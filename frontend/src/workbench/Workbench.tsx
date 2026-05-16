@@ -4,15 +4,15 @@ import { BottomPanel } from "./BottomPanel";
 import { EditorPane } from "./EditorPane";
 import { FileTree } from "./FileTree";
 import { GitView } from "./GitView";
+import { MarkdownPreview } from "./MarkdownPreview";
 import { Resizer } from "./Resizer";
 import { SearchView } from "./SearchView";
 import { SettingsView } from "./SettingsView";
+import { WorkspacePicker } from "./WorkspacePicker";
 import { DEFAULT_SETTINGS, type OsheepSettings } from "./settings";
 import {
   type FsNode,
-  ensurePermission,
   loadOsheepSettings,
-  pickRootDirectory,
   readFileText,
   saveOsheepSettings,
   writeFileText,
@@ -22,11 +22,11 @@ import "./workbench.css";
 interface FileTab {
   kind: "file";
   path: string;
-  handle: FileSystemFileHandle;
   content: string;
   savedContent: string;
   dirty: boolean;
   deleted: boolean;
+  previewMode: boolean;
 }
 
 interface SettingsTab {
@@ -46,9 +46,8 @@ const BOTTOM_THRESHOLD = 60;
 const SIDE_MAX = 600;
 
 export function Workbench() {
-  const [rootHandle, setRootHandle] = useState<FileSystemDirectoryHandle | null>(
-    null
-  );
+  const [workspaceId, setWorkspaceId] = useState<string | null>(null);
+  const [picking, setPicking] = useState(false);
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [activePath, setActivePath] = useState<string | null>(null);
   const [selectedTreePath, setSelectedTreePath] = useState<string | null>(null);
@@ -57,18 +56,19 @@ export function Workbench() {
 
   const [activeView, setActiveView] = useState<ViewId>("explorer");
 
-  // Width / height of 0 means collapsed. Non-zero is the rendered size.
   const [leftWidth, setLeftWidth] = useState(DEFAULT_LEFT_WIDTH);
   const [rightWidth, setRightWidth] = useState(0);
   const [bottomHeight, setBottomHeight] = useState(0);
+  // BottomPanel keeps mounting across collapse so terminals survive.
+  // Toggling visibility or drag-collapse leaves this true; only an explicit
+  // close (× in BottomPanel header) flips it back to false, which unmounts
+  // the panel and kills its terminal sessions.
+  const [bottomActivated, setBottomActivated] = useState(false);
 
-  // Last non-zero size, so toggle-buttons can restore the user's preferred size.
   const lastLeftWidthRef = useRef(DEFAULT_LEFT_WIDTH);
   const lastRightWidthRef = useRef(DEFAULT_RIGHT_WIDTH);
   const lastBottomHeightRef = useRef(DEFAULT_BOTTOM_HEIGHT);
 
-  // Cumulative drag progress (in pixels). Lets the user drag a collapsed
-  // panel back out from its edge without each delta being snapped to 0.
   const leftProgressRef = useRef(0);
   const rightProgressRef = useRef(0);
   const bottomProgressRef = useRef(0);
@@ -78,42 +78,38 @@ export function Workbench() {
   const bottomCollapsed = bottomHeight === 0;
 
   useEffect(() => {
-    if (!rootHandle) return;
+    if (!workspaceId) return;
     let cancelled = false;
-    void loadOsheepSettings(rootHandle).then((s) => {
+    void loadOsheepSettings(workspaceId).then((s) => {
       if (!cancelled) setSettings(s);
     });
     return () => {
       cancelled = true;
     };
-  }, [rootHandle]);
+  }, [workspaceId]);
 
   const updateSettings = useCallback(
     (next: OsheepSettings) => {
       setSettings(next);
-      if (rootHandle) void saveOsheepSettings(rootHandle, next);
+      if (workspaceId) void saveOsheepSettings(workspaceId, next);
     },
-    [rootHandle]
+    [workspaceId]
   );
 
-  const openProject = useCallback(async () => {
+  const onChooseWorkspace = useCallback((id: string) => {
     setError(null);
-    try {
-      const handle = await pickRootDirectory();
-      await ensurePermission(handle, "readwrite");
-      setRootHandle(handle);
-      if (leftCollapsed) {
-        setLeftWidth(lastLeftWidthRef.current);
-      }
-    } catch (e) {
-      if ((e as Error).name === "AbortError") return;
-      setError((e as Error).message);
-    }
-  }, [leftCollapsed]);
+    setWorkspaceId(id);
+    setTabs([]);
+    setActivePath(null);
+    setSelectedTreePath(null);
+    setPicking(false);
+    if (leftWidth === 0) setLeftWidth(lastLeftWidthRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [leftWidth]);
 
   const openFile = useCallback(
     async (node: FsNode) => {
-      if (node.kind !== "file") return;
+      if (node.kind !== "file" || !workspaceId) return;
       const existing = tabs.find(
         (t) => t.kind === "file" && t.path === node.path
       );
@@ -121,23 +117,28 @@ export function Workbench() {
         setActivePath(node.path);
         return;
       }
-      const fileHandle = node.handle as FileSystemFileHandle;
-      const text = await readFileText(fileHandle);
+      let text: string;
+      try {
+        text = await readFileText(workspaceId, node.path);
+      } catch (e) {
+        setError((e as Error).message);
+        return;
+      }
       setTabs((prev) => [
         ...prev,
         {
           kind: "file",
           path: node.path,
-          handle: fileHandle,
           content: text,
           savedContent: text,
           dirty: false,
           deleted: false,
+          previewMode: false,
         },
       ]);
       setActivePath(node.path);
     },
-    [tabs]
+    [tabs, workspaceId]
   );
 
   const openSettingsTab = useCallback(() => {
@@ -174,6 +175,16 @@ export function Workbench() {
     );
   }, []);
 
+  const togglePreview = useCallback((path: string) => {
+    setTabs((prev) =>
+      prev.map((t) =>
+        t.kind === "file" && t.path === path
+          ? { ...t, previewMode: !t.previewMode }
+          : t
+      )
+    );
+  }, []);
+
   const updateActive = useCallback(
     (value: string) => {
       if (!activePath) return;
@@ -189,10 +200,15 @@ export function Workbench() {
   );
 
   const saveActive = useCallback(async () => {
-    if (!activePath) return;
+    if (!activePath || !workspaceId) return;
     const tab = tabs.find((t) => t.path === activePath);
     if (!tab || tab.kind !== "file" || tab.deleted) return;
-    await writeFileText(tab.handle, tab.content);
+    try {
+      await writeFileText(workspaceId, tab.path, tab.content);
+    } catch (e) {
+      setError((e as Error).message);
+      return;
+    }
     setTabs((prev) =>
       prev.map((t) =>
         t.kind === "file" && t.path === activePath
@@ -200,7 +216,7 @@ export function Workbench() {
           : t
       )
     );
-  }, [activePath, tabs]);
+  }, [activePath, tabs, workspaceId]);
 
   const closeTab = useCallback(
     (path: string) => {
@@ -249,7 +265,6 @@ export function Workbench() {
     rightProgressRef.current = rightWidth;
   };
   const onRightResize = useCallback((delta: number) => {
-    // Dragging left (negative delta x) grows the right panel.
     rightProgressRef.current -= delta;
     const p = rightProgressRef.current;
     if (p < SIDE_THRESHOLD) {
@@ -265,7 +280,6 @@ export function Workbench() {
     bottomProgressRef.current = bottomHeight;
   };
   const onBottomResize = useCallback((delta: number) => {
-    // Dragging up (negative delta y) grows the bottom panel.
     bottomProgressRef.current -= delta;
     const p = bottomProgressRef.current;
     if (p < BOTTOM_THRESHOLD) {
@@ -274,6 +288,8 @@ export function Workbench() {
       const h = Math.min(p, SIDE_MAX);
       setBottomHeight(h);
       lastBottomHeightRef.current = h;
+      // Drag-expanding from a hidden state re-activates the panel
+      setBottomActivated(true);
     }
   }, []);
 
@@ -284,12 +300,22 @@ export function Workbench() {
       setRightWidth(0);
     }
   };
+  // Soft toggle: only flips visibility. BottomPanel stays mounted so its
+  // terminal sessions and any state are preserved across collapse/restore.
   const toggleBottom = () => {
-    if (bottomCollapsed) setBottomHeight(lastBottomHeightRef.current);
-    else {
+    if (bottomCollapsed) {
+      setBottomActivated(true);
+      setBottomHeight(lastBottomHeightRef.current);
+    } else {
       lastBottomHeightRef.current = bottomHeight;
       setBottomHeight(0);
     }
+  };
+  // Hard close: invoked by the × button inside the BottomPanel header.
+  // Unmounts the panel, which tears down its terminal sessions.
+  const hardCloseBottom = () => {
+    setBottomActivated(false);
+    setBottomHeight(0);
   };
 
   const activeTab = tabs.find((t) => t.path === activePath) ?? null;
@@ -301,11 +327,11 @@ export function Workbench() {
         <span className="titlebar__brand">osheep</span>
         <span className="titlebar__sep">·</span>
         <span className="titlebar__project">
-          {rootHandle ? rootHandle.name : "未打开项目"}
+          {workspaceId ?? "未选择工作区"}
         </span>
         <div className="titlebar__actions">
-          <button className="tb-btn" onClick={openProject}>
-            打开项目…
+          <button className="tb-btn" onClick={() => setPicking(true)}>
+            选择工作区…
           </button>
           <button
             className="tb-btn"
@@ -330,7 +356,18 @@ export function Workbench() {
         </div>
       </div>
 
-      {error && <div className="banner-error">{error}</div>}
+      {error && (
+        <div className="banner-error">
+          {error}
+          <button
+            className="banner-error__close"
+            onClick={() => setError(null)}
+            title="关闭"
+          >
+            ×
+          </button>
+        </div>
+      )}
 
       <div className="body">
         <ActivityBar
@@ -343,9 +380,10 @@ export function Workbench() {
         {!leftCollapsed && (
           <div className="side" style={{ width: leftWidth }}>
             {activeView === "explorer" &&
-              (rootHandle ? (
+              (workspaceId ? (
                 <FileTree
-                  rootHandle={rootHandle}
+                  workspaceId={workspaceId}
+                  workspaceName={workspaceId}
                   selectedPath={selectedTreePath}
                   onSelect={setSelectedTreePath}
                   onOpenFile={openFile}
@@ -358,11 +396,14 @@ export function Workbench() {
                     <span className="side-view__title">资源管理器</span>
                   </div>
                   <div className="side-view__body side-view__body--padded">
-                    <button className="primary-btn" onClick={openProject}>
-                      打开项目
+                    <button
+                      className="primary-btn"
+                      onClick={() => setPicking(true)}
+                    >
+                      选择工作区
                     </button>
                     <div className="muted" style={{ marginTop: 12 }}>
-                      请选择本地文件夹作为工作区
+                      所有文件由后端 osheep-backend 提供
                     </div>
                   </div>
                 </div>
@@ -380,58 +421,77 @@ export function Workbench() {
         <div className="main">
           <div className="editor-area">
             <div className="tabs">
-              {tabs.map((t) => {
-                const isDeleted = t.kind === "file" && t.deleted;
-                return (
-                  <div
-                    key={t.path}
-                    className={
-                      "tab" +
-                      (t.path === activePath ? " is-active" : "") +
-                      (isDeleted ? " is-deleted" : "")
-                    }
-                    onClick={() => setActivePath(t.path)}
-                    title={
-                      t.kind === "file"
-                        ? isDeleted
-                          ? `${t.path}（已被删除）`
-                          : t.path
-                        : "设置"
-                    }
-                  >
-                    <span className="tab__name">
-                      {t.kind === "settings"
-                        ? "设置"
-                        : t.path.split("/").pop()}
-                      {t.kind === "file" && t.dirty ? " ●" : ""}
-                    </span>
-                    <span
-                      className="tab__close"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        closeTab(t.path);
-                      }}
+              <div className="tabs__list">
+                {tabs.map((t) => {
+                  const isDeleted = t.kind === "file" && t.deleted;
+                  return (
+                    <div
+                      key={t.path}
+                      className={
+                        "tab" +
+                        (t.path === activePath ? " is-active" : "") +
+                        (isDeleted ? " is-deleted" : "")
+                      }
+                      onClick={() => setActivePath(t.path)}
+                      title={
+                        t.kind === "file"
+                          ? isDeleted
+                            ? `${t.path}（已被删除）`
+                            : t.path
+                          : "设置"
+                      }
                     >
-                      ×
-                    </span>
-                  </div>
-                );
-              })}
+                      <span className="tab__name">
+                        {t.kind === "settings"
+                          ? "设置"
+                          : t.path.split("/").pop()}
+                        {t.kind === "file" && t.dirty ? " ●" : ""}
+                      </span>
+                      <span
+                        className="tab__close"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          closeTab(t.path);
+                        }}
+                      >
+                        ×
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+              {activeFileTab && isMarkdownPath(activeFileTab.path) && (
+                <div className="tabs__trailing">
+                  <PreviewToggle
+                    previewMode={activeFileTab.previewMode}
+                    onToggle={() => togglePreview(activeFileTab.path)}
+                  />
+                </div>
+              )}
             </div>
             <div className="editor-host">
               {activeFileTab ? (
-                <EditorPane
-                  path={activeFileTab.path}
-                  value={activeFileTab.content}
-                  fontSize={settings.editor.fontSize}
-                  onChange={updateActive}
-                  onSave={saveActive}
-                />
+                isMarkdownPath(activeFileTab.path) && activeFileTab.previewMode ? (
+                  <div className="editor-host__preview">
+                    <MarkdownPreview source={activeFileTab.content} />
+                  </div>
+                ) : (
+                  <div className="editor-host__source">
+                    <EditorPane
+                      path={activeFileTab.path}
+                      value={activeFileTab.content}
+                      fontSize={settings.editor.fontSize}
+                      tabSize={settings.editor.tabSize}
+                      onChange={updateActive}
+                      onSave={saveActive}
+                    />
+                  </div>
+                )
               ) : activeTab?.kind === "settings" ? (
                 <SettingsView
                   settings={settings}
                   onChange={updateSettings}
-                  hasProject={!!rootHandle}
+                  hasProject={!!workspaceId}
                 />
               ) : (
                 <div className="empty-hint">在左侧选择文件以开始编辑</div>
@@ -444,9 +504,17 @@ export function Workbench() {
             onResizeStart={onBottomStart}
             onResize={onBottomResize}
           />
-          {!bottomCollapsed && (
-            <div className="bottom" style={{ height: bottomHeight }}>
-              <BottomPanel onClose={toggleBottom} />
+          {bottomActivated && (
+            <div
+              className={"bottom" + (bottomCollapsed ? " is-hidden" : "")}
+              style={{
+                height: bottomCollapsed ? 0 : bottomHeight,
+              }}
+            >
+              <BottomPanel
+                workspaceId={workspaceId}
+                onClose={hardCloseBottom}
+              />
             </div>
           )}
         </div>
@@ -474,6 +542,14 @@ export function Workbench() {
           </div>
         )}
       </div>
+
+      {picking && (
+        <WorkspacePicker
+          currentId={workspaceId}
+          onCancel={() => setPicking(false)}
+          onChoose={onChooseWorkspace}
+        />
+      )}
     </div>
   );
 }
@@ -531,5 +607,59 @@ function PanelRightIcon() {
       <rect x="3" y="4" width="18" height="16" rx="1" />
       <path d="M15 4v16" />
     </svg>
+  );
+}
+
+function isMarkdownPath(path: string): boolean {
+  const lower = path.toLowerCase();
+  return (
+    lower.endsWith(".md") ||
+    lower.endsWith(".markdown") ||
+    lower.endsWith(".mdx")
+  );
+}
+
+function PreviewToggle({
+  previewMode,
+  onToggle,
+}: {
+  previewMode: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      className="preview-toggle"
+      title={previewMode ? "切换到源码" : "打开预览"}
+      onClick={onToggle}
+    >
+      {previewMode ? (
+        <svg
+          viewBox="0 0 16 16"
+          width="14"
+          height="14"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.4"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <path d="M3 4h10M3 8h10M3 12h6" />
+        </svg>
+      ) : (
+        <svg
+          viewBox="0 0 16 16"
+          width="14"
+          height="14"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.4"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <path d="M2 8s2.5-4 6-4 6 4 6 4-2.5 4-6 4-6-4-6-4z" />
+          <circle cx="8" cy="8" r="1.6" />
+        </svg>
+      )}
+    </button>
   );
 }

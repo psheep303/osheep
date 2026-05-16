@@ -1,247 +1,135 @@
-import { DEFAULT_SETTINGS, mergeSettings, type OsheepSettings } from "./settings";
+// Workspace file-system helpers. These delegate to the backend API.
+//
+// All paths are workspace-relative POSIX strings ("", "src", "src/main.ts").
+
+import {
+  copyEntry as apiCopyEntry,
+  createEntry as apiCreateEntry,
+  deleteEntry as apiDeleteEntry,
+  findFreeName as apiFindFreeName,
+  getSettings as apiGetSettings,
+  listTree as apiListTree,
+  moveEntry as apiMoveEntry,
+  putSettings as apiPutSettings,
+  readFile as apiReadFile,
+  writeFile as apiWriteFile,
+  type FsEntry,
+} from "./api";
+import {
+  DEFAULT_SETTINGS,
+  mergeSettings,
+  type OsheepSettings,
+} from "./settings";
 
 export interface FsNode {
   name: string;
   path: string;
   kind: "file" | "directory";
-  handle: FileSystemHandle;
 }
 
-const IGNORED_DIRS = new Set([
-  "node_modules",
-  ".git",
-  "dist",
-  "build",
-  ".next",
-  ".vite",
-  ".cache",
-]);
-
-export async function pickRootDirectory(): Promise<FileSystemDirectoryHandle> {
-  if (!("showDirectoryPicker" in window)) {
-    throw new Error(
-      "当前浏览器不支持 File System Access API，请使用 Chrome / Edge 等 Chromium 内核浏览器"
-    );
-  }
-  return await (
-    window as unknown as {
-      showDirectoryPicker: (opts?: {
-        mode?: "read" | "readwrite";
-      }) => Promise<FileSystemDirectoryHandle>;
-    }
-  ).showDirectoryPicker({ mode: "readwrite" });
+function toNode(e: FsEntry): FsNode {
+  return { name: e.name, path: e.path, kind: e.kind };
 }
 
 export async function readDirShallow(
-  dirHandle: FileSystemDirectoryHandle,
-  basePath: string
+  workspaceId: string,
+  dirPath: string
 ): Promise<FsNode[]> {
-  const nodes: FsNode[] = [];
-  // @ts-expect-error iterator is part of the FS Access API
-  for await (const [name, handle] of dirHandle.entries()) {
-    if (handle.kind === "directory" && IGNORED_DIRS.has(name)) continue;
-    nodes.push({
-      name,
-      path: basePath ? `${basePath}/${name}` : name,
-      kind: handle.kind,
-      handle,
-    });
-  }
-  nodes.sort((a, b) => {
-    if (a.kind !== b.kind) return a.kind === "directory" ? -1 : 1;
-    return a.name.localeCompare(b.name);
-  });
-  return nodes;
+  const entries = await apiListTree(workspaceId, dirPath, false);
+  return entries.map(toNode);
 }
 
 export async function readFileText(
-  fileHandle: FileSystemFileHandle
+  workspaceId: string,
+  filePath: string
 ): Promise<string> {
-  const file = await fileHandle.getFile();
-  return await file.text();
+  const { content } = await apiReadFile(workspaceId, filePath);
+  return content;
 }
 
 export async function writeFileText(
-  fileHandle: FileSystemFileHandle,
+  workspaceId: string,
+  filePath: string,
   content: string
 ): Promise<void> {
-  const writable = await fileHandle.createWritable();
-  await writable.write(content);
-  await writable.close();
-}
-
-export async function ensurePermission(
-  handle: FileSystemHandle,
-  mode: "read" | "readwrite" = "readwrite"
-): Promise<boolean> {
-  const anyHandle = handle as unknown as {
-    queryPermission: (opts: { mode: string }) => Promise<PermissionState>;
-    requestPermission: (opts: { mode: string }) => Promise<PermissionState>;
-  };
-  if ((await anyHandle.queryPermission({ mode })) === "granted") return true;
-  return (await anyHandle.requestPermission({ mode })) === "granted";
+  await apiWriteFile(workspaceId, filePath, content);
 }
 
 export async function createFile(
-  dirHandle: FileSystemDirectoryHandle,
-  name: string
-): Promise<FileSystemFileHandle> {
-  return await dirHandle.getFileHandle(name, { create: true });
+  workspaceId: string,
+  filePath: string
+): Promise<void> {
+  await apiCreateEntry(workspaceId, filePath, "file");
 }
 
 export async function createDirectory(
-  dirHandle: FileSystemDirectoryHandle,
-  name: string
-): Promise<FileSystemDirectoryHandle> {
-  return await dirHandle.getDirectoryHandle(name, { create: true });
+  workspaceId: string,
+  dirPath: string
+): Promise<void> {
+  await apiCreateEntry(workspaceId, dirPath, "directory");
 }
 
 export async function removeEntry(
-  parent: FileSystemDirectoryHandle,
-  name: string,
-  recursive = true
+  workspaceId: string,
+  entryPath: string
 ): Promise<void> {
-  await parent.removeEntry(name, { recursive });
+  await apiDeleteEntry(workspaceId, entryPath, true);
 }
 
 export async function renameEntry(
-  parent: FileSystemDirectoryHandle,
-  oldHandle: FileSystemHandle,
-  oldName: string,
+  workspaceId: string,
+  oldPath: string,
   newName: string
+): Promise<string> {
+  const slash = oldPath.lastIndexOf("/");
+  const dir = slash >= 0 ? oldPath.slice(0, slash) : "";
+  const newPath = dir ? `${dir}/${newName}` : newName;
+  if (newPath === oldPath) return oldPath;
+  await apiMoveEntry(workspaceId, oldPath, newPath);
+  return newPath;
+}
+
+export async function moveEntryTo(
+  workspaceId: string,
+  fromPath: string,
+  toPath: string
 ): Promise<void> {
-  if (!newName || newName === oldName) return;
-  const anyH = oldHandle as unknown as {
-    move?: (n: string) => Promise<void>;
-  };
-  if (typeof anyH.move === "function") {
-    await anyH.move(newName);
-    return;
-  }
-  if (oldHandle.kind !== "file") {
-    throw new Error("当前浏览器不支持重命名文件夹，请升级到最新版 Chrome / Edge");
-  }
-  const fileHandle = oldHandle as FileSystemFileHandle;
-  const text = await (await fileHandle.getFile()).text();
-  const next = await parent.getFileHandle(newName, { create: true });
-  const w = await next.createWritable();
-  await w.write(text);
-  await w.close();
-  await parent.removeEntry(oldName);
+  await apiMoveEntry(workspaceId, fromPath, toPath);
+}
+
+export async function copyEntryTo(
+  workspaceId: string,
+  fromPath: string,
+  toPath: string
+): Promise<void> {
+  await apiCopyEntry(workspaceId, fromPath, toPath);
 }
 
 export async function findFreeName(
-  dir: FileSystemDirectoryHandle,
-  base: string,
+  workspaceId: string,
+  dirPath: string,
+  baseName: string,
   kind: "file" | "directory"
 ): Promise<string> {
-  const exists = async (name: string): Promise<boolean> => {
-    try {
-      if (kind === "file") await dir.getFileHandle(name);
-      else await dir.getDirectoryHandle(name);
-      return true;
-    } catch {
-      return false;
-    }
-  };
-  if (!(await exists(base))) return base;
-  const dot = kind === "file" ? base.lastIndexOf(".") : -1;
-  const stem = dot > 0 ? base.slice(0, dot) : base;
-  const ext = dot > 0 ? base.slice(dot) : "";
-  for (let i = 1; i < 1000; i++) {
-    const candidate = i === 1 ? `${stem} 副本${ext}` : `${stem} 副本 ${i}${ext}`;
-    if (!(await exists(candidate))) return candidate;
-  }
-  return `${stem} 副本 ${Date.now()}${ext}`;
-}
-
-export async function copyHandleInto(
-  src: FileSystemHandle,
-  destDir: FileSystemDirectoryHandle,
-  destName: string
-): Promise<void> {
-  if (src.kind === "file") {
-    const file = await (src as FileSystemFileHandle).getFile();
-    const buf = await file.arrayBuffer();
-    const target = await destDir.getFileHandle(destName, { create: true });
-    const w = await target.createWritable();
-    await w.write(buf);
-    await w.close();
-    return;
-  }
-  const srcDir = src as FileSystemDirectoryHandle;
-  const targetDir = await destDir.getDirectoryHandle(destName, { create: true });
-  // @ts-expect-error iterator is part of the FS Access API
-  for await (const [name, child] of srcDir.entries()) {
-    await copyHandleInto(child, targetDir, name);
-  }
-}
-
-export async function moveHandleInto(
-  src: FileSystemHandle,
-  srcParent: FileSystemDirectoryHandle,
-  srcName: string,
-  destDir: FileSystemDirectoryHandle,
-  destName: string
-): Promise<void> {
-  const anyH = src as unknown as {
-    move?: (
-      dest: FileSystemDirectoryHandle | string,
-      name?: string
-    ) => Promise<void>;
-  };
-  if (typeof anyH.move === "function") {
-    try {
-      await anyH.move(destDir, destName);
-      return;
-    } catch {
-      // fall through to copy + delete
-    }
-  }
-  await copyHandleInto(src, destDir, destName);
-  await srcParent.removeEntry(srcName, { recursive: true });
+  return await apiFindFreeName(workspaceId, dirPath, baseName, kind);
 }
 
 export async function loadOsheepSettings(
-  root: FileSystemDirectoryHandle
+  workspaceId: string
 ): Promise<OsheepSettings> {
-  const osheep = await root.getDirectoryHandle(".osheep", { create: true });
-  // Ensure docs/ subdir exists for project documentation
-  await osheep.getDirectoryHandle("docs", { create: true });
-  let handle: FileSystemFileHandle;
   try {
-    handle = await osheep.getFileHandle("settings.json");
-  } catch {
-    handle = await osheep.getFileHandle("settings.json", { create: true });
-    await writeJson(handle, DEFAULT_SETTINGS);
-    return DEFAULT_SETTINGS;
-  }
-  const text = (await (await handle.getFile()).text()).trim();
-  if (!text) {
-    await writeJson(handle, DEFAULT_SETTINGS);
-    return DEFAULT_SETTINGS;
-  }
-  try {
-    return mergeSettings(JSON.parse(text));
+    const raw = await apiGetSettings<unknown>(workspaceId);
+    return mergeSettings(raw);
   } catch {
     return DEFAULT_SETTINGS;
   }
 }
 
 export async function saveOsheepSettings(
-  root: FileSystemDirectoryHandle,
+  workspaceId: string,
   s: OsheepSettings
 ): Promise<void> {
-  const osheep = await root.getDirectoryHandle(".osheep", { create: true });
-  const handle = await osheep.getFileHandle("settings.json", { create: true });
-  await writeJson(handle, s);
+  await apiPutSettings(workspaceId, s);
 }
 
-async function writeJson(
-  handle: FileSystemFileHandle,
-  obj: unknown
-): Promise<void> {
-  const w = await handle.createWritable();
-  await w.write(JSON.stringify(obj, null, 2));
-  await w.close();
-}
+export const PLAN_DIR = ".osheep/plan";

@@ -1,0 +1,1 @@
+{"root":["./src/config.ts","./src/errors.ts","./src/fs-ops.ts","./src/index.ts","./src/pty.ts","./src/server.ts","./src/workspace.ts","./src/routes/terminals.ts","./src/routes/workspaces.ts"],"version":"5.9.3"}

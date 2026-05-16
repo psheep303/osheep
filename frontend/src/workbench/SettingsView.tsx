@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { OsheepSettings } from "./settings";
+import type { OsheepSettings, TabSize } from "./settings";
 
 interface SettingsViewProps {
   settings: OsheepSettings;
@@ -25,9 +25,20 @@ export function SettingsView({
   const applyFontSize = (raw: string) => {
     const next = commitFontSize(raw);
     if (next !== settings.editor.fontSize) {
-      onChange({ ...settings, editor: { ...settings.editor, fontSize: next } });
+      onChange({
+        ...settings,
+        editor: { ...settings.editor, fontSize: next },
+      });
     }
     return next;
+  };
+
+  const applyTabSize = (next: TabSize) => {
+    if (next === settings.editor.tabSize) return;
+    onChange({
+      ...settings,
+      editor: { ...settings.editor, tabSize: next },
+    });
   };
 
   return (
@@ -52,6 +63,22 @@ export function SettingsView({
               value={settings.editor.fontSize}
               disabled={!hasProject}
               onCommit={applyFontSize}
+            />
+          </div>
+
+          <div className="settings-view__item">
+            <div className="settings-view__item-label">Tab 缩进</div>
+            <div className="settings-view__item-desc">
+              按 Tab 键插入的空格数（同时影响自动缩进宽度）。
+            </div>
+            <Segmented<TabSize>
+              value={settings.editor.tabSize}
+              disabled={!hasProject}
+              options={[
+                { label: "2 空格", value: 2 },
+                { label: "4 空格", value: 4 },
+              ]}
+              onChange={applyTabSize}
             />
           </div>
         </div>
@@ -96,5 +123,37 @@ function NumberInput({ value, disabled, onCommit }: NumberInputProps) {
         }
       }}
     />
+  );
+}
+
+interface SegmentedProps<T extends string | number> {
+  value: T;
+  options: { label: string; value: T }[];
+  disabled: boolean;
+  onChange: (v: T) => void;
+}
+
+function Segmented<T extends string | number>({
+  value,
+  options,
+  disabled,
+  onChange,
+}: SegmentedProps<T>) {
+  return (
+    <div className="settings-view__segmented">
+      {options.map((opt) => (
+        <button
+          key={String(opt.value)}
+          type="button"
+          disabled={disabled}
+          className={
+            "settings-view__seg" + (opt.value === value ? " is-active" : "")
+          }
+          onClick={() => onChange(opt.value)}
+        >
+          {opt.label}
+        </button>
+      ))}
+    </div>
   );
 }

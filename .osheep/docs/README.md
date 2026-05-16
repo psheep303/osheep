@@ -2,15 +2,20 @@
 
 ## 一、总述
 
-osheep 是一个 AI 驱动的 Web 开发工作台，目标是在浏览器中提供接近 VS Code 的项目开发体验，并将 AI 的"需求理解 → 文档生成 → 文档对齐 → Todo 生成 → 执行开发"流程整合进统一工作台中。
+osheep 是一个 AI 驱动的 **服务器端 Web 开发工作台**，目标是在浏览器中提供接近 VS Code 的项目开发体验，并将 AI 的"需求理解 → 文档生成 → 文档对齐 → Todo 生成 → 执行开发"流程整合进统一工作台中。
+
+osheep 长期部署在服务器上，浏览器只是远程访问入口：
+- 用户在浏览器看到的、修改的是**服务器上**的文件，不是本地磁盘
+- 所有文件读写、终端进程都跑在后端
+- 文件 API 与终端 API 的 schema 设计上同样适合 LLM 工具调用——AI 与人类用户共享同一组接口
 
 当前阶段聚焦以下两类能力：
 
 1. Web IDE 基础能力
-   - 在浏览器中打开项目
-   - 浏览文件树
-   - 编辑代码与文档
-   - 查看终端与任务日志
+   - 浏览器中选择 / 打开服务器上的工作区
+   - 浏览文件树（通过文件 API）
+   - 编辑代码与文档（通过文件 API）
+   - 集成的服务器端终端（xterm.js + 后端 node-pty）
    - 拥有基础自动补全能力
 
 2. AI 生成能力
@@ -26,14 +31,14 @@ osheep 是一个 AI 驱动的 Web 开发工作台，目标是在浏览器中提�
 
 ## 二、`.osheep` 目录结构
 
-`.osheep` 是 osheep 在每个项目根目录下创建的工作区，用于存放该项目的设置和文档：
+`.osheep` 是 osheep 在每个 **服务器端工作区** 根目录下创建的工作区子目录，用于存放该 workspace 的设置、计划和文档：
 
 ```
 .osheep/
-├── settings.json        项目级设置（字号、AI Provider、执行策略等）
-└── docs/                项目所有文档（本文件所在目录）
+├── settings.json        项目级设置（字号、缩进、AI Provider、执行策略等）
+├── plan/                阶段计划、版本计划、实现计划（顶层独立目录，便于快速访问）
+└── docs/                项目所有其它文档
     ├── README.md        本索引文件
-    ├── plan/            阶段计划、版本计划、实现计划
     ├── product/         产品定位、目标用户、核心流程、产品边界
     ├── frontend/        前端工作台、布局、交互流程、编辑器设计
     ├── backend/         后端接口、任务调度、工作区管理、服务边界
@@ -49,18 +54,18 @@ osheep 是一个 AI 驱动的 Web 开发工作台，目标是在浏览器中提�
   - 由 osheep 在打开项目时自动创建（缺失则写入默认值）
   - 保存前端设置、AI 行为设置、Provider 设置、执行策略等项目级配置
 
+- `plan/`
+  - **顶层目录**，与 `docs/` 平级
+  - 存放阶段计划、版本计划、实现计划
+  - 工作台底部面板的"计划"视图直接读取此目录并渲染为只读 Markdown 预览
+  - 文件命名规则：`序号-主题.md`，例如 `0001-mvp-web-ide-and-generate-flow.md`
+
 - `docs/`
-  - 项目所有文档统一存放位置
+  - 除计划之外的所有项目文档统一存放位置
   - osheep 打开任意项目时若不存在则自动创建
   - 子目录划分见下方 2.2
 
 ### 2.2 `docs/` 子目录规则
-
-- `plan/`
-  - 必须存在
-  - 存放阶段计划、版本计划、实现计划
-  - 文件命名规则：`序号-主题.md`
-  - 例如：`0001-mvp-web-ide-and-generate-flow.md`
 
 - `product/`
   - 存放产品定位、目标用户、核心流程、产品边界等文档
@@ -117,15 +122,18 @@ osheep 是一个 AI 驱动的 Web 开发工作台，目标是在浏览器中提�
 - Node.js 20+
 - TypeScript
 - React
-- Eclipse Theia
-- Monaco Editor
+- Monaco Editor（通过 `@monaco-editor/react`）
+- xterm.js（终端渲染）
+- marked + DOMPurify（Markdown 预览）
 
 ### 3.2 后端环境
 - Node.js 20+
 - TypeScript
-- PostgreSQL 15+
-- Redis 7+
-- BullMQ
+- Fastify（HTTP + WebSocket）
+- node-pty（终端 PTY）
+- PostgreSQL 15+（任务编排，后续阶段）
+- Redis 7+（BullMQ 队列，后续阶段）
+- BullMQ（后续阶段）
 
 ### 3.3 执行与隔离环境
 - Docker
@@ -149,7 +157,7 @@ osheep 是一个 AI 驱动的 Web 开发工作台，目标是在浏览器中提�
 2. 需求到文档生成的 AI 流程
 3. 文档确认后的 Todo 生成流程
 4. Todo 确认后的执行入口与任务状态展示
-5. 项目文档统一存放在 `.osheep/docs/`
+5. 项目文档统一存放在 `.osheep/docs/`，项目计划存放在 `.osheep/plan/`
 
 当前阶段不做以下内容：
 

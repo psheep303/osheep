@@ -6,6 +6,12 @@
 
 ---
 
+## 关键架构定位
+
+osheep 是 **服务端 Web IDE**：所有文件读写、终端进程都跑在后端，浏览器只持有路径字符串通过 HTTP / WebSocket 调用。前端**不**使用 File System Access API，不直接读写用户本地磁盘。详见 [api-architecture.md](../backend/api-architecture.md)。
+
+---
+
 ## 整体布局
 
 采用「活动栏 + 可伸缩侧栏 + 中央编辑器 + 可伸缩底部面板」的五区布局：
@@ -33,7 +39,10 @@
    - 可通过标题栏按钮折叠 / 展开
 
 5. 底部面板 (Bottom Panel)
-   - 终端、日志、任务执行状态
+   - 三个标签页：终端、日志、计划
+   - 终端：xterm.js 渲染 + WebSocket 透传后端 `node-pty`，profile 列表来自后端 `GET /api/terminals/profiles`（服务器是 Windows 则显示 PowerShell / Command Prompt / Git Bash，Linux / macOS 则显示 bash / zsh）；判定依据是**服务器**的平台，不是浏览器。**右侧带一条 ~180 px 的会话侧边栏**，列出本面板内所有活跃 PTY，可点击切换、`×` 关闭、`+` 新建（按当前 profile）、`∨` 弹 profile 菜单新建。详见 [terminal-panel.md](terminal-panel.md)
+   - 计划：左侧迷你列表展示 `.osheep/plan/` 下所有文件，右侧渲染选中文件的 **只读** Markdown 预览；用户要编辑计划必须从资源管理器打开（避免在底部面板里误改）
+   - 日志：后续阶段接入任务执行日志
    - 可拖拽改变高度
    - 可通过标题栏按钮折叠 / 展开
 
@@ -44,20 +53,23 @@
 ### 编辑器能力
 - 打开文件
 - 多 Tab
-- Markdown 编辑
 - 代码编辑
+- Markdown 编辑（源码态）与渲染预览：预览 / 源码切换按钮位于**标签页栏最右侧**（与标签页同高度），仿 VS Code 工具栏按钮放置方式；预览内容左对齐（不水平居中）。详见 [markdown-preview.md](markdown-preview.md)
 - 基础自动补全
 - 差异查看入口
 
 ### 工作区能力
-- 浏览文件树（持续高亮当前选中项，直到选中其他项）
-- 文件树中每个**文件**前显示按类型着色的 16×16 小图标，覆盖主流编程语言、Web、配置、媒体、压缩包等数十种文件类型（图标风格参考 VS Code 的 Seti / Material，色板沿用 GitHub linguist）
-- 文件夹不显示文件夹图标，只保留可旋转的 `>` chevron 作为展开 / 折叠指示
-- 在文件树中新建文件、新建文件夹（头部入口 + 文件夹悬停入口）
+- 启动时调 `GET /api/workspaces` 列出后端 `WORKSPACES_ROOT` 下的所有工作区
+- 标题栏「打开项目」按钮弹出工作区选择面板（替代旧的本地目录 picker），选定一个后所有后续 API 调用带 `workspaceId`
+- 浏览文件树（持续高亮当前选中项，直到选中其他项）——树通过 `GET /api/workspaces/:id/fs/tree?path=` 拉取
+- 文件树中每个**条目**最左侧都占用一个 16 px 的图标列：文件显示按类型着色的小图标；文件夹显示一个可旋转的 `>` chevron。两者共享同一个槽位，因此同级文件与文件夹的图标和名字必然在同一垂直线上
+- 在文件树中新建文件、新建文件夹（头部入口 + 文件夹悬停入口）→ `POST /api/workspaces/:id/fs/entry`
 - 右键文件 / 文件夹弹出上下文菜单：复制、粘贴、剪切、重命名、删除；文件夹另含新建文件、新建文件夹
-- 复制 / 剪切粘贴遵循：粘贴目标为右键的文件夹本身，或右键的文件所在文件夹；同名时自动追加"副本"后缀
+- **右键文件树空白区或工作区根**：弹出根上下文菜单——新建文件、新建文件夹、粘贴（粘贴指向工作区根）
+- **拖拽移动**：仿 VS Code，按住条目拖动到任一文件夹上方时该文件夹高亮（蓝边 + 浅蓝背景），松手时调 `POST /api/workspaces/:id/fs/move`；拖到空白区或文件树根时移动到工作区根；禁止把文件夹拖入它自己或其子目录
+- 复制 / 剪切粘贴遵循：粘贴目标为右键的文件夹本身，或右键的文件所在文件夹；同名时自动追加"副本"后缀（重名检测前端先列目录拿名字集再调后端 `move` / `copy`）
 - 新建和修改 `.osheep/docs/` 下的文档
-- 展示当前项目路径
+- 展示当前 workspace 名
 - 查看任务涉及文件
 
 ### 编辑器与文件树的联动
@@ -83,9 +95,24 @@
 ### 设置能力
 - 通过活动栏齿轮图标打开设置页面（作为一个特殊 Tab 渲染在中央编辑区）
 - 设置项作用域为当前项目，持久化到 `.osheep/settings.json`
-- 打开项目时若该文件 / `.osheep/docs/` 目录不存在则自动创建
-- 当前阶段提供：编辑器字体大小
+- 打开项目时若该文件 / `.osheep/docs/` / `.osheep/plan/` 目录不存在则自动创建
+- 当前阶段提供：编辑器字体大小、编辑器缩进（2 / 4 空格）
 - 详见 [settings-page.md](settings-page.md)
+
+---
+
+## 相关子文档
+
+- [settings-page.md](settings-page.md)：设置页面
+- [markdown-preview.md](markdown-preview.md)：Markdown 源码 / 预览切换
+- [terminal-panel.md](terminal-panel.md)：终端面板（xterm.js + 后端 PTY）
+- [plan-panel.md](plan-panel.md)：计划面板（只读 Markdown 预览）
+- [document-panel.md](document-panel.md)：文档面板
+- [generate-flow-ui.md](generate-flow-ui.md)：需求 → 文档 → Todo → 执行 的前端流转
+- [theming.md](theming.md)：主题与配色
+- [../backend/api-architecture.md](../backend/api-architecture.md)：服务端整体接口架构
+- [../backend/file-api.md](../backend/file-api.md)：前端 fs 操作的后端契约
+- [../backend/terminal-api.md](../backend/terminal-api.md)：终端会话契约
 
 ---
 

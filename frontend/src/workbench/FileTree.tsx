@@ -10,11 +10,11 @@ import { ContextMenu, type CtxMenuSection } from "./ContextMenu";
 import { FileIcon } from "./FileIcon";
 import type { FsNode } from "./fs";
 import {
-  copyHandleInto,
+  copyEntryTo,
   createDirectory,
   createFile,
   findFreeName,
-  moveHandleInto,
+  moveEntryTo,
   readDirShallow,
   removeEntry,
   renameEntry,
@@ -24,23 +24,26 @@ type DraftKind = "file" | "folder";
 
 interface ClipboardItem {
   kind: "copy" | "cut";
-  parentDir: FileSystemDirectoryHandle;
-  handle: FileSystemHandle;
-  name: string;
   path: string;
+  name: string;
+  entryKind: "file" | "directory";
 }
 
 interface TreeContextValue {
+  workspaceId: string;
   treeVersion: number;
   bumpTree: () => void;
   selectedPath: string | null;
   onSelect: (path: string | null) => void;
-  onOpenFile: (node: FsNode, parentDir: FileSystemDirectoryHandle) => void;
+  onOpenFile: (node: FsNode) => void;
   openMenu: (x: number, y: number, ctx: MenuCtx) => void;
   clipboard: ClipboardItem | null;
   setClipboard: (c: ClipboardItem | null) => void;
   onPathRenamed: (oldPath: string, newPath: string) => void;
   onPathDeleted: (path: string) => void;
+  dropTarget: string | null;
+  setDropTarget: (path: string | null) => void;
+  onDropMove: (srcPath: string, destDir: string) => Promise<void>;
 }
 
 const TreeCtx = createContext<TreeContextValue | null>(null);
@@ -50,17 +53,43 @@ const useTreeCtx = () => {
   return v;
 };
 
+const DRAG_MIME = "application/x-osheep-path";
+
 interface FileTreeProps {
-  rootHandle: FileSystemDirectoryHandle;
+  workspaceId: string;
+  workspaceName: string;
   selectedPath: string | null;
   onSelect: (path: string | null) => void;
-  onOpenFile: (node: FsNode, parentDir: FileSystemDirectoryHandle) => void;
+  onOpenFile: (node: FsNode) => void;
   onPathRenamed: (oldPath: string, newPath: string) => void;
   onPathDeleted: (path: string) => void;
 }
 
+function joinPath(parent: string, name: string): string {
+  if (!parent) return name;
+  return parent + "/" + name;
+}
+
+function parentOf(p: string): string {
+  const i = p.lastIndexOf("/");
+  return i >= 0 ? p.slice(0, i) : "";
+}
+
+function basename(p: string): string {
+  const i = p.lastIndexOf("/");
+  return i >= 0 ? p.slice(i + 1) : p;
+}
+
+function isAncestorOrSelf(maybeAncestor: string, descendant: string): boolean {
+  return (
+    maybeAncestor === descendant ||
+    descendant.startsWith(maybeAncestor + "/")
+  );
+}
+
 export function FileTree({
-  rootHandle,
+  workspaceId,
+  workspaceName,
   selectedPath,
   onSelect,
   onOpenFile,
@@ -72,35 +101,144 @@ export function FileTree({
   const [treeVersion, setTreeVersion] = useState(0);
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [clipboard, setClipboard] = useState<ClipboardItem | null>(null);
-
-  const reload = async () => {
-    const kids = await readDirShallow(rootHandle, "");
-    setChildren(kids);
-  };
+  const [dropTarget, setDropTarget] = useState<string | null>(null);
+  const [rootDropActive, setRootDropActive] = useState(false);
 
   useEffect(() => {
-    void reload();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rootHandle, treeVersion]);
+    let cancelled = false;
+    void (async () => {
+      const kids = await readDirShallow(workspaceId, "");
+      if (!cancelled) setChildren(kids);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [workspaceId, treeVersion]);
 
   const bumpTree = () => setTreeVersion((v) => v + 1);
 
-  const onSubmitRootDraft = async (name: string) => {
+  const submitDraftAt = async (dir: string, kind: DraftKind, name: string) => {
     const trimmed = name.trim();
-    if (!trimmed || !draft) {
+    if (!trimmed) return;
+    const target = joinPath(dir, trimmed);
+    try {
+      if (kind === "file") await createFile(workspaceId, target);
+      else await createDirectory(workspaceId, target);
+    } catch (err) {
+      window.alert((err as Error).message);
+    }
+  };
+
+  const onSubmitRootDraft = async (name: string) => {
+    if (!draft) {
       setDraft(null);
       return;
     }
     try {
-      if (draft === "file") await createFile(rootHandle, trimmed);
-      else await createDirectory(rootHandle, trimmed);
+      await submitDraftAt("", draft, name);
     } finally {
       setDraft(null);
       bumpTree();
     }
   };
 
+  const doRootPaste = async () => {
+    if (!clipboard) return;
+    try {
+      const targetName = await findFreeName(
+        workspaceId,
+        "",
+        clipboard.name,
+        clipboard.entryKind
+      );
+      if (clipboard.kind === "cut") {
+        if (parentOf(clipboard.path) === "") {
+          setClipboard(null);
+          return;
+        }
+        await moveEntryTo(workspaceId, clipboard.path, targetName);
+        onPathRenamed(clipboard.path, targetName);
+      } else {
+        await copyEntryTo(workspaceId, clipboard.path, targetName);
+      }
+      setClipboard(null);
+      bumpTree();
+    } catch (err) {
+      window.alert("粘贴失败：" + (err as Error).message);
+    }
+  };
+
+  const onDropMove = async (srcPath: string, destDir: string) => {
+    if (isAncestorOrSelf(srcPath, joinPath(destDir, basename(srcPath)))) {
+      // Don't move a folder into itself / its descendant
+      window.alert("不能把文件夹移动到它自己或其子目录里");
+      return;
+    }
+    if (parentOf(srcPath) === destDir) return; // already there
+    try {
+      const targetName = basename(srcPath);
+      const dest = joinPath(destDir, targetName);
+      await moveEntryTo(workspaceId, srcPath, dest);
+      onPathRenamed(srcPath, dest);
+      bumpTree();
+    } catch (err) {
+      window.alert("移动失败：" + (err as Error).message);
+    }
+  };
+
+  const onRootContextMenu = (e: React.MouseEvent) => {
+    // Only fire if user right-clicked on the body itself, not a row.
+    if (e.defaultPrevented) return;
+    e.preventDefault();
+    setMenu({
+      x: e.clientX,
+      y: e.clientY,
+      ctx: {
+        node: { name: workspaceName, path: "", kind: "directory" },
+        startRename: () => {
+          /* root not renameable */
+        },
+        doDelete: async () => {
+          /* root not deletable */
+        },
+        doCut: () => {
+          /* root not cuttable */
+        },
+        doCopy: () => {
+          /* root not copyable */
+        },
+        doPaste: doRootPaste,
+        startDraft: async (kind) => {
+          setDraft(kind === "folder" ? "folder" : "file");
+        },
+        isRoot: true,
+      },
+    });
+  };
+
+  const onRootDragOver = (e: React.DragEvent) => {
+    if (!e.dataTransfer.types.includes(DRAG_MIME)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    setRootDropActive(true);
+  };
+
+  const onRootDragLeave = (e: React.DragEvent) => {
+    if (e.currentTarget === e.target) setRootDropActive(false);
+  };
+
+  const onRootDrop = (e: React.DragEvent) => {
+    if (!e.dataTransfer.types.includes(DRAG_MIME)) return;
+    e.preventDefault();
+    setRootDropActive(false);
+    setDropTarget(null);
+    const src = e.dataTransfer.getData(DRAG_MIME);
+    if (!src) return;
+    void onDropMove(src, "");
+  };
+
   const ctxValue: TreeContextValue = {
+    workspaceId,
     treeVersion,
     bumpTree,
     selectedPath,
@@ -111,13 +249,16 @@ export function FileTree({
     setClipboard,
     onPathRenamed,
     onPathDeleted,
+    dropTarget,
+    setDropTarget,
+    onDropMove,
   };
 
   return (
     <TreeCtx.Provider value={ctxValue}>
       <div className="side-view" onClick={() => onSelect(null)}>
         <div className="side-view__header">
-          <span className="side-view__title">{rootHandle.name}</span>
+          <span className="side-view__title">{workspaceName}</span>
           <span className="side-view__actions">
             <IconBtn title="新建文件" onClick={() => setDraft("file")}>
               <NewFileIcon />
@@ -131,8 +272,15 @@ export function FileTree({
           </span>
         </div>
         <div
-          className="side-view__body file-tree"
+          className={
+            "side-view__body file-tree" +
+            (rootDropActive ? " is-drop-target-root" : "")
+          }
           onClick={(e) => e.stopPropagation()}
+          onContextMenu={onRootContextMenu}
+          onDragOver={onRootDragOver}
+          onDragLeave={onRootDragLeave}
+          onDrop={onRootDrop}
         >
           {draft && (
             <DraftRow
@@ -143,12 +291,7 @@ export function FileTree({
             />
           )}
           {children.map((n) => (
-            <TreeNode
-              key={n.path}
-              node={n}
-              parentDir={rootHandle}
-              depth={0}
-            />
+            <TreeNode key={n.path} node={n} depth={0} />
           ))}
         </div>
         {menu && (
@@ -166,13 +309,13 @@ export function FileTree({
 
 interface MenuCtx {
   node: FsNode;
-  parentDir: FileSystemDirectoryHandle;
   startRename: () => void;
   doDelete: () => Promise<void>;
   doCut: () => void;
   doCopy: () => void;
   doPaste: () => Promise<void>;
   startDraft: (kind: DraftKind) => Promise<void>;
+  isRoot?: boolean;
 }
 
 interface MenuState {
@@ -198,8 +341,18 @@ function buildMenuSections(
 
   sections.push({
     items: [
-      { label: "剪切", shortcut: "Ctrl+X", onSelect: ctx.doCut },
-      { label: "复制", shortcut: "Ctrl+C", onSelect: ctx.doCopy },
+      {
+        label: "剪切",
+        shortcut: "Ctrl+X",
+        disabled: !!ctx.isRoot,
+        onSelect: ctx.doCut,
+      },
+      {
+        label: "复制",
+        shortcut: "Ctrl+C",
+        disabled: !!ctx.isRoot,
+        onSelect: ctx.doCopy,
+      },
       {
         label: "粘贴",
         shortcut: "Ctrl+V",
@@ -209,28 +362,29 @@ function buildMenuSections(
     ],
   });
 
-  sections.push({
-    items: [
-      { label: "重命名", shortcut: "F2", onSelect: ctx.startRename },
-      {
-        label: "删除",
-        shortcut: "Delete",
-        danger: true,
-        onSelect: () => void ctx.doDelete(),
-      },
-    ],
-  });
+  if (!ctx.isRoot) {
+    sections.push({
+      items: [
+        { label: "重命名", shortcut: "F2", onSelect: ctx.startRename },
+        {
+          label: "删除",
+          shortcut: "Delete",
+          danger: true,
+          onSelect: () => void ctx.doDelete(),
+        },
+      ],
+    });
+  }
 
   return sections;
 }
 
 interface TreeNodeProps {
   node: FsNode;
-  parentDir: FileSystemDirectoryHandle;
   depth: number;
 }
 
-function TreeNode({ node, parentDir, depth }: TreeNodeProps) {
+function TreeNode({ node, depth }: TreeNodeProps) {
   const ctx = useTreeCtx();
   const [expanded, setExpanded] = useState(false);
   const [children, setChildren] = useState<FsNode[] | undefined>();
@@ -239,10 +393,7 @@ function TreeNode({ node, parentDir, depth }: TreeNodeProps) {
 
   const reload = async () => {
     if (node.kind !== "directory") return;
-    const kids = await readDirShallow(
-      node.handle as FileSystemDirectoryHandle,
-      node.path
-    );
+    const kids = await readDirShallow(ctx.workspaceId, node.path);
     setChildren(kids);
   };
 
@@ -263,7 +414,7 @@ function TreeNode({ node, parentDir, depth }: TreeNodeProps) {
     e.stopPropagation();
     ctx.onSelect(node.path);
     if (node.kind === "file") {
-      ctx.onOpenFile(node, parentDir);
+      ctx.onOpenFile(node);
       return;
     }
     if (expanded) setExpanded(false);
@@ -282,10 +433,12 @@ function TreeNode({ node, parentDir, depth }: TreeNodeProps) {
       setDraft(null);
       return;
     }
-    const dir = node.handle as FileSystemDirectoryHandle;
+    const childPath = joinPath(node.path, trimmed);
     try {
-      if (draft === "file") await createFile(dir, trimmed);
-      else await createDirectory(dir, trimmed);
+      if (draft === "file") await createFile(ctx.workspaceId, childPath);
+      else await createDirectory(ctx.workspaceId, childPath);
+    } catch (err) {
+      window.alert((err as Error).message);
     } finally {
       setDraft(null);
       await reload();
@@ -297,28 +450,30 @@ function TreeNode({ node, parentDir, depth }: TreeNodeProps) {
       `确定要删除 "${node.name}" 吗？此操作不可撤销。`
     );
     if (!ok) return;
-    await removeEntry(parentDir, node.name);
-    ctx.onPathDeleted(node.path);
-    ctx.bumpTree();
+    try {
+      await removeEntry(ctx.workspaceId, node.path);
+      ctx.onPathDeleted(node.path);
+      ctx.bumpTree();
+    } catch (err) {
+      window.alert((err as Error).message);
+    }
   };
 
   const doCut = () => {
     ctx.setClipboard({
       kind: "cut",
-      parentDir,
-      handle: node.handle,
-      name: node.name,
       path: node.path,
+      name: node.name,
+      entryKind: node.kind,
     });
   };
 
   const doCopy = () => {
     ctx.setClipboard({
       kind: "copy",
-      parentDir,
-      handle: node.handle,
-      name: node.name,
       path: node.path,
+      name: node.name,
+      entryKind: node.kind,
     });
   };
 
@@ -326,39 +481,24 @@ function TreeNode({ node, parentDir, depth }: TreeNodeProps) {
     const cb = ctx.clipboard;
     if (!cb) return;
     const targetDir =
-      node.kind === "directory"
-        ? (node.handle as FileSystemDirectoryHandle)
-        : parentDir;
-    const targetDirPath =
-      node.kind === "directory"
-        ? node.path
-        : node.path.includes("/")
-        ? node.path.slice(0, node.path.lastIndexOf("/"))
-        : "";
-    if (cb.kind === "cut" && cb.parentDir === targetDir) {
+      node.kind === "directory" ? node.path : parentOf(node.path);
+    if (cb.kind === "cut" && parentOf(cb.path) === targetDir) {
       ctx.setClipboard(null);
       return;
     }
     try {
       const targetName = await findFreeName(
+        ctx.workspaceId,
         targetDir,
         cb.name,
-        cb.handle.kind as "file" | "directory"
+        cb.entryKind
       );
+      const destPath = joinPath(targetDir, targetName);
       if (cb.kind === "cut") {
-        await moveHandleInto(
-          cb.handle,
-          cb.parentDir,
-          cb.name,
-          targetDir,
-          targetName
-        );
-        const destPath = targetDirPath
-          ? `${targetDirPath}/${targetName}`
-          : targetName;
+        await moveEntryTo(ctx.workspaceId, cb.path, destPath);
         ctx.onPathRenamed(cb.path, destPath);
       } else {
-        await copyHandleInto(cb.handle, targetDir, targetName);
+        await copyEntryTo(ctx.workspaceId, cb.path, destPath);
       }
       ctx.setClipboard(null);
       ctx.bumpTree();
@@ -373,7 +513,6 @@ function TreeNode({ node, parentDir, depth }: TreeNodeProps) {
     ctx.onSelect(node.path);
     ctx.openMenu(e.clientX, e.clientY, {
       node,
-      parentDir,
       startRename: () => setRenaming(true),
       doDelete,
       doCut,
@@ -390,10 +529,7 @@ function TreeNode({ node, parentDir, depth }: TreeNodeProps) {
       return;
     }
     try {
-      await renameEntry(parentDir, node.handle, node.name, trimmed);
-      const lastSlash = node.path.lastIndexOf("/");
-      const parentPath = lastSlash >= 0 ? node.path.slice(0, lastSlash) : "";
-      const newPath = parentPath ? `${parentPath}/${trimmed}` : trimmed;
+      const newPath = await renameEntry(ctx.workspaceId, node.path, trimmed);
       ctx.onPathRenamed(node.path, newPath);
       ctx.bumpTree();
     } catch (err) {
@@ -403,8 +539,43 @@ function TreeNode({ node, parentDir, depth }: TreeNodeProps) {
     }
   };
 
+  // ─── Drag & drop ───
+
+  const onDragStart = (e: React.DragEvent) => {
+    e.stopPropagation();
+    e.dataTransfer.setData(DRAG_MIME, node.path);
+    e.dataTransfer.setData("text/plain", node.path);
+    e.dataTransfer.effectAllowed = "move";
+  };
+
+  const onDragOver = (e: React.DragEvent) => {
+    if (!e.dataTransfer.types.includes(DRAG_MIME)) return;
+    if (node.kind !== "directory") return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = "move";
+    if (ctx.dropTarget !== node.path) ctx.setDropTarget(node.path);
+  };
+
+  const onDragLeave = (e: React.DragEvent) => {
+    e.stopPropagation();
+    if (ctx.dropTarget === node.path) ctx.setDropTarget(null);
+  };
+
+  const onDrop = (e: React.DragEvent) => {
+    if (!e.dataTransfer.types.includes(DRAG_MIME)) return;
+    if (node.kind !== "directory") return;
+    e.preventDefault();
+    e.stopPropagation();
+    const src = e.dataTransfer.getData(DRAG_MIME);
+    ctx.setDropTarget(null);
+    if (!src) return;
+    void ctx.onDropMove(src, node.path);
+  };
+
   const isSelected = ctx.selectedPath === node.path;
   const isCut = ctx.clipboard?.kind === "cut" && ctx.clipboard.path === node.path;
+  const isDropTarget = ctx.dropTarget === node.path;
 
   return (
     <div>
@@ -412,20 +583,31 @@ function TreeNode({ node, parentDir, depth }: TreeNodeProps) {
         className={
           "tree-row" +
           (isSelected ? " is-selected" : "") +
-          (isCut ? " is-cut" : "")
+          (isCut ? " is-cut" : "") +
+          (isDropTarget ? " is-drop-target" : "")
         }
         style={{ paddingLeft: 8 + depth * 12 }}
         onClick={onRowClick}
         onContextMenu={onContextMenu}
+        draggable={!renaming}
+        onDragStart={onDragStart}
+        onDragOver={onDragOver}
+        onDragLeave={onDragLeave}
+        onDrop={onDrop}
       >
-        <span className={"tree-row__chevron" + (expanded ? " is-open" : "")}>
-          {node.kind === "directory" ? <ChevronIcon /> : null}
-        </span>
-        {node.kind === "file" && (
-          <span className="tree-row__type-icon">
+        <span
+          className={
+            "tree-row__icon" +
+            (node.kind === "directory" ? " is-chevron" : "") +
+            (expanded ? " is-open" : "")
+          }
+        >
+          {node.kind === "directory" ? (
+            <ChevronIcon />
+          ) : (
             <FileIcon name={node.name} />
-          </span>
-        )}
+          )}
+        </span>
         {renaming ? (
           <RenameInput initial={node.name} onSubmit={submitRename} />
         ) : (
@@ -458,7 +640,7 @@ function TreeNode({ node, parentDir, depth }: TreeNodeProps) {
         <div
           className="tree-children"
           style={
-            { "--guide-x": `${8 + depth * 12 + 7}px` } as CSSProperties
+            { "--guide-x": `${8 + depth * 12 + 8}px` } as CSSProperties
           }
         >
           {draft && (
@@ -470,12 +652,7 @@ function TreeNode({ node, parentDir, depth }: TreeNodeProps) {
             />
           )}
           {children?.map((c) => (
-            <TreeNode
-              key={c.path}
-              node={c}
-              parentDir={node.handle as FileSystemDirectoryHandle}
-              depth={depth + 1}
-            />
+            <TreeNode key={c.path} node={c} depth={depth + 1} />
           ))}
         </div>
       )}
@@ -541,14 +718,13 @@ function DraftRow({
       className="tree-row tree-row--draft"
       style={{ paddingLeft: 8 + depth * 12 }}
     >
-      <span className="tree-row__chevron">
-        {kind === "folder" ? <ChevronIcon /> : null}
+      <span
+        className={
+          "tree-row__icon" + (kind === "folder" ? " is-chevron" : "")
+        }
+      >
+        {kind === "folder" ? <ChevronIcon /> : <FileIcon name={value || "new"} />}
       </span>
-      {kind === "file" && (
-        <span className="tree-row__type-icon">
-          <FileIcon name={value || "new"} />
-        </span>
-      )}
       <input
         ref={inputRef}
         className="tree-row__input"

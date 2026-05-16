@@ -6,6 +6,7 @@ interface EditorPaneProps {
   path: string;
   value: string;
   fontSize: number;
+  tabSize: number;
   onChange: (value: string) => void;
   onSave: () => void;
 }
@@ -41,6 +42,7 @@ export function EditorPane({
   path,
   value,
   fontSize,
+  tabSize,
   onChange,
   onSave,
 }: EditorPaneProps) {
@@ -66,10 +68,12 @@ export function EditorPane({
       onMount={handleMount}
       options={{
         fontSize,
+        tabSize,
+        insertSpaces: true,
+        detectIndentation: false,
         minimap: { enabled: true },
         automaticLayout: true,
         scrollBeyondLastLine: false,
-        tabSize: 2,
         wordWrap: "on",
         renderLineHighlight: "line",
       }}

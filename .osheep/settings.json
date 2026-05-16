@@ -1,5 +1,6 @@
 {
   "editor": {
-    "fontSize": 13
+    "fontSize": 13,
+    "tabSize": 4
   }
 }
