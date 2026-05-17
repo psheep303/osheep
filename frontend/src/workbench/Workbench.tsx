@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityBar, type ViewId } from "./ActivityBar";
+import { AgentView } from "./AgentView";
+import { AiPanel } from "./AiPanel";
 import { BottomPanel } from "./BottomPanel";
+import { ChatTab } from "./ChatTab";
 import { DiffPane } from "./DiffPane";
 import { EditorPane, type GotoTarget } from "./EditorPane";
 import { FileTree } from "./FileTree";
@@ -38,6 +41,17 @@ interface SettingsTab {
   path: "__settings__";
 }
 
+interface AgentTab {
+  kind: "agent";
+  path: "__agent__";
+}
+
+interface ChatTabState {
+  kind: "chat";
+  path: string; // __chat__:<sessionId>
+  sessionId: string;
+}
+
 interface DiffTab {
   kind: "diff";
   path: string; // synthetic tab id
@@ -49,9 +63,12 @@ interface DiffTab {
   binary: boolean;
 }
 
-type Tab = FileTab | SettingsTab | DiffTab;
+type Tab = FileTab | SettingsTab | AgentTab | ChatTabState | DiffTab;
 
 const SETTINGS_PATH = "__settings__";
+const AGENT_PATH = "__agent__";
+const CHAT_PREFIX = "__chat__:";
+const chatPath = (sessionId: string) => CHAT_PREFIX + sessionId;
 
 const DEFAULT_LEFT_WIDTH = 260;
 const DEFAULT_RIGHT_WIDTH = 320;
@@ -97,7 +114,7 @@ export function Workbench() {
   }, [workspaceId, statusVersion]);
 
   const [leftWidth, setLeftWidth] = useState(DEFAULT_LEFT_WIDTH);
-  const [rightWidth, setRightWidth] = useState(0);
+  const [rightWidth, setRightWidth] = useState(DEFAULT_RIGHT_WIDTH);
   const [bottomHeight, setBottomHeight] = useState(0);
   // BottomPanel keeps mounting across collapse so terminals survive.
   // Toggling visibility or drag-collapse leaves this true; only an explicit
@@ -268,6 +285,28 @@ export function Workbench() {
       return [...prev, { kind: "settings", path: SETTINGS_PATH }];
     });
     setActivePath(SETTINGS_PATH);
+  }, []);
+
+  const openAgentTab = useCallback(() => {
+    setTabs((prev) => {
+      if (prev.some((t) => t.kind === "agent")) return prev;
+      return [...prev, { kind: "agent", path: AGENT_PATH }];
+    });
+    setActivePath(AGENT_PATH);
+  }, []);
+
+  const [aiRefreshSignal, setAiRefreshSignal] = useState(0);
+  const bumpAiRefresh = useCallback(() => {
+    setAiRefreshSignal((v) => v + 1);
+  }, []);
+
+  const openChatTab = useCallback((sessionId: string) => {
+    const path = chatPath(sessionId);
+    setTabs((prev) => {
+      if (prev.some((t) => t.path === path)) return prev;
+      return [...prev, { kind: "chat", path, sessionId }];
+    });
+    setActivePath(path);
   }, []);
 
   const onPathRenamed = useCallback(
@@ -498,6 +537,7 @@ export function Workbench() {
           collapsed={leftCollapsed}
           onSelect={onSelectView}
           onOpenSettings={openSettingsTab}
+          onOpenAgent={openAgentTab}
         />
 
         {!leftCollapsed && (
@@ -564,6 +604,10 @@ export function Workbench() {
                   const label =
                     t.kind === "settings"
                       ? "设置"
+                      : t.kind === "agent"
+                      ? "Agent"
+                      : t.kind === "chat"
+                      ? "对话"
                       : t.kind === "diff"
                       ? `${basename(t.filePath)} (${diffLabel(t)})`
                       : t.path.split("/").pop();
@@ -574,6 +618,10 @@ export function Workbench() {
                         : t.path
                       : t.kind === "diff"
                       ? `${t.filePath} · ${diffLabel(t)}`
+                      : t.kind === "agent"
+                      ? "Agent"
+                      : t.kind === "chat"
+                      ? `对话 ${t.sessionId}`
                       : "设置";
                   return (
                     <div
@@ -650,7 +698,24 @@ export function Workbench() {
                   settings={settings}
                   onChange={updateSettings}
                   hasProject={!!workspaceId}
+                  workspaceId={workspaceId}
                 />
+              ) : activeTab?.kind === "agent" ? (
+                <AgentView
+                  workspaceId={workspaceId}
+                  settings={settings}
+                />
+              ) : activeTab?.kind === "chat" ? (
+                workspaceId ? (
+                  <ChatTab
+                    workspaceId={workspaceId}
+                    sessionId={activeTab.sessionId}
+                    settings={settings}
+                    onSessionChanged={bumpAiRefresh}
+                  />
+                ) : (
+                  <div className="empty-hint">请先打开工作区</div>
+                )
               ) : (
                 <div className="empty-hint">在左侧选择文件以开始编辑</div>
               )}
@@ -684,19 +749,15 @@ export function Workbench() {
         />
         {!rightCollapsed && (
           <div className="side side--right" style={{ width: rightWidth }}>
-            <div className="side-view">
-              <div className="side-view__header">
-                <span className="side-view__title">AI 面板</span>
-                <button className="icon-btn" title="关闭" onClick={toggleRight}>
-                  ×
-                </button>
-              </div>
-              <div className="side-view__body side-view__body--padded">
-                <div className="muted">
-                  后续阶段接入：需求输入、文档生成、Todo 生成、执行控制
-                </div>
-              </div>
-            </div>
+            <AiPanel
+              workspaceId={workspaceId}
+              onClose={toggleRight}
+              onOpenSession={openChatTab}
+              activeSessionId={
+                activeTab?.kind === "chat" ? activeTab.sessionId : null
+              }
+              refreshSignal={aiRefreshSignal}
+            />
           </div>
         )}
       </div>

@@ -8,6 +8,9 @@ import { registerWorkspaceRoutes } from "./routes/workspaces.js";
 import { registerTerminalRoutes } from "./routes/terminals.js";
 import { registerSearchRoutes } from "./routes/search.js";
 import { registerGitRoutes } from "./routes/git.js";
+import { registerAgentRoutes } from "./routes/agents.js";
+import { registerSessionRoutes } from "./routes/sessions.js";
+import { registerAiRoutes } from "./routes/ai.js";
 
 export async function buildServer() {
   const app = Fastify({
@@ -51,6 +54,9 @@ export async function buildServer() {
   await registerTerminalRoutes(app);
   await registerSearchRoutes(app);
   await registerGitRoutes(app);
+  await registerAgentRoutes(app);
+  await registerSessionRoutes(app);
+  await registerAiRoutes(app);
 
   await ensureWorkspacesRoot();
   return app;

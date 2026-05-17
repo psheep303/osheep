@@ -1,10 +1,13 @@
 import { useEffect, useState } from "react";
-import type { OsheepSettings, TabSize } from "./settings";
+import type { AiProvider, OsheepSettings, TabSize } from "./settings";
+import { newProviderId } from "./settings";
+import { fetchProviderModels } from "./api";
 
 interface SettingsViewProps {
   settings: OsheepSettings;
   onChange: (s: OsheepSettings) => void;
   hasProject: boolean;
+  workspaceId: string | null;
 }
 
 const MIN_FONT = 8;
@@ -14,6 +17,7 @@ export function SettingsView({
   settings,
   onChange,
   hasProject,
+  workspaceId,
 }: SettingsViewProps) {
   const commitFontSize = (raw: string): number => {
     const n = parseInt(raw, 10);
@@ -39,6 +43,33 @@ export function SettingsView({
       ...settings,
       editor: { ...settings.editor, tabSize: next },
     });
+  };
+
+  const setProviders = (providers: AiProvider[]) => {
+    onChange({ ...settings, ai: { ...settings.ai, providers } });
+  };
+
+  const addProvider = () => {
+    setProviders([
+      ...settings.ai.providers,
+      {
+        id: newProviderId(),
+        name: "新 Provider",
+        baseUrl: "https://api.openai.com/v1",
+        apiKey: "",
+        models: [],
+      },
+    ]);
+  };
+
+  const updateProvider = (id: string, patch: Partial<AiProvider>) => {
+    setProviders(
+      settings.ai.providers.map((p) => (p.id === id ? { ...p, ...patch } : p))
+    );
+  };
+
+  const removeProvider = (id: string) => {
+    setProviders(settings.ai.providers.filter((p) => p.id !== id));
   };
 
   return (
@@ -81,6 +112,261 @@ export function SettingsView({
               onChange={applyTabSize}
             />
           </div>
+        </div>
+
+        <div className="settings-view__group">
+          <div className="settings-view__group-title">AI</div>
+          <div className="settings-view__item-desc">
+            维护可用的模型 Provider。每个 Provider 兼容 OpenAI API，可填写 Base URL、API Key 与模型列表，供 Agent 选择。
+          </div>
+
+          {settings.ai.providers.length === 0 && (
+            <div className="settings-view__empty">尚未配置任何 Provider</div>
+          )}
+
+          {settings.ai.providers.map((p) => (
+            <ProviderCard
+              key={p.id}
+              provider={p}
+              disabled={!hasProject}
+              workspaceId={workspaceId}
+              onChange={(patch) => updateProvider(p.id, patch)}
+              onRemove={() => removeProvider(p.id)}
+            />
+          ))}
+
+          <button
+            type="button"
+            className="primary-btn settings-view__add"
+            disabled={!hasProject}
+            onClick={addProvider}
+          >
+            + 新建 Provider
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+interface ProviderCardProps {
+  provider: AiProvider;
+  disabled: boolean;
+  workspaceId: string | null;
+  onChange: (patch: Partial<AiProvider>) => void;
+  onRemove: () => void;
+}
+
+function ProviderCard({
+  provider,
+  disabled,
+  workspaceId,
+  onChange,
+  onRemove,
+}: ProviderCardProps) {
+  const [modelDraft, setModelDraft] = useState("");
+  const [fetching, setFetching] = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+  const [picker, setPicker] = useState<string[] | null>(null);
+  const [pickerSelected, setPickerSelected] = useState<Set<string>>(new Set());
+
+  const addModel = () => {
+    const v = modelDraft.trim();
+    if (!v) return;
+    if (provider.models.includes(v)) {
+      setModelDraft("");
+      return;
+    }
+    onChange({ models: [...provider.models, v] });
+    setModelDraft("");
+  };
+
+  const removeModel = (m: string) => {
+    onChange({ models: provider.models.filter((x) => x !== m) });
+  };
+
+  const fetchModels = async () => {
+    if (!workspaceId || !provider.baseUrl || !provider.apiKey) {
+      setFetchError("需要先填写 Base URL 与 API Key");
+      return;
+    }
+    setFetching(true);
+    setFetchError(null);
+    setPicker(null);
+    try {
+      const list = await fetchProviderModels(
+        workspaceId,
+        provider.baseUrl,
+        provider.apiKey
+      );
+      setPicker(list);
+      setPickerSelected(new Set(provider.models.filter((m) => list.includes(m))));
+    } catch (e) {
+      setFetchError((e as Error).message);
+    } finally {
+      setFetching(false);
+    }
+  };
+
+  const applyPicker = () => {
+    if (!picker) return;
+    const next = Array.from(new Set([...provider.models, ...pickerSelected]));
+    // keep already-selected order, append new selected
+    onChange({ models: next });
+    setPicker(null);
+  };
+
+  const togglePick = (m: string) => {
+    setPickerSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(m)) next.delete(m);
+      else next.add(m);
+      return next;
+    });
+  };
+
+  return (
+    <div className="provider-card">
+      <div className="provider-card__row">
+        <label className="provider-card__label">名称</label>
+        <input
+          className="settings-view__input"
+          value={provider.name}
+          disabled={disabled}
+          onChange={(e) => onChange({ name: e.target.value })}
+        />
+        <button
+          type="button"
+          className="provider-card__remove"
+          disabled={disabled}
+          onClick={onRemove}
+          title="删除 Provider"
+        >
+          删除
+        </button>
+      </div>
+      <div className="provider-card__row">
+        <label className="provider-card__label">Base URL</label>
+        <input
+          className="settings-view__input"
+          value={provider.baseUrl}
+          disabled={disabled}
+          placeholder="https://api.openai.com/v1"
+          onChange={(e) => onChange({ baseUrl: e.target.value })}
+        />
+      </div>
+      <div className="provider-card__row">
+        <label className="provider-card__label">API Key</label>
+        <input
+          className="settings-view__input"
+          type="password"
+          value={provider.apiKey}
+          disabled={disabled}
+          placeholder="sk-..."
+          onChange={(e) => onChange({ apiKey: e.target.value })}
+        />
+      </div>
+      <div className="provider-card__row provider-card__row--top">
+        <label className="provider-card__label">模型</label>
+        <div className="provider-card__models">
+          {provider.models.length === 0 && (
+            <div className="settings-view__empty">尚未添加模型</div>
+          )}
+          {provider.models.map((m) => (
+            <span key={m} className="provider-card__chip">
+              {m}
+              <button
+                type="button"
+                className="provider-card__chip-remove"
+                disabled={disabled}
+                onClick={() => removeModel(m)}
+                title="移除"
+              >
+                ×
+              </button>
+            </span>
+          ))}
+          <div className="provider-card__model-input">
+            <input
+              className="settings-view__input"
+              value={modelDraft}
+              disabled={disabled}
+              placeholder="模型 ID，如 gpt-4o-mini"
+              onChange={(e) => setModelDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  addModel();
+                }
+              }}
+            />
+            <button
+              type="button"
+              className="settings-view__seg"
+              disabled={disabled || modelDraft.trim() === ""}
+              onClick={addModel}
+            >
+              添加
+            </button>
+            <button
+              type="button"
+              className="settings-view__seg"
+              disabled={
+                disabled ||
+                fetching ||
+                !provider.baseUrl ||
+                !provider.apiKey ||
+                !workspaceId
+              }
+              onClick={() => void fetchModels()}
+              title="调用 {baseUrl}/models 拉取可用模型"
+            >
+              {fetching ? "获取中…" : "获取模型"}
+            </button>
+          </div>
+          {fetchError && (
+            <div className="provider-card__error">{fetchError}</div>
+          )}
+          {picker && (
+            <div className="provider-card__picker">
+              <div className="provider-card__picker-header">
+                <span>选择要加入的模型（{picker.length}）</span>
+                <button
+                  type="button"
+                  className="provider-card__chip-remove"
+                  onClick={() => setPicker(null)}
+                  title="取消"
+                >
+                  ×
+                </button>
+              </div>
+              <div className="provider-card__picker-list">
+                {picker.length === 0 && (
+                  <div className="settings-view__empty">上游未返回任何模型</div>
+                )}
+                {picker.map((m) => (
+                  <label key={m} className="provider-card__picker-item">
+                    <input
+                      type="checkbox"
+                      checked={pickerSelected.has(m)}
+                      onChange={() => togglePick(m)}
+                    />
+                    <span>{m}</span>
+                  </label>
+                ))}
+              </div>
+              <div className="provider-card__picker-actions">
+                <button
+                  type="button"
+                  className="settings-view__seg is-active"
+                  onClick={applyPicker}
+                  disabled={pickerSelected.size === 0}
+                >
+                  加入选中（{pickerSelected.size}）
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

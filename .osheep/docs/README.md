@@ -36,6 +36,8 @@ osheep 长期部署在服务器上，浏览器只是远程访问入口：
 ```
 .osheep/
 ├── settings.json        项目级设置（字号、缩进、AI Provider、执行策略等）
+├── agent/               用户自定义 Agent，单个文件 `[名称].json`
+├── session/             AI 对话会话，单个文件 `[id].json`
 ├── plan/                阶段计划、版本计划、实现计划（顶层独立目录，便于快速访问）
 └── docs/                项目所有其它文档
     ├── README.md        本索引文件
@@ -59,6 +61,18 @@ osheep 长期部署在服务器上，浏览器只是远程访问入口：
   - 存放阶段计划、版本计划、实现计划
   - 工作台底部面板的"计划"视图直接读取此目录并渲染为只读 Markdown 预览
   - 文件命名规则：`序号-主题.md`，例如 `0001-mvp-web-ide-and-generate-flow.md`
+
+- `agent/`
+  - **顶层目录**，与 `docs/`、`plan/` 平级
+  - 存放用户自定义 Agent 配置，单个文件 `[Agent 名称].json`
+  - 由 Agent 管理页面（活动栏底部机器人图标）写入与维护
+  - 每个文件结构见 `docs/frontend/agent-page.md`
+
+- `session/`
+  - **顶层目录**，与 `agent/`、`plan/`、`docs/` 平级
+  - 存放 AI 对话会话，单个文件 `[id].json`
+  - 由工作台右侧 AI 面板的「编写」栏维护
+  - 每个文件结构见 `docs/frontend/ai-panel.md` 与 `docs/backend/session-api.md`
 
 - `docs/`
   - 除计划之外的所有项目文档统一存放位置

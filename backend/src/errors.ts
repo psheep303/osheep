@@ -52,4 +52,6 @@ export const errors = {
   nonFastForward: (msg = "推送被拒绝：non-fast-forward") =>
     new ApiError(409, "NON_FAST_FORWARD", msg),
   rejected: (msg = "远端拒绝") => new ApiError(409, "REJECTED", msg),
+  upstreamFailed: (msg: string) =>
+    new ApiError(502, "UPSTREAM_FAILED", msg),
 };

@@ -7,6 +7,7 @@ interface ActivityBarProps {
   collapsed: boolean;
   onSelect: (id: ViewId) => void;
   onOpenSettings: () => void;
+  onOpenAgent: () => void;
 }
 
 interface Item {
@@ -21,7 +22,7 @@ const ITEMS: Item[] = [
   { id: "git", label: "源代码管理", icon: <GitIcon /> },
 ];
 
-export function ActivityBar({ activeView, collapsed, onSelect, onOpenSettings }: ActivityBarProps) {
+export function ActivityBar({ activeView, collapsed, onSelect, onOpenSettings, onOpenAgent }: ActivityBarProps) {
   return (
     <div className="activity-bar">
       <div className="activity-bar__group">
@@ -41,6 +42,14 @@ export function ActivityBar({ activeView, collapsed, onSelect, onOpenSettings }:
         })}
       </div>
       <div className="activity-bar__group activity-bar__group--bottom">
+        <button
+          className="activity-bar__item"
+          title="Agent"
+          aria-label="Agent"
+          onClick={onOpenAgent}
+        >
+          <span className="activity-bar__icon"><AgentIcon /></span>
+        </button>
         <button
           className="activity-bar__item"
           title="设置"
@@ -80,6 +89,21 @@ function GitIcon() {
       <circle cx="18" cy="13" r="2.2" />
       <path d="M6 8.2v7.6" />
       <path d="M8 6h4a3 3 0 0 1 3 3v2" />
+    </svg>
+  );
+}
+
+function AgentIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="4" y="7" width="16" height="12" rx="2" />
+      <path d="M12 3v4" />
+      <circle cx="12" cy="3" r="1" />
+      <circle cx="9" cy="13" r="1" />
+      <circle cx="15" cy="13" r="1" />
+      <path d="M9 17h6" />
+      <path d="M2 12h2" />
+      <path d="M20 12h2" />
     </svg>
   );
 }

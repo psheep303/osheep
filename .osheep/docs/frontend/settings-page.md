@@ -41,6 +41,23 @@
   - 含义：编辑器按 Tab 键插入的空格数 / 自动缩进宽度
   - 实时生效，立即写入 settings.json
 
+### AI
+- Provider 列表 `ai.providers`
+  - 类型：数组，每项为一个 Provider 记录
+  - 默认：空数组
+  - 含义：当前项目可用的模型 Provider，兼容 OpenAI API
+  - Provider 记录字段：
+    - `id` string，Provider 内部标识，前端自动生成
+    - `name` string，展示名，例如「OpenAI 官方」
+    - `baseUrl` string，OpenAI 兼容接口的根地址
+    - `apiKey` string，对应密钥
+    - `models` string[]，可在该 Provider 下使用的模型 ID 列表
+  - 设置页面支持新建 / 删除 Provider、修改字段、向模型列表新增 / 移除条目
+  - 模型列表支持两种方式录入：
+    - 手动输入模型 ID 并点击「添加」
+    - 点击「获取模型」按钮，由后端使用当前 `baseUrl` + `apiKey` 调用 `GET {baseUrl}/models`（兼容 OpenAI 协议），返回模型清单后用户从中勾选写入 `models`
+  - 修改任意字段时立即写回 `.osheep/settings.json`
+
 ---
 
 ## 编辑体验
@@ -59,6 +76,17 @@
   "editor": {
     "fontSize": 14,
     "tabSize": 2
+  },
+  "ai": {
+    "providers": [
+      {
+        "id": "prov_xxx",
+        "name": "OpenAI",
+        "baseUrl": "https://api.openai.com/v1",
+        "apiKey": "sk-...",
+        "models": ["gpt-4o-mini", "gpt-4o"]
+      }
+    ]
   }
 }
 ```

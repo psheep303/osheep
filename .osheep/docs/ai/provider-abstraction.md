@@ -37,3 +37,17 @@
 - 先支持一个主力 Provider
 - 保留扩展多个 Provider 的接口
 - 不在业务流程中写死供应商逻辑
+
+---
+
+## Provider 配置存储
+
+Provider 列表存放在 `.osheep/settings.json` 的 `ai.providers` 字段，由设置页面维护。每个 Provider 记录包含：
+
+- `id`：Provider 内部标识，前端生成
+- `name`：展示名
+- `baseUrl`：OpenAI 兼容接口的根地址
+- `apiKey`：访问该 Provider 所需的密钥
+- `models`：可调用的模型 ID 列表
+
+Agent（见 `frontend/agent-page.md`）通过 `providerId` + `model` 引用一个具体的 Provider 模型组合。

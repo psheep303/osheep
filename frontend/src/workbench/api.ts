@@ -523,3 +523,156 @@ export async function gitPush(
     force: !!opts.force,
   });
 }
+
+// ─── Agents ───
+
+export interface AgentRecord {
+  name: string;
+  prompt: string;
+  providerId: string;
+  model: string;
+}
+
+const agentsUrl = (id: string, suffix = "") =>
+  `/api/workspaces/${encodeURIComponent(id)}/agents${suffix}`;
+
+export async function listAgents(workspaceId: string): Promise<AgentRecord[]> {
+  const { agents } = await http.get<{ agents: AgentRecord[] }>(
+    agentsUrl(workspaceId)
+  );
+  return agents;
+}
+
+export async function createAgent(
+  workspaceId: string,
+  agent: AgentRecord
+): Promise<void> {
+  await http.post(agentsUrl(workspaceId), agent);
+}
+
+export async function updateAgent(
+  workspaceId: string,
+  originalName: string,
+  agent: AgentRecord
+): Promise<void> {
+  await http.put(
+    agentsUrl(workspaceId, `/${encodeURIComponent(originalName)}`),
+    agent
+  );
+}
+
+export async function deleteAgent(
+  workspaceId: string,
+  name: string
+): Promise<void> {
+  await http.delete(agentsUrl(workspaceId, `/${encodeURIComponent(name)}`));
+}
+
+// ─── Sessions ───
+
+export type ChatRole = "user" | "assistant";
+
+export interface ChatMessage {
+  role: ChatRole;
+  content: string;
+  timestamp: number;
+}
+
+export interface SessionRecord {
+  id: string;
+  title: string;
+  agentName: string;
+  createdAt: number;
+  updatedAt: number;
+  messages: ChatMessage[];
+}
+
+export interface SessionSummary {
+  id: string;
+  title: string;
+  agentName: string;
+  createdAt: number;
+  updatedAt: number;
+  messageCount: number;
+}
+
+const sessionsUrl = (id: string, suffix = "") =>
+  `/api/workspaces/${encodeURIComponent(id)}/sessions${suffix}`;
+
+export async function listSessions(
+  workspaceId: string
+): Promise<SessionSummary[]> {
+  const { sessions } = await http.get<{ sessions: SessionSummary[] }>(
+    sessionsUrl(workspaceId)
+  );
+  return sessions;
+}
+
+export async function getSession(
+  workspaceId: string,
+  sessionId: string
+): Promise<SessionRecord> {
+  return await http.get(
+    sessionsUrl(workspaceId, `/${encodeURIComponent(sessionId)}`)
+  );
+}
+
+export async function createSession(
+  workspaceId: string,
+  partial: Partial<SessionRecord> = {}
+): Promise<SessionRecord> {
+  return await http.post(sessionsUrl(workspaceId), partial);
+}
+
+export async function saveSession(
+  workspaceId: string,
+  record: SessionRecord
+): Promise<SessionRecord> {
+  return await http.put(
+    sessionsUrl(workspaceId, `/${encodeURIComponent(record.id)}`),
+    record
+  );
+}
+
+export async function deleteSession(
+  workspaceId: string,
+  sessionId: string
+): Promise<void> {
+  await http.delete(
+    sessionsUrl(workspaceId, `/${encodeURIComponent(sessionId)}`)
+  );
+}
+
+// ─── AI proxy ───
+
+export interface AiChatMessage {
+  role: "system" | "user" | "assistant";
+  content: string;
+}
+
+export async function fetchProviderModels(
+  workspaceId: string,
+  baseUrl: string,
+  apiKey: string
+): Promise<string[]> {
+  const { models } = await http.post<{ models: string[] }>(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/ai/models`,
+    { baseUrl, apiKey }
+  );
+  return models;
+}
+
+export async function aiChat(
+  workspaceId: string,
+  input: {
+    baseUrl: string;
+    apiKey: string;
+    model: string;
+    messages: AiChatMessage[];
+  }
+): Promise<{ content: string }> {
+  return await http.post(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/ai/chat`,
+    input
+  );
+}
