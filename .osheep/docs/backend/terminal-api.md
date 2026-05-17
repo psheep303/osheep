@@ -163,24 +163,35 @@
 
 ## 工作区边界守卫
 
-终端是真实 shell，理论上可以 `cd` 到服务器任意位置。osheep 强制约束：**PTY 的逻辑 cwd 必须落在 `WORKSPACES_ROOT` 之内**（注意是 root 父目录本身，不是单个工作区；用户可以在多个工作区之间 `cd ../<other>`）。
+终端是真实 shell，理论上可以 `cd` 到服务器任意位置。osheep 在两个层面做加固：**PTY 的逻辑 cwd 必须落在 `WORKSPACES_ROOT` 之内**（注意是 root 父目录本身，不是单个工作区；用户可以在多个工作区之间 `cd ../<other>`）。
 
-### 算法
+### 第一层：Shell-Level 代理（强）
 
-1. 服务端为每个会话维护 `logicalCwd`（初始 = workspace 根）以及一个 `inputBuffer`
-2. 用户输入按字符转发到 PTY 的同时，被镜像到 `inputBuffer`
-3. 当遇到 `\r` / `\n`（Enter）时：
-   - 解析 `inputBuffer` 是否匹配 `cd <target>` / `chdir` / `Set-Location` / `sl` / `pushd`（不区分大小写，支持 `cd /d ...` 的 cmd 语法）
-   - 解析 target 为绝对路径 `path.resolve(logicalCwd, target)`
-   - 若结果仍在 `WORKSPACES_ROOT` 内：更新 `logicalCwd`，正常转发 Enter
-   - 若越界：**不转发 Enter**，改为发送 `\x03`（Ctrl-C）给 PTY 取消当前行，并通过 WS 下发一帧 `{ type: 'output', data: '\r\n\x1b[33m警告：超出 workspaces ...\x1b[0m\r\n' }`
-4. 出现任意控制字符（ESC / Tab / Ctrl-*）会把 `bufferDirty=true`；该行不再做边界检查（避免误判），允许通过
-5. 仅做行内 `cd`，不解析复合语句（`cd ..; ls`、`if ... { cd .. }`、`pushd` 后的 `popd` 栈、`$(...)` 子命令）
+每个新 PTY 启动时，后端为对应 shell 写入一个一次性 init 脚本，shell 启动时自动加载它。脚本里：
+
+1. 把目标根目录写进环境变量 `OSHEEP_WORKSPACE_ROOT`
+2. 用语言原生机制覆盖目录切换命令：
+   - PowerShell：定义 `function global:Set-Location { ... }`，并把 `cd / chdir / sl` 重新 alias 到这个函数。函数内部用 `[IO.Path]::GetFullPath` 解析目标，若落在根外则打印黄字警告并直接返回
+   - bash / Git Bash：定义 `cd () { ... }`，用 `realpath -m` 解析目标后做前缀比较，越界则 stderr 警告并 `return 1`
+   - cmd.exe：当前阶段无可靠 hook，回退到下方"第二层"
+3. 把 PTY 启动后的当前目录设到 workspace 根
+
+这层覆盖了 `cd ..` 与历史回放（↑ 键）、粘贴等会跳过输入缓冲的所有情形。
+
+### 第二层：Input-Buffer 启发式（弱）
+
+仍保留第一轮的输入字符缓冲解析（详见 `pty.ts` 中 `parseCdTarget`），作为兜底：
+
+1. 服务端为每个会话维护 `logicalCwd` 与 `inputBuffer`
+2. 用户输入按字符转发到 PTY 的同时镜像到 `inputBuffer`
+3. Enter 时解析 `cd / chdir / Set-Location / sl / pushd`；越界则发 `\x03` + 黄字警告，并**不**转发 Enter
+4. 遇到任意控制字符 / Tab，标记 `bufferDirty=true`，该行不做检查（避免误判）——此时全靠第一层
 
 ### 限制
 
 - 这是**前置启发式**，不是完整的越界沙箱
 - 用户仍可通过 `cat /etc/passwd` 类命令读取 workspace 之外的文件——文件 API 的越界守卫负责挡住前端的文件访问，但 shell 内部命令不归终端 API 管
+- 进阶绕过（直接调 `[System.IO.Directory]::SetCurrentDirectory`、`builtin cd` 等）仍可能绕过第一层
 - 真正的越界沙箱需要容器化执行环境（后续阶段：把每个 workspace PTY 放进 Docker）
 
 ### 客户端表现
@@ -188,11 +199,11 @@
 ```
 demo>cd ..
 workspaces>cd ..
-警告：超出 workspaces，已忽略 ".."
+[osheep] 拒绝: 目标 'D:\project\osheep\backend' 超出 workspaces 根
 workspaces>
 ```
 
-- 黄色 ANSI 警告由后端直接写入 WS，xterm 原样渲染
+- 黄色警告由 shell 内部输出，或在 buffer 启发式触发时由后端写入 WS
 - Ctrl-C 取消当前行的副作用是 PTY 会回显 `^C` 与新提示符
 
 ---

@@ -19,6 +19,7 @@ import {
   removeEntry,
   renameEntry,
 } from "./fs";
+import { statusColor, type FileDecoration } from "./git-decorations";
 
 type DraftKind = "file" | "folder";
 
@@ -44,6 +45,7 @@ interface TreeContextValue {
   dropTarget: string | null;
   setDropTarget: (path: string | null) => void;
   onDropMove: (srcPath: string, destDir: string) => Promise<void>;
+  decorations: Map<string, FileDecoration>;
 }
 
 const TreeCtx = createContext<TreeContextValue | null>(null);
@@ -63,6 +65,8 @@ interface FileTreeProps {
   onOpenFile: (node: FsNode) => void;
   onPathRenamed: (oldPath: string, newPath: string) => void;
   onPathDeleted: (path: string) => void;
+  decorations: Map<string, FileDecoration>;
+  onFsChange?: () => void;
 }
 
 function joinPath(parent: string, name: string): string {
@@ -95,6 +99,8 @@ export function FileTree({
   onOpenFile,
   onPathRenamed,
   onPathDeleted,
+  decorations,
+  onFsChange,
 }: FileTreeProps) {
   const [children, setChildren] = useState<FsNode[]>([]);
   const [draft, setDraft] = useState<DraftKind | null>(null);
@@ -115,7 +121,10 @@ export function FileTree({
     };
   }, [workspaceId, treeVersion]);
 
-  const bumpTree = () => setTreeVersion((v) => v + 1);
+  const bumpTree = () => {
+    setTreeVersion((v) => v + 1);
+    onFsChange?.();
+  };
 
   const submitDraftAt = async (dir: string, kind: DraftKind, name: string) => {
     const trimmed = name.trim();
@@ -252,6 +261,7 @@ export function FileTree({
     dropTarget,
     setDropTarget,
     onDropMove,
+    decorations,
   };
 
   return (
@@ -577,6 +587,18 @@ function TreeNode({ node, depth }: TreeNodeProps) {
   const isCut = ctx.clipboard?.kind === "cut" && ctx.clipboard.path === node.path;
   const isDropTarget = ctx.dropTarget === node.path;
 
+  const deco = ctx.decorations.get(node.path);
+  const nameColor =
+    node.kind === "file" && deco?.selfStatus
+      ? statusColor(deco.selfStatus)
+      : undefined;
+  const dotColor =
+    node.kind === "directory" && deco?.childStatus
+      ? statusColor(deco.childStatus)
+      : undefined;
+  const badgeLetter =
+    node.kind === "file" && deco?.selfStatus ? deco.selfStatus : null;
+
   return (
     <div>
       <div
@@ -611,7 +633,12 @@ function TreeNode({ node, depth }: TreeNodeProps) {
         {renaming ? (
           <RenameInput initial={node.name} onSubmit={submitRename} />
         ) : (
-          <span className="tree-row__name">{node.name}</span>
+          <span
+            className="tree-row__name"
+            style={nameColor ? { color: nameColor } : undefined}
+          >
+            {node.name}
+          </span>
         )}
         {!renaming && node.kind === "directory" && (
           <span className="tree-row__actions">
@@ -633,6 +660,22 @@ function TreeNode({ node, depth }: TreeNodeProps) {
             >
               <NewFolderIcon />
             </IconBtn>
+          </span>
+        )}
+        {!renaming && (badgeLetter || dotColor) && (
+          <span
+            className={
+              "tree-row__badge" +
+              (badgeLetter ? " tree-row__badge--letter" : " tree-row__badge--dot")
+            }
+            style={{ color: nameColor ?? dotColor }}
+            title={
+              badgeLetter
+                ? `Git: ${badgeLetter}`
+                : `Git 变更: ${deco?.childStatus}`
+            }
+          >
+            {badgeLetter ?? "●"}
           </span>
         )}
       </div>

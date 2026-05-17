@@ -257,3 +257,198 @@ export function joinPath(parent: string, name: string): string {
   if (!parent) return name;
   return parent + "/" + name;
 }
+
+// ─── Search ───
+
+export interface SearchOptions {
+  caseSensitive?: boolean;
+  wholeWord?: boolean;
+  regex?: boolean;
+  include?: string;
+  exclude?: string;
+  maxFiles?: number;
+  maxMatchesPerFile?: number;
+}
+
+export interface SearchMatchLine {
+  line: number;
+  column: number;
+  preview: string;
+  matchStart: number;
+  matchEnd: number;
+}
+
+export interface SearchFileMatch {
+  path: string;
+  lines: SearchMatchLine[];
+}
+
+export interface SearchResult {
+  matches: SearchFileMatch[];
+  truncated: boolean;
+  filesScanned: number;
+  elapsedMs: number;
+}
+
+export async function searchWorkspace(
+  workspaceId: string,
+  query: string,
+  opts: SearchOptions = {}
+): Promise<SearchResult> {
+  const q: Record<string, string> = { query };
+  if (opts.caseSensitive) q.caseSensitive = "true";
+  if (opts.wholeWord) q.wholeWord = "true";
+  if (opts.regex) q.regex = "true";
+  if (opts.include) q.include = opts.include;
+  if (opts.exclude) q.exclude = opts.exclude;
+  if (opts.maxFiles) q.maxFiles = String(opts.maxFiles);
+  if (opts.maxMatchesPerFile)
+    q.maxMatchesPerFile = String(opts.maxMatchesPerFile);
+  const qs = new URLSearchParams(q).toString();
+  return await http.get(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/search?${qs}`
+  );
+}
+
+// ─── Git ───
+
+export interface GitRepoInfo {
+  isRepo: boolean;
+  branch?: string;
+  head?: string;
+  ahead?: number;
+  behind?: number;
+  upstream?: string | null;
+  detached?: boolean;
+}
+
+export interface GitChange {
+  path: string;
+  indexStatus: string;
+  worktreeStatus: string;
+  renamedFrom: string | null;
+}
+
+export interface GitStatus extends GitRepoInfo {
+  changes: GitChange[];
+}
+
+export interface GitDiff {
+  path: string;
+  base: "HEAD" | "INDEX";
+  head: "INDEX" | "WORKTREE";
+  leftContent: string;
+  rightContent: string;
+  leftMissing: boolean;
+  rightMissing: boolean;
+  binary: boolean;
+}
+
+const gitUrl = (id: string, suffix: string) =>
+  `/api/workspaces/${encodeURIComponent(id)}/git${suffix}`;
+
+export async function getGitRepo(workspaceId: string): Promise<GitRepoInfo> {
+  return await http.get(gitUrl(workspaceId, "/repo"));
+}
+
+export async function getGitStatus(workspaceId: string): Promise<GitStatus> {
+  return await http.get(gitUrl(workspaceId, "/status"));
+}
+
+export async function gitStage(
+  workspaceId: string,
+  paths: string[]
+): Promise<void> {
+  await http.post(gitUrl(workspaceId, "/stage"), { paths });
+}
+
+export async function gitUnstage(
+  workspaceId: string,
+  paths: string[]
+): Promise<void> {
+  await http.post(gitUrl(workspaceId, "/unstage"), { paths });
+}
+
+export async function gitDiscard(
+  workspaceId: string,
+  paths: string[]
+): Promise<{ discarded: string[] }> {
+  return await http.post(gitUrl(workspaceId, "/discard"), { paths });
+}
+
+export async function gitCommit(
+  workspaceId: string,
+  message: string
+): Promise<{ head: string }> {
+  return await http.post(gitUrl(workspaceId, "/commit"), { message });
+}
+
+export async function gitInit(workspaceId: string): Promise<void> {
+  await http.post(gitUrl(workspaceId, "/init"), {});
+}
+
+export async function getGitDiff(
+  workspaceId: string,
+  path: string,
+  base: "HEAD" | "INDEX" = "HEAD",
+  head: "INDEX" | "WORKTREE" = "WORKTREE"
+): Promise<GitDiff> {
+  const qs = new URLSearchParams({ path, base, head }).toString();
+  return await http.get(gitUrl(workspaceId, `/diff?${qs}`));
+}
+
+export interface GitRemote {
+  name: string;
+  url: string;
+}
+
+export async function listGitRemotes(workspaceId: string): Promise<GitRemote[]> {
+  const { remotes } = await http.get<{ remotes: GitRemote[] }>(
+    gitUrl(workspaceId, "/remotes")
+  );
+  return remotes;
+}
+
+export async function addGitRemote(
+  workspaceId: string,
+  name: string,
+  url: string
+): Promise<void> {
+  await http.post(gitUrl(workspaceId, "/remotes"), { name, url });
+}
+
+export async function removeGitRemote(
+  workspaceId: string,
+  name: string
+): Promise<void> {
+  await http.delete(gitUrl(workspaceId, `/remotes/${encodeURIComponent(name)}`));
+}
+
+export interface GitCommit {
+  sha: string;
+  shortSha: string;
+  parents: string[];
+  author: string;
+  date: number;
+  subject: string;
+  refs: string[];
+}
+
+export interface GitLog {
+  commits: GitCommit[];
+  head: string | null;
+}
+
+export async function getGitLog(
+  workspaceId: string,
+  limit = 200,
+  offset = 0,
+  ref = "HEAD"
+): Promise<GitLog> {
+  const qs = new URLSearchParams({
+    limit: String(limit),
+    offset: String(offset),
+    ref,
+  }).toString();
+  return await http.get(gitUrl(workspaceId, `/log?${qs}`));
+}

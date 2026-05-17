@@ -6,6 +6,8 @@ import { ApiError } from "./errors.js";
 import { ensureWorkspacesRoot } from "./workspace.js";
 import { registerWorkspaceRoutes } from "./routes/workspaces.js";
 import { registerTerminalRoutes } from "./routes/terminals.js";
+import { registerSearchRoutes } from "./routes/search.js";
+import { registerGitRoutes } from "./routes/git.js";
 
 export async function buildServer() {
   const app = Fastify({
@@ -47,6 +49,8 @@ export async function buildServer() {
 
   await registerWorkspaceRoutes(app);
   await registerTerminalRoutes(app);
+  await registerSearchRoutes(app);
+  await registerGitRoutes(app);
 
   await ensureWorkspacesRoot();
   return app;

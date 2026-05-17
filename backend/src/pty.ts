@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import { randomBytes } from "node:crypto";
 import { platform, config } from "./config.js";
 import { errors } from "./errors.js";
+import { buildBashGuard, buildPowerShellGuard } from "./pty-guard.js";
 import type { WorkspaceInfo } from "./workspace.js";
 
 export interface ShellProfile {
@@ -38,6 +39,8 @@ export interface TerminalSession {
   // line — at that point we can't trust the buffer matches the visible line,
   // so we skip the boundary check for this Enter.
   bufferDirty: boolean;
+  // Tear down per-session shell-init temp files when the session ends.
+  guardCleanup: (() => void) | null;
 }
 
 const sessions = new Map<string, TerminalSession>();
@@ -153,9 +156,32 @@ export function createSession(input: CreateSessionInput): TerminalSession {
   const cols = clampSize(input.cols, 80);
   const rows = clampSize(input.rows, 24);
 
+  // Build shell-level guard if supported. The guard returns args to spawn with
+  // and a cleanup to call when the session ends.
+  const workspacesRootAbs = path.resolve(config.workspacesRoot);
+  const initialCwd = path.resolve(input.workspace.path);
+  let spawnArgs = profile.args;
+  let guardCleanup: (() => void) | null = null;
+  try {
+    if (profile.id === "powershell") {
+      const g = buildPowerShellGuard(profile.args, workspacesRootAbs, initialCwd);
+      spawnArgs = g.args;
+      guardCleanup = g.cleanup;
+    } else if (profile.id === "bash" || profile.id === "zsh") {
+      const g = buildBashGuard(profile.args, workspacesRootAbs, initialCwd);
+      spawnArgs = g.args;
+      guardCleanup = g.cleanup;
+    }
+    // cmd has no clean hook; rely on the input-buffer heuristic only.
+  } catch {
+    // If guard generation fails (e.g., tmp write), fall back silently.
+    spawnArgs = profile.args;
+    guardCleanup = null;
+  }
+
   let pty: nodePty.IPty;
   try {
-    pty = nodePty.spawn(profile.executable, profile.args, {
+    pty = nodePty.spawn(profile.executable, spawnArgs, {
       name: "xterm-256color",
       cols,
       rows,
@@ -163,6 +189,7 @@ export function createSession(input: CreateSessionInput): TerminalSession {
       env: { ...process.env },
     });
   } catch (e) {
+    if (guardCleanup) guardCleanup();
     throw errors.ptySpawnFailed((e as Error).message);
   }
 
@@ -178,10 +205,11 @@ export function createSession(input: CreateSessionInput): TerminalSession {
     scrollback: "",
     sink: null,
     idleTimer: null,
-    logicalCwd: path.resolve(input.workspace.path),
-    workspacesRoot: path.resolve(config.workspacesRoot),
+    logicalCwd: initialCwd,
+    workspacesRoot: workspacesRootAbs,
     inputBuffer: "",
     bufferDirty: false,
+    guardCleanup,
   };
   sessions.set(session.id, session);
   bumpActivity(session);
@@ -247,6 +275,14 @@ function cleanupSession(s: TerminalSession, _reason: string): void {
   if (s.sink) {
     // The caller of the sink is expected to close their WS after `exit` or `error`.
     s.sink = null;
+  }
+  if (s.guardCleanup) {
+    try {
+      s.guardCleanup();
+    } catch {
+      /* ignore */
+    }
+    s.guardCleanup = null;
   }
   sessions.delete(s.id);
 }

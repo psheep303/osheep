@@ -1,6 +1,13 @@
 import Editor, { type BeforeMount, type OnMount } from "@monaco-editor/react";
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
+import type * as Monaco from "monaco-editor";
 import { languageFromPath } from "./language";
+
+export interface GotoTarget {
+  line: number;
+  column?: number;
+  nonce: number;
+}
 
 interface EditorPaneProps {
   path: string;
@@ -9,6 +16,7 @@ interface EditorPaneProps {
   tabSize: number;
   onChange: (value: string) => void;
   onSave: () => void;
+  goto?: GotoTarget | null;
 }
 
 const beforeMount: BeforeMount = (monaco) => {
@@ -45,16 +53,43 @@ export function EditorPane({
   tabSize,
   onChange,
   onSave,
+  goto,
 }: EditorPaneProps) {
   const onSaveRef = useRef(onSave);
   onSaveRef.current = onSave;
 
+  const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
+  const appliedNonceRef = useRef<number | null>(null);
+
+  const applyGoto = (target: GotoTarget) => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const line = Math.max(1, target.line);
+    const column = Math.max(1, target.column ?? 1);
+    editor.revealLineInCenter(line);
+    editor.setPosition({ lineNumber: line, column });
+    editor.focus();
+    appliedNonceRef.current = target.nonce;
+  };
+
   const handleMount: OnMount = (editor, monaco) => {
+    editorRef.current = editor;
     editor.addCommand(
       monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS,
       () => onSaveRef.current()
     );
+    if (goto && appliedNonceRef.current !== goto.nonce) {
+      // Defer until next tick so the model is fully attached.
+      window.setTimeout(() => applyGoto(goto), 0);
+    }
   };
+
+  useEffect(() => {
+    if (!goto) return;
+    if (appliedNonceRef.current === goto.nonce) return;
+    if (!editorRef.current) return;
+    applyGoto(goto);
+  }, [goto]);
 
   return (
     <Editor

@@ -25,6 +25,9 @@ osheep 是 **服务端 Web IDE**：所有文件读写、终端进程都跑在后
 
 2. 左侧栏 (Side Panel)
    - 渲染当前活动视图（资源管理器 / 搜索 / Git）
+   - 资源管理器：见上文文件树小节
+   - 搜索：全工作区文本搜索，支持区分大小写 / 全词 / 正则 / include / exclude；点击结果在中央编辑区跳转到对应行。详见 [search-view.md](search-view.md)
+   - 源代码管理：展示 Git 仓库状态、暂存 / 取消暂存 / 提交 / 撤销变更，点击文件行打开 Monaco DiffEditor 渲染的 diff Tab。详见 [git-view.md](git-view.md)
    - 可拖拽改变宽度
    - 可通过活动栏折叠 / 展开
 
@@ -55,6 +58,8 @@ osheep 是 **服务端 Web IDE**：所有文件读写、终端进程都跑在后
 - 多 Tab
 - 代码编辑
 - Markdown 编辑（源码态）与渲染预览：预览 / 源码切换按钮位于**标签页栏最右侧**（与标签页同高度），仿 VS Code 工具栏按钮放置方式；预览内容左对齐（不水平居中）。详见 [markdown-preview.md](markdown-preview.md)
+- Diff 视图（来自源代码管理面板）：使用 Monaco `DiffEditor` 渲染，只读，Tab 标题含 `(Working Tree)` / `(Staged)` 后缀。详见 [git-view.md](git-view.md)
+- 跳转到行（来自搜索面板）：点击搜索结果时编辑器把光标移动到指定行 + 列
 - 基础自动补全
 - 差异查看入口
 
@@ -62,6 +67,10 @@ osheep 是 **服务端 Web IDE**：所有文件读写、终端进程都跑在后
 - 启动时调 `GET /api/workspaces` 列出后端 `WORKSPACES_ROOT` 下的所有工作区
 - 标题栏「打开项目」按钮弹出工作区选择面板（替代旧的本地目录 picker），选定一个后所有后续 API 调用带 `workspaceId`
 - 浏览文件树（持续高亮当前选中项，直到选中其他项）——树通过 `GET /api/workspaces/:id/fs/tree?path=` 拉取
+- **Git 装饰**（仿 VS Code）：文件树根据当前 Git 状态在条目右侧渲染状态徽章
+  - 文件：右侧出现状态字母 `M / A / D / U / C / R`，文件名同步染色（如 `M`=黄，`A`/`U`=绿，`D`=红，`R`=蓝，`C`=红加粗）
+  - 文件夹：若任一后代有变更，文件夹右侧渲染一个小圆点，颜色取该子树中最高优先级状态的颜色（C > D > M > R > A/U）
+  - 数据源：Workbench 持有最新的 `git status` 并把 `Map<path, status>` 透传给文件树；写文件、git 操作、刷新按钮、激活窗口都会触发 status 重新拉取
 - 文件树中每个**条目**最左侧都占用一个 16 px 的图标列：文件显示按类型着色的小图标；文件夹显示一个可旋转的 `>` chevron。两者共享同一个槽位，因此同级文件与文件夹的图标和名字必然在同一垂直线上
 - 在文件树中新建文件、新建文件夹（头部入口 + 文件夹悬停入口）→ `POST /api/workspaces/:id/fs/entry`
 - 右键文件 / 文件夹弹出上下文菜单：复制、粘贴、剪切、重命名、删除；文件夹另含新建文件、新建文件夹
@@ -105,6 +114,8 @@ osheep 是 **服务端 Web IDE**：所有文件读写、终端进程都跑在后
 
 - [settings-page.md](settings-page.md)：设置页面
 - [markdown-preview.md](markdown-preview.md)：Markdown 源码 / 预览切换
+- [search-view.md](search-view.md)：搜索面板
+- [git-view.md](git-view.md)：源代码管理面板
 - [terminal-panel.md](terminal-panel.md)：终端面板（xterm.js + 后端 PTY）
 - [plan-panel.md](plan-panel.md)：计划面板（只读 Markdown 预览）
 - [document-panel.md](document-panel.md)：文档面板
@@ -112,6 +123,8 @@ osheep 是 **服务端 Web IDE**：所有文件读写、终端进程都跑在后
 - [theming.md](theming.md)：主题与配色
 - [../backend/api-architecture.md](../backend/api-architecture.md)：服务端整体接口架构
 - [../backend/file-api.md](../backend/file-api.md)：前端 fs 操作的后端契约
+- [../backend/search-api.md](../backend/search-api.md)：搜索接口契约
+- [../backend/git-api.md](../backend/git-api.md)：Git 接口契约
 - [../backend/terminal-api.md](../backend/terminal-api.md)：终端会话契约
 
 ---

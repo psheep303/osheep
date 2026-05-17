@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityBar, type ViewId } from "./ActivityBar";
 import { BottomPanel } from "./BottomPanel";
-import { EditorPane } from "./EditorPane";
+import { DiffPane } from "./DiffPane";
+import { EditorPane, type GotoTarget } from "./EditorPane";
 import { FileTree } from "./FileTree";
 import { GitView } from "./GitView";
 import { MarkdownPreview } from "./MarkdownPreview";
@@ -17,6 +18,8 @@ import {
   saveOsheepSettings,
   writeFileText,
 } from "./fs";
+import { getGitDiff, getGitStatus, type GitStatus } from "./api";
+import { buildDecorations } from "./git-decorations";
 import "./workbench.css";
 
 interface FileTab {
@@ -27,6 +30,7 @@ interface FileTab {
   dirty: boolean;
   deleted: boolean;
   previewMode: boolean;
+  goto?: GotoTarget | null;
 }
 
 interface SettingsTab {
@@ -34,7 +38,18 @@ interface SettingsTab {
   path: "__settings__";
 }
 
-type Tab = FileTab | SettingsTab;
+interface DiffTab {
+  kind: "diff";
+  path: string; // synthetic tab id
+  filePath: string;
+  base: "HEAD" | "INDEX";
+  head: "INDEX" | "WORKTREE";
+  leftContent: string;
+  rightContent: string;
+  binary: boolean;
+}
+
+type Tab = FileTab | SettingsTab | DiffTab;
 
 const SETTINGS_PATH = "__settings__";
 
@@ -55,6 +70,31 @@ export function Workbench() {
   const [settings, setSettings] = useState<OsheepSettings>(DEFAULT_SETTINGS);
 
   const [activeView, setActiveView] = useState<ViewId>("explorer");
+
+  const [gitStatus, setGitStatus] = useState<GitStatus | null>(null);
+  const decorations = useMemo(() => buildDecorations(gitStatus), [gitStatus]);
+  const [statusVersion, setStatusVersion] = useState(0);
+  const refreshGitStatus = useCallback(() => {
+    setStatusVersion((v) => v + 1);
+  }, []);
+
+  useEffect(() => {
+    if (!workspaceId) {
+      setGitStatus(null);
+      return;
+    }
+    let cancelled = false;
+    void getGitStatus(workspaceId)
+      .then((s) => {
+        if (!cancelled) setGitStatus(s);
+      })
+      .catch(() => {
+        if (!cancelled) setGitStatus(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [workspaceId, statusVersion]);
 
   const [leftWidth, setLeftWidth] = useState(DEFAULT_LEFT_WIDTH);
   const [rightWidth, setRightWidth] = useState(0);
@@ -141,6 +181,87 @@ export function Workbench() {
     [tabs, workspaceId]
   );
 
+  const openFileAt = useCallback(
+    async (filePath: string, line: number, column: number) => {
+      if (!workspaceId) return;
+      const target: GotoTarget = {
+        line,
+        column,
+        nonce: Date.now() + Math.random(),
+      };
+      const existing = tabs.find(
+        (t) => t.kind === "file" && t.path === filePath
+      );
+      if (existing) {
+        setTabs((prev) =>
+          prev.map((t) =>
+            t.kind === "file" && t.path === filePath ? { ...t, goto: target } : t
+          )
+        );
+        setActivePath(filePath);
+        return;
+      }
+      let text: string;
+      try {
+        text = await readFileText(workspaceId, filePath);
+      } catch (e) {
+        setError((e as Error).message);
+        return;
+      }
+      setTabs((prev) => [
+        ...prev,
+        {
+          kind: "file",
+          path: filePath,
+          content: text,
+          savedContent: text,
+          dirty: false,
+          deleted: false,
+          previewMode: false,
+          goto: target,
+        },
+      ]);
+      setActivePath(filePath);
+    },
+    [tabs, workspaceId]
+  );
+
+  const openDiffTab = useCallback(
+    async (
+      filePath: string,
+      base: "HEAD" | "INDEX",
+      head: "INDEX" | "WORKTREE"
+    ) => {
+      if (!workspaceId) return;
+      const diffId = `__diff__:${base}:${head}:${filePath}`;
+      const existing = tabs.find((t) => t.path === diffId);
+      if (existing) {
+        setActivePath(diffId);
+        return;
+      }
+      try {
+        const d = await getGitDiff(workspaceId, filePath, base, head);
+        setTabs((prev) => [
+          ...prev,
+          {
+            kind: "diff",
+            path: diffId,
+            filePath,
+            base,
+            head,
+            leftContent: d.leftContent,
+            rightContent: d.rightContent,
+            binary: d.binary,
+          },
+        ]);
+        setActivePath(diffId);
+      } catch (e) {
+        setError((e as Error).message);
+      }
+    },
+    [tabs, workspaceId]
+  );
+
   const openSettingsTab = useCallback(() => {
     setTabs((prev) => {
       if (prev.some((t) => t.kind === "settings")) return prev;
@@ -216,7 +337,8 @@ export function Workbench() {
           : t
       )
     );
-  }, [activePath, tabs, workspaceId]);
+    refreshGitStatus();
+  }, [activePath, tabs, workspaceId, refreshGitStatus]);
 
   const closeTab = useCallback(
     (path: string) => {
@@ -320,6 +442,7 @@ export function Workbench() {
 
   const activeTab = tabs.find((t) => t.path === activePath) ?? null;
   const activeFileTab = activeTab?.kind === "file" ? activeTab : null;
+  const activeDiffTab = activeTab?.kind === "diff" ? activeTab : null;
 
   return (
     <div className="workbench">
@@ -389,6 +512,8 @@ export function Workbench() {
                   onOpenFile={openFile}
                   onPathRenamed={onPathRenamed}
                   onPathDeleted={onPathDeleted}
+                  decorations={decorations}
+                  onFsChange={refreshGitStatus}
                 />
               ) : (
                 <div className="side-view">
@@ -408,8 +533,20 @@ export function Workbench() {
                   </div>
                 </div>
               ))}
-            {activeView === "search" && <SearchView />}
-            {activeView === "git" && <GitView />}
+            {activeView === "search" && (
+              <SearchView
+                workspaceId={workspaceId}
+                onOpenMatch={(p, line, col) => void openFileAt(p, line, col)}
+              />
+            )}
+            {activeView === "git" && (
+              <GitView
+                workspaceId={workspaceId}
+                status={gitStatus}
+                onRefreshStatus={refreshGitStatus}
+                onOpenDiff={(p, base, head) => void openDiffTab(p, base, head)}
+              />
+            )}
           </div>
         )}
         <Resizer
@@ -424,27 +561,34 @@ export function Workbench() {
               <div className="tabs__list">
                 {tabs.map((t) => {
                   const isDeleted = t.kind === "file" && t.deleted;
+                  const label =
+                    t.kind === "settings"
+                      ? "设置"
+                      : t.kind === "diff"
+                      ? `${basename(t.filePath)} (${diffLabel(t)})`
+                      : t.path.split("/").pop();
+                  const tabTitle =
+                    t.kind === "file"
+                      ? isDeleted
+                        ? `${t.path}（已被删除）`
+                        : t.path
+                      : t.kind === "diff"
+                      ? `${t.filePath} · ${diffLabel(t)}`
+                      : "设置";
                   return (
                     <div
                       key={t.path}
                       className={
                         "tab" +
                         (t.path === activePath ? " is-active" : "") +
-                        (isDeleted ? " is-deleted" : "")
+                        (isDeleted ? " is-deleted" : "") +
+                        (t.kind === "diff" ? " is-diff" : "")
                       }
                       onClick={() => setActivePath(t.path)}
-                      title={
-                        t.kind === "file"
-                          ? isDeleted
-                            ? `${t.path}（已被删除）`
-                            : t.path
-                          : "设置"
-                      }
+                      title={tabTitle}
                     >
                       <span className="tab__name">
-                        {t.kind === "settings"
-                          ? "设置"
-                          : t.path.split("/").pop()}
+                        {label}
                         {t.kind === "file" && t.dirty ? " ●" : ""}
                       </span>
                       <span
@@ -484,9 +628,23 @@ export function Workbench() {
                       tabSize={settings.editor.tabSize}
                       onChange={updateActive}
                       onSave={saveActive}
+                      goto={activeFileTab.goto ?? null}
                     />
                   </div>
                 )
+              ) : activeDiffTab ? (
+                <div className="editor-host__source">
+                  {activeDiffTab.binary ? (
+                    <div className="empty-hint">该文件为二进制，无法显示 diff</div>
+                  ) : (
+                    <DiffPane
+                      path={activeDiffTab.filePath}
+                      fontSize={settings.editor.fontSize}
+                      leftContent={activeDiffTab.leftContent}
+                      rightContent={activeDiffTab.rightContent}
+                    />
+                  )}
+                </div>
               ) : activeTab?.kind === "settings" ? (
                 <SettingsView
                   settings={settings}
@@ -617,6 +775,17 @@ function isMarkdownPath(path: string): boolean {
     lower.endsWith(".markdown") ||
     lower.endsWith(".mdx")
   );
+}
+
+function basename(p: string): string {
+  const i = p.lastIndexOf("/");
+  return i >= 0 ? p.slice(i + 1) : p;
+}
+
+function diffLabel(t: DiffTab): string {
+  if (t.base === "HEAD" && t.head === "INDEX") return "Staged";
+  if (t.base === "INDEX" && t.head === "WORKTREE") return "Working Tree";
+  return `${t.base} → ${t.head}`;
 }
 
 function PreviewToggle({

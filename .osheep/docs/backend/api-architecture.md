@@ -31,6 +31,8 @@ osheep 的**所有**文件与终端操作都在服务器侧执行，前端只持
 负责：
 - 工作区发现与路径解析（含安全检查）
 - 文件读写、目录管理（详见 [file-api.md](file-api.md)）
+- 全工作区文本搜索（详见 [search-api.md](search-api.md)）
+- Git 状态读取与日常提交流（详见 [git-api.md](git-api.md)）
 - 终端会话管理与 PTY 透传（详见 [terminal-api.md](terminal-api.md)）
 - `.osheep/` 相关操作（settings、plan、docs）
 - AI 流程接口、任务接口（后续阶段补全）
@@ -55,6 +57,16 @@ osheep 的**所有**文件与终端操作都在服务器侧执行，前端只持
 - 详见 [file-api.md](file-api.md)
 - 都挂在 `/api/workspaces/:id/fs` 下
 - 路径都是相对于工作区根的 POSIX 风格相对路径
+
+### 搜索接口
+- 详见 [search-api.md](search-api.md)
+- 都挂在 `/api/workspaces/:id/search` 下
+- 单次请求扫描完成，前端搜索面板与 AI 工具调用共用
+
+### Git 接口
+- 详见 [git-api.md](git-api.md)
+- 都挂在 `/api/workspaces/:id/git` 下
+- 通过 `git` CLI 子进程实现；不嵌入 libgit2
 
 ### 终端接口
 - 详见 [terminal-api.md](terminal-api.md)

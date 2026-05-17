@@ -35,4 +35,12 @@ export const errors = {
     new ApiError(500, "PTY_SPAWN_FAILED", `PTY 启动失败: ${msg}`),
   tooManySessions: (limit: number) =>
     new ApiError(429, "TOO_MANY_SESSIONS", `并发会话数达到上限 ${limit}`),
+  invalidQuery: (msg = "搜索参数非法") =>
+    new ApiError(400, "INVALID_QUERY", msg),
+  notARepo: () => new ApiError(409, "NOT_A_REPO", "当前工作区不是 Git 仓库"),
+  emptyCommitMessage: () =>
+    new ApiError(400, "EMPTY_COMMIT_MESSAGE", "commit 消息不能为空"),
+  invalidRef: (msg = "ref 取值不合法") =>
+    new ApiError(400, "INVALID_REF", msg),
+  gitFailed: (msg: string) => new ApiError(500, "GIT_FAILED", msg),
 };
