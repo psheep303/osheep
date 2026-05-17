@@ -2,15 +2,20 @@ import type { FastifyInstance } from "fastify";
 import { resolveWorkspace } from "../workspace.js";
 import {
   addRemote,
+  checkoutBranch,
   commit,
   discardPaths,
+  fetchRemote,
   getDiff,
   getLog,
   getRepoInfo,
   getStatus,
   gitInit,
   isRepo,
+  listBranches,
   listRemotes,
+  pullCurrent,
+  pushCurrent,
   removeRemote,
   stagePaths,
   unstagePaths,
@@ -150,6 +155,78 @@ export async function registerGitRoutes(app: FastifyInstance) {
       return { ok: true };
     }
   );
+
+  // ─── Branches ───
+
+  app.get<{ Params: { id: string } }>(
+    "/api/workspaces/:id/git/branches",
+    async (req) => {
+      const ws = await resolveWorkspace(req.params.id);
+      await ensureRepo(ws.path);
+      return await listBranches(ws.path);
+    }
+  );
+
+  app.post<{
+    Params: { id: string };
+    Body: { ref?: string; create?: boolean; fromRef?: string | null };
+  }>("/api/workspaces/:id/git/checkout", async (req) => {
+    const ws = await resolveWorkspace(req.params.id);
+    await ensureRepo(ws.path);
+    const ref = req.body?.ref;
+    if (typeof ref !== "string" || !ref) throw errors.invalidRef("缺少 ref");
+    await checkoutBranch(ws.path, ref, {
+      create: !!req.body?.create,
+      fromRef: req.body?.fromRef ?? null,
+    });
+    return { ok: true, branch: ref };
+  });
+
+  // ─── Fetch / Pull / Push ───
+
+  app.post<{
+    Params: { id: string };
+    Body: { remote?: string | null; prune?: boolean };
+  }>("/api/workspaces/:id/git/fetch", async (req) => {
+    const ws = await resolveWorkspace(req.params.id);
+    await ensureRepo(ws.path);
+    await fetchRemote(ws.path, req.body?.remote ?? null, !!req.body?.prune);
+    return { ok: true };
+  });
+
+  app.post<{
+    Params: { id: string };
+    Body: { remote?: string | null; branch?: string | null; ffOnly?: boolean };
+  }>("/api/workspaces/:id/git/pull", async (req) => {
+    const ws = await resolveWorkspace(req.params.id);
+    await ensureRepo(ws.path);
+    await pullCurrent(ws.path, {
+      remote: req.body?.remote ?? null,
+      branch: req.body?.branch ?? null,
+      ffOnly: req.body?.ffOnly !== false,
+    });
+    return { ok: true };
+  });
+
+  app.post<{
+    Params: { id: string };
+    Body: {
+      remote?: string | null;
+      branch?: string | null;
+      setUpstream?: boolean;
+      force?: boolean;
+    };
+  }>("/api/workspaces/:id/git/push", async (req) => {
+    const ws = await resolveWorkspace(req.params.id);
+    await ensureRepo(ws.path);
+    await pushCurrent(ws.path, {
+      remote: req.body?.remote ?? null,
+      branch: req.body?.branch ?? null,
+      setUpstream: !!req.body?.setUpstream,
+      force: !!req.body?.force,
+    });
+    return { ok: true };
+  });
 
   // ─── Log ───
 

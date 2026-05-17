@@ -171,9 +171,9 @@
 
 1. 把目标根目录写进环境变量 `OSHEEP_WORKSPACE_ROOT`
 2. 用语言原生机制覆盖目录切换命令：
-   - PowerShell：定义 `function global:Set-Location { ... }`，并把 `cd / chdir / sl` 重新 alias 到这个函数。函数内部用 `[IO.Path]::GetFullPath` 解析目标，若落在根外则打印黄字警告并直接返回
+   - PowerShell：定义 `function global:Set-Location { ... }`，并把 `cd / chdir / sl` 重新 alias 到这个函数。函数内部用 `[IO.Path]::GetFullPath` 解析目标，若落在根外则打印黄字警告并直接返回。脚本 **以 UTF-8 BOM 写入磁盘**（Windows PowerShell 5.1 默认会用 ANSI/系统区域代码页读取无 BOM 的脚本，BOM 让它确定按 UTF-8 解析，从而避免警告里"拒绝"等中文被读成 GBK 字节再向终端输出造成的 UTF-8 ↔ GBK 双向乱码）；脚本顶部还强制 `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8` 让 Write-Host 的字节也按 UTF-8 输出到 xterm.js
    - bash / Git Bash：定义 `cd () { ... }`，用 `realpath -m` 解析目标后做前缀比较，越界则 stderr 警告并 `return 1`
-   - cmd.exe：当前阶段无可靠 hook，回退到下方"第二层"
+   - cmd.exe：写两个一次性 `.cmd` 文件（init + helper），**均不带 BOM**——cmd 的批处理解析器不会跳过 UTF-8 BOM，BOM 字节会被当作首行命令的一部分导致 `@echo off` 失败并把后续每行都回显，所以一定要无 BOM。Init 用 `chcp 65001 > nul` 切码页、`set OSHEEP_WORKSPACE_ROOT=...`、再用 `doskey cd=call "helper.cmd" $*`（含 `chdir`）把交互输入的 `cd / chdir` 转发到 helper。helper 用 `pushd` 把目标 canonicalize 成绝对路径，再用 `findstr /i /b /c:"<root>\\"` 做大小写不敏感前缀比较（`\\` 的双反斜杠是为了让 findstr 的 CRT argv 解析器收到一个尾随 `\`）；越界则中文警告并 `exit /b 1`，否则真正执行 `cd /d`。cmd 进程用 `cmd /D /K initpath` 启动，`/D` 跳过用户 `AutoRun` 注册项，避免诸如 `chcp 65001 / Active code page: 65001` 这种 AutoRun 输出污染首屏。会话退出时 init + helper 两个临时文件随 `guardCleanup` 一起删除
 3. 把 PTY 启动后的当前目录设到 workspace 根
 
 这层覆盖了 `cd ..` 与历史回放（↑ 键）、粘贴等会跳过输入缓冲的所有情形。

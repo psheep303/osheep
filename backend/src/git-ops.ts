@@ -501,3 +501,199 @@ function looksBinary(buf: Buffer): boolean {
   }
   return false;
 }
+
+// ─── Branches ───
+
+export interface GitBranch {
+  name: string;
+  isCurrent: boolean;
+  kind: "local" | "remote";
+  upstream?: string | null;
+  ahead?: number;
+  behind?: number;
+}
+
+const BRANCH_NAME_RE = /^(?!-)[A-Za-z0-9._/-]{1,200}$/;
+
+function validateBranchName(name: string): void {
+  if (typeof name !== "string" || !BRANCH_NAME_RE.test(name) || name.includes("..")) {
+    throw errors.invalidRef("分支名格式非法");
+  }
+}
+
+export async function listBranches(
+  workspaceRoot: string
+): Promise<{ current: string | null; detached: boolean; branches: GitBranch[] }> {
+  const info = await getRepoInfo(workspaceRoot);
+  const current = info.detached ? null : info.branch ?? null;
+  const detached = !!info.detached;
+
+  const fmt = "%(refname)%00%(refname:short)%00%(upstream:short)%00%(upstream:track)";
+  const out = await runGit(workspaceRoot, [
+    "for-each-ref",
+    `--format=${fmt}`,
+    "refs/heads",
+    "refs/remotes",
+  ]);
+  if (out.code !== 0) {
+    const err = (out.stderr || "").toLowerCase();
+    if (err.includes("does not have any commits")) {
+      return { current, detached, branches: [] };
+    }
+    throw errors.gitFailed(out.stderr.trim() || "git for-each-ref 失败");
+  }
+
+  const branches: GitBranch[] = [];
+  for (const line of out.stdout.toString("utf-8").split("\n")) {
+    if (!line) continue;
+    const [fullref, short, upstream, track] = line.split("\0");
+    if (!fullref) continue;
+    const kind: "local" | "remote" = fullref.startsWith("refs/remotes/")
+      ? "remote"
+      : "local";
+    if (kind === "remote" && short.endsWith("/HEAD")) continue;
+    if (kind === "remote") {
+      branches.push({ name: short, isCurrent: false, kind: "remote" });
+      continue;
+    }
+    let ahead: number | undefined;
+    let behind: number | undefined;
+    if (track) {
+      const a = track.match(/ahead (\d+)/);
+      const b = track.match(/behind (\d+)/);
+      if (a) ahead = Number.parseInt(a[1], 10);
+      if (b) behind = Number.parseInt(b[1], 10);
+    }
+    branches.push({
+      name: short,
+      isCurrent: short === current,
+      kind: "local",
+      upstream: upstream || null,
+      ahead,
+      behind,
+    });
+  }
+  branches.sort((a, b) => {
+    if (a.kind !== b.kind) return a.kind === "local" ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+  return { current, detached, branches };
+}
+
+function classifyGitError(stderr: string): Error {
+  const s = stderr.toLowerCase();
+  if (
+    s.includes("would be overwritten") ||
+    s.includes("local changes") ||
+    s.includes("unmerged paths")
+  ) {
+    return errors.dirtyWorktree(stderr.trim().slice(0, 500));
+  }
+  if (s.includes("already exists")) {
+    return errors.branchExists(stderr.trim().slice(0, 500));
+  }
+  if (s.includes("no upstream") || s.includes("no tracking information")) {
+    return errors.noUpstream(stderr.trim().slice(0, 500));
+  }
+  if (s.includes("non-fast-forward") || s.includes("non fast-forward")) {
+    return errors.nonFastForward(stderr.trim().slice(0, 500));
+  }
+  if (
+    s.includes("could not read username") ||
+    s.includes("authentication failed") ||
+    s.includes("permission denied") ||
+    s.includes("rejected")
+  ) {
+    return errors.rejected(stderr.trim().slice(0, 500));
+  }
+  return errors.gitFailed(stderr.trim().slice(0, 1000) || "git 操作失败");
+}
+
+export async function checkoutBranch(
+  workspaceRoot: string,
+  ref: string,
+  opts: { create?: boolean; fromRef?: string | null } = {}
+): Promise<void> {
+  validateBranchName(ref);
+  const args: string[] = ["checkout"];
+  if (opts.create) {
+    args.push("-b", ref);
+    if (opts.fromRef) {
+      validateBranchName(opts.fromRef.replace(/^refs\/(heads|remotes)\//, ""));
+      args.push(opts.fromRef);
+    }
+  } else {
+    args.push(ref);
+  }
+  const r = await runGit(workspaceRoot, args);
+  if (r.code !== 0) throw classifyGitError(r.stderr);
+}
+
+// ─── Remote ops: fetch / pull / push ───
+
+const REMOTE_TOKEN_RE = /^[A-Za-z0-9._-]{1,64}$/;
+
+function validateRemoteName(name: string): void {
+  if (name === "--all") return;
+  if (!REMOTE_TOKEN_RE.test(name)) {
+    throw errors.invalidPath("远程名称非法");
+  }
+}
+
+export async function fetchRemote(
+  workspaceRoot: string,
+  remote: string | null,
+  prune: boolean
+): Promise<void> {
+  const args = ["fetch"];
+  if (prune) args.push("--prune");
+  if (remote) {
+    validateRemoteName(remote);
+    if (remote === "--all") args.push("--all");
+    else args.push(remote);
+  }
+  const r = await runGit(workspaceRoot, args);
+  if (r.code !== 0) throw classifyGitError(r.stderr);
+}
+
+export async function pullCurrent(
+  workspaceRoot: string,
+  opts: { remote?: string | null; branch?: string | null; ffOnly?: boolean }
+): Promise<void> {
+  const args = ["pull"];
+  if (opts.ffOnly !== false) args.push("--ff-only");
+  if (opts.remote && opts.branch) {
+    validateRemoteName(opts.remote);
+    validateBranchName(opts.branch);
+    args.push(opts.remote, opts.branch);
+  }
+  const r = await runGit(workspaceRoot, args);
+  if (r.code !== 0) throw classifyGitError(r.stderr);
+}
+
+export async function pushCurrent(
+  workspaceRoot: string,
+  opts: {
+    remote?: string | null;
+    branch?: string | null;
+    setUpstream?: boolean;
+    force?: boolean;
+  }
+): Promise<void> {
+  const args = ["push"];
+  if (opts.force) args.push("--force-with-lease");
+  if (opts.setUpstream) args.push("-u");
+  if (opts.remote) {
+    validateRemoteName(opts.remote);
+    args.push(opts.remote);
+    if (opts.branch) {
+      validateBranchName(opts.branch);
+      args.push(opts.branch);
+    }
+  } else if (opts.setUpstream) {
+    // -u requires explicit remote+branch.
+    throw errors.invalidPath("setUpstream 需要同时提供 remote 与 branch");
+  }
+  const r = await runGit(workspaceRoot, args);
+  if (r.code !== 0) throw classifyGitError(r.stderr);
+}

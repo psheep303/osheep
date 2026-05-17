@@ -452,3 +452,74 @@ export async function getGitLog(
   }).toString();
   return await http.get(gitUrl(workspaceId, `/log?${qs}`));
 }
+
+// ─── Branches & remote ops ───
+
+export interface GitBranch {
+  name: string;
+  isCurrent: boolean;
+  kind: "local" | "remote";
+  upstream?: string | null;
+  ahead?: number;
+  behind?: number;
+}
+
+export interface GitBranchesResp {
+  current: string | null;
+  detached: boolean;
+  branches: GitBranch[];
+}
+
+export async function listGitBranches(
+  workspaceId: string
+): Promise<GitBranchesResp> {
+  return await http.get(gitUrl(workspaceId, "/branches"));
+}
+
+export async function gitCheckout(
+  workspaceId: string,
+  ref: string,
+  opts: { create?: boolean; fromRef?: string | null } = {}
+): Promise<void> {
+  await http.post(gitUrl(workspaceId, "/checkout"), {
+    ref,
+    create: !!opts.create,
+    fromRef: opts.fromRef ?? null,
+  });
+}
+
+export async function gitFetch(
+  workspaceId: string,
+  remote: string | null = null,
+  prune = false
+): Promise<void> {
+  await http.post(gitUrl(workspaceId, "/fetch"), { remote, prune });
+}
+
+export async function gitPull(
+  workspaceId: string,
+  opts: { remote?: string | null; branch?: string | null; ffOnly?: boolean } = {}
+): Promise<void> {
+  await http.post(gitUrl(workspaceId, "/pull"), {
+    remote: opts.remote ?? null,
+    branch: opts.branch ?? null,
+    ffOnly: opts.ffOnly !== false,
+  });
+}
+
+export async function gitPush(
+  workspaceId: string,
+  opts: {
+    remote?: string | null;
+    branch?: string | null;
+    setUpstream?: boolean;
+    force?: boolean;
+  } = {}
+): Promise<void> {
+  await http.post(gitUrl(workspaceId, "/push"), {
+    remote: opts.remote ?? null,
+    branch: opts.branch ?? null,
+    setUpstream: !!opts.setUpstream,
+    force: !!opts.force,
+  });
+}

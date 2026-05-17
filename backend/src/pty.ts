@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import { randomBytes } from "node:crypto";
 import { platform, config } from "./config.js";
 import { errors } from "./errors.js";
-import { buildBashGuard, buildPowerShellGuard } from "./pty-guard.js";
+import { buildBashGuard, buildCmdGuard, buildPowerShellGuard } from "./pty-guard.js";
 import type { WorkspaceInfo } from "./workspace.js";
 
 export interface ShellProfile {
@@ -167,12 +167,17 @@ export function createSession(input: CreateSessionInput): TerminalSession {
       const g = buildPowerShellGuard(profile.args, workspacesRootAbs, initialCwd);
       spawnArgs = g.args;
       guardCleanup = g.cleanup;
+    } else if (profile.id === "cmd") {
+      const g = buildCmdGuard(profile.args, workspacesRootAbs, initialCwd);
+      spawnArgs = g.args;
+      guardCleanup = g.cleanup;
     } else if (profile.id === "bash" || profile.id === "zsh") {
       const g = buildBashGuard(profile.args, workspacesRootAbs, initialCwd);
       spawnArgs = g.args;
       guardCleanup = g.cleanup;
     }
-    // cmd has no clean hook; rely on the input-buffer heuristic only.
+    // No shell-level guard available beyond the three above; the input-buffer
+    // heuristic in handleInputData remains as fallback.
   } catch {
     // If guard generation fails (e.g., tmp write), fall back silently.
     spawnArgs = profile.args;

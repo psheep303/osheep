@@ -1702,16 +1702,242 @@
   border-bottom: 1px solid var(--border-faint);
 }
 
-.git-view__branch-name {
+.git-view__branch-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
   color: var(--fg-default);
-  font-weight: 500;
+  padding: 2px 6px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+.git-view__branch-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+.git-view__branch-btn:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+.git-view__branch-chev {
+  color: var(--fg-faint);
+  font-size: 10px;
+  margin-left: 2px;
 }
 
 .git-view__sync {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: var(--fg-muted);
+  padding: 2px 6px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-family: "Cascadia Mono", Consolas, monospace;
+}
+.git-view__sync:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--fg-default);
+}
+.git-view__sync:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.git-view__sync--active {
+  color: var(--fg-default);
+}
+.git-view__sync--publish {
+  color: var(--accent);
+  font-family: inherit;
+}
+.git-view__sync-counts {
+  font-family: inherit;
+}
+
+/* ─────────────── Commit split-button ─────────────── */
+
+.git-view__commit-split {
+  position: relative;
+  display: flex;
+  align-self: stretch;
+}
+
+.git-view__commit-btn {
+  flex: 1 1 auto;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.git-view__commit-more {
+  flex: 0 0 auto;
+  width: 22px;
+  padding: 0;
+  margin-left: 1px;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  font-size: 12px;
+}
+
+.git-view__commit-menu {
+  position: absolute;
+  bottom: 100%;
+  right: 0;
+  margin-bottom: 4px;
+  background: #252526;
+  border: 1px solid var(--border-edge);
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  min-width: 160px;
+  padding: 4px 0;
+}
+
+.git-view__commit-menu-item {
+  background: transparent;
+  border: none;
+  color: var(--fg-default);
+  text-align: left;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.git-view__commit-menu-item:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+.git-view__commit-menu-item.is-active {
+  color: var(--accent);
+}
+.git-view__commit-menu-item.is-disabled,
+.git-view__commit-menu-item:disabled {
   color: var(--fg-faint);
+  cursor: default;
+}
+
+/* ─────────────── Branch popover ─────────────── */
+
+.git-view__branch-popover {
+  position: relative;
+  margin: 4px 8px 6px;
+  background: #252526;
+  border: 1px solid var(--border-edge);
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  z-index: 10;
+  font-size: 12px;
+  max-height: 360px;
+  display: flex;
+  flex-direction: column;
+}
+
+.git-view__branch-search {
+  padding: 6px 8px 4px;
+}
+.git-view__branch-search .git-view__input {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.git-view__branch-create {
+  margin: 0 8px 6px;
+  padding: 6px 10px;
+  text-align: left;
+  background: rgba(58, 158, 255, 0.12);
+  border: 1px dashed rgba(58, 158, 255, 0.5);
+  color: var(--accent);
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.git-view__branch-create:hover:not(:disabled) {
+  background: rgba(58, 158, 255, 0.2);
+}
+.git-view__branch-create:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.git-view__branch-list {
+  overflow-y: auto;
+  padding-bottom: 4px;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.git-view__branch-group {
+  padding: 6px 12px 2px;
+  color: var(--fg-faint);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.git-view__branch-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 12px;
+  background: transparent;
+  border: none;
+  color: var(--fg-default);
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+}
+.git-view__branch-item:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+.git-view__branch-item.is-current {
+  color: var(--accent);
+  cursor: default;
+}
+.git-view__branch-item:disabled:not(.is-current) {
+  opacity: 0.5;
+  cursor: default;
+}
+.git-view__branch-item--remote {
+  color: var(--fg-muted);
   font-family: "Cascadia Mono", Consolas, monospace;
   font-size: 11px;
-  margin-left: auto;
+}
+.git-view__branch-mark {
+  width: 12px;
+  text-align: center;
+}
+.git-view__branch-item-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.git-view__branch-upstream {
+  color: var(--fg-faint);
+  font-size: 10px;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  flex-shrink: 0;
+}
+
+.git-view__branch-foot {
+  padding: 6px 12px;
+  border-top: 1px solid var(--border-faint);
+  color: var(--fg-muted);
+  font-size: 11px;
+}
+
+.git-view__branch-name {
+  color: var(--fg-default);
+  font-weight: 500;
 }
 
 .git-view__commit {
@@ -1758,6 +1984,105 @@
   min-height: 0;
   overflow-y: auto;
   padding-bottom: 8px;
+}
+
+/* ─────────────── Git Split (Changes / Graph) ─────────────── */
+
+.git-view__split {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.git-view__split-pane {
+  min-height: 0;
+}
+
+.git-view__split-pane--scroll {
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* ─────────────── Git Remotes (header button + popover) ─────────────── */
+
+.git-view__remotes-btn {
+  position: relative;
+}
+.git-view__remotes-btn.is-active {
+  background: var(--bg-hover);
+  color: var(--fg-default);
+}
+
+.git-view__remotes-badge {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 9px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 8px;
+  min-width: 14px;
+  text-align: center;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-weight: 600;
+  pointer-events: none;
+}
+
+.git-view__remotes-popover {
+  position: relative;
+  margin: 4px 8px 6px;
+  background: #252526;
+  border: 1px solid var(--border-edge);
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  z-index: 10;
+  font-size: 12px;
+}
+
+.git-view__remotes-popover-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 6px 4px 10px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg-default);
+  border-bottom: 1px solid var(--border-faint);
+}
+
+.git-view__remotes-list {
+  display: flex;
+  flex-direction: column;
+  padding: 4px 0 6px;
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.git-view__remotes-empty {
+  padding: 8px 12px;
+  color: var(--fg-muted);
+}
+
+.git-view__remotes-popover .git-view__remote-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px;
+  cursor: default;
+}
+.git-view__remotes-popover .git-view__remote-row:hover {
+  background: var(--bg-hover);
+}
+.git-view__remotes-popover .git-view__add-remote {
+  margin: 4px 10px;
+}
+.git-view__remotes-popover .git-view__remote-form {
+  padding: 6px 10px 8px;
 }
 
 .git-view__section {
@@ -1991,8 +2316,7 @@
 /* ─────────────── Git Graph ─────────────── */
 
 .git-view__section--graph {
-  border-top: 1px solid var(--border-faint);
-  margin-top: 8px;
+  margin-top: 0;
   padding-top: 4px;
 }
 

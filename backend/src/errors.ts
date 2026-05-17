@@ -43,4 +43,13 @@ export const errors = {
   invalidRef: (msg = "ref 取值不合法") =>
     new ApiError(400, "INVALID_REF", msg),
   gitFailed: (msg: string) => new ApiError(500, "GIT_FAILED", msg),
+  dirtyWorktree: (msg = "工作区有未提交的更改，无法切换分支") =>
+    new ApiError(409, "DIRTY_WORKTREE", msg),
+  branchExists: (msg = "分支已存在") =>
+    new ApiError(409, "BRANCH_EXISTS", msg),
+  noUpstream: (msg = "当前分支未设置 upstream") =>
+    new ApiError(409, "NO_UPSTREAM", msg),
+  nonFastForward: (msg = "推送被拒绝：non-fast-forward") =>
+    new ApiError(409, "NON_FAST_FORWARD", msg),
+  rejected: (msg = "远端拒绝") => new ApiError(409, "REJECTED", msg),
 };

@@ -207,6 +207,115 @@
 
 ---
 
+### `GET /branches`
+
+列出本地与远程分支，前端"分支切换"弹层使用。
+
+实现：`git for-each-ref --format=... refs/heads refs/remotes`
+
+响应：
+```json
+{
+  "current": "main",
+  "detached": false,
+  "branches": [
+    { "name": "main", "isCurrent": true, "kind": "local", "upstream": "origin/main", "ahead": 0, "behind": 0 },
+    { "name": "feature/foo", "isCurrent": false, "kind": "local" },
+    { "name": "origin/main", "isCurrent": false, "kind": "remote" }
+  ]
+}
+```
+
+- `kind`：`local` 或 `remote`
+- 仅本地分支会附带 `upstream / ahead / behind`
+- `current` 为 `null` 时表示 detached HEAD
+
+---
+
+### `POST /checkout`
+
+切换分支或基于当前 HEAD 创建并切换到新分支。
+
+请求 body：
+```json
+{ "ref": "feature/foo", "create": false, "fromRef": null }
+```
+
+- `ref`：必填，目标分支名
+- `create`：true 时执行 `git checkout -b <ref> [<fromRef>]`；false 时执行 `git checkout <ref>`
+- `fromRef`：仅在 `create=true` 时有效，缺省为 `HEAD`
+
+校验：
+- 分支名必须匹配 `^[A-Za-z0-9._/-]{1,200}$`，且不包含 `..`、不以 `-` 开头
+- 工作区"有未暂存或暂存的脏文件"时，由 git 自己决定是否拒绝（透传 stderr）
+
+响应：`{ ok: true, branch: "feature/foo" }`
+
+错误：
+- `409 DIRTY_WORKTREE`（来自 git 的 "would be overwritten by checkout"）
+- `409 BRANCH_EXISTS`（来自 git 的 "already exists"）
+- 其他归 `500 GIT_FAILED`
+
+---
+
+### `POST /fetch`
+
+请求 body：
+```json
+{ "remote": "origin", "prune": false }
+```
+
+- `remote` 缺省时 `origin`；填 `--all` 则拉所有
+
+实现：`git fetch [--prune] <remote>`
+
+响应：`{ ok: true }`
+
+---
+
+### `POST /pull`
+
+把上游分支的提交合并 / fast-forward 进当前分支。
+
+请求 body：
+```json
+{ "remote": null, "branch": null, "ffOnly": true }
+```
+
+- `remote` / `branch` 缺省时使用当前分支的 upstream（通过 `git pull` 自动解析）；同时指定时执行 `git pull <remote> <branch>`
+- `ffOnly` 默认 true（避免无意中产生合并提交），生成 `--ff-only`
+
+实现：`git pull [--ff-only] [<remote> <branch>]`
+
+响应：`{ ok: true }`
+
+错误：
+- `409 NO_UPSTREAM`（当前分支未设上游且未指定 remote/branch）
+- `409 MERGE_CONFLICT` / `409 DIVERGED`（来自 git）
+
+---
+
+### `POST /push`
+
+请求 body：
+```json
+{ "remote": "origin", "branch": "main", "setUpstream": false, "force": false }
+```
+
+- `remote` / `branch` 缺省时使用当前 HEAD 与已设 upstream；首次发布 (`setUpstream: true`) 会带 `-u`
+- `force` 仅在用户显式选择"强制推送"时为 true，生成 `--force-with-lease`（不允许裸 `--force`）
+
+实现：`git push [-u] [--force-with-lease] <remote> <branch>`
+
+响应：`{ ok: true }`
+
+错误：
+- `409 NO_UPSTREAM`（缺 remote/branch 且未设 upstream）
+- `409 NON_FAST_FORWARD`
+- `409 REJECTED`（鉴权 / 远端拒绝）
+
+---
+
 ### `GET /log?limit=&offset=&ref=`
 
 返回提交历史，供前端图形视图渲染。
@@ -287,7 +396,12 @@
 | 409 | `NOT_A_REPO` | 当前工作区不是 Git 仓库 |
 | 400 | `EMPTY_COMMIT_MESSAGE` | commit 消息为空 |
 | 400 | `INVALID_PATH` | 路径非法 |
-| 400 | `INVALID_REF` | base / head 取值不合法 |
+| 400 | `INVALID_REF` | base / head 取值不合法；或分支名格式非法 |
+| 409 | `DIRTY_WORKTREE` | checkout 因脏工作区被 git 拒绝 |
+| 409 | `BRANCH_EXISTS` | 创建分支时分支已存在 |
+| 409 | `NO_UPSTREAM` | push / pull 缺少 upstream 且没有显式 remote/branch |
+| 409 | `NON_FAST_FORWARD` | push 不能 fast-forward |
+| 409 | `REJECTED` | 远端拒绝（鉴权 / hook） |
 | 500 | `GIT_FAILED` | git CLI 退出码非 0；错误体附带 stderr 截断 |
 
 ---

@@ -49,6 +49,16 @@ export function buildPowerShellGuard(
 $global:OSHEEP_WORKSPACE_ROOT = '${rootEscaped}'
 $env:OSHEEP_WORKSPACE_ROOT = '${rootEscaped}'
 
+# Force UTF-8 so guard messages (Chinese) reach xterm.js as UTF-8 bytes rather
+# than the console's legacy OEM/ANSI codepage (GBK on zh-CN), which otherwise
+# round-trips through xterm.js as mojibake.
+try { chcp 65001 > $null } catch {}
+try {
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+    [Console]::InputEncoding = [System.Text.Encoding]::UTF8
+    $OutputEncoding = [System.Text.Encoding]::UTF8
+} catch {}
+
 function global:Set-Location {
     [CmdletBinding(DefaultParameterSetName='Path')]
     param(
@@ -91,7 +101,10 @@ Set-Alias -Scope Global -Name sl -Value Set-Location -Force -Option AllScope
 Microsoft.PowerShell.Management\\Set-Location -LiteralPath '${cwdEscaped}'
 `;
 
-  fs.writeFileSync(tmpPath, script, "utf-8");
+  // PowerShell 5.1 reads BOM-less files using the system ANSI code page, which
+  // garbles Chinese on zh-CN. Prepend a UTF-8 BOM so it consistently decodes
+  // the script (and our 拒绝 / 无法解析 messages) as UTF-8.
+  fs.writeFileSync(tmpPath, "﻿" + script, "utf-8");
   // -NoExit keeps the interactive shell up after the dot-sourced script runs.
   // Use `& '...'` to call the file; functions inside it run in this scope when
   // they declare `global:` explicitly, which we do.
@@ -177,6 +190,113 @@ builtin cd -- '${cwdEsc}' 2>/dev/null || true
         fs.unlinkSync(tmpPath);
       } catch {
         /* ignore */
+      }
+    },
+  };
+}
+
+/**
+ * cmd.exe init via /K. Two temp .cmd files are written:
+ *   - osheep-cmd-init-<token>.cmd  : sets chcp + OSHEEP_WORKSPACE_ROOT, installs
+ *     doskey macros aliasing `cd` / `chdir` to the helper, then cd's to the
+ *     initial workspace.
+ *   - osheep-cmd-cd-<token>.cmd    : resolves the target with `pushd`, rejects
+ *     it if outside OSHEEP_WORKSPACE_ROOT, otherwise executes `cd /d` for real.
+ *
+ * Both files are written with a UTF-8 BOM so chcp 65001 + cmd can correctly
+ * interpret the embedded Chinese in error messages.
+ */
+export function buildCmdGuard(
+  baseArgs: string[],
+  workspacesRoot: string,
+  initialCwd: string
+): ShellGuardResult {
+  const token = randomToken();
+  const initPath = path.join(tmpDir(), `osheep-cmd-init-${token}.cmd`);
+  const helperPath = path.join(tmpDir(), `osheep-cmd-cd-${token}.cmd`);
+
+  const initScript = [
+    "@echo off",
+    "chcp 65001 >nul",
+    `set "OSHEEP_WORKSPACE_ROOT=${workspacesRoot}"`,
+    `doskey cd=call "${helperPath}" $*`,
+    `doskey chdir=call "${helperPath}" $*`,
+    `cd /d "${initialCwd}"`,
+    "",
+  ].join("\r\n");
+
+  // Helper uses delayed expansion and `pushd` to canonicalize the target, then
+  // findstr for a case-insensitive prefix check. The final `cd` is executed
+  // outside setlocal so it sticks in the parent (calling) cmd shell.
+  const helperScript = [
+    "@echo off",
+    "setlocal EnableDelayedExpansion",
+    'if /i "%~1"=="/d" (',
+    '  set "_target=%~2"',
+    '  set "_useD=1"',
+    ") else (",
+    '  set "_target=%~1"',
+    '  set "_useD=0"',
+    ")",
+    'if "!_target!"=="" (',
+    "  echo !CD!",
+    "  endlocal",
+    "  exit /b 0",
+    ")",
+    'if "!_target!"=="~" set "_target=%USERPROFILE%"',
+    "",
+    'pushd "!_target!" 2>nul',
+    "if errorlevel 1 (",
+    '  echo [osheep] cd: 无法解析路径 "!_target!" 1>&2',
+    "  endlocal",
+    "  exit /b 1",
+    ")",
+    'set "_resolved=!CD!"',
+    "popd",
+    "",
+    'set "_root=%OSHEEP_WORKSPACE_ROOT%"',
+    'set "_ok=0"',
+    'if /i "!_resolved!"=="!_root!" set "_ok=1"',
+    'if "!_ok!"=="0" (',
+    // findstr's CRT argv parser eats a single \" — we need a doubled backslash
+    // before the closing quote so it survives as a literal trailing `\`.
+    "  (echo !_resolved!) | findstr /i /b /c:\"!_root!\\\\\" >nul",
+    "  if not errorlevel 1 set \"_ok=1\"",
+    ")",
+    'if "!_ok!"=="0" (',
+    '  echo [osheep] 拒绝: 目标 "!_resolved!" 超出 workspaces 根 "!_root!" 1>&2',
+    "  endlocal",
+    "  exit /b 1",
+    ")",
+    "",
+    'if "!_useD!"=="1" (',
+    "  endlocal & cd /d %2",
+    ") else (",
+    "  endlocal & cd %1",
+    ")",
+    "exit /b 0",
+    "",
+  ].join("\r\n");
+
+  // No BOM: cmd's batch parser does NOT skip a UTF-8 BOM, so leaving it in
+  // would prepend invisible bytes to the first line and prevent `@echo off`
+  // from taking effect — causing every line of the init to be echoed verbatim.
+  fs.writeFileSync(initPath, initScript, "utf-8");
+  fs.writeFileSync(helperPath, helperScript, "utf-8");
+
+  // `/D` disables the user's AutoRun registry hook so things like a global
+  // `chcp 65001` (which prints `Active code page: 65001`) don't pollute the
+  // first frame the user sees. `/K` keeps the shell interactive after init.
+  const args = [...baseArgs, "/D", "/K", initPath];
+  return {
+    args,
+    cleanup: () => {
+      for (const p of [initPath, helperPath]) {
+        try {
+          fs.unlinkSync(p);
+        } catch {
+          /* ignore */
+        }
       }
     },
   };
