@@ -5,32 +5,31 @@ import {
   listSessions as apiListSessions,
   type SessionSummary,
 } from "./api";
-
-type AiPanelTab = "compose" | "maintain";
+import { useActiveSessions } from "./chat-runtime";
 
 interface AiPanelProps {
   workspaceId: string | null;
-  onClose: () => void;
   onOpenSession: (sessionId: string) => void;
   activeSessionId: string | null;
   /** bumped externally when a session was changed so the list re-fetches */
   refreshSignal: number;
 }
 
+type PanelTab = "osheepcode" | "maintain";
+
 export function AiPanel({
   workspaceId,
-  onClose,
   onOpenSession,
   activeSessionId,
   refreshSignal,
 }: AiPanelProps) {
-  const [tab, setTab] = useState<AiPanelTab>("compose");
+  const [activeTab, setActiveTab] = useState<PanelTab>("osheepcode");
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  const [searchOpen, setSearchOpen] = useState(false);
   const [searchText, setSearchText] = useState("");
+
+  const activeRuntimeSessions = useActiveSessions();
 
   const reload = useCallback(async () => {
     if (!workspaceId) {
@@ -82,77 +81,64 @@ export function AiPanel({
   };
 
   return (
-    <div className="side-view ai-panel">
-      <div className="side-view__header">
-        <span className="side-view__title">AI 面板</span>
-        <button className="icon-btn" title="关闭" onClick={onClose}>
-          ×
-        </button>
-      </div>
+    <div className="ai-panel">
+      <div className="ai-panel__brand">osheep</div>
 
       <div className="ai-panel__tabs">
         <button
           className={
-            "ai-panel__tab" + (tab === "compose" ? " is-active" : "")
+            "ai-panel__tab" + (activeTab === "osheepcode" ? " is-active" : "")
           }
-          onClick={() => setTab("compose")}
+          onClick={() => setActiveTab("osheepcode")}
         >
-          编写
+          osheep code
         </button>
         <button
           className={
-            "ai-panel__tab" + (tab === "maintain" ? " is-active" : "")
+            "ai-panel__tab" + (activeTab === "maintain" ? " is-active" : "")
           }
-          onClick={() => setTab("maintain")}
+          onClick={() => setActiveTab("maintain")}
         >
           维护
         </button>
       </div>
 
-      {tab === "compose" ? (
-        <div className="ai-panel__body">
-          <div className="ai-panel__toolbar">
-            <button
-              className="ai-panel__btn primary-btn"
-              disabled={!workspaceId}
-              onClick={() => void handleNew()}
-              title="新建对话"
-            >
-              + 新建
-            </button>
-            <button
-              className={
-                "ai-panel__btn" + (searchOpen ? " is-active" : "")
-              }
-              onClick={() => {
-                setSearchOpen((v) => !v);
-                if (searchOpen) setSearchText("");
-              }}
-              title="搜索"
-            >
-              搜索
-            </button>
-          </div>
+      {activeTab === "maintain" ? (
+        <div className="ai-panel__maintain">
+          <div className="ai-panel__maintain-title">维护功能正在筹备中</div>
+          <div className="ai-panel__maintain-hint">未来阶段将提供：</div>
+          <ul className="ai-panel__maintain-list">
+            <li>长期会话与记忆库</li>
+            <li>规则 / 工作流模板</li>
+            <li>自动化任务（计划运行）</li>
+          </ul>
+        </div>
+      ) : (
+        <>
+          <button
+            className="ai-panel__new"
+            disabled={!workspaceId}
+            onClick={() => void handleNew()}
+            title="新建对话"
+          >
+            <PlusIcon />
+            <span>New session</span>
+          </button>
 
-          {searchOpen && (
-            <div className="ai-panel__search">
-              <input
-                className="settings-view__input"
-                value={searchText}
-                placeholder="按标题搜索…"
-                autoFocus
-                onChange={(e) => setSearchText(e.target.value)}
-              />
-            </div>
-          )}
+          <div className="ai-panel__search">
+            <SearchIcon />
+            <input
+              className="ai-panel__search-input"
+              value={searchText}
+              placeholder="Search sessions…"
+              onChange={(e) => setSearchText(e.target.value)}
+            />
+          </div>
 
           {error && (
             <div className="ai-panel__error">
-              {error}
-              <button
-                className="provider-card__chip-remove"
-                onClick={() => setError(null)}
-              >
+              <span>{error}</span>
+              <button onClick={() => setError(null)} aria-label="关闭错误提示">
                 ×
               </button>
             </div>
@@ -162,7 +148,7 @@ export function AiPanel({
             <div className="ai-panel__empty">请先打开工作区</div>
           )}
 
-          {workspaceId && loading && (
+          {workspaceId && loading && sessions.length === 0 && (
             <div className="ai-panel__empty">加载中…</div>
           )}
 
@@ -178,18 +164,13 @@ export function AiPanel({
                 key={s.id}
                 session={s}
                 active={s.id === activeSessionId}
+                running={activeRuntimeSessions.has(s.id)}
                 onOpen={() => onOpenSession(s.id)}
                 onDelete={() => void handleDelete(s.id, s.title)}
               />
             ))}
           </div>
-        </div>
-      ) : (
-        <div className="ai-panel__body">
-          <div className="ai-panel__empty">
-            维护页面（PR / Issue / 自动维护）将在后续阶段接入
-          </div>
-        </div>
+        </>
       )}
     </div>
   );
@@ -198,31 +179,39 @@ export function AiPanel({
 interface SessionItemProps {
   session: SessionSummary;
   active: boolean;
+  running: boolean;
   onOpen: () => void;
   onDelete: () => void;
 }
 
-function SessionItem({ session, active, onOpen, onDelete }: SessionItemProps) {
+function SessionItem({ session, active, running, onOpen, onDelete }: SessionItemProps) {
   return (
     <div
       className={"ai-panel__item" + (active ? " is-active" : "")}
       onClick={onOpen}
-      title={session.title}
+      title={
+        running
+          ? `${session.title}（后台运行中）`
+          : session.title
+      }
     >
-      <div className="ai-panel__item-title">{session.title || "新对话"}</div>
-      <div className="ai-panel__item-meta">
-        <span>{formatRelative(session.updatedAt)}</span>
-        <button
-          className="ai-panel__item-del"
-          onClick={(e) => {
-            e.stopPropagation();
-            onDelete();
-          }}
-          title="删除"
-        >
-          🗑
-        </button>
-      </div>
+      {running && <span className="ai-panel__item-active-dot" aria-hidden />}
+      <span className="ai-panel__item-title">
+        {session.title || "新对话"}
+      </span>
+      <span className="ai-panel__item-time">
+        {formatRelative(session.updatedAt)}
+      </span>
+      <button
+        className="ai-panel__item-del"
+        onClick={(e) => {
+          e.stopPropagation();
+          onDelete();
+        }}
+        title="删除"
+      >
+        <TrashIcon />
+      </button>
     </div>
   );
 }
@@ -239,4 +228,55 @@ function formatRelative(ts: number): string {
   const mo = Math.floor(d / 30);
   if (mo < 12) return `${mo}mo`;
   return `${Math.floor(mo / 12)}y`;
+}
+
+function PlusIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden>
+      <path
+        d="M8 3v10M3 8h10"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+        fill="none"
+      />
+    </svg>
+  );
+}
+
+function SearchIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden>
+      <circle
+        cx="7"
+        cy="7"
+        r="4.5"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        fill="none"
+      />
+      <path
+        d="M10.5 10.5L14 14"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+        fill="none"
+      />
+    </svg>
+  );
+}
+
+function TrashIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden>
+      <path
+        d="M3 5h10M6 5V3.5h4V5M5 5l.7 8.2c0 .4.3.8.8.8h3c.5 0 .8-.4.8-.8L11 5"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        fill="none"
+      />
+    </svg>
+  );
 }

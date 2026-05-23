@@ -4,18 +4,28 @@ import { errors } from "./errors.js";
 
 const SESSION_ID_RE = /^ses_[a-z0-9]{8,32}$/;
 
-export type ChatRole = "user" | "assistant";
+export type ChatRole = "user" | "assistant" | "tool";
 
 export interface ChatMessage {
   role: ChatRole;
   content: string;
   timestamp: number;
+  /** Opaque step timeline attached to assistant messages by the frontend. */
+  steps?: unknown;
+  /** Correlation id for tool-role messages. */
+  tool_call_id?: string;
 }
 
 export interface SessionRecord {
   id: string;
   title: string;
+  /** @deprecated kept for backward compat with sessions created before
+   *  osheep code dropped the Agent abstraction. */
   agentName: string;
+  /** Provider used to start the last turn (osheep code era). */
+  providerId?: string;
+  /** Model used to start the last turn. */
+  model?: string;
   createdAt: number;
   updatedAt: number;
   messages: ChatMessage[];
@@ -25,6 +35,8 @@ export interface SessionSummary {
   id: string;
   title: string;
   agentName: string;
+  providerId?: string;
+  model?: string;
   createdAt: number;
   updatedAt: number;
   messageCount: number;
@@ -60,6 +72,9 @@ function sanitize(raw: unknown, fallbackId: string): SessionRecord {
     typeof r.id === "string" && SESSION_ID_RE.test(r.id) ? r.id : fallbackId;
   const title = typeof r.title === "string" ? r.title : "新对话";
   const agentName = typeof r.agentName === "string" ? r.agentName : "";
+  const providerId =
+    typeof r.providerId === "string" ? r.providerId : undefined;
+  const model = typeof r.model === "string" ? r.model : undefined;
   const createdAt =
     typeof r.createdAt === "number" ? r.createdAt : Date.now();
   const updatedAt =
@@ -70,18 +85,37 @@ function sanitize(raw: unknown, fallbackId: string): SessionRecord {
       .map((m): ChatMessage | null => {
         if (!m || typeof m !== "object") return null;
         const mm = m as Partial<ChatMessage>;
-        if (mm.role !== "user" && mm.role !== "assistant") return null;
+        if (mm.role !== "user" && mm.role !== "assistant" && mm.role !== "tool") {
+          return null;
+        }
         if (typeof mm.content !== "string") return null;
-        return {
+        const out: ChatMessage = {
           role: mm.role,
           content: mm.content,
           timestamp:
             typeof mm.timestamp === "number" ? mm.timestamp : Date.now(),
         };
+        if (mm.role === "assistant" && mm.steps !== undefined) {
+          out.steps = mm.steps;
+        }
+        if (mm.role === "tool" && typeof mm.tool_call_id === "string") {
+          out.tool_call_id = mm.tool_call_id;
+        }
+        return out;
       })
       .filter((m): m is ChatMessage => m !== null);
   }
-  return { id, title, agentName, createdAt, updatedAt, messages };
+  const result: SessionRecord = {
+    id,
+    title,
+    agentName,
+    createdAt,
+    updatedAt,
+    messages,
+  };
+  if (providerId) result.providerId = providerId;
+  if (model) result.model = model;
+  return result;
 }
 
 export async function listSessions(
@@ -103,14 +137,17 @@ export async function listSessions(
     try {
       const text = await fs.readFile(path.join(dir, f), "utf-8");
       const s = sanitize(JSON.parse(text), id);
-      out.push({
+      const summary: SessionSummary = {
         id: s.id,
         title: s.title,
         agentName: s.agentName,
         createdAt: s.createdAt,
         updatedAt: s.updatedAt,
         messageCount: s.messages.length,
-      });
+      };
+      if (s.providerId) summary.providerId = s.providerId;
+      if (s.model) summary.model = s.model;
+      out.push(summary);
     } catch {
       /* skip */
     }

@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityBar, type ViewId } from "./ActivityBar";
-import { AgentView } from "./AgentView";
 import { AiPanel } from "./AiPanel";
 import { BottomPanel } from "./BottomPanel";
 import { ChatTab } from "./ChatTab";
@@ -41,11 +40,6 @@ interface SettingsTab {
   path: "__settings__";
 }
 
-interface AgentTab {
-  kind: "agent";
-  path: "__agent__";
-}
-
 interface ChatTabState {
   kind: "chat";
   path: string; // __chat__:<sessionId>
@@ -63,10 +57,9 @@ interface DiffTab {
   binary: boolean;
 }
 
-type Tab = FileTab | SettingsTab | AgentTab | ChatTabState | DiffTab;
+type Tab = FileTab | SettingsTab | ChatTabState | DiffTab;
 
 const SETTINGS_PATH = "__settings__";
-const AGENT_PATH = "__agent__";
 const CHAT_PREFIX = "__chat__:";
 const chatPath = (sessionId: string) => CHAT_PREFIX + sessionId;
 
@@ -285,14 +278,6 @@ export function Workbench() {
       return [...prev, { kind: "settings", path: SETTINGS_PATH }];
     });
     setActivePath(SETTINGS_PATH);
-  }, []);
-
-  const openAgentTab = useCallback(() => {
-    setTabs((prev) => {
-      if (prev.some((t) => t.kind === "agent")) return prev;
-      return [...prev, { kind: "agent", path: AGENT_PATH }];
-    });
-    setActivePath(AGENT_PATH);
   }, []);
 
   const [aiRefreshSignal, setAiRefreshSignal] = useState(0);
@@ -537,7 +522,6 @@ export function Workbench() {
           collapsed={leftCollapsed}
           onSelect={onSelectView}
           onOpenSettings={openSettingsTab}
-          onOpenAgent={openAgentTab}
         />
 
         {!leftCollapsed && (
@@ -604,8 +588,6 @@ export function Workbench() {
                   const label =
                     t.kind === "settings"
                       ? "设置"
-                      : t.kind === "agent"
-                      ? "Agent"
                       : t.kind === "chat"
                       ? "对话"
                       : t.kind === "diff"
@@ -618,8 +600,6 @@ export function Workbench() {
                         : t.path
                       : t.kind === "diff"
                       ? `${t.filePath} · ${diffLabel(t)}`
-                      : t.kind === "agent"
-                      ? "Agent"
                       : t.kind === "chat"
                       ? `对话 ${t.sessionId}`
                       : "设置";
@@ -700,18 +680,15 @@ export function Workbench() {
                   hasProject={!!workspaceId}
                   workspaceId={workspaceId}
                 />
-              ) : activeTab?.kind === "agent" ? (
-                <AgentView
-                  workspaceId={workspaceId}
-                  settings={settings}
-                />
               ) : activeTab?.kind === "chat" ? (
                 workspaceId ? (
                   <ChatTab
                     workspaceId={workspaceId}
                     sessionId={activeTab.sessionId}
                     settings={settings}
+                    onSettingsChange={updateSettings}
                     onSessionChanged={bumpAiRefresh}
+                    onOpenSettings={openSettingsTab}
                   />
                 ) : (
                   <div className="empty-hint">请先打开工作区</div>
@@ -751,7 +728,6 @@ export function Workbench() {
           <div className="side side--right" style={{ width: rightWidth }}>
             <AiPanel
               workspaceId={workspaceId}
-              onClose={toggleRight}
               onOpenSession={openChatTab}
               activeSessionId={
                 activeTab?.kind === "chat" ? activeTab.sessionId : null

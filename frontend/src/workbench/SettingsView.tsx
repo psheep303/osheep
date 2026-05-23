@@ -55,6 +55,7 @@ export function SettingsView({
       {
         id: newProviderId(),
         name: "新 Provider",
+        kind: "openai",
         baseUrl: "https://api.openai.com/v1",
         apiKey: "",
         models: [],
@@ -117,7 +118,30 @@ export function SettingsView({
         <div className="settings-view__group">
           <div className="settings-view__group-title">AI</div>
           <div className="settings-view__item-desc">
-            维护可用的模型 Provider。每个 Provider 兼容 OpenAI API，可填写 Base URL、API Key 与模型列表，供 Agent 选择。
+            维护可用的模型 Provider。每个 Provider 兼容 OpenAI API，可填写 Base URL、API Key 与模型列表，供对话使用。
+          </div>
+
+          <div className="settings-view__item">
+            <div className="settings-view__item-label">默认对话模型</div>
+            <div className="settings-view__item-desc">
+              所有对话框（osheep code）将固定使用此 Provider 与 Model。对话框中不再提供切换入口。
+            </div>
+            <DefaultModelPicker
+              providers={settings.ai.providers}
+              providerId={settings.ai.defaultProviderId ?? settings.ai.lastProviderId ?? ""}
+              model={settings.ai.defaultModel ?? settings.ai.lastModel ?? ""}
+              disabled={!hasProject}
+              onChange={(pid, m) =>
+                onChange({
+                  ...settings,
+                  ai: {
+                    ...settings.ai,
+                    defaultProviderId: pid || undefined,
+                    defaultModel: m || undefined,
+                  },
+                })
+              }
+            />
           </div>
 
           {settings.ai.providers.length === 0 && (
@@ -197,7 +221,8 @@ function ProviderCard({
       const list = await fetchProviderModels(
         workspaceId,
         provider.baseUrl,
-        provider.apiKey
+        provider.apiKey,
+        provider.kind
       );
       setPicker(list);
       setPickerSelected(new Set(provider.models.filter((m) => list.includes(m))));
@@ -246,12 +271,30 @@ function ProviderCard({
         </button>
       </div>
       <div className="provider-card__row">
+        <label className="provider-card__label">协议</label>
+        <select
+          className="settings-view__input"
+          value={provider.kind}
+          disabled={disabled}
+          onChange={(e) =>
+            onChange({ kind: e.target.value === "anthropic" ? "anthropic" : "openai" })
+          }
+        >
+          <option value="openai">OpenAI 兼容（/chat/completions）</option>
+          <option value="anthropic">Anthropic / Claude（/v1/messages）</option>
+        </select>
+      </div>
+      <div className="provider-card__row">
         <label className="provider-card__label">Base URL</label>
         <input
           className="settings-view__input"
           value={provider.baseUrl}
           disabled={disabled}
-          placeholder="https://api.openai.com/v1"
+          placeholder={
+            provider.kind === "anthropic"
+              ? "https://api.anthropic.com/v1"
+              : "https://api.openai.com/v1"
+          }
           onChange={(e) => onChange({ baseUrl: e.target.value })}
         />
       </div>
@@ -377,6 +420,65 @@ interface NumberInputProps {
   value: number;
   disabled: boolean;
   onCommit: (raw: string) => number;
+}
+
+function DefaultModelPicker({
+  providers,
+  providerId,
+  model,
+  disabled,
+  onChange,
+}: {
+  providers: AiProvider[];
+  providerId: string;
+  model: string;
+  disabled: boolean;
+  onChange: (providerId: string, model: string) => void;
+}) {
+  if (providers.length === 0) {
+    return (
+      <div className="settings-view__empty">
+        请先在下方新建 Provider 并添加模型
+      </div>
+    );
+  }
+  const selectedProvider = providers.find((p) => p.id === providerId) ?? null;
+  return (
+    <div className="provider-card__row" style={{ marginBottom: 0 }}>
+      <select
+        className="settings-view__input"
+        value={providerId}
+        disabled={disabled}
+        onChange={(e) => {
+          const pid = e.target.value;
+          const next = providers.find((p) => p.id === pid);
+          onChange(pid, next?.models[0] ?? "");
+        }}
+        style={{ width: 200 }}
+      >
+        <option value="">（未选择 Provider）</option>
+        {providers.map((p) => (
+          <option key={p.id} value={p.id}>
+            {p.name || p.id}
+          </option>
+        ))}
+      </select>
+      <select
+        className="settings-view__input"
+        value={model}
+        disabled={disabled || !selectedProvider}
+        onChange={(e) => onChange(providerId, e.target.value)}
+        style={{ width: 240 }}
+      >
+        <option value="">（未选择 Model）</option>
+        {selectedProvider?.models.map((m) => (
+          <option key={m} value={m}>
+            {m}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
 }
 
 function NumberInput({ value, disabled, onCommit }: NumberInputProps) {

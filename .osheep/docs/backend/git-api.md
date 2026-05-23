@@ -371,6 +371,12 @@
 - `INDEX` → `git show :<path>`
 - `WORKTREE` → 直接读磁盘文件
 
+仓库无 HEAD（`git init` 之后尚未 commit）时，`base=HEAD` 不再让前端撞上 `fatal: ambiguous argument 'HEAD'` 报错——后端会把 `leftMissing` 直接置为 `true`、`leftContent` 为空串，按"新文件"展示 diff。同样的容错也覆盖 `git log` 与 `getRepoInfo`：
+
+- `getLog`：上游 git 报 `ambiguous argument` / `unknown revision` / `bad revision` / `does not have any commits` 一律返回 `{ commits: [], head: null }`
+- `getRepoInfo`：`rev-parse HEAD` 失败时 `head` 字段为空串，`detached/branch` 退化为安全默认值
+- 提供 `hasHead(workspaceRoot)` 助手（`git rev-parse --verify --quiet HEAD`）供任何需要 gate HEAD 操作的新接口使用
+
 响应：
 ```json
 {

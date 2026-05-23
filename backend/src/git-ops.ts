@@ -85,6 +85,19 @@ export async function isRepo(workspaceRoot: string): Promise<boolean> {
   }
 }
 
+// True only when HEAD points to an existing commit. False for a freshly
+// `git init`'d repo with no commits yet, or any state where `rev-parse HEAD`
+// would emit "fatal: ambiguous argument 'HEAD'".
+export async function hasHead(workspaceRoot: string): Promise<boolean> {
+  const r = await runGit(workspaceRoot, [
+    "rev-parse",
+    "--verify",
+    "--quiet",
+    "HEAD",
+  ]);
+  return r.code === 0;
+}
+
 export async function getRepoInfo(workspaceRoot: string): Promise<GitRepoInfo> {
   if (!(await isRepo(workspaceRoot))) return { isRepo: false };
 
@@ -397,7 +410,12 @@ export async function getLog(
   const r = await runGit(workspaceRoot, args);
   if (r.code !== 0) {
     const err = (r.stderr || "").toLowerCase();
-    if (err.includes("does not have any commits") || err.includes("bad revision")) {
+    if (
+      err.includes("does not have any commits") ||
+      err.includes("bad revision") ||
+      err.includes("ambiguous argument") ||
+      err.includes("unknown revision")
+    ) {
       return { commits: [], head: null };
     }
     throw errors.gitFailed(r.stderr.trim() || "git log 失败");
@@ -470,6 +488,17 @@ export async function getDiff(
     if (r.code !== 0) {
       const err = r.stderr.toLowerCase();
       if (err.includes("does not exist") || err.includes("exists on disk")) {
+        return { content: "", missing: true, binary: false };
+      }
+      // Repo with no commits yet → HEAD can't be resolved. Treat as missing
+      // so the diff view shows the file as newly added rather than erroring.
+      if (
+        ref === "HEAD" &&
+        (err.includes("ambiguous argument") ||
+          err.includes("unknown revision") ||
+          err.includes("bad revision") ||
+          err.includes("does not have any commits"))
+      ) {
         return { content: "", missing: true, binary: false };
       }
       throw errors.gitFailed(r.stderr.trim() || "git show 失败");
