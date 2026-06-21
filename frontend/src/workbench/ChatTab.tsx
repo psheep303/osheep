@@ -15,17 +15,12 @@ import { chatRuntime, useChatTurn } from "./chat-runtime";
 import { buildUnifiedDiff, type DiffRowType } from "./file-diff";
 import type {
   AiAutoAllow,
-  AiProvider,
   OsheepSettings,
   ReasoningEffort,
 } from "./settings";
 import {
   DEFAULT_AUTO_ALLOW,
-  detectReasoningKind,
-  effortKey,
-  effortLevels,
-  resolveDefaultProviderModel,
-  resolveEffort,
+  DEFAULT_CLI_PROVIDER,
 } from "./settings";
 
 const SCROLL_STICKY_PX = 24;
@@ -76,25 +71,13 @@ export function ChatTab({
   const view = useChatTurn(sessionId);
   const sending = view.status === "running" || view.status === "awaiting-confirm";
 
-  const { providerId, model } = useMemo(
-    () => resolveDefaultProviderModel(settings),
-    [settings]
-  );
-
-  const provider: AiProvider | null = useMemo(
-    () => settings.ai.providers.find((p) => p.id === providerId) ?? null,
-    [providerId, settings.ai.providers]
-  );
-
-  const effort = useMemo<ReasoningEffort | null>(() => {
-    if (!provider || !model) return null;
-    return resolveEffort(settings, provider.id, model, provider.kind);
-  }, [provider, model, settings]);
+  const provider = DEFAULT_CLI_PROVIDER;
+  const model = DEFAULT_CLI_PROVIDER.models[0] ?? "default";
+  const effort: ReasoningEffort | null = null;
 
   const autoAllow: AiAutoAllow = settings.ai.autoAllow ?? DEFAULT_AUTO_ALLOW;
 
   const [slashOpen, setSlashOpen] = useState(false);
-  const [slashSection, setSlashSection] = useState<"root" | "model">("root");
   const [autoAllowOpen, setAutoAllowOpen] = useState(false);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -210,16 +193,9 @@ export function ChatTab({
     return () => el.removeEventListener("scroll", onScroll);
   }, []);
 
-  const readyToSend =
-    !!provider && !!provider.baseUrl && !!provider.apiKey && !!model;
+  const readyToSend = true;
 
-  const sendBlockReason = !provider
-    ? "请先在「设置」中选择默认 Provider"
-    : !provider.baseUrl || !provider.apiKey
-    ? "默认 Provider 缺少 Base URL 或 API Key（请在设置中填写）"
-    : !model
-    ? "请先在「设置」中选择默认 Model"
-    : "";
+  const sendBlockReason = "";
 
   const stopStream = () => {
     chatRuntime.stop(sessionId);
@@ -232,35 +208,14 @@ export function ChatTab({
     });
   };
 
-  const setDefaultModel = (pid: string, m: string) => {
-    onSettingsChange({
-      ...settings,
-      ai: {
-        ...settings.ai,
-        defaultProviderId: pid,
-        defaultModel: m,
-      },
-    });
-  };
-
-  const setEffort = (next: ReasoningEffort | null) => {
-    if (!provider || !model || !next) return;
-    const map = { ...(settings.ai.reasoningEffort ?? {}) };
-    map[effortKey(provider.id, model)] = next;
-    onSettingsChange({
-      ...settings,
-      ai: { ...settings.ai, reasoningEffort: map },
-    });
-  };
-
   const clearConversation = async () => {
     if (!session) return;
     if (!window.confirm("清空当前对话的所有消息？")) return;
     const next: SessionRecord = {
       ...session,
       messages: [],
-      providerId: provider?.id ?? session.providerId,
-      model: model || session.model,
+      providerId: provider.id,
+      model,
     };
     try {
       const saved = await apiSaveSession(workspaceId, next);
@@ -275,7 +230,7 @@ export function ChatTab({
     if (!session) return;
     const text = rawText.trim();
     if (!text) return;
-    if (!readyToSend || !provider) return;
+    if (!readyToSend) return;
 
     // chatRuntime.send handles the "queue on top of a running turn" case
     // internally — it aborts the current upstream stream, resolves any
@@ -363,7 +318,6 @@ export function ChatTab({
       stopStream();
     } else if (e.key === "/" && input === "") {
       setSlashOpen(true);
-      setSlashSection("root");
     }
   };
 
@@ -482,23 +436,12 @@ export function ChatTab({
                 title="斜杠菜单"
                 onClick={() => {
                   setSlashOpen((v) => !v);
-                  setSlashSection("root");
                 }}
               >
                 <SlashIcon />
               </button>
               {slashOpen && (
                 <SlashMenu
-                  section={slashSection}
-                  setSection={setSlashSection}
-                  providers={settings.ai.providers}
-                  providerId={providerId}
-                  model={model}
-                  effort={effort}
-                  onPickModel={(pid, m) => {
-                    setDefaultModel(pid, m);
-                  }}
-                  onPickEffort={(e) => setEffort(e)}
                   onClose={() => setSlashOpen(false)}
                   onClear={() => {
                     setSlashOpen(false);
@@ -514,16 +457,6 @@ export function ChatTab({
                   }}
                 />
               )}
-
-              <ComposerModelChip
-                provider={provider}
-                model={model}
-                effort={effort}
-                onClick={() => {
-                  setSlashOpen(true);
-                  setSlashSection("model");
-                }}
-              />
             </div>
             <div className="chat-composer__row-right">
               {sending && !input.trim() ? (
@@ -1726,192 +1659,58 @@ function extractEditPath(args: unknown): string | null {
 // ─── Slash menu (with Model picker as first section) ───
 
 function SlashMenu({
-  section,
-  setSection,
-  providers,
-  providerId,
-  model,
-  effort,
-  onPickModel,
-  onPickEffort,
   onClose,
   onClear,
   onOpenSettings,
   onAutoAllow,
 }: {
-  section: "root" | "model";
-  setSection: (s: "root" | "model") => void;
-  providers: AiProvider[];
-  providerId: string;
-  model: string;
-  effort: ReasoningEffort | null;
-  onPickModel: (pid: string, m: string) => void;
-  onPickEffort: (e: ReasoningEffort) => void;
   onClose: () => void;
   onClear: () => void;
   onOpenSettings: () => void;
   onAutoAllow: () => void;
 }) {
-  const currentProvider = providers.find((p) => p.id === providerId);
-  const reasoningKind =
-    currentProvider && model
-      ? detectReasoningKind(currentProvider.kind, model)
-      : null;
-
   return (
     <>
       <div className="chat-composer__slash-backdrop" onClick={onClose} />
       <div className="chat-composer__slash">
-        {section === "model" && (
-          <>
-            <div className="chat-composer__slash-section chat-composer__slash-section--with-back">
-              <button
-                className="chat-composer__slash-back"
-                onClick={() => setSection("root")}
-                title="返回"
-              >
-                ←
-              </button>
-              <span>Model</span>
-            </div>
-            <div className="slash-model-list">
-              {providers.length === 0 ? (
-                <div className="chat-composer__provider-empty">
-                  尚未配置任何 Provider
-                </div>
-              ) : (
-                providers.flatMap((p) =>
-                  p.models.map((m) => {
-                    const isActive = p.id === providerId && m === model;
-                    return (
-                      <button
-                        key={p.id + "::" + m}
-                        className="slash-model-row"
-                        onClick={() => {
-                          onPickModel(p.id, m);
-                        }}
-                      >
-                        <span className="slash-model-row__kind">{p.kind}</span>
-                        <span className="slash-model-row__provider">
-                          {p.name || p.id}
-                        </span>
-                        <span className="slash-model-row__provider">/</span>
-                        <span className="slash-model-row__model">{m}</span>
-                        {isActive && (
-                          <span className="slash-model-row__check">✓</span>
-                        )}
-                      </button>
-                    );
-                  })
-                )
-              )}
-            </div>
-            {reasoningKind && (
-              <div className="slash-effort">
-                <span className="slash-effort__label">Effort</span>
-                {effortLevels(reasoningKind).map((lvl) => (
-                  <button
-                    key={lvl}
-                    className={
-                      "slash-effort__seg" +
-                      (lvl === effort ? " is-active" : "")
-                    }
-                    onClick={() => onPickEffort(lvl)}
-                  >
-                    {lvl}
-                  </button>
-                ))}
-              </div>
-            )}
-          </>
-        )}
-
-        {section === "root" && (
-          <>
-            <div className="chat-composer__slash-section">Model</div>
-            <button
-              className="chat-composer__slash-item"
-              onClick={() => setSection("model")}
-            >
-              <span>
-                {currentProvider
-                  ? `${currentProvider.name || currentProvider.id} / ${model || "(未选择)"}`
-                  : "(未选择 Provider)"}
-                {effort && effort !== "off" && (
-                  <span className="chat-composer__slash-hint">{effort}</span>
-                )}
-              </span>
-              <span className="chat-composer__slash-hint">切换 ▸</span>
-            </button>
-            <div className="chat-composer__slash-section">Context</div>
-            <button className="chat-composer__slash-item is-disabled" disabled>
-              Attach file… <span className="chat-composer__slash-hint">敬请期待</span>
-            </button>
-            <button className="chat-composer__slash-item is-disabled" disabled>
-              Mention file from this project…{" "}
-              <span className="chat-composer__slash-hint">敬请期待</span>
-            </button>
-            <button className="chat-composer__slash-item" onClick={onClear}>
-              Clear conversation
-            </button>
-            <button className="chat-composer__slash-item is-disabled" disabled>
-              Rewind <span className="chat-composer__slash-hint">敬请期待</span>
-            </button>
-            <div className="chat-composer__slash-section">Tools</div>
-            <button className="chat-composer__slash-item" onClick={onAutoAllow}>
-              Auto-allow commands…
-            </button>
-            <button className="chat-composer__slash-item is-disabled" disabled>
-              Add MCP server…{" "}
-              <span className="chat-composer__slash-hint">敬请期待</span>
-            </button>
-            <div className="chat-composer__slash-section">Settings</div>
-            <button
-              className="chat-composer__slash-item"
-              onClick={onOpenSettings}
-            >
-              Open settings…
-              <span className="chat-composer__slash-hint">
-                Provider / API Key / 主题
-              </span>
-            </button>
-          </>
-        )}
+        <div className="chat-composer__slash-section">Context</div>
+        <button className="chat-composer__slash-item is-disabled" disabled>
+          Attach file
+          <span className="chat-composer__slash-hint">敬请期待</span>
+        </button>
+        <button className="chat-composer__slash-item is-disabled" disabled>
+          Mention file from this project
+          <span className="chat-composer__slash-hint">敬请期待</span>
+        </button>
+        <button className="chat-composer__slash-item" onClick={onClear}>
+          Clear conversation
+        </button>
+        <button className="chat-composer__slash-item is-disabled" disabled>
+          Rewind <span className="chat-composer__slash-hint">敬请期待</span>
+        </button>
+        <div className="chat-composer__slash-section">Tools</div>
+        <button className="chat-composer__slash-item" onClick={onAutoAllow}>
+          Auto-allow commands
+        </button>
+        <button className="chat-composer__slash-item is-disabled" disabled>
+          Add MCP server
+          <span className="chat-composer__slash-hint">敬请期待</span>
+        </button>
+        <div className="chat-composer__slash-section">Settings</div>
+        <button
+          className="chat-composer__slash-item"
+          onClick={onOpenSettings}
+        >
+          Open settings
+          <span className="chat-composer__slash-hint">编辑器 / CLI 说明</span>
+        </button>
       </div>
     </>
   );
+
 }
 
-function ComposerModelChip({
-  provider,
-  model,
-  effort,
-  onClick,
-}: {
-  provider: AiProvider | null;
-  model: string;
-  effort: ReasoningEffort | null;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      className="composer-model-chip"
-      onClick={onClick}
-      title="切换 Provider / Model / 推理强度"
-    >
-      <span className="composer-model-chip__provider">
-        {provider ? provider.name || provider.id : "未选择"}
-      </span>
-      <span className="composer-model-chip__provider">/</span>
-      <span className="composer-model-chip__model">{model || "—"}</span>
-      {effort && effort !== "off" && (
-        <span className="composer-model-chip__effort">{effort}</span>
-      )}
-    </button>
-  );
-}
-
-// ─── Auto-allow panel (redesigned) ───
+// Auto-allow panel (redesigned)
 
 interface AutoAllowEntry {
   key: keyof AiAutoAllow;
@@ -2416,7 +2215,6 @@ function prettyUnknown(value: unknown): string {
 }
 
 // Unused — kept to preserve API for callers that might import it.
-export { resolveDefaultProviderModel };
 
 // ─── Icons ───
 

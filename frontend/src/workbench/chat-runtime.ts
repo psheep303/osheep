@@ -6,6 +6,7 @@
 
 import {
   ApiClientError,
+  aiChatStream,
   aiChatStreamOsheepCode,
   execRead,
   execRun,
@@ -33,6 +34,7 @@ import {
   type AiAutoAllow,
   type AiProvider,
   type ReasoningEffort,
+  isCliProviderKind,
 } from "./settings";
 
 const MAX_TOOL_LOOPS = 40;
@@ -479,6 +481,58 @@ class ChatRuntime {
     };
 
     try {
+      if (isCliProviderKind(provider.kind)) {
+        const ac = new AbortController();
+        t.abortRef = ac;
+        const { aborted } = await aiChatStream(
+          t.workspaceId,
+          {
+            model,
+            messages: buildCliTurnMessages(working.messages),
+            kind: provider.kind,
+          },
+          appendTextStep,
+          ac.signal
+        );
+        t.abortRef = null;
+        cb.onFilesChanged?.();
+
+        const finalText = collapseFinalText(t.pendingSteps);
+        const finalSteps = t.pendingSteps;
+        if (finalSteps.length === 0 && !finalText.trim() && !aborted) {
+          t.error =
+            "CLI did not return any output. Check that the selected CLI is installed and logged in.";
+          t.pendingSteps = [];
+          try {
+            const saved = await apiSaveSession(t.workspaceId, working);
+            cb.setSession(saved);
+          } catch {
+            cb.setSession(working);
+          }
+          cb.onSessionChanged();
+        } else if (finalSteps.length > 0 || finalText.trim()) {
+          const replyMsg: ChatMessage = {
+            role: "assistant",
+            content: finalText,
+            timestamp: Date.now(),
+            steps: finalSteps,
+          };
+          working = {
+            ...working,
+            messages: [...working.messages, replyMsg],
+          };
+          t.pendingSteps = [];
+          try {
+            const saved = await apiSaveSession(t.workspaceId, working);
+            cb.setSession(saved);
+          } catch {
+            cb.setSession(working);
+          }
+          cb.onSessionChanged();
+        }
+        return;
+      }
+
       for (let loop = 0; loop < MAX_TOOL_LOOPS; loop += 1) {
         loopsRun = loop + 1;
         const apiMessages: AiChatMessage[] = [
@@ -516,8 +570,6 @@ class ChatRuntime {
         const { rawAcc, aborted } = await aiChatStreamOsheepCode(
           t.workspaceId,
           {
-            baseUrl: provider.baseUrl,
-            apiKey: provider.apiKey,
             model,
             messages: apiMessages,
             kind: provider.kind,
@@ -840,7 +892,7 @@ class ChatRuntime {
       const finalSteps = t.pendingSteps;
       if (finalSteps.length === 0 && !finalText.trim() && !userAborted) {
         t.error =
-          "上游未返回任何内容，请检查模型 ID、Base URL 或上游兼容性（看后端日志可获取详情）";
+          "CLI 未返回任何内容，请检查所选 CLI、模型名称或登录状态。";
         // Clear pending state BEFORE we hand control to React so the tab
         // never paints "pending steps + saved message" together.
         t.pendingSteps = [];
@@ -972,6 +1024,31 @@ function idleView(sessionId: string): TurnView {
     pendingConfirm: null,
     error: null,
   };
+}
+
+function buildCliTurnMessages(messages: ChatMessage[]): AiChatMessage[] {
+  const out: AiChatMessage[] = [
+    {
+      role: "system",
+      content: [
+        "You are running as a local CLI coding agent inside the osheep IDE.",
+        "Use your native CLI tools to inspect, edit, and verify the workspace directly.",
+        "Do not emit osheep XML tags such as <tasks>, <thought>, or <tool>; those belong to the legacy API path.",
+        "Reply in the user's language with a concise summary of what changed and any verification result.",
+      ].join("\n"),
+    },
+  ];
+  for (const message of messages) {
+    if (message.role === "tool") {
+      out.push({
+        role: "user",
+        content: `Previous tool result:\n${message.content}`,
+      });
+    } else {
+      out.push({ role: message.role, content: message.content });
+    }
+  }
+  return out;
 }
 
 function normalizeTasksItems(items: string[]): string[] {

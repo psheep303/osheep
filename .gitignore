@@ -29,3 +29,5 @@ backend/workspaces/
 # OS and editor noise
 .DS_Store
 Thumbs.db
+
+cc-switch/

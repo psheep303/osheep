@@ -669,6 +669,124 @@ export async function deleteSession(
   );
 }
 
+// Workflows
+
+export type WorkflowProviderKind = "codex-cli" | "claude-cli";
+export type WorkflowNodeKind =
+  | "agent"
+  | "trigger"
+  | "command"
+  | "web"
+  | "file-read"
+  | "file-write";
+export type WorkflowNodeStatus = "idle" | "running" | "success" | "error";
+export type WorkflowRunStatus =
+  | "idle"
+  | "running"
+  | "success"
+  | "error"
+  | "stopped";
+
+export interface WorkflowNode {
+  id: string;
+  kind?: WorkflowNodeKind;
+  title: string;
+  providerKind: WorkflowProviderKind;
+  model: string;
+  prompt: string;
+  x: number;
+  y: number;
+  status: WorkflowNodeStatus;
+  summary?: string;
+  rawOutput?: string;
+  error?: string;
+  startedAt?: number;
+  completedAt?: number;
+}
+
+export interface WorkflowEdge {
+  id: string;
+  from: string;
+  to: string;
+  passSummary: boolean;
+}
+
+export interface WorkflowRun {
+  id: string;
+  status: WorkflowRunStatus;
+  startedAt: number;
+  completedAt?: number;
+  nodeIds: string[];
+  error?: string;
+}
+
+export interface WorkflowRecord {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  nodes: WorkflowNode[];
+  edges: WorkflowEdge[];
+  runs: WorkflowRun[];
+}
+
+export interface WorkflowSummary {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  nodeCount: number;
+  edgeCount: number;
+  status: WorkflowRunStatus;
+}
+
+const workflowsUrl = (id: string, suffix = "") =>
+  `/api/workspaces/${encodeURIComponent(id)}/workflows${suffix}`;
+
+export async function listWorkflows(
+  workspaceId: string
+): Promise<WorkflowSummary[]> {
+  const { workflows } = await http.get<{ workflows: WorkflowSummary[] }>(
+    workflowsUrl(workspaceId)
+  );
+  return workflows;
+}
+
+export async function getWorkflow(
+  workspaceId: string,
+  workflowId: string
+): Promise<WorkflowRecord> {
+  return await http.get(
+    workflowsUrl(workspaceId, `/${encodeURIComponent(workflowId)}`)
+  );
+}
+
+export async function createWorkflow(
+  workspaceId: string,
+  partial: Partial<WorkflowRecord> = {}
+): Promise<WorkflowRecord> {
+  return await http.post(workflowsUrl(workspaceId), partial);
+}
+
+export async function saveWorkflow(
+  workspaceId: string,
+  record: WorkflowRecord
+): Promise<WorkflowRecord> {
+  return await http.put(
+    workflowsUrl(workspaceId, `/${encodeURIComponent(record.id)}`),
+    record
+  );
+}
+
+export async function deleteWorkflow(
+  workspaceId: string,
+  workflowId: string
+): Promise<void> {
+  await http.delete(
+    workflowsUrl(workspaceId, `/${encodeURIComponent(workflowId)}`)
+  );
+}
+
 // ─── AI proxy ───
 
 export interface AiChatMessage {
@@ -680,13 +798,11 @@ export interface AiChatMessage {
 
 export async function fetchProviderModels(
   workspaceId: string,
-  baseUrl: string,
-  apiKey: string,
-  kind: "openai" | "anthropic" | "claude-code" = "openai"
+  kind: "claude-cli" | "codex-cli" = "claude-cli"
 ): Promise<string[]> {
   const { models } = await http.post<{ models: string[] }>(
     `/api/workspaces/${encodeURIComponent(workspaceId)}/ai/models`,
-    { baseUrl, apiKey, kind }
+    { kind }
   );
   return models;
 }
@@ -694,11 +810,9 @@ export async function fetchProviderModels(
 export async function aiChat(
   workspaceId: string,
   input: {
-    baseUrl: string;
-    apiKey: string;
     model: string;
     messages: AiChatMessage[];
-    kind?: "openai" | "anthropic" | "claude-code";
+    kind?: "claude-cli" | "codex-cli";
   }
 ): Promise<{ content: string }> {
   return await http.post(
@@ -720,11 +834,9 @@ export async function aiChat(
 async function aiChatStreamOnce(
   workspaceId: string,
   input: {
-    baseUrl: string;
-    apiKey: string;
     model: string;
     messages: AiChatMessage[];
-    kind?: "openai" | "anthropic" | "claude-code";
+    kind?: "claude-cli" | "codex-cli";
     reasoning?: { effort: "off" | "minimal" | "low" | "medium" | "high" };
   },
   onDelta: (chunk: string) => void,
@@ -858,11 +970,9 @@ async function aiChatStreamOnce(
 export async function aiChatStream(
   workspaceId: string,
   input: {
-    baseUrl: string;
-    apiKey: string;
     model: string;
     messages: AiChatMessage[];
-    kind?: "openai" | "anthropic" | "claude-code";
+    kind?: "claude-cli" | "codex-cli";
     reasoning?: { effort: "off" | "minimal" | "low" | "medium" | "high" };
   },
   onDelta: (chunk: string) => void,
@@ -1616,11 +1726,9 @@ function findMatchingBrace(s: string, openIdx: number): number {
 export async function aiChatStreamOsheepCode(
   workspaceId: string,
   input: {
-    baseUrl: string;
-    apiKey: string;
     model: string;
     messages: AiChatMessage[];
-    kind?: "openai" | "anthropic" | "claude-code";
+    kind?: "claude-cli" | "codex-cli";
     reasoning?: { effort: "off" | "minimal" | "low" | "medium" | "high" };
   },
   handlers: OsheepCodeStreamHandlers,

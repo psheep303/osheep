@@ -1,46 +1,39 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  createSession as apiCreateSession,
-  deleteSession as apiDeleteSession,
-  listSessions as apiListSessions,
-  type SessionSummary,
+  createWorkflow as apiCreateWorkflow,
+  deleteWorkflow as apiDeleteWorkflow,
+  listWorkflows as apiListWorkflows,
+  type WorkflowSummary,
 } from "./api";
-import { useActiveSessions } from "./chat-runtime";
 
 interface AiPanelProps {
   workspaceId: string | null;
-  onOpenSession: (sessionId: string) => void;
-  activeSessionId: string | null;
-  /** bumped externally when a session was changed so the list re-fetches */
+  onOpenWorkflow: (workflowId: string) => void;
+  activeWorkflowId: string | null;
   refreshSignal: number;
 }
 
-type PanelTab = "osheepcode" | "maintain";
-
 export function AiPanel({
   workspaceId,
-  onOpenSession,
-  activeSessionId,
+  onOpenWorkflow,
+  activeWorkflowId,
   refreshSignal,
 }: AiPanelProps) {
-  const [activeTab, setActiveTab] = useState<PanelTab>("osheepcode");
-  const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const [workflows, setWorkflows] = useState<WorkflowSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [searchText, setSearchText] = useState("");
 
-  const activeRuntimeSessions = useActiveSessions();
-
   const reload = useCallback(async () => {
     if (!workspaceId) {
-      setSessions([]);
+      setWorkflows([]);
       return;
     }
     setLoading(true);
     setError(null);
     try {
-      const list = await apiListSessions(workspaceId);
-      setSessions(list);
+      const list = await apiListWorkflows(workspaceId);
+      setWorkflows(list);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -53,17 +46,19 @@ export function AiPanel({
   }, [reload, refreshSignal]);
 
   const filtered = useMemo(() => {
-    if (!searchText.trim()) return sessions;
+    if (!searchText.trim()) return workflows;
     const q = searchText.trim().toLowerCase();
-    return sessions.filter((s) => s.title.toLowerCase().includes(q));
-  }, [sessions, searchText]);
+    return workflows.filter((workflow) =>
+      workflow.title.toLowerCase().includes(q)
+    );
+  }, [workflows, searchText]);
 
   const handleNew = async () => {
     if (!workspaceId) return;
     try {
-      const s = await apiCreateSession(workspaceId, {});
+      const workflow = await apiCreateWorkflow(workspaceId, {});
       await reload();
-      onOpenSession(s.id);
+      onOpenWorkflow(workflow.id);
     } catch (e) {
       setError((e as Error).message);
     }
@@ -71,9 +66,9 @@ export function AiPanel({
 
   const handleDelete = async (id: string, title: string) => {
     if (!workspaceId) return;
-    if (!window.confirm(`确定删除对话「${title}」？`)) return;
+    if (!window.confirm(`Delete workflow "${title}"?`)) return;
     try {
-      await apiDeleteSession(workspaceId, id);
+      await apiDeleteWorkflow(workspaceId, id);
       await reload();
     } catch (e) {
       setError((e as Error).message);
@@ -82,128 +77,97 @@ export function AiPanel({
 
   return (
     <div className="ai-panel">
-      <div className="ai-panel__brand">osheep</div>
+      <div className="ai-panel__brand">osheep workflows</div>
 
-      <div className="ai-panel__tabs">
-        <button
-          className={
-            "ai-panel__tab" + (activeTab === "osheepcode" ? " is-active" : "")
-          }
-          onClick={() => setActiveTab("osheepcode")}
-        >
-          osheep code
-        </button>
-        <button
-          className={
-            "ai-panel__tab" + (activeTab === "maintain" ? " is-active" : "")
-          }
-          onClick={() => setActiveTab("maintain")}
-        >
-          维护
-        </button>
+      <button
+        className="ai-panel__new"
+        disabled={!workspaceId}
+        onClick={() => void handleNew()}
+        title="New workflow"
+      >
+        <PlusIcon />
+        <span>New workflow</span>
+      </button>
+
+      <div className="ai-panel__search">
+        <SearchIcon />
+        <input
+          className="ai-panel__search-input"
+          value={searchText}
+          placeholder="Search workflows..."
+          onChange={(e) => setSearchText(e.target.value)}
+        />
       </div>
 
-      {activeTab === "maintain" ? (
-        <div className="ai-panel__maintain">
-          <div className="ai-panel__maintain-title">维护功能正在筹备中</div>
-          <div className="ai-panel__maintain-hint">未来阶段将提供：</div>
-          <ul className="ai-panel__maintain-list">
-            <li>长期会话与记忆库</li>
-            <li>规则 / 工作流模板</li>
-            <li>自动化任务（计划运行）</li>
-          </ul>
-        </div>
-      ) : (
-        <>
-          <button
-            className="ai-panel__new"
-            disabled={!workspaceId}
-            onClick={() => void handleNew()}
-            title="新建对话"
-          >
-            <PlusIcon />
-            <span>New session</span>
+      {error && (
+        <div className="ai-panel__error">
+          <span>{error}</span>
+          <button onClick={() => setError(null)} aria-label="Close error">
+            x
           </button>
-
-          <div className="ai-panel__search">
-            <SearchIcon />
-            <input
-              className="ai-panel__search-input"
-              value={searchText}
-              placeholder="Search sessions…"
-              onChange={(e) => setSearchText(e.target.value)}
-            />
-          </div>
-
-          {error && (
-            <div className="ai-panel__error">
-              <span>{error}</span>
-              <button onClick={() => setError(null)} aria-label="关闭错误提示">
-                ×
-              </button>
-            </div>
-          )}
-
-          {!workspaceId && (
-            <div className="ai-panel__empty">请先打开工作区</div>
-          )}
-
-          {workspaceId && loading && sessions.length === 0 && (
-            <div className="ai-panel__empty">加载中…</div>
-          )}
-
-          {workspaceId && !loading && filtered.length === 0 && (
-            <div className="ai-panel__empty">
-              {searchText ? "未匹配到对话" : "尚未创建任何对话"}
-            </div>
-          )}
-
-          <div className="ai-panel__list">
-            {filtered.map((s) => (
-              <SessionItem
-                key={s.id}
-                session={s}
-                active={s.id === activeSessionId}
-                running={activeRuntimeSessions.has(s.id)}
-                onOpen={() => onOpenSession(s.id)}
-                onDelete={() => void handleDelete(s.id, s.title)}
-              />
-            ))}
-          </div>
-        </>
+        </div>
       )}
+
+      {!workspaceId && (
+        <div className="ai-panel__empty">Open a workspace first</div>
+      )}
+
+      {workspaceId && loading && workflows.length === 0 && (
+        <div className="ai-panel__empty">Loading...</div>
+      )}
+
+      {workspaceId && !loading && filtered.length === 0 && (
+        <div className="ai-panel__empty">
+          {searchText ? "No matching workflows" : "No workflows yet"}
+        </div>
+      )}
+
+      <div className="ai-panel__list">
+        {filtered.map((workflow) => (
+          <WorkflowItem
+            key={workflow.id}
+            workflow={workflow}
+            active={workflow.id === activeWorkflowId}
+            running={workflow.status === "running"}
+            onOpen={() => onOpenWorkflow(workflow.id)}
+            onDelete={() => void handleDelete(workflow.id, workflow.title)}
+          />
+        ))}
+      </div>
     </div>
   );
 }
 
-interface SessionItemProps {
-  session: SessionSummary;
+interface WorkflowItemProps {
+  workflow: WorkflowSummary;
   active: boolean;
   running: boolean;
   onOpen: () => void;
   onDelete: () => void;
 }
 
-function SessionItem({ session, active, running, onOpen, onDelete }: SessionItemProps) {
+function WorkflowItem({
+  workflow,
+  active,
+  running,
+  onOpen,
+  onDelete,
+}: WorkflowItemProps) {
   return (
     <div
       className={"ai-panel__item" + (active ? " is-active" : "")}
       onClick={onOpen}
-      title={
-        running
-          ? `${session.title}（后台运行中）`
-          : session.title
-      }
+      title={running ? `${workflow.title} (running)` : workflow.title}
     >
       <span
         className={"ai-panel__item-status" + (running ? " is-running" : "")}
         aria-hidden
       />
       <span className="ai-panel__item-title">
-        {session.title || "新对话"}
+        {workflow.title || "New workflow"}
       </span>
       <span className="ai-panel__item-time">
-        {formatRelative(session.updatedAt)}
+        {formatRelative(workflow.updatedAt)}
       </span>
       <button
         className="ai-panel__item-del"
@@ -211,7 +175,7 @@ function SessionItem({ session, active, running, onOpen, onDelete }: SessionItem
           e.stopPropagation();
           onDelete();
         }}
-        title="删除"
+        title="Delete"
       >
         <TrashIcon />
       </button>
@@ -222,7 +186,7 @@ function SessionItem({ session, active, running, onOpen, onDelete }: SessionItem
 function formatRelative(ts: number): string {
   const diff = Math.max(0, Date.now() - ts);
   const m = Math.floor(diff / 60_000);
-  if (m < 1) return "刚刚";
+  if (m < 1) return "now";
   if (m < 60) return `${m}m`;
   const h = Math.floor(m / 60);
   if (h < 24) return `${h}h`;

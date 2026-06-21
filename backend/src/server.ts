@@ -10,6 +10,7 @@ import { registerSearchRoutes } from "./routes/search.js";
 import { registerGitRoutes } from "./routes/git.js";
 import { registerAgentRoutes } from "./routes/agents.js";
 import { registerSessionRoutes } from "./routes/sessions.js";
+import { registerWorkflowRoutes } from "./routes/workflows.js";
 import { registerAiRoutes } from "./routes/ai.js";
 
 export async function buildServer() {
@@ -56,6 +57,7 @@ export async function buildServer() {
   await registerGitRoutes(app);
   await registerAgentRoutes(app);
   await registerSessionRoutes(app);
+  await registerWorkflowRoutes(app);
   await registerAiRoutes(app);
 
   await ensureWorkspacesRoot();
