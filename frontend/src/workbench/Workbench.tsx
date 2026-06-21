@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityBar, type ViewId } from "./ActivityBar";
 import { AiPanel } from "./AiPanel";
 import { BottomPanel } from "./BottomPanel";
-import { ChatTab } from "./ChatTab";
 import { DiffPane } from "./DiffPane";
 import { EditorPane, type GotoTarget } from "./EditorPane";
 import { FileTree } from "./FileTree";
@@ -11,6 +10,7 @@ import { MarkdownPreview } from "./MarkdownPreview";
 import { Resizer } from "./Resizer";
 import { SearchView } from "./SearchView";
 import { SettingsView } from "./SettingsView";
+import { WorkflowTab } from "./WorkflowTab";
 import { WorkspacePicker } from "./WorkspacePicker";
 import { DEFAULT_SETTINGS, type OsheepSettings } from "./settings";
 import {
@@ -40,10 +40,10 @@ interface SettingsTab {
   path: "__settings__";
 }
 
-interface ChatTabState {
-  kind: "chat";
-  path: string; // __chat__:<sessionId>
-  sessionId: string;
+interface WorkflowTabState {
+  kind: "workflow";
+  path: string; // __workflow__:<workflowId>
+  workflowId: string;
 }
 
 interface DiffTab {
@@ -57,24 +57,11 @@ interface DiffTab {
   binary: boolean;
 }
 
-interface AiDiffTab {
-  kind: "ai-diff";
-  path: string; // __ai-diff__:<sessionId>:<stepId>
-  filePath: string;
-  sessionId: string;
-  stepId: string;
-  leftContent: string;
-  rightContent: string;
-}
-
-type Tab = FileTab | SettingsTab | ChatTabState | DiffTab | AiDiffTab;
+type Tab = FileTab | SettingsTab | WorkflowTabState | DiffTab;
 
 const SETTINGS_PATH = "__settings__";
-const CHAT_PREFIX = "__chat__:";
-const AI_DIFF_PREFIX = "__ai-diff__:";
-const chatPath = (sessionId: string) => CHAT_PREFIX + sessionId;
-const aiDiffPath = (sessionId: string, stepId: string) =>
-  `${AI_DIFF_PREFIX}${sessionId}:${stepId}`;
+const WORKFLOW_PREFIX = "__workflow__:";
+const workflowPath = (workflowId: string) => WORKFLOW_PREFIX + workflowId;
 
 const DEFAULT_LEFT_WIDTH = 260;
 const DEFAULT_RIGHT_WIDTH = 320;
@@ -294,42 +281,6 @@ export function Workbench() {
     [tabs, workspaceId]
   );
 
-  /**
-   * Open a synthetic AI-diff Tab for an `edit_file` step. The diff is rendered
-   * from the runtime tool-result's `before` / `after` strings — no git lookup
-   * needed. Subsequent clicks on the same (session, step) reuse the tab.
-   */
-  const openAiDiffTab = useCallback(
-    (input: {
-      sessionId: string;
-      stepId: string;
-      filePath: string;
-      leftContent: string;
-      rightContent: string;
-    }) => {
-      const tabId = aiDiffPath(input.sessionId, input.stepId);
-      const existing = tabs.find((t) => t.path === tabId);
-      if (existing) {
-        setActivePath(tabId);
-        return;
-      }
-      setTabs((prev) => [
-        ...prev,
-        {
-          kind: "ai-diff",
-          path: tabId,
-          filePath: input.filePath,
-          sessionId: input.sessionId,
-          stepId: input.stepId,
-          leftContent: input.leftContent,
-          rightContent: input.rightContent,
-        },
-      ]);
-      setActivePath(tabId);
-    },
-    [tabs]
-  );
-
   const openSettingsTab = useCallback(() => {
     setTabs((prev) => {
       if (prev.some((t) => t.kind === "settings")) return prev;
@@ -343,11 +294,11 @@ export function Workbench() {
     setAiRefreshSignal((v) => v + 1);
   }, []);
 
-  const openChatTab = useCallback((sessionId: string) => {
-    const path = chatPath(sessionId);
+  const openWorkflowTab = useCallback((workflowId: string) => {
+    const path = workflowPath(workflowId);
     setTabs((prev) => {
       if (prev.some((t) => t.path === path)) return prev;
-      return [...prev, { kind: "chat", path, sessionId }];
+      return [...prev, { kind: "workflow", path, workflowId }];
     });
     setActivePath(path);
   }, []);
@@ -525,7 +476,6 @@ export function Workbench() {
   const activeTab = tabs.find((t) => t.path === activePath) ?? null;
   const activeFileTab = activeTab?.kind === "file" ? activeTab : null;
   const activeDiffTab = activeTab?.kind === "diff" ? activeTab : null;
-  const activeAiDiffTab = activeTab?.kind === "ai-diff" ? activeTab : null;
 
   return (
     <div className="workbench">
@@ -648,12 +598,10 @@ export function Workbench() {
                   const label =
                     t.kind === "settings"
                       ? "设置"
-                      : t.kind === "chat"
-                      ? "对话"
+                      : t.kind === "workflow"
+                      ? "Workflow"
                       : t.kind === "diff"
                       ? `${basename(t.filePath)} (${diffLabel(t)})`
-                      : t.kind === "ai-diff"
-                      ? `${basename(t.filePath)} (osheep code edit)`
                       : t.path.split("/").pop();
                   const tabTitle =
                     t.kind === "file"
@@ -662,10 +610,8 @@ export function Workbench() {
                         : t.path
                       : t.kind === "diff"
                       ? `${t.filePath} · ${diffLabel(t)}`
-                      : t.kind === "ai-diff"
-                      ? `${t.filePath} · osheep code edit`
-                      : t.kind === "chat"
-                      ? `对话 ${t.sessionId}`
+                      : t.kind === "workflow"
+                      ? `Workflow ${t.workflowId}`
                       : "设置";
                   return (
                     <div
@@ -674,7 +620,7 @@ export function Workbench() {
                         "tab" +
                         (t.path === activePath ? " is-active" : "") +
                         (isDeleted ? " is-deleted" : "") +
-                        (t.kind === "diff" || t.kind === "ai-diff" ? " is-diff" : "")
+                        (t.kind === "diff" ? " is-diff" : "")
                       }
                       onClick={() => setActivePath(t.path)}
                       title={tabTitle}
@@ -737,33 +683,19 @@ export function Workbench() {
                     />
                   )}
                 </div>
-              ) : activeAiDiffTab ? (
-                <div className="editor-host__source">
-                  <DiffPane
-                    path={activeAiDiffTab.filePath}
-                    fontSize={settings.editor.fontSize}
-                    leftContent={activeAiDiffTab.leftContent}
-                    rightContent={activeAiDiffTab.rightContent}
-                  />
-                </div>
               ) : activeTab?.kind === "settings" ? (
                 <SettingsView
                   settings={settings}
                   onChange={updateSettings}
                   hasProject={!!workspaceId}
-                  workspaceId={workspaceId}
                 />
-              ) : activeTab?.kind === "chat" ? (
+              ) : activeTab?.kind === "workflow" ? (
                 workspaceId ? (
-                  <ChatTab
+                  <WorkflowTab
                     workspaceId={workspaceId}
-                    sessionId={activeTab.sessionId}
-                    settings={settings}
-                    onSettingsChange={updateSettings}
-                    onSessionChanged={bumpAiRefresh}
+                    workflowId={activeTab.workflowId}
+                    onWorkflowChanged={bumpAiRefresh}
                     onFilesChanged={bumpFileTree}
-                    onOpenSettings={openSettingsTab}
-                    onOpenAiDiff={openAiDiffTab}
                   />
                 ) : (
                   <div className="empty-hint">请先打开工作区</div>
@@ -803,9 +735,9 @@ export function Workbench() {
           <div className="side side--right" style={{ width: rightWidth }}>
             <AiPanel
               workspaceId={workspaceId}
-              onOpenSession={openChatTab}
-              activeSessionId={
-                activeTab?.kind === "chat" ? activeTab.sessionId : null
+              onOpenWorkflow={openWorkflowTab}
+              activeWorkflowId={
+                activeTab?.kind === "workflow" ? activeTab.workflowId : null
               }
               refreshSignal={aiRefreshSignal}
             />
