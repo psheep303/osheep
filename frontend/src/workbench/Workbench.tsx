@@ -57,11 +57,24 @@ interface DiffTab {
   binary: boolean;
 }
 
-type Tab = FileTab | SettingsTab | ChatTabState | DiffTab;
+interface AiDiffTab {
+  kind: "ai-diff";
+  path: string; // __ai-diff__:<sessionId>:<stepId>
+  filePath: string;
+  sessionId: string;
+  stepId: string;
+  leftContent: string;
+  rightContent: string;
+}
+
+type Tab = FileTab | SettingsTab | ChatTabState | DiffTab | AiDiffTab;
 
 const SETTINGS_PATH = "__settings__";
 const CHAT_PREFIX = "__chat__:";
+const AI_DIFF_PREFIX = "__ai-diff__:";
 const chatPath = (sessionId: string) => CHAT_PREFIX + sessionId;
+const aiDiffPath = (sessionId: string, stepId: string) =>
+  `${AI_DIFF_PREFIX}${sessionId}:${stepId}`;
 
 const DEFAULT_LEFT_WIDTH = 260;
 const DEFAULT_RIGHT_WIDTH = 320;
@@ -87,6 +100,15 @@ export function Workbench() {
   const refreshGitStatus = useCallback(() => {
     setStatusVersion((v) => v + 1);
   }, []);
+
+  // Bumped to force the file explorer (FileTree) to reload its tree. Driven by
+  // osheep code file mutations so the explorer refreshes without a manual
+  // click; also refreshes git decorations.
+  const [fileTreeVersion, setFileTreeVersion] = useState(0);
+  const bumpFileTree = useCallback(() => {
+    setFileTreeVersion((v) => v + 1);
+    refreshGitStatus();
+  }, [refreshGitStatus]);
 
   useEffect(() => {
     if (!workspaceId) {
@@ -270,6 +292,42 @@ export function Workbench() {
       }
     },
     [tabs, workspaceId]
+  );
+
+  /**
+   * Open a synthetic AI-diff Tab for an `edit_file` step. The diff is rendered
+   * from the runtime tool-result's `before` / `after` strings — no git lookup
+   * needed. Subsequent clicks on the same (session, step) reuse the tab.
+   */
+  const openAiDiffTab = useCallback(
+    (input: {
+      sessionId: string;
+      stepId: string;
+      filePath: string;
+      leftContent: string;
+      rightContent: string;
+    }) => {
+      const tabId = aiDiffPath(input.sessionId, input.stepId);
+      const existing = tabs.find((t) => t.path === tabId);
+      if (existing) {
+        setActivePath(tabId);
+        return;
+      }
+      setTabs((prev) => [
+        ...prev,
+        {
+          kind: "ai-diff",
+          path: tabId,
+          filePath: input.filePath,
+          sessionId: input.sessionId,
+          stepId: input.stepId,
+          leftContent: input.leftContent,
+          rightContent: input.rightContent,
+        },
+      ]);
+      setActivePath(tabId);
+    },
+    [tabs]
   );
 
   const openSettingsTab = useCallback(() => {
@@ -467,6 +525,7 @@ export function Workbench() {
   const activeTab = tabs.find((t) => t.path === activePath) ?? null;
   const activeFileTab = activeTab?.kind === "file" ? activeTab : null;
   const activeDiffTab = activeTab?.kind === "diff" ? activeTab : null;
+  const activeAiDiffTab = activeTab?.kind === "ai-diff" ? activeTab : null;
 
   return (
     <div className="workbench">
@@ -538,6 +597,7 @@ export function Workbench() {
                   onPathDeleted={onPathDeleted}
                   decorations={decorations}
                   onFsChange={refreshGitStatus}
+                  refreshSignal={fileTreeVersion}
                 />
               ) : (
                 <div className="side-view">
@@ -592,6 +652,8 @@ export function Workbench() {
                       ? "对话"
                       : t.kind === "diff"
                       ? `${basename(t.filePath)} (${diffLabel(t)})`
+                      : t.kind === "ai-diff"
+                      ? `${basename(t.filePath)} (osheep code edit)`
                       : t.path.split("/").pop();
                   const tabTitle =
                     t.kind === "file"
@@ -600,6 +662,8 @@ export function Workbench() {
                         : t.path
                       : t.kind === "diff"
                       ? `${t.filePath} · ${diffLabel(t)}`
+                      : t.kind === "ai-diff"
+                      ? `${t.filePath} · osheep code edit`
                       : t.kind === "chat"
                       ? `对话 ${t.sessionId}`
                       : "设置";
@@ -610,7 +674,7 @@ export function Workbench() {
                         "tab" +
                         (t.path === activePath ? " is-active" : "") +
                         (isDeleted ? " is-deleted" : "") +
-                        (t.kind === "diff" ? " is-diff" : "")
+                        (t.kind === "diff" || t.kind === "ai-diff" ? " is-diff" : "")
                       }
                       onClick={() => setActivePath(t.path)}
                       title={tabTitle}
@@ -673,6 +737,15 @@ export function Workbench() {
                     />
                   )}
                 </div>
+              ) : activeAiDiffTab ? (
+                <div className="editor-host__source">
+                  <DiffPane
+                    path={activeAiDiffTab.filePath}
+                    fontSize={settings.editor.fontSize}
+                    leftContent={activeAiDiffTab.leftContent}
+                    rightContent={activeAiDiffTab.rightContent}
+                  />
+                </div>
               ) : activeTab?.kind === "settings" ? (
                 <SettingsView
                   settings={settings}
@@ -688,7 +761,9 @@ export function Workbench() {
                     settings={settings}
                     onSettingsChange={updateSettings}
                     onSessionChanged={bumpAiRefresh}
+                    onFilesChanged={bumpFileTree}
                     onOpenSettings={openSettingsTab}
+                    onOpenAiDiff={openAiDiffTab}
                   />
                 ) : (
                   <div className="empty-hint">请先打开工作区</div>

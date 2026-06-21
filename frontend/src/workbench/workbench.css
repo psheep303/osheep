@@ -1251,7 +1251,7 @@
 
 .ai-panel__item {
   display: grid;
-  grid-template-columns: 1fr auto auto;
+  grid-template-columns: 12px 1fr auto auto;
   align-items: center;
   gap: 6px;
   padding: 7px 10px;
@@ -1807,6 +1807,7 @@
   font-weight: 700;
   flex-shrink: 0;
   color: var(--bg-editor);
+  background: transparent;  /* 默认透明背景 */
 }
 
 .chat-step__icon--text {
@@ -1817,10 +1818,81 @@
   left: -16px;
 }
 
+/* Hide the white dot when a tool has its own status icon */
+.chat-step--tool .chat-step__icon {
+  /* Tool steps have their own status icons (✓/×/running) */
+  background: transparent !important;  /* 强制透明背景 */
+}
+
+.chat-step--tool .chat-step__icon--text,
+.chat-step--tool > .chat-step__icon--text {
+  display: none !important;
+}
+
+/* Also ensure the icon with status classes doesn't render as a text dot */
+.chat-step--tool .chat-step__icon--ok::before,
+.chat-step--tool .chat-step__icon--err::before,
+.chat-step--tool .chat-step__icon--running::before,
+.chat-step--tool .chat-step__icon--queued::before,
+.chat-step--tool .chat-step__icon--cached::before {
+  content: none;
+  display: none;
+}
+
+/*
+ * Plan / Thought / Verify share the timeline column but want distinct shapes
+ * so users can scan the conversation hierarchy at a glance (Claude Code style:
+ * Plan dominates, Thought is small + neutral, Verify is a green checkmark).
+ */
+.chat-step__icon--plan {
+  background: var(--accent);
+  width: 10px;
+  height: 10px;
+  top: 6px;
+  left: -17px;
+  color: var(--fg-strong);
+}
+
+.chat-step__icon--thought {
+  background: var(--fg-muted);
+  width: 6px;
+  height: 6px;
+  top: 8px;
+  left: -15px;
+}
+
+.chat-step__icon--ask {
+  background: transparent;
+  border: 1.4px solid var(--fg-muted);
+  width: 10px;
+  height: 10px;
+  top: 6px;
+  left: -17px;
+  box-sizing: border-box;
+}
+
+.chat-step__icon--verify {
+  background: transparent;
+  border: 1.4px solid #3fb950;
+  color: #3fb950;
+  width: 12px;
+  height: 12px;
+  top: 5px;
+  left: -18px;
+  box-sizing: border-box;
+}
+
 .chat-step__icon--running {
   background: transparent;
   border: 1.4px solid #58a6ff;
   color: #58a6ff;
+  box-sizing: border-box;
+}
+
+.chat-step__icon--queued {
+  background: transparent;
+  border: 1.4px solid var(--fg-muted);
+  color: var(--fg-muted);
   box-sizing: border-box;
 }
 
@@ -1835,6 +1907,13 @@
   background: transparent;
   border: 1.4px solid #d29922;
   color: #d29922;
+  box-sizing: border-box;
+}
+
+.chat-step__icon--cached {
+  background: transparent;
+  border: 1.4px solid var(--fg-muted);
+  color: var(--fg-muted);
   box-sizing: border-box;
 }
 
@@ -1866,6 +1945,86 @@
   color: var(--fg);
 }
 
+.chat-step__duration,
+.chat-step__line-meta {
+  color: var(--fg-faint);
+  font-size: 11px;
+  margin-left: 8px;
+  margin-right: 8px;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.sheep-coding {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: 8px;
+  color: var(--fg-muted);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  vertical-align: baseline;
+}
+
+.sheep-coding__track {
+  position: relative;
+  display: inline-block;
+  width: 28px;
+  height: 13px;
+  overflow: hidden;
+  vertical-align: -2px;
+}
+
+.sheep-coding__sheep {
+  position: absolute;
+  left: -10px;
+  top: -2px;
+  display: inline-block;
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 14px;
+  line-height: 1;
+  animation: sheep-coding-run 0.92s linear infinite;
+}
+
+.sheep-coding__dust {
+  position: absolute;
+  bottom: 2px;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.35);
+  animation: sheep-coding-dust 0.92s linear infinite;
+}
+
+.sheep-coding__dust--one {
+  left: 4px;
+}
+
+.sheep-coding__dust--two {
+  left: 12px;
+  animation-delay: 0.18s;
+}
+
+.sheep-coding__text {
+  color: var(--fg-muted);
+}
+
+@keyframes sheep-coding-run {
+  0% { transform: translateX(0) translateY(1px) scaleX(1) rotate(-5deg); opacity: 0; }
+  12% { opacity: 1; }
+  32% { transform: translateX(10px) translateY(-2px) scaleX(0.92) rotate(4deg); }
+  58% { transform: translateX(18px) translateY(1px) scaleX(1.05) rotate(-3deg); }
+  88% { opacity: 1; }
+  100% { transform: translateX(34px) translateY(-1px) scaleX(1) rotate(3deg); opacity: 0; }
+}
+
+@keyframes sheep-coding-dust {
+  0%, 25% { transform: translateX(0) scale(0.4); opacity: 0; }
+  45% { opacity: 0.75; }
+  100% { transform: translateX(-9px) scale(1); opacity: 0; }
+}
+
 .chat-step--thought .chat-step__inline,
 .chat-step--verify .chat-step__inline {
   color: var(--fg);
@@ -1878,6 +2037,54 @@
   flex-direction: column;
   gap: 2px;
   color: var(--fg);
+}
+
+.ask-step__question {
+  display: inline;
+  color: var(--fg-default);
+}
+
+.ask-step__options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.ask-step__option {
+  border: 1px solid var(--border-edge);
+  border-radius: 4px;
+  padding: 2px 7px;
+  color: var(--fg-muted);
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.ask-step__io {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 11.5px;
+}
+
+.ask-step__in,
+.ask-step__out {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.ask-step__io-label {
+  color: var(--fg-muted);
+  font-weight: 600;
+  min-width: 24px;
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.05em;
+}
+
+.ask-step__answer {
+  color: var(--fg-default);
 }
 
 .chat-step--tool .chat-step__tool-head {
@@ -1894,6 +2101,265 @@
 
 .chat-step--tool .chat-step__tool-head:hover .chat-step__inline {
   text-decoration: underline;
+}
+
+/* +N / -M counter that sits on the tool head row for successful edit_file. */
+.chat-step__diff-summary {
+  display: inline-block;
+  margin-left: 8px;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 11px;
+  padding: 0 6px;
+  border-radius: 3px;
+  background: rgba(63, 185, 80, 0.12);
+  color: #8cc796;
+  border: 1px solid rgba(63, 185, 80, 0.32);
+}
+
+.chat-step__exit {
+  display: inline-block;
+  margin-left: 8px;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 11px;
+  padding: 0 6px;
+  border-radius: 3px;
+  background: rgba(63, 185, 80, 0.12);
+  color: #8cc796;
+  border: 1px solid rgba(63, 185, 80, 0.32);
+}
+
+.chat-step__exit--bad {
+  background: rgba(203, 36, 37, 0.12);
+  color: #f48771;
+  border: 1px solid rgba(203, 36, 37, 0.32);
+}
+
+/* ─────────────── edit_file thumbnail diff ─────────────── */
+
+.edit-diff {
+  margin: 6px 0 0;
+  border: 1px solid var(--border-faint);
+  border-radius: 4px;
+  background: var(--bg-secondary, #1a1a1a);
+  overflow: hidden;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 11.5px;
+}
+
+.edit-diff__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 8px;
+  background: rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid var(--border-faint);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+}
+
+.edit-diff__path {
+  color: var(--fg-default);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.edit-diff__line {
+  color: var(--fg-muted);
+  margin-left: 2px;
+}
+
+.edit-diff__hint {
+  color: var(--fg-muted);
+  font-style: italic;
+}
+
+.edit-diff__head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.edit-diff__open {
+  background: transparent;
+  border: 1px solid var(--border-edge);
+  color: var(--accent);
+  padding: 2px 8px;
+  font-size: 11px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.edit-diff__open:hover {
+  background: var(--accent-soft);
+}
+
+.edit-diff__collapse {
+  background: transparent;
+  border: 1px solid var(--border-edge);
+  color: var(--fg-muted);
+  padding: 0;
+  width: 22px;
+  height: 22px;
+  font-size: 12px;
+  line-height: 1;
+  border-radius: 3px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.edit-diff__collapse:hover {
+  color: var(--fg-default);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.edit-diff__body {
+  max-height: 320px;
+  overflow: auto;
+  padding: 2px 0;
+}
+
+.edit-diff__row {
+  display: grid;
+  grid-template-columns: 44px 14px 1fr;
+  align-items: baseline;
+  gap: 6px;
+  padding: 0 8px;
+  line-height: 1.5;
+  white-space: pre;
+  overflow: hidden;
+}
+
+.edit-diff__row--del {
+  background: rgba(203, 36, 37, 0.08);
+}
+
+.edit-diff__row--add {
+  background: rgba(35, 134, 54, 0.10);
+}
+
+.edit-diff__row--ctx {
+  background: transparent;
+}
+
+.edit-diff__row--ellipsis {
+  background: transparent;
+  color: var(--fg-muted);
+  font-style: italic;
+}
+
+.edit-diff__num {
+  color: var(--fg-faint);
+  text-align: right;
+  font-size: 10.5px;
+}
+
+.edit-diff__sign {
+  width: 14px;
+  text-align: center;
+  font-weight: 700;
+}
+
+.edit-diff__row--del .edit-diff__sign {
+  color: #f48771;
+}
+
+.edit-diff__row--add .edit-diff__sign {
+  color: #81b88b;
+}
+
+.edit-diff__text {
+  white-space: pre;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg-default);
+}
+
+/* Variant used inside the tool-confirm bar — slightly tighter, no scroll. */
+.edit-diff--confirm {
+  margin: 4px 0 0;
+}
+
+.edit-diff--confirm .edit-diff__body {
+  max-height: 200px;
+}
+
+.edit-diff--confirm .edit-diff__row {
+  grid-template-columns: 14px 1fr;
+}
+
+.edit-diff--confirm .edit-diff__num {
+  display: none;
+}
+
+/* Variant used inline in the timeline before approval / execution. Slimmer
+ * column layout (no startLine yet) and a subtle dashed border so the user
+ * reads it as "proposed, not yet applied". */
+.edit-diff--pending {
+  border-style: dashed;
+  border-color: var(--border-edge);
+}
+
+.edit-diff--pending .edit-diff__row {
+  grid-template-columns: 14px 1fr;
+}
+
+.edit-diff--pending .edit-diff__num {
+  display: none;
+}
+
+.edit-diff--pending .edit-diff__hint {
+  margin-left: 6px;
+  color: var(--accent);
+  font-style: normal;
+  font-size: 10.5px;
+}
+
+/* multi_edit: a stack of mini per-edit diff blocks inside one card. */
+.edit-diff__body--multi {
+  gap: 6px;
+}
+.edit-diff__entry {
+  border: 1px solid var(--border-edge);
+  border-radius: 4px;
+  padding: 4px 6px;
+  background: rgba(255, 255, 255, 0.012);
+}
+.edit-diff__entry + .edit-diff__entry {
+  margin-top: 6px;
+}
+.edit-diff__entry-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10.5px;
+  color: var(--fg-muted);
+  margin-bottom: 3px;
+}
+.edit-diff__entry-num {
+  font-weight: 600;
+  color: var(--fg-faint);
+}
+.edit-diff__entry-line {
+  color: var(--fg-faint);
+}
+.edit-diff__entry-stat {
+  margin-left: auto;
+  color: var(--fg-muted);
+}
+
+/* Pending tag on the tool head when an edit_file is awaiting approval. */
+.chat-step__diff-summary--pending {
+  color: var(--accent);
+  border: 1px dashed var(--border-edge);
+  padding: 0 6px;
+  border-radius: 3px;
+  font-size: 10.5px;
 }
 
 .chat-step__tool-output {
@@ -2218,6 +2684,274 @@
   gap: 6px;
 }
 
+.tool-confirm__actions--wrap {
+  flex-wrap: wrap;
+}
+
+.tool-confirm__button {
+  background: transparent;
+  border: 1px solid var(--border-edge);
+  color: var(--fg-default);
+  padding: 5px 12px;
+  font-size: 12px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.tool-confirm__button:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.tool-confirm__button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.tool-confirm__choice {
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-confirm__choice-label {
+  color: var(--fg-muted);
+  margin-right: 4px;
+}
+
+.tool-confirm__feedback {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.tool-confirm__feedback-input {
+  flex: 1 1 auto;
+  min-width: 180px;
+  background: var(--bg-editor);
+  border: 1px solid var(--border-edge);
+  border-radius: 3px;
+  color: var(--fg-default);
+  font: inherit;
+  font-size: 12px;
+  padding: 5px 8px;
+  outline: none;
+}
+
+.tool-confirm__feedback-input:focus {
+  border-color: var(--fg-muted);
+}
+
+/* Compact variant — used when the diff is already inline in the chat
+ * timeline, so the bar only needs the label, one-line summary, and the
+ * three decision buttons. */
+.tool-confirm--compact {
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+}
+
+.tool-confirm--compact .tool-confirm__body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.tool-confirm--compact .tool-confirm__title {
+  margin-bottom: 2px;
+}
+
+.tool-confirm--compact .tool-confirm__detail {
+  max-height: 48px;
+  font-size: 11px;
+}
+
+.tool-confirm--compact .tool-confirm__actions {
+  flex-shrink: 0;
+}
+
+.tool-confirm--ask {
+  align-items: flex-start;
+}
+
+.tool-confirm--ask .tool-confirm__actions {
+  flex: 0 1 auto;
+  max-width: 55%;
+}
+
+/* ─────────────── Ask dialog (osheep code) ─────────────── */
+
+.ask-dialog__backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.ask-dialog {
+  width: min(520px, calc(100vw - 48px));
+  max-width: 50vw;
+  max-height: min(480px, 50vh);
+  overflow: auto;
+  background: #2b2b2b;
+  border: 1px solid #0e7ad8;
+  border-radius: 10px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(14, 122, 216, 0.2) inset;
+  color: var(--fg-default);
+  padding: 14px 14px 12px;
+}
+
+.ask-dialog__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.ask-dialog__tabs {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.ask-dialog__tab {
+  color: var(--fg-muted);
+  font-size: 13px;
+  padding-bottom: 6px;
+  border-bottom: 2px solid transparent;
+}
+
+.ask-dialog__tab.is-active {
+  color: var(--fg-default);
+  border-bottom-color: #0e8ff2;
+}
+
+.ask-dialog__close {
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  font-size: 30px;
+  line-height: 1;
+  padding: 0;
+}
+
+.ask-dialog__close:hover:not(:disabled) {
+  color: var(--fg-default);
+}
+
+.ask-dialog__question {
+  color: var(--fg-strong);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.45;
+  margin-bottom: 12px;
+}
+
+.ask-dialog__options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ask-dialog__option {
+  display: grid;
+  grid-template-columns: 28px 1fr;
+  gap: 8px;
+  align-items: flex-start;
+  cursor: pointer;
+  color: var(--fg-default);
+}
+
+.ask-dialog__option input[type="radio"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 18px;
+  height: 18px;
+  margin: 1px 0 0;
+  border-radius: 50%;
+  border: 2px solid #545454;
+  background: transparent;
+  position: relative;
+}
+
+.ask-dialog__option input[type="radio"]:checked {
+  border-color: #0e8ff2;
+}
+
+.ask-dialog__option input[type="radio"]:checked::after {
+  content: "";
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  background: #0e8ff2;
+}
+
+.ask-dialog__option-title {
+  display: block;
+  color: var(--fg-default);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.ask-dialog__other-input {
+  width: 100%;
+  margin-top: 8px;
+  box-sizing: border-box;
+  background: #1f1f1f;
+  border: 1px solid #0e8ff2;
+  border-radius: 5px;
+  color: var(--fg-default);
+  font: inherit;
+  font-size: 13px;
+  padding: 9px 11px;
+  outline: none;
+}
+
+.ask-dialog__other-input:disabled {
+  border-color: var(--border-edge);
+  opacity: 0.6;
+}
+
+.ask-dialog__submit {
+  width: 100%;
+  margin-top: 12px;
+  background: #0e83d8;
+  border: none;
+  border-radius: 5px;
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 14px;
+  text-align: left;
+}
+
+.ask-dialog__submit:hover:not(:disabled) {
+  background: #1192ed;
+}
+
+.ask-dialog__submit:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.ask-dialog__esc {
+  margin-top: 8px;
+  color: var(--fg-muted);
+  font-size: 11px;
+}
+
 .ghost-btn {
   background: transparent;
   border: 1px solid var(--border);
@@ -2391,8 +3125,8 @@
 }
 
 .chat-markdown .markdown-todo[data-state="done"] > input[type="checkbox"] {
-  background: #3fb950;
-  border-color: #3fb950;
+  background: rgba(255, 255, 255, 0.15);
+  border-color: rgba(255, 255, 255, 0.3);
 }
 
 .chat-markdown .markdown-todo[data-state="done"] > input[type="checkbox"]::after {
@@ -2402,28 +3136,31 @@
   top: 0px;
   width: 4px;
   height: 7px;
-  border: solid #0d1117;
-  border-width: 0 1.6px 1.6px 0;
+  border: solid var(--fg-default);
+  border-width: 0 2px 2px 0;  /* 从1.6px增加到2px，让勾号更清晰 */
   transform: rotate(40deg);
 }
 
 .chat-markdown .markdown-todo[data-state="doing"] > input[type="checkbox"] {
   background: transparent;
-  border-color: #58a6ff;
+  border-color: rgba(255, 255, 255, 0.3);
   position: relative;
 }
 
 .chat-markdown .markdown-todo[data-state="doing"] > input[type="checkbox"]::after {
-  content: "";
+  content: "*";
   position: absolute;
   left: 50%;
   top: 50%;
-  width: 5px;
-  height: 5px;
-  background: #58a6ff;
-  border-radius: 50%;
+  width: auto;
+  height: auto;
+  background: transparent;
+  color: var(--fg-default);
+  font-size: 14px;  /* 从10px增大到14px，让星号填满checkbox */
+  line-height: 1;
+  font-weight: 700;  /* 加粗让星号更明显 */
   transform: translate(-50%, -50%);
-  animation: chat-step-icon-pulse 1.6s ease-in-out infinite;
+  animation: none;
 }
 
 @keyframes todo-doing-pulse {
@@ -2446,14 +3183,7 @@
 }
 
 .chat-markdown .markdown-todo[data-state="doing"] {
-  color: #58a6ff;
-}
-
-.chat-markdown .markdown-todo[data-state="doing"] [data-doing="1"]::after {
-  content: " · in progress";
-  color: #58a6ff;
-  font-size: 11px;
-  font-style: italic;
+  color: var(--fg-default);
 }
 
 /* ─────────────── Chat timeline hairlines + shimmer ─────────────── */
@@ -2498,36 +3228,10 @@
   pointer-events: none;
 }
 
-/* Subtle "thinking" shimmer over the currently-streaming step body. Uses a
- * low-alpha white sweep instead of a colored highlight so the chat feels
- * lively without clashing with VS Code's neutral palette. */
+/* Streaming steps stay visually quiet; the small sheep indicator next to the
+ * label carries the motion instead of a full-row shimmer. */
 .chat-step.is-streaming .chat-step__body {
   position: relative;
-}
-
-.chat-step.is-streaming .chat-step__body::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  border-radius: 4px;
-  background: linear-gradient(
-    100deg,
-    transparent 35%,
-    rgba(255, 255, 255, 0.06) 50%,
-    transparent 65%
-  );
-  background-size: 220% 100%;
-  animation: chat-step-shimmer 1.8s linear infinite;
-}
-
-@keyframes chat-step-shimmer {
-  0% {
-    background-position: 220% 0;
-  }
-  100% {
-    background-position: -120% 0;
-  }
 }
 
 /* Tiny pulse on the icon of the running step so the user clearly sees
@@ -2680,12 +3384,13 @@
 
 .auto-allow-panel-v2 {
   margin: 0 12px 8px;
-  padding: 12px 14px 10px;
+  padding: 10px 12px 8px;
   background: var(--bg-shell);
   border: 1px solid var(--border-edge);
   border-radius: 6px;
-  font-size: 12.5px;
+  font-size: 12px;
   color: var(--fg-default);
+  max-width: 50vw;
 }
 
 .auto-allow-panel-v2__title {
@@ -2695,12 +3400,12 @@
   font-weight: 500;
   color: var(--fg-default);
   margin-bottom: 2px;
-  font-size: 12.5px;
+  font-size: 12px;
 }
 
 .auto-allow-panel-v2__title-icon {
-  width: 14px;
-  height: 14px;
+  width: 13px;
+  height: 13px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -2709,8 +3414,8 @@
 
 .auto-allow-panel-v2__subtitle {
   color: var(--fg-muted);
-  font-size: 11.5px;
-  margin-bottom: 12px;
+  font-size: 11px;
+  margin-bottom: 10px;
 }
 
 .auto-allow-panel-v2__group {
@@ -2721,19 +3426,19 @@
 }
 
 .auto-allow-panel-v2__group-label {
-  font-size: 10px;
+  font-size: 9px;
   text-transform: uppercase;
   letter-spacing: 0.1em;
   color: var(--fg-faint);
-  margin: 6px 0 2px;
+  margin: 4px 0 2px;
 }
 
 .auto-allow-panel-v2__row {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 6px 8px;
-  border-radius: 6px;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 4px;
   cursor: pointer;
   user-select: none;
   transition: background 0.12s;
@@ -2746,10 +3451,10 @@
 .auto-allow-panel-v2__check {
   appearance: none;
   -webkit-appearance: none;
-  width: 16px;
-  height: 16px;
+  width: 14px;
+  height: 14px;
   border: 1.5px solid var(--fg-faint);
-  border-radius: 4px;
+  border-radius: 3px;
   flex-shrink: 0;
   position: relative;
   cursor: pointer;
@@ -2765,12 +3470,12 @@
 .auto-allow-panel-v2__check:checked::after {
   content: "";
   position: absolute;
-  left: 4px;
+  left: 3px;
   top: 1px;
-  width: 5px;
-  height: 9px;
+  width: 4px;
+  height: 7px;
   border: solid #fff;
-  border-width: 0 1.8px 1.8px 0;
+  border-width: 0 1.5px 1.5px 0;
   transform: rotate(40deg);
 }
 
@@ -2787,17 +3492,18 @@
   display: flex;
   align-items: center;
   gap: 6px;
+  font-size: 11.5px;
 }
 
 .auto-allow-panel-v2__row-hint {
   color: var(--fg-muted);
-  font-size: 11px;
+  font-size: 10px;
   margin-top: 1px;
 }
 
 .auto-allow-panel-v2__row-icon {
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -2847,15 +3553,25 @@
 }
 
 /* Active-session badge in the sidebar list */
-.ai-panel__item-active-dot {
-  width: 6px;
-  height: 6px;
+.ai-panel__item-status {
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
-  background: var(--fg-default);
-  margin-right: 6px;
-  display: inline-block;
-  animation: chat-step-icon-pulse 1.6s ease-in-out infinite;
-  flex-shrink: 0;
+  border: 1px solid var(--border-edge);
+  opacity: 0.55;
+}
+
+.ai-panel__item-status.is-running {
+  width: 10px;
+  height: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.58);
+  border-left-color: transparent;
+  opacity: 0.9;
+  animation: ai-session-spin 1.1s linear infinite;
+}
+
+@keyframes ai-session-spin {
+  to { transform: rotate(360deg); }
 }
 
 
@@ -4449,4 +5165,117 @@
   max-width: 120px;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* ─────────────── run in/out card ─────────────── */
+
+.run-io {
+  margin: 6px 0 0;
+  border: 1px solid var(--border-faint);
+  border-radius: 4px;
+  background: var(--bg-secondary, #1a1a1a);
+  overflow: hidden;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 11.5px;
+}
+
+.run-io__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  background: rgba(255, 255, 255, 0.02);
+  border-bottom: 1px solid var(--border-faint);
+}
+
+.run-io__prompt {
+  color: var(--fg-muted);
+  font-weight: 600;
+}
+
+.run-io__cmd {
+  flex: 1;
+  color: var(--fg-default);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.run-io__head-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.run-io__dur {
+  color: var(--fg-faint);
+  font-size: 10.5px;
+}
+
+.run-io__exit {
+  display: inline-block;
+  font-size: 10.5px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(63, 185, 80, 0.12);
+  color: #8cc796;
+  border: 1px solid rgba(63, 185, 80, 0.32);
+}
+
+.run-io__exit--bad {
+  background: rgba(203, 36, 37, 0.12);
+  color: #f48771;
+  border: 1px solid rgba(203, 36, 37, 0.32);
+}
+
+.run-io__exit--pending {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--fg-muted);
+  border: 1px solid var(--border-faint);
+}
+
+.run-io__body {
+  padding: 6px 8px;
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--bg-editor);
+}
+
+.run-io__meta {
+  color: var(--fg-faint);
+  font-size: 10.5px;
+  margin-bottom: 4px;
+}
+
+.run-io__line {
+  color: var(--fg-default);
+  white-space: pre;
+  line-height: 1.4;
+}
+
+.run-io__line--err {
+  color: #f48771;
+}
+
+.run-io__stream-label {
+  color: var(--fg-muted);
+  font-size: 10.5px;
+  margin-top: 8px;
+  margin-bottom: 2px;
+  font-style: italic;
+}
+
+.run-io__more {
+  color: var(--fg-muted);
+  font-style: italic;
+  margin-top: 4px;
+}
+
+.run-io--pending .run-io__head {
+  border-bottom: none;
+}
+
+.run-io--pending .run-io__body {
+  max-height: none;
 }

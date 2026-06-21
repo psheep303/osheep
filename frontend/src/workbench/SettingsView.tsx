@@ -276,12 +276,16 @@ function ProviderCard({
           className="settings-view__input"
           value={provider.kind}
           disabled={disabled}
-          onChange={(e) =>
-            onChange({ kind: e.target.value === "anthropic" ? "anthropic" : "openai" })
-          }
+          onChange={(e) => {
+            const v = e.target.value;
+            onChange({
+              kind: v === "anthropic" ? "anthropic" : v === "claude-code" ? "claude-code" : "openai"
+            });
+          }}
         >
           <option value="openai">OpenAI 兼容（/chat/completions）</option>
-          <option value="anthropic">Anthropic / Claude（/v1/messages）</option>
+          <option value="anthropic">Anthropic API（/v1/messages）</option>
+          <option value="claude-code">Claude Code 原生方式</option>
         </select>
       </div>
       <div className="provider-card__row">
@@ -291,7 +295,7 @@ function ProviderCard({
           value={provider.baseUrl}
           disabled={disabled}
           placeholder={
-            provider.kind === "anthropic"
+            provider.kind === "anthropic" || provider.kind === "claude-code"
               ? "https://api.anthropic.com/v1"
               : "https://api.openai.com/v1"
           }

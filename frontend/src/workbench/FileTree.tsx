@@ -67,6 +67,12 @@ interface FileTreeProps {
   onPathDeleted: (path: string) => void;
   decorations: Map<string, FileDecoration>;
   onFsChange?: () => void;
+  /**
+   * Bumped by the workbench to force a tree reload (e.g. after osheep code
+   * mutates files). A change in this number reloads the root and every
+   * expanded directory, preserving expansion state.
+   */
+  refreshSignal?: number;
 }
 
 function joinPath(parent: string, name: string): string {
@@ -101,6 +107,7 @@ export function FileTree({
   onPathDeleted,
   decorations,
   onFsChange,
+  refreshSignal,
 }: FileTreeProps) {
   const [children, setChildren] = useState<FsNode[]>([]);
   const [draft, setDraft] = useState<DraftKind | null>(null);
@@ -125,6 +132,16 @@ export function FileTree({
     setTreeVersion((v) => v + 1);
     onFsChange?.();
   };
+
+  // External refresh trigger (osheep code mutated files). Skip the mount pass
+  // and only react to real changes, then bump treeVersion so the root and
+  // every expanded directory reload — the same path as the 刷新 button.
+  const prevSignalRef = useRef(refreshSignal);
+  useEffect(() => {
+    if (prevSignalRef.current === refreshSignal) return;
+    prevSignalRef.current = refreshSignal;
+    setTreeVersion((v) => v + 1);
+  }, [refreshSignal]);
 
   const submitDraftAt = async (dir: string, kind: DraftKind, name: string) => {
     const trimmed = name.trim();
