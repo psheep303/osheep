@@ -575,16 +575,17 @@ export type ChatRole = "user" | "assistant" | "tool";
 /** Step records attached to assistant messages by osheep code. */
 export type ChatStep =
   | { kind: "plan"; items: string[] }
-  | { kind: "thought"; id: string; text: string }
+  | { kind: "thought"; id: string; text: string; startedAt?: number; endedAt?: number }
   | {
       kind: "tool";
       id: string;
       tool: ToolKind;
       args: unknown;
-      status: "running" | "ok" | "err" | "denied";
+      status: "queued" | "running" | "ok" | "err" | "denied" | "cached";
       result?: unknown;
       error?: string;
     }
+  | { kind: "ask"; id?: string; question: string; options: string[]; answer?: string }
   | { kind: "verify"; text: string }
   | { kind: "text"; text: string };
 
@@ -673,7 +674,7 @@ export async function deleteSession(
 export interface AiChatMessage {
   role: "system" | "user" | "assistant" | "tool";
   content: string;
-  /** present when role === "tool" — used to correlate with the originating tool_call */
+  /** present when role === "tool"  - used to correlate with the originating tool_call */
   tool_call_id?: string;
 }
 
@@ -681,7 +682,7 @@ export async function fetchProviderModels(
   workspaceId: string,
   baseUrl: string,
   apiKey: string,
-  kind: "openai" | "anthropic" = "openai"
+  kind: "openai" | "anthropic" | "claude-code" = "openai"
 ): Promise<string[]> {
   const { models } = await http.post<{ models: string[] }>(
     `/api/workspaces/${encodeURIComponent(workspaceId)}/ai/models`,
@@ -697,7 +698,7 @@ export async function aiChat(
     apiKey: string;
     model: string;
     messages: AiChatMessage[];
-    kind?: "openai" | "anthropic";
+    kind?: "openai" | "anthropic" | "claude-code";
   }
 ): Promise<{ content: string }> {
   return await http.post(
@@ -716,18 +717,19 @@ export async function aiChat(
  * Network or upstream errors reject with an Error whose message is the
  * server-supplied reason (or fetch failure).
  */
-export async function aiChatStream(
+async function aiChatStreamOnce(
   workspaceId: string,
   input: {
     baseUrl: string;
     apiKey: string;
     model: string;
     messages: AiChatMessage[];
-    kind?: "openai" | "anthropic";
+    kind?: "openai" | "anthropic" | "claude-code";
     reasoning?: { effort: "off" | "minimal" | "low" | "medium" | "high" };
   },
   onDelta: (chunk: string) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  onReasoningDelta?: (chunk: string) => void
 ): Promise<{ content: string; aborted: boolean }> {
   const url = `/api/workspaces/${encodeURIComponent(
     workspaceId
@@ -786,6 +788,14 @@ export async function aiChatStream(
       } catch {
         /* ignore malformed payload */
       }
+    } else if (event === "reasoning") {
+      try {
+        const obj = JSON.parse(dataLine) as { content?: string };
+        const piece = typeof obj.content === "string" ? obj.content : "";
+        if (piece) onReasoningDelta?.(piece);
+      } catch {
+        /* ignore malformed payload */
+      }
     } else if (event === "done") {
       done = true;
     } else if (event === "error") {
@@ -817,7 +827,7 @@ export async function aiChatStream(
         if (line.startsWith("event:")) {
           event = line.slice(6).trim();
         } else if (line.startsWith("data:")) {
-          // Append (in case of multi-line data — rare here but safe)
+          // Append (in case of multi-line data  - rare here but safe)
           const piece = line.slice(5).trimStart();
           dataLine = dataLine ? dataLine + "\n" + piece : piece;
         }
@@ -845,11 +855,84 @@ export async function aiChatStream(
   return { content: acc, aborted };
 }
 
+export async function aiChatStream(
+  workspaceId: string,
+  input: {
+    baseUrl: string;
+    apiKey: string;
+    model: string;
+    messages: AiChatMessage[];
+    kind?: "openai" | "anthropic" | "claude-code";
+    reasoning?: { effort: "off" | "minimal" | "low" | "medium" | "high" };
+  },
+  onDelta: (chunk: string) => void,
+  signal?: AbortSignal,
+  onReasoningDelta?: (chunk: string) => void
+): Promise<{ content: string; aborted: boolean }> {
+  const maxRetries = 3;
+  const maxAttempts = 1 + maxRetries;
+  let lastError: unknown = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    let emitted = false;
+    try {
+      const result = await aiChatStreamOnce(
+        workspaceId,
+        input,
+        (chunk) => {
+          emitted = true;
+          onDelta(chunk);
+        },
+        signal,
+        (chunk) => {
+          emitted = true;
+          onReasoningDelta?.(chunk);
+        }
+      );
+      return result;
+    } catch (e) {
+      lastError = e;
+      if (signal?.aborted || emitted || !isRetryableStreamError(e) || attempt >= maxAttempts) {
+        throw e;
+      }
+      await sleep(350 * attempt, signal);
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+function isRetryableStreamError(e: unknown): boolean {
+  if (e instanceof ApiClientError) {
+    if (e.status === 408 || e.status === 425 || e.status === 429) return true;
+    return e.status >= 500 && e.status < 600;
+  }
+  return true;
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const id = window.setTimeout(resolve, ms);
+    signal?.addEventListener(
+      "abort",
+      () => {
+        window.clearTimeout(id);
+        resolve();
+      },
+      { once: true }
+    );
+  });
+}
+
 // ─── AI tool exec (osheep code) ───
 
 export type ToolKind = "read" | "write" | "run";
 
-export interface ReadFileArgs { kind: "file"; path: string }
+export interface ReadFileArgs {
+  kind: "file";
+  path: string;
+  startLine?: number;
+  lineCount?: number;
+}
 export interface ReadListArgs { kind: "list"; path: string; includeHidden?: boolean }
 export interface ReadSearchArgs {
   kind: "search";
@@ -872,6 +955,11 @@ export interface EditFileArgs {
   oldString: string;
   newString: string;
 }
+export interface MultiEditArgs {
+  kind: "multi_edit";
+  path: string;
+  edits: Array<{ oldString: string; newString: string }>;
+}
 export interface MoveArgs { kind: "move"; from: string; to: string }
 export interface DeleteArgs { kind: "delete"; path: string; recursive?: boolean }
 export interface CreateArgs {
@@ -883,6 +971,7 @@ export type WriteArgs =
   | WriteFileArgs
   | AppendFileArgs
   | EditFileArgs
+  | MultiEditArgs
   | MoveArgs
   | DeleteArgs
   | CreateArgs;
@@ -897,12 +986,83 @@ export interface RunArgs {
 export interface RunResult {
   command: string;
   cwd: string;
+  shell?: string;
   exitCode: number | null;
   signal: string | null;
   durationMs: number;
   stdout: string;
   stderr: string;
   truncated: boolean;
+  attempts?: Array<{
+    shell: string;
+    exitCode: number | null;
+    signal: string | null;
+    durationMs: number;
+  }>;
+}
+
+/**
+ * Structured diff payload returned by `edit_file`. Used by the chat UI to
+ * render an inline thumbnail and (on click) a full Monaco DiffEditor tab.
+ *
+ * `before` / `after` are full file contents  - heavy fields that the chat
+ * runtime strips before sending the tool result back to the model so the
+ * conversation context doesn't double-quote the whole file.
+ */
+export interface EditFileDiff {
+  oldString: string;
+  newString: string;
+  startLine: number;
+  endLineBefore: number;
+  endLineAfter: number;
+  added: number;
+  removed: number;
+  before: string;
+  after: string;
+}
+
+export interface EditFileResult {
+  ok: true;
+  kind: "edit_file";
+  path: string;
+  size: number;
+  mtime: number;
+  replacements: number;
+  diff: EditFileDiff;
+}
+
+/**
+ * Per-edit diff entry inside a `multi_edit` result. Same shape as
+ * `EditFileDiff` minus the heavy `before` / `after` strings  - those live once
+ * at the top of the multi_edit `diff` payload covering the whole file
+ * before/after the entire batch.
+ */
+export interface MultiEditEntry {
+  oldString: string;
+  newString: string;
+  startLine: number;
+  endLineBefore: number;
+  endLineAfter: number;
+  added: number;
+  removed: number;
+}
+
+export interface MultiEditDiff {
+  edits: MultiEditEntry[];
+  added: number;
+  removed: number;
+  before: string;
+  after: string;
+}
+
+export interface MultiEditResult {
+  ok: true;
+  kind: "multi_edit";
+  path: string;
+  size: number;
+  mtime: number;
+  replacements: number;
+  diff: MultiEditDiff;
 }
 
 export async function execRead(
@@ -938,53 +1098,105 @@ export async function execRun(
 // ─── osheep code tag-aware streaming ───
 //
 // The backend `/ai/chat/stream` still emits a raw delta stream. osheep code's
-// tag protocol (<plan>/<thought>/<tool>/<verify>) is parsed here, on the
+// tag protocol (<tasks>/<thought>/<tool>/<ask>/<verify>) is parsed here, on the
 // client. The caller passes semantic callbacks instead of a single onDelta.
 
 export interface OsheepCodeStreamHandlers {
   onPlan?: (items: string[]) => void;
+  /**
+   * Fired once when a thought / reasoning node begins, so the UI can show a
+   * placeholder ("正在思考 - ) with the running animation. No per-token deltas
+   * are emitted  - see `onThought` for the atomic fill.
+   */
   onThoughtStart?: (id: string) => void;
-  onThoughtDelta?: (id: string, chunk: string) => void;
-  onThoughtEnd?: (id: string) => void;
+  /**
+   * Fired once when a thought / reasoning node is complete, carrying the FULL
+   * text. osheep code renders each timeline node atomically: the upstream
+   * request still streams, but a node only materialises (or fills its
+   * placeholder) once it has fully closed  - we never repaint a node mid-token.
+   */
+  onThought?: (id: string, text: string) => void;
   onTextDelta?: (chunk: string) => void;
   onToolCall?: (call: {
     id: string;
     tool: ToolKind;
     args: unknown;
   }) => void;
+  onAsk?: (ask: { id: string; question: string; options: string[] }) => void;
   onVerify?: (text: string) => void;
 }
 
 class TagStreamParser {
   private buffer = "";
-  private state: "outside" | "in_plan" | "in_thought" | "in_tool" | "in_verify" =
-    "outside";
+  private state:
+    | "outside"
+    | "in_plan"
+    | "in_thought"
+    | "in_tool"
+    | "in_tool_result"
+    | "in_ask"
+    | "in_verify" = "outside";
   private tagSeq = 0;
   private currentId = "";
+  private reasoningId: string | null = null;
+  private accReasoning = "";
   // Tool open-tag may carry attrs like name="run". We capture the full opening
   // tag text until we see the matching `>` before we know what tool it is.
   private toolName: ToolKind | null = null;
   private accInTag = "";
+  private expectedCloseTag = "";
 
   constructor(private readonly h: OsheepCodeStreamHandlers) {}
 
   feed(chunk: string) {
+    // A thought/reasoning node renders atomically: as soon as the model
+    // starts emitting tagged/plain content, the preceding reasoning phase is
+    // over, so flush it as one complete node (filling its placeholder).
+    this.flushReasoning();
     this.buffer += chunk;
     this.drain();
   }
 
+  feedReasoning(chunk: string) {
+    if (!chunk) return;
+    if (!this.reasoningId) {
+      this.reasoningId = this.nextId("rt");
+      this.accReasoning = "";
+      // Placeholder only  - content is buffered and emitted whole on flush.
+      this.h.onThoughtStart?.(this.reasoningId);
+    }
+    this.accReasoning += chunk;
+  }
+
+  /** Emit the buffered reasoning node atomically, if any is open. */
+  private flushReasoning() {
+    if (!this.reasoningId) return;
+    this.h.onThought?.(this.reasoningId, this.accReasoning.trim());
+    this.reasoningId = null;
+    this.accReasoning = "";
+  }
+
   finish() {
+    // Flush a still-open reasoning node as one complete thought.
+    this.flushReasoning();
     // Flush any pending text or in-tag content as best-effort.
     if (this.state === "outside" && this.buffer) {
       this.emitText(this.buffer);
       this.buffer = "";
     }
-    // Unclosed tags: surface accumulated content as plain text so user sees something.
-    if (this.state !== "outside" && this.accInTag) {
-      this.emitText(this.accInTag);
+    // Unclosed tags: surface accumulated content so the user sees something,
+    // except tool_result echoes which are never user-facing. An unclosed
+    // <thought> still fills its placeholder atomically via onThought.
+    if (this.state !== "outside" && this.state !== "in_tool_result" && this.accInTag) {
+      if (this.state === "in_thought" && this.currentId) {
+        this.h.onThought?.(this.currentId, this.accInTag.trim());
+      } else {
+        this.emitText(this.accInTag);
+      }
       this.accInTag = "";
     }
     this.state = "outside";
+    this.expectedCloseTag = "";
   }
 
   private emitText(t: string) {
@@ -1017,7 +1229,7 @@ class TagStreamParser {
           const consumed = this.tryConsumeBareToolCall();
           if (consumed === "ok") continue;
           if (consumed === "wait") return;
-          // "skip" — pattern didn't actually resolve to a tool call, fall
+          // "skip"  - pattern didn't actually resolve to a tool call, fall
           // through to normal `<` handling so we emit a single char as text
           // and keep scanning.
         } else if (bareIdx > 0) {
@@ -1030,11 +1242,8 @@ class TagStreamParser {
 
         const ltIdx = this.buffer.indexOf("<");
         if (ltIdx === -1) {
-          // No tag-start in sight — entire buffer is plain text.
-          if (this.buffer) {
-            this.emitText(this.buffer);
-            this.buffer = "";
-          }
+          // No complete node yet. Keep buffering plain text so the UI only
+          // receives completed nodes, not token-by-token deltas.
           return;
         }
         // Emit everything before the `<` as text.
@@ -1055,13 +1264,23 @@ class TagStreamParser {
           this.buffer = this.buffer.slice(gtIdx + 1);
           continue;
         }
-        // Not a tag we recognise — emit the `<` as text and continue scanning.
+        // Some upstreams/models echo host tool-result tags in the assistant
+        // stream. They are protocol noise, not user-facing text; consume them
+        // as a whole so raw JSON never appears in the timeline.
+        if (/^<tool_result\b[^>]*>$/i.test(opening)) {
+          this.state = "in_tool_result";
+          this.expectedCloseTag = "</tool_result>";
+          this.accInTag = "";
+          this.buffer = this.buffer.slice(gtIdx + 1);
+          continue;
+        }
+        // Not a tag we recognise  - emit the `<` as text and continue scanning.
         this.emitText("<");
         this.buffer = this.buffer.slice(1);
         continue;
       }
 
-      // Inside a tag — find the matching closing tag.
+      // Inside a tag  - find the matching closing tag.
       const closeTag = this.closingFor(this.state);
       const cIdx = this.buffer.indexOf(closeTag);
       if (cIdx === -1) {
@@ -1099,16 +1318,16 @@ class TagStreamParser {
     const m = this.buffer.match(/\n[ \t]*(?:Read|Write|Run|read|write|run)\s*\r?\n\s*\{/);
     if (!m || m.index === undefined) return -1;
     // Return the position of the newline so the caller emits text up to (and
-    // including) it before retrying — this keeps prose ending in a newline
+    // including) it before retrying  - this keeps prose ending in a newline
     // intact.
     return m.index + 1;
   }
 
   /**
    * Try to consume a bare tool call at the start of the buffer. Returns:
-   *   "ok"   — consumed a complete tool call and emitted it
-   *   "wait" — pattern looks right but the JSON args aren't complete yet
-   *   "skip" — pattern didn't match cleanly; let normal text handling resume
+   *   "ok"    - consumed a complete tool call and emitted it
+   *   "wait"  - pattern looks right but the JSON args aren't complete yet
+   *   "skip"  - pattern didn't match cleanly; let normal text handling resume
    */
   private tryConsumeBareToolCall(): "ok" | "wait" | "skip" {
     const m = this.buffer.match(
@@ -1118,7 +1337,7 @@ class TagStreamParser {
     const openIdx = m[0].length - 1; // index of `{` in the buffer
     const closeIdx = findMatchingBrace(this.buffer, openIdx);
     if (closeIdx === -1) {
-      // Args still streaming — wait for more.
+      // Args still streaming  - wait for more.
       return "wait";
     }
     const jsonStr = this.buffer.slice(openIdx, closeIdx + 1);
@@ -1126,6 +1345,12 @@ class TagStreamParser {
     try {
       args = JSON.parse(jsonStr);
     } catch {
+      return "skip";
+    }
+    // Only treat this as a tool call if the JSON actually looks like one of
+    // our tool argument shapes. Otherwise prose like "Read this:\n{...}" with
+    // an arbitrary object would get hijacked.
+    if (!looksLikeToolArgs(m[1]!.toLowerCase() as ToolKind, args)) {
       return "skip";
     }
     const toolName = m[1]!.toLowerCase() as ToolKind;
@@ -1140,13 +1365,18 @@ class TagStreamParser {
   }
 
   private closingFor(s: typeof this.state): string {
+    if (this.expectedCloseTag) return this.expectedCloseTag;
     switch (s) {
       case "in_plan":
-        return "</plan>";
+        return "</tasks>";
       case "in_thought":
         return "</thought>";
       case "in_tool":
         return "</tool>";
+      case "in_tool_result":
+        return "</tool_result>";
+      case "in_ask":
+        return "</ask>";
       case "in_verify":
         return "</verify>";
       default:
@@ -1156,8 +1386,12 @@ class TagStreamParser {
 
   private tryEnterTag(opening: string): boolean {
     const lower = opening.toLowerCase();
-    if (lower === "<plan>") {
+    if (lower === "<plan>" || lower === "<tasks>") {
+      // <tasks> is the new name; <plan> stays as a legacy alias and flows
+      // through the same state  - downstream `kind: "plan"` is the persistent
+      // data field, the UI label is "Tasks".
       this.state = "in_plan";
+      this.expectedCloseTag = lower === "<tasks>" ? "</tasks>" : "</plan>";
       this.accInTag = "";
       return true;
     }
@@ -1173,6 +1407,12 @@ class TagStreamParser {
       this.accInTag = "";
       return true;
     }
+    if (lower === "<ask>") {
+      this.state = "in_ask";
+      this.accInTag = "";
+      this.currentId = this.nextId("ask");
+      return true;
+    }
     // <tool name="run"> / <tool name='read'> / <tool name=write>
     const m = opening.match(/^<tool\b[^>]*\bname\s*=\s*["']?(read|write|run)["']?[^>]*>$/i);
     if (m) {
@@ -1186,13 +1426,10 @@ class TagStreamParser {
   }
 
   private onInTagChunk(part: string) {
-    if (this.state === "in_thought") {
-      this.accInTag += part;
-      this.h.onThoughtDelta?.(this.currentId, part);
-    } else {
-      // plan / verify / tool: accumulate, emit on close.
-      this.accInTag += part;
-    }
+    // Buffer only. Every semantic block  - including <thought>  - is emitted as
+    // one complete node on its closing tag, so the timeline never repaints a
+    // node mid-token (the upstream request still streams; the UI does not).
+    this.accInTag += part;
   }
 
   private onCloseTag() {
@@ -1211,9 +1448,21 @@ class TagStreamParser {
         .filter((l) => l.length > 0);
       this.h.onPlan?.(items);
     } else if (this.state === "in_thought") {
-      this.h.onThoughtEnd?.(this.currentId);
+      this.h.onThought?.(this.currentId, this.accInTag.trim());
     } else if (this.state === "in_verify") {
       this.h.onVerify?.(this.accInTag.trim());
+    } else if (this.state === "in_ask") {
+      const parsed = parseAskBody(this.accInTag);
+      if (parsed) {
+        this.h.onAsk?.({
+          id: this.currentId,
+          question: parsed.question,
+          options: parsed.options,
+        });
+      } else {
+        // Fall back to plain text so the user still sees the model's words.
+        this.emitText(this.accInTag);
+      }
     } else if (this.state === "in_tool" && this.toolName) {
       let parsedArgs: unknown = null;
       const trimmed = this.accInTag.trim();
@@ -1231,7 +1480,91 @@ class TagStreamParser {
     this.state = "outside";
     this.accInTag = "";
     this.toolName = null;
+    this.expectedCloseTag = "";
   }
+}
+
+/**
+ * Parse the body of an `<ask>` tag. Accepts:
+ *   - JSON object: {"question": "...", "options": ["a", "b"]}
+ *   - Lenient fallback: first non-empty line as question, lines starting with
+ *     `A.` / `B.` / `1.` / `-` etc. as options. This catches models that
+ *     forget the JSON shape (rare but cheap to support).
+ */
+function parseAskBody(
+  raw: string
+): { question: string; options: string[] } | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  // JSON path
+  if (trimmed.startsWith("{")) {
+    try {
+      const obj = JSON.parse(trimmed) as {
+        question?: unknown;
+        options?: unknown;
+      };
+      const question =
+        typeof obj.question === "string" ? obj.question.trim() : "";
+      const opts = Array.isArray(obj.options)
+        ? obj.options
+            .filter((o): o is string => typeof o === "string")
+            .map((o) => o.trim())
+            .filter((o) => o.length > 0)
+        : [];
+      if (question && opts.length >= 2) {
+        // Cap at 4 options; anything beyond is dropped.
+        return { question, options: opts.slice(0, 4) };
+      }
+    } catch {
+      /* fall through */
+    }
+  }
+  // Lenient: first non-empty line = question, subsequent list items =
+  // options. This is a best-effort fallback for models that didn't follow
+  // the JSON contract.
+  const lines = trimmed.split(/\r?\n/).map((l) => l.replace(/\s+$/, ""));
+  let question = "";
+  const options: string[] = [];
+  for (const ln of lines) {
+    const l = ln.replace(/^\s+/, "");
+    if (!l) continue;
+    const optMatch = l.match(/^(?:[-*+]|\(?[A-Da-d]\)|[A-Da-d][.)、]|\d+[.)、])\s*(.+)$/);
+    if (optMatch) {
+      options.push(optMatch[1]!.trim());
+    } else if (!question) {
+      question = l;
+    }
+  }
+  if (question && options.length >= 2) {
+    return { question, options: options.slice(0, 4) };
+  }
+  return null;
+}
+
+/**
+ * Cheap shape check for "this JSON object actually plausibly maps to the named
+ * osheep code tool argument set." Used by the bare-tool fallback to avoid
+ * hijacking prose like `Read this:\n{ "title": "..." }`.
+ */
+function looksLikeToolArgs(tool: ToolKind, args: unknown): boolean {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return false;
+  const a = args as Record<string, unknown>;
+  if (tool === "run") {
+    return typeof a.command === "string";
+  }
+  if (tool === "read") {
+    return a.kind === "file" || a.kind === "list" || a.kind === "search";
+  }
+  // write
+  return (
+    a.kind === "write_file" ||
+    a.kind === "append_file" ||
+    a.kind === "edit_file" ||
+    a.kind === "multi_edit" ||
+    a.kind === "move" ||
+    a.kind === "delete" ||
+    a.kind === "create"
+  );
 }
 
 /**
@@ -1287,7 +1620,7 @@ export async function aiChatStreamOsheepCode(
     apiKey: string;
     model: string;
     messages: AiChatMessage[];
-    kind?: "openai" | "anthropic";
+    kind?: "openai" | "anthropic" | "claude-code";
     reasoning?: { effort: "off" | "minimal" | "low" | "medium" | "high" };
   },
   handlers: OsheepCodeStreamHandlers,
@@ -1302,7 +1635,10 @@ export async function aiChatStreamOsheepCode(
       rawAcc += delta;
       parser.feed(delta);
     },
-    signal
+    signal,
+    (delta) => {
+      parser.feedReasoning(delta);
+    }
   );
   parser.finish();
   // `content` and `rawAcc` should match; keep `rawAcc` since it's the one we
@@ -1310,4 +1646,3 @@ export async function aiChatStreamOsheepCode(
   void content;
   return { rawAcc, aborted };
 }
-

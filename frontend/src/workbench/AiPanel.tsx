@@ -195,7 +195,10 @@ function SessionItem({ session, active, running, onOpen, onDelete }: SessionItem
           : session.title
       }
     >
-      {running && <span className="ai-panel__item-active-dot" aria-hidden />}
+      <span
+        className={"ai-panel__item-status" + (running ? " is-running" : "")}
+        aria-hidden
+      />
       <span className="ai-panel__item-title">
         {session.title || "新对话"}
       </span>

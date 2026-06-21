@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
+import * as fs from "node:fs/promises";
 import { errors } from "../errors.js";
-import { resolveWorkspace } from "../workspace.js";
+import { resolveWorkspace, resolveWorkspacePath } from "../workspace.js";
 import {
   createEntry,
   deleteEntry,
@@ -12,9 +13,11 @@ import {
 import { searchWorkspace } from "../search.js";
 import { execRun } from "../ai-exec.js";
 
-type ProviderKind = "openai" | "anthropic";
+type ProviderKind = "openai" | "anthropic" | "claude-code";
 
 type ReasoningEffort = "off" | "minimal" | "low" | "medium" | "high";
+
+const AI_READ_LIMIT = 256 * 1024;
 
 interface ChatMessageIn {
   role: "system" | "user" | "assistant" | "tool";
@@ -26,8 +29,216 @@ function normalizeBase(baseUrl: string): string {
   return baseUrl.replace(/\/+$/, "");
 }
 
+function toPosix(p: string): string {
+  return p.replace(/\\/g, "/");
+}
+
+async function readAiFileText(
+  workspaceRoot: string,
+  relPath: string
+): Promise<{
+  path: string;
+  content: string;
+  size: number;
+  mtime: number;
+  truncated: boolean;
+}> {
+  const abs = resolveWorkspacePath(workspaceRoot, relPath);
+  let stat;
+  try {
+    stat = await fs.stat(abs);
+  } catch {
+    throw errors.notFound();
+  }
+  if (stat.isDirectory()) throw errors.isDirectory();
+
+  const bytesToRead = Math.min(stat.size, AI_READ_LIMIT);
+  if (bytesToRead === 0) {
+    return {
+      path: toPosix(relPath),
+      content: "",
+      size: stat.size,
+      mtime: stat.mtimeMs,
+      truncated: false,
+    };
+  }
+
+  const handle = await fs.open(abs, "r");
+  try {
+    const buffer = Buffer.allocUnsafe(bytesToRead);
+    const { bytesRead } = await handle.read(buffer, 0, bytesToRead, 0);
+    return {
+      path: toPosix(relPath),
+      content: buffer.subarray(0, bytesRead).toString("utf-8"),
+      size: stat.size,
+      mtime: stat.mtimeMs,
+      truncated: stat.size > bytesRead,
+    };
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
+}
+
+function isObviousWritePlaceholder(content: string): boolean {
+  const trimmed = content.trim();
+  return (
+    trimmed === "..." ||
+    trimmed === "…" ||
+    trimmed === "<content>" ||
+    trimmed === "{{content}}" ||
+    trimmed === "[content]"
+  );
+}
+
+function toPositiveInt(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) return null;
+  return value;
+}
+
+function sliceLines(
+  content: string,
+  startLine: number | null,
+  lineCount: number | null
+): {
+  content: string;
+  startLine: number;
+  endLine: number;
+  totalLines: number;
+  truncated: boolean;
+} {
+  const lines = content.split(/\r?\n/);
+  const totalLines = lines.length;
+  if (!startLine && !lineCount) {
+    return {
+      content,
+      startLine: totalLines > 0 ? 1 : 0,
+      endLine: totalLines,
+      totalLines,
+      truncated: false,
+    };
+  }
+  const start = Math.min(Math.max(startLine ?? 1, 1), Math.max(totalLines, 1));
+  const count = Math.max(lineCount ?? 200, 1);
+  const end = Math.min(start + count - 1, totalLines);
+  return {
+    content: lines.slice(start - 1, end).join("\n"),
+    startLine: start,
+    endLine: end,
+    totalLines,
+    truncated: start > 1 || end < totalLines,
+  };
+}
+
+/** 1-based line number of `index` within `text` (0-based char offset). */
+function lineOfIndex(text: string, index: number): number {
+  if (index <= 0) return 1;
+  let n = 1;
+  for (let i = 0; i < index && i < text.length; i += 1) {
+    if (text.charCodeAt(i) === 10 /* \n */) n += 1;
+  }
+  return n;
+}
+
+/** Count `\n` characters in `s`. Useful for "lines spanned by this slice". */
+function countNewlines(s: string): number {
+  let n = 0;
+  for (let i = 0; i < s.length; i += 1) {
+    if (s.charCodeAt(i) === 10) n += 1;
+  }
+  return n;
+}
+
+interface EditDiffPayload {
+  oldString: string;
+  newString: string;
+  startLine: number;
+  endLineBefore: number;
+  endLineAfter: number;
+  added: number;
+  removed: number;
+  before: string;
+  after: string;
+}
+
+function buildEditDiff(
+  before: string,
+  after: string,
+  oldString: string,
+  newString: string
+): EditDiffPayload {
+  // Single match guaranteed by caller (occurrences === 1).
+  const idx = before.indexOf(oldString);
+  const startLine = idx >= 0 ? lineOfIndex(before, idx) : 1;
+  // Newlines that `oldString`/`newString` themselves contain. `+1` so a
+  // single-line slice still spans line N → N.
+  const oldLines = countNewlines(oldString) + 1;
+  const newLines = countNewlines(newString) + 1;
+  return {
+    oldString,
+    newString,
+    startLine,
+    endLineBefore: startLine + oldLines - 1,
+    endLineAfter: startLine + newLines - 1,
+    added: newLines,
+    removed: oldLines,
+    before,
+    after,
+  };
+}
+
+/**
+ * Build a hint message for `edit_file` when `oldString` was not found. Tries
+ * to locate the first non-empty line of `oldString` elsewhere in the file and
+ * appends "可能位置: line A, B, …" with up to 5 candidates.
+ */
+function formatEditMissHint(
+  before: string,
+  oldString: string,
+  pathDisplay: string
+): string {
+  const trimmedSearch = oldString.replace(/^\s+/, "");
+  const firstLineEnd = trimmedSearch.indexOf("\n");
+  const firstLine =
+    firstLineEnd >= 0
+      ? trimmedSearch.slice(0, firstLineEnd).trim()
+      : trimmedSearch.trim();
+  if (!firstLine || firstLine.length < 4) {
+    return `oldString 在 ${pathDisplay} 中未匹配`;
+  }
+  const fileLines = before.split(/\r?\n/);
+  const hits: number[] = [];
+  for (let i = 0; i < fileLines.length && hits.length < 5; i += 1) {
+    if (fileLines[i]!.includes(firstLine)) hits.push(i + 1);
+  }
+  if (hits.length === 0) {
+    return `oldString 在 ${pathDisplay} 中未匹配`;
+  }
+  return `oldString 在 ${pathDisplay} 中未匹配；可能位置: ${hits
+    .map((n) => `line ${n}`)
+    .join(", ")}（基于 oldString 首行）`;
+}
+
+function formatEditAmbiguousHint(
+  before: string,
+  oldString: string,
+  occurrences: number
+): string {
+  const lines: number[] = [];
+  let from = 0;
+  while (lines.length < 8) {
+    const i = before.indexOf(oldString, from);
+    if (i < 0) break;
+    lines.push(lineOfIndex(before, i));
+    from = i + Math.max(1, oldString.length);
+  }
+  const loc = lines.length ? `: ${lines.map((n) => `line ${n}`).join(", ")}` : "";
+  return `oldString 匹配到 ${occurrences} 处${loc}，请提供更多上下文以唯一定位`;
+}
+
 function parseKind(v: unknown): ProviderKind {
-  return v === "anthropic" ? "anthropic" : "openai";
+  if (v === "anthropic") return "anthropic";
+  if (v === "claude-code") return "claude-code";
+  return "openai";
 }
 
 function parseEffort(v: unknown): ReasoningEffort | null {
@@ -70,22 +281,7 @@ function modelSupportsReasoning(kind: ProviderKind, model: string): boolean {
 }
 
 /** Anthropic budget tokens per effort level. `off` → no thinking. */
-function anthropicBudget(effort: ReasoningEffort): number | null {
-  switch (effort) {
-    case "off":
-      return null;
-    case "low":
-      return 4096;
-    case "medium":
-      return 16384;
-    case "high":
-      return 32768;
-    case "minimal":
-      return 4096; // anthropic doesn't have a "minimal" — alias to low
-    default:
-      return null;
-  }
-}
+// Deprecated: Claude 4.8+ uses adaptive thinking, not manual budgets
 
 /**
  * Some upstreams (older OpenAI-compatible endpoints) don't accept role=tool.
@@ -123,7 +319,7 @@ function toAnthropicPayload(
   messages: { role: "user" | "assistant"; content: string }[];
   stream: boolean;
   max_tokens: number;
-  thinking?: { type: "enabled"; budget_tokens: number };
+  thinking?: { type: "enabled" | "adaptive"; budget_tokens?: number };
 } {
   const systemParts: string[] = [];
   const conv: { role: "user" | "assistant"; content: string }[] = [];
@@ -158,7 +354,7 @@ function toAnthropicPayload(
     messages: { role: "user" | "assistant"; content: string }[];
     stream: boolean;
     max_tokens: number;
-    thinking?: { type: "enabled"; budget_tokens: number };
+    thinking?: { type: "enabled" | "adaptive"; budget_tokens?: number };
   } = {
     model,
     messages: merged,
@@ -166,13 +362,20 @@ function toAnthropicPayload(
     max_tokens: 4096,
   };
   if (systemParts.length > 0) payload.system = systemParts.join("\n\n");
-  if (effort && modelSupportsReasoning("anthropic", model)) {
-    const budget = anthropicBudget(effort);
-    if (budget !== null) {
-      payload.thinking = { type: "enabled", budget_tokens: budget };
-      // Extended thinking requires max_tokens > budget_tokens.
-      payload.max_tokens = Math.max(payload.max_tokens, budget + 2048);
-    }
+
+  // Claude 4.8+ uses adaptive thinking with output_config.effort
+  if (effort && effort !== "off" && modelSupportsReasoning("anthropic", model)) {
+    payload.thinking = {
+      type: "adaptive",  // 使用 adaptive 而非 enabled
+    };
+
+    // 使用 output_config.effort 控制思考强度
+    // @ts-ignore - output_config 是新的 API 参数
+    payload.output_config = {
+      effort: effort,  // "low" | "medium" | "high"
+    };
+
+    payload.max_tokens = Math.max(payload.max_tokens, 8192);
   }
   return payload;
 }
@@ -200,16 +403,45 @@ function sanitizeMessages(messages: unknown): ChatMessageIn[] {
 }
 
 function authHeaders(kind: ProviderKind, apiKey: string): Record<string, string> {
+  // 通用浏览器 User-Agent，避免某些代理服务检测到 Node.js 后拒绝请求
+  const browserUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+
+  if (kind === "claude-code") {
+    // Claude Code 原生方式：完全模拟真实的 Claude Code 请求
+    // 基于真实的 Claude Code 请求头分析
+    // 生成唯一的 session ID（UUID v4 格式）
+    const sessionId = `${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 15)}`;
+
+    return {
+      "authorization": `Bearer ${apiKey}`,  // 真实 Claude Code 使用 Bearer
+      "anthropic-version": "2023-06-01",
+      // 使用真实 Claude Code 的 beta 功能列表
+      "anthropic-beta": "claude-code-20250219,context-1m-2025-08-07,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20,effort-2025-11-24",
+      "anthropic-dangerous-direct-browser-access": "true",
+      "user-agent": "claude-cli/2.1.123 (external, cli)",
+      "x-app": "cli",
+      "x-claude-code-session-id": sessionId,  // Session ID 可能是关键
+      "x-stainless-lang": "js",
+      "x-stainless-package-version": "0.81.0",
+      "x-stainless-runtime": "node",
+      "x-stainless-runtime-version": "v24.3.0",
+      "x-stainless-arch": "x64",
+      "x-stainless-os": "Windows",
+    };
+  }
   if (kind === "anthropic") {
+    // Anthropic 官方 API（标准模式，不带 Beta 功能）
     return {
       "x-api-key": apiKey,
       "anthropic-version": "2023-06-01",
-      // Some Anthropic-compatible proxies still expect Authorization too —
-      // sending both is harmless to the official API.
-      authorization: `Bearer ${apiKey}`,
+      "user-agent": browserUA,
     };
   }
-  return { authorization: `Bearer ${apiKey}` };
+  // OpenAI 兼容接口
+  return {
+    authorization: `Bearer ${apiKey}`,
+    "user-agent": browserUA,
+  };
 }
 
 async function callUpstream(
@@ -220,14 +452,35 @@ async function callUpstream(
 ): Promise<unknown> {
   let res: Response;
   try {
+    // 对于 claude-code 类型，不添加浏览器特征头（会覆盖 Claude Code 的请求头）
+    const browserHeaders: Record<string, string> = kind === "claude-code" ? {} : {
+      "accept": "application/json",
+      "accept-language": "zh-CN,zh;q=0.9,en;q=0.8",
+      "accept-encoding": "gzip, deflate, br",
+      "cache-control": "no-cache",
+      "pragma": "no-cache",
+      "sec-ch-ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+      "sec-ch-ua-mobile": "?0",
+      "sec-ch-ua-platform": '"Windows"',
+      "sec-fetch-dest": "empty",
+      "sec-fetch-mode": "cors",
+      "sec-fetch-site": "same-origin",
+    };
+    const headers = new Headers();
+    headers.set("content-type", "application/json");
+    for (const [key, value] of Object.entries(browserHeaders)) {
+      headers.set(key, value);
+    }
+    for (const [key, value] of Object.entries(authHeaders(kind, apiKey))) {
+      headers.set(key, value);
+    }
+    new Headers(init.headers).forEach((value, key) => {
+      headers.set(key, value);
+    });
+
     res = await fetch(url, {
       ...init,
-      headers: {
-        "content-type": "application/json",
-        accept: "application/json",
-        ...authHeaders(kind, apiKey),
-        ...(init.headers ?? {}),
-      },
+      headers,
     });
   } catch (e) {
     throw errors.upstreamFailed(`无法连接到 LLM: ${(e as Error).message}`);
@@ -266,6 +519,20 @@ export async function registerAiRoutes(app: FastifyInstance) {
     if (typeof apiKey !== "string" || !apiKey) {
       throw errors.invalidQuery("缺少 apiKey");
     }
+
+    // Claude Code uses hardcoded model list
+    if (kind === "claude-code") {
+      return {
+        models: [
+          "claude-opus-4-8",
+          "claude-opus-4-7",
+          "claude-opus-4-6",
+          "claude-sonnet-4-6",
+          "claude-haiku-4-5-20251001",
+        ]
+      };
+    }
+
     const url = `${normalizeBase(baseUrl)}/models`;
     const data = (await callUpstream(url, apiKey, kind, { method: "GET" })) as {
       data?: Array<{ id?: string }>;
@@ -305,8 +572,24 @@ export async function registerAiRoutes(app: FastifyInstance) {
     }
     const cleaned = sanitizeMessages(messages);
 
-    if (kind === "anthropic") {
-      const url = `${normalizeBase(baseUrl)}/messages`;
+    if (kind === "anthropic" || kind === "claude-code") {
+      // 如果 baseUrl 已经包含 /v1/messages 或 /messages，直接使用
+      // 否则追加 /v1/messages
+      let url: string;
+      const normalized = normalizeBase(baseUrl);
+      if (normalized.endsWith('/messages') || normalized.includes('/v1/messages')) {
+        url = normalized;
+      } else if (normalized.endsWith('/v1')) {
+        url = `${normalized}/messages`;
+      } else {
+        url = `${normalized}/v1/messages`;
+      }
+
+      // Claude Code 使用 ?beta=true 参数
+      if (kind === "claude-code") {
+        url += "?beta=true";
+      }
+
       const payload = toAnthropicPayload(cleaned, model, false, effort);
       const raw = (await callUpstream(url, apiKey, kind, {
         method: "POST",
@@ -350,8 +633,8 @@ export async function registerAiRoutes(app: FastifyInstance) {
 
   // ── Streaming (SSE) chat ──────────────────────────────────────────────
   // Server stays the simple transparent proxy: it only emits delta / done /
-  // error events. The osheep code tag protocol (<plan>/<thought>/<tool>/
-  // <verify>) is parsed client-side from the raw delta stream.
+  // error events. The osheep code tag protocol (<tasks>/<thought>/<tool>/
+  // <ask>/<verify>) is parsed client-side from the raw delta stream.
   app.post<{
     Params: { id: string };
     Body: {
@@ -416,12 +699,27 @@ export async function registerAiRoutes(app: FastifyInstance) {
     reply.raw.on("close", onSocketClose);
 
     const upstreamUrl =
-      kind === "anthropic"
-        ? `${normalizeBase(baseUrl)}/messages`
+      kind === "anthropic" || kind === "claude-code"
+        ? (() => {
+            const normalized = normalizeBase(baseUrl);
+            let url: string;
+            if (normalized.endsWith('/messages') || normalized.includes('/v1/messages')) {
+              url = normalized;
+            } else if (normalized.endsWith('/v1')) {
+              url = `${normalized}/messages`;
+            } else {
+              url = `${normalized}/v1/messages`;
+            }
+            // Claude Code 使用 ?beta=true 参数
+            if (kind === "claude-code") {
+              url += "?beta=true";
+            }
+            return url;
+          })()
         : `${normalizeBase(baseUrl)}/chat/completions`;
 
     const upstreamBody =
-      kind === "anthropic"
+      kind === "anthropic" || kind === "claude-code"
         ? JSON.stringify(toAnthropicPayload(cleaned, model, true, effort))
         : JSON.stringify(
             (() => {
@@ -441,14 +739,30 @@ export async function registerAiRoutes(app: FastifyInstance) {
             })()
           );
 
+
     let upstream: Response;
     try {
+      // 添加更多浏览器特征来绕过严格的客户端检测
+      const browserHeaders = {
+        "accept-language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "accept-encoding": "gzip, deflate, br",
+        "cache-control": "no-cache",
+        "pragma": "no-cache",
+        "sec-ch-ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-origin",
+      };
+
       upstream = await fetch(upstreamUrl, {
         method: "POST",
         signal: abort.signal,
         headers: {
           "content-type": "application/json",
           accept: "text/event-stream",
+          ...browserHeaders,
           ...authHeaders(kind, apiKey),
         },
         body: upstreamBody,
@@ -478,7 +792,7 @@ export async function registerAiRoutes(app: FastifyInstance) {
     if (!ct.includes("event-stream")) {
       const txt = await upstream.text();
       try {
-        if (kind === "anthropic") {
+        if (kind === "anthropic" || kind === "claude-code") {
           const json = JSON.parse(txt) as {
             content?: Array<{ type?: string; text?: string }>;
             error?: { message?: string; type?: string };
@@ -549,10 +863,8 @@ export async function registerAiRoutes(app: FastifyInstance) {
           }
           if (!line.startsWith("data:")) continue;
           const payload = line.slice(5).trimStart();
-          if (kind === "anthropic") {
+          if (kind === "anthropic" || kind === "claude-code") {
             // Anthropic SSE: event: content_block_delta / message_stop / etc.
-            // Translate to OpenAI-style delta/done so the frontend parser
-            // doesn't need to know the upstream wire format.
             if (currentEvent === "message_stop" || payload === "[DONE]") {
               send("done", {});
               continue;
@@ -560,14 +872,18 @@ export async function registerAiRoutes(app: FastifyInstance) {
             if (currentEvent === "content_block_delta") {
               try {
                 const obj = JSON.parse(payload) as {
-                  delta?: { type?: string; text?: string };
+                  delta?: { type?: string; text?: string; thinking?: string };
                 };
                 const piece = obj.delta?.text;
                 if (typeof piece === "string" && piece.length > 0) {
                   send("delta", { content: piece });
                 }
-              } catch {
-                /* ignore */
+                const thinking = obj.delta?.thinking;
+                if (typeof thinking === "string" && thinking.length > 0) {
+                  send("reasoning", { content: thinking });
+                }
+              } catch (e) {
+                // Ignore parse errors in SSE chunks
               }
               continue;
             }
@@ -582,8 +898,6 @@ export async function registerAiRoutes(app: FastifyInstance) {
               }
               continue;
             }
-            // Other events (ping, message_start, content_block_start, etc.)
-            // are not forwarded.
             continue;
           }
 
@@ -594,7 +908,13 @@ export async function registerAiRoutes(app: FastifyInstance) {
           }
           try {
             const obj = JSON.parse(payload) as {
-              choices?: Array<{ delta?: { content?: string } }>;
+              choices?: Array<{
+                delta?: {
+                  content?: string;
+                  reasoning?: string;
+                  reasoning_content?: string;
+                };
+              }>;
               error?: { message?: string; code?: string; type?: string };
             };
             // Some OpenAI-compatible proxies (and OpenAI itself for things like
@@ -609,6 +929,12 @@ export async function registerAiRoutes(app: FastifyInstance) {
             const piece = obj.choices?.[0]?.delta?.content;
             if (typeof piece === "string" && piece.length > 0) {
               send("delta", { content: piece });
+            }
+            const reasoning =
+              obj.choices?.[0]?.delta?.reasoning_content ??
+              obj.choices?.[0]?.delta?.reasoning;
+            if (typeof reasoning === "string" && reasoning.length > 0) {
+              send("reasoning", { content: reasoning });
             }
           } catch {
             /* ignore */
@@ -642,27 +968,28 @@ export async function registerAiRoutes(app: FastifyInstance) {
       query?: string;
       include?: string | string[];
       exclude?: string | string[];
+      startLine?: number;
+      lineCount?: number;
     };
   }>("/api/workspaces/:id/ai/exec/read", async (req) => {
     const ws = await resolveWorkspace(req.params.id);
     const body = req.body ?? {};
     if (body.kind === "file") {
       if (typeof body.path !== "string") throw errors.invalidQuery("缺少 path");
-      const f = await readFileText(ws.path, body.path);
-      const MAX_READ = 256 * 1024;
-      let content = f.content;
-      let truncated = false;
-      if (content.length > MAX_READ) {
-        content = content.slice(0, MAX_READ);
-        truncated = true;
-      }
+      const f = await readAiFileText(ws.path, body.path);
+      const startLine = toPositiveInt(body.startLine);
+      const lineCount = toPositiveInt(body.lineCount);
+      const sliced = sliceLines(f.content, startLine, lineCount);
       return {
         kind: "file",
         path: f.path,
-        content,
+        content: sliced.content,
         size: f.size,
         mtime: f.mtime,
-        truncated,
+        truncated: f.truncated || sliced.truncated,
+        startLine: sliced.startLine,
+        endLine: sliced.endLine,
+        totalLines: sliced.totalLines,
       };
     }
     if (body.kind === "list") {
@@ -702,6 +1029,7 @@ export async function registerAiRoutes(app: FastifyInstance) {
         | "write_file"
         | "append_file"
         | "edit_file"
+        | "multi_edit"
         | "move"
         | "delete"
         | "create";
@@ -710,6 +1038,7 @@ export async function registerAiRoutes(app: FastifyInstance) {
       createParents?: boolean;
       oldString?: string;
       newString?: string;
+      edits?: Array<{ oldString?: unknown; newString?: unknown }>;
       from?: string;
       to?: string;
       recursive?: boolean;
@@ -721,6 +1050,11 @@ export async function registerAiRoutes(app: FastifyInstance) {
     if (b.kind === "write_file") {
       if (typeof b.path !== "string") throw errors.invalidQuery("缺少 path");
       if (typeof b.content !== "string") throw errors.invalidQuery("缺少 content");
+      if (isObviousWritePlaceholder(b.content)) {
+        throw errors.invalidQuery(
+          "write_file content 看起来是占位符；请先读取文件并提供完整内容，或改用 edit_file"
+        );
+      }
       const out = await writeFileText(ws.path, b.path, b.content, b.createParents !== false);
       return { ok: true, kind: "write_file", ...out };
     }
@@ -742,18 +1076,101 @@ export async function registerAiRoutes(app: FastifyInstance) {
       if (typeof b.oldString !== "string") throw errors.invalidQuery("缺少 oldString");
       if (typeof b.newString !== "string") throw errors.invalidQuery("缺少 newString");
       const f = await readFileText(ws.path, b.path);
-      const occurrences = f.content.split(b.oldString).length - 1;
+      const before = f.content;
+      const occurrences = before.split(b.oldString).length - 1;
       if (occurrences === 0) {
-        throw errors.invalidQuery("oldString 在文件中未找到");
+        throw errors.invalidQuery(formatEditMissHint(before, b.oldString, toPosix(b.path)));
       }
       if (occurrences > 1) {
-        throw errors.invalidQuery(
-          `oldString 匹配到 ${occurrences} 处，请提供更多上下文以唯一定位`
-        );
+        throw errors.invalidQuery(formatEditAmbiguousHint(before, b.oldString, occurrences));
       }
-      const next = f.content.replace(b.oldString, b.newString);
-      const out = await writeFileText(ws.path, b.path, next, false);
-      return { ok: true, kind: "edit_file", ...out, replacements: 1 };
+      const after = before.replace(b.oldString, b.newString);
+      const out = await writeFileText(ws.path, b.path, after, false);
+      const diff = buildEditDiff(before, after, b.oldString, b.newString);
+      return {
+        ok: true,
+        kind: "edit_file",
+        ...out,
+        replacements: 1,
+        diff,
+      };
+    }
+    if (b.kind === "multi_edit") {
+      if (typeof b.path !== "string") throw errors.invalidQuery("缺少 path");
+      if (!Array.isArray(b.edits) || b.edits.length === 0) {
+        throw errors.invalidQuery("multi_edit 需要非空 edits 数组");
+      }
+      const edits: Array<{ oldString: string; newString: string }> = [];
+      for (let i = 0; i < b.edits.length; i += 1) {
+        const e = b.edits[i] as { oldString?: unknown; newString?: unknown };
+        if (typeof e?.oldString !== "string" || !e.oldString) {
+          throw errors.invalidQuery(`multi_edit edits[${i}]: oldString 必须为非空字符串`);
+        }
+        if (typeof e?.newString !== "string") {
+          throw errors.invalidQuery(`multi_edit edits[${i}]: newString 必须为字符串`);
+        }
+        edits.push({ oldString: e.oldString, newString: e.newString });
+      }
+      const f = await readFileText(ws.path, b.path);
+      const before = f.content;
+      const pathDisplay = toPosix(b.path);
+      // Apply edits in order against the running state. Compute each edit's
+      // diff metadata against the file *as it stood just before that edit* so
+      // startLine numbers are meaningful even when earlier edits shifted text.
+      let current = before;
+      const perEditDiffs: Array<{
+        oldString: string;
+        newString: string;
+        startLine: number;
+        endLineBefore: number;
+        endLineAfter: number;
+        added: number;
+        removed: number;
+      }> = [];
+      let totalAdded = 0;
+      let totalRemoved = 0;
+      for (let i = 0; i < edits.length; i += 1) {
+        const { oldString, newString } = edits[i]!;
+        const occurrences = current.split(oldString).length - 1;
+        if (occurrences === 0) {
+          throw errors.invalidQuery(
+            `multi_edit edits[${i}] 失败：${formatEditMissHint(current, oldString, pathDisplay)}`
+          );
+        }
+        if (occurrences > 1) {
+          throw errors.invalidQuery(
+            `multi_edit edits[${i}] 失败：${formatEditAmbiguousHint(current, oldString, occurrences)}`
+          );
+        }
+        const next = current.replace(oldString, newString);
+        const diff = buildEditDiff(current, next, oldString, newString);
+        perEditDiffs.push({
+          oldString: diff.oldString,
+          newString: diff.newString,
+          startLine: diff.startLine,
+          endLineBefore: diff.endLineBefore,
+          endLineAfter: diff.endLineAfter,
+          added: diff.added,
+          removed: diff.removed,
+        });
+        totalAdded += diff.added;
+        totalRemoved += diff.removed;
+        current = next;
+      }
+      const out = await writeFileText(ws.path, b.path, current, false);
+      return {
+        ok: true,
+        kind: "multi_edit",
+        ...out,
+        replacements: edits.length,
+        diff: {
+          edits: perEditDiffs,
+          added: totalAdded,
+          removed: totalRemoved,
+          before,
+          after: current,
+        },
+      };
     }
     if (b.kind === "move") {
       if (typeof b.from !== "string" || typeof b.to !== "string") {

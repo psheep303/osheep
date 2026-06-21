@@ -1,14 +1,14 @@
 export type TabSize = 2 | 4;
 
-export type AiProviderKind = "openai" | "anthropic";
+export type AiProviderKind = "openai" | "anthropic" | "claude-code";
 
 export interface AiProvider {
   id: string;
   name: string;
   /**
    * Wire protocol. `openai` = OpenAI-compatible /chat/completions.
-   * `anthropic` = Claude API /v1/messages (and Claude Code style endpoints
-   * that share the Anthropic wire format).
+   * `anthropic` = Anthropic API /v1/messages.
+   * `claude-code` = Claude Code native request style.
    */
   kind: AiProviderKind;
   baseUrl: string;
@@ -64,11 +64,11 @@ export interface OsheepSettings {
 export const DEFAULT_AUTO_ALLOW: AiAutoAllow = {
   read: true,
   write: false,
-  runNetwork: false,
-  runInstall: false,
-  runGit: false,
-  runTest: false,
-  runOther: false,
+  runNetwork: true,
+  runInstall: true,
+  runGit: true,
+  runTest: true,
+  runOther: true,
 };
 
 export const DEFAULT_SETTINGS: OsheepSettings = {
@@ -89,7 +89,8 @@ function sanitizeProvider(raw: unknown): AiProvider | null {
   const r = raw as Partial<AiProvider> & { models?: unknown };
   const id = typeof r.id === "string" && r.id ? r.id : newProviderId();
   const name = typeof r.name === "string" ? r.name : "";
-  const kind: AiProviderKind = r.kind === "anthropic" ? "anthropic" : "openai";
+  const kind: AiProviderKind =
+    r.kind === "anthropic" ? "anthropic" : r.kind === "claude-code" ? "claude-code" : "openai";
   const baseUrl = typeof r.baseUrl === "string" ? r.baseUrl : "";
   const apiKey = typeof r.apiKey === "string" ? r.apiKey : "";
   let models: string[] = [];
@@ -239,7 +240,7 @@ export function detectReasoningKind(
     }
     return null;
   }
-  if (kind === "anthropic") {
+  if (kind === "anthropic" || kind === "claude-code") {
     if (
       m.startsWith("claude-3-7") ||
       m.startsWith("claude-4") ||

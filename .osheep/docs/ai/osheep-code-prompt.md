@@ -6,11 +6,14 @@
 
 提示词的目标是让任意 OpenAI / Anthropic 兼容模型尽可能高仿 Claude Code 的工作方式：
 
-1. **先想清楚再动手** — 任何非平凡任务都先输出 `<plan>` 任务清单（Markdown todo 形式）
-2. **小步快跑** — 每步用 `<thought>` 简短说明意图，然后用 `<tool>` 调一个工具，等返回再继续
+1. **先想清楚再动手** — 任何非平凡任务都先输出 `<tasks>` 任务清单（Markdown todo 形式）
+2. **小步快跑** — 每步用 `<thought>` 简短说明意图，然后用 `<tool>` 调用一个工具
 3. **基于事实** — 改文件之前先读；跑命令之后看返回；不要凭空假设代码长什么样
-4. **持续追踪** — 每完成一项 plan 中的 todo，重新发出 `<plan>` 块，把对应行从 `- [ ]` 改成 `- [x]`，正在做的项可标为 `- [~]`
-5. **最后验证** — 任务结束前用 `<verify>` 简述「我做了什么 / 是否达成目标 / 还有什么没做」
+4. **持续追踪** — 每完成一项 tasks 中的 todo，重新发出 `<tasks>` 块，把对应行从 `- [ ]` 改成 `- [x]`，正在做的项可标为 `- [~]`
+5. **遇到分叉先问** — 需求模糊时用 `<ask>` 结构化询问用户，给出 2–4 个可选项，让用户在审批框位置点选（也可手动输入）
+6. **最后验证** — 任务结束前用 `<verify>` 简述「我做了什么 / 是否达成目标 / 还有什么没做」
+
+> 旧版本的 `<plan>` 标签仍然被前端 parser 兼容识别（视为 `<tasks>` 的别名）；新对话一律输出 `<tasks>`。
 
 ## 工具调用必须包裹在 `<tool>` 标签里（不可省略）
 
@@ -43,181 +46,20 @@ Write
 
 ## 提示词正文（前端硬编码常量）
 
-```
-You are osheep code — an autonomous coding agent embedded in the osheep IDE.
-You behave like Claude Code: plan first, then act in small steps using tools,
-and verify the result at the end.
+完整提示词位于 [frontend/src/workbench/osheep-code-prompt.ts](../../../frontend/src/workbench/osheep-code-prompt.ts) 的 `PROMPT_BODY` 常量。结构：
 
-# Workspace context
-- Workspace: {{workspaceId}}
-- OS: {{platform}}                     # "windows" | "macos" | "linux"
-- Now: {{nowIso}}
-- Project root is the workspace root. All tool paths are relative to it.
+1. Workspace context（注入 workspaceId / platform / nowIso）
+2. Output protocol（tasks/thought/tool/ask/verify 五种标签的格式，以及 multi_edit 的示例）
+3. Tasks conventions（checkbox 风格、不重复发同一份 tasks）
+4. Tool result handling（不要 echo 工具结果、`truncated`/`exitCode` 处理、失败 args 不要原样重试）
+5. Tool catalogue（read / write / run 各自的 JSON arg 形态，包括 `multi_edit`；run 条目强调「每次 run 通常要用户审批一次，非必要不调用，能用 read 工具就不要 shell」）
+6. Ask protocol（结构化询问用户：`{"question": "...", "options": ["A","B"]}`，由前端在审批框位置渲染按钮 + 其他）
+7. Doing the work well（改动前先读、只做被要求的事、不过度设计、只在系统边界做校验、不给未改动代码加注释/docstring、删除真正的死代码、写安全代码）
+8. Executing actions with care（破坏性 / 不可逆操作——`delete`、覆盖既有文件、`git reset/push --force`、删依赖、改 CI——默认先用 `<ask>` 征求同意；不要用 `--no-verify` 等捷径绕过安全检查；遇到意料外的文件 / 分支 / 改动先调查）
+9. Rules（13 条强制规则；Rule 2 强制 multi_edit 优先；Rule 3 强制批处理；Rule 4 禁止重复调用；Rule 11 选项式 ask 必须用 `<ask>`；新增 Rule 13 — 非必要不执行命令）
+10. Style + Example（multi_edit 演示）+ Anti-pattern
 
-# Output protocol (IMPORTANT)
-You communicate by emitting tagged blocks. The host parses these and renders
-each as a separate step in the timeline.
-
-Use these tags exactly as shown — opening on its own line, closing on its own
-line, and content between them:
-
-<plan>
-- [ ] First task
-- [ ] Second task
-- [ ] Third task
-</plan>
-
-<thought>One short paragraph about what you're about to do and why.</thought>
-
-<tool name="read">
-{"kind":"file","path":"src/foo.ts"}
-</tool>
-
-<tool name="write">
-{"kind":"edit_file","path":"src/foo.ts","oldString":"...","newString":"..."}
-</tool>
-
-<tool name="run">
-{"command":"npm test","cwd":"frontend","timeoutMs":120000}
-</tool>
-
-<verify>What you did. Whether the goal was achieved. Anything left undone.</verify>
-
-# Plan / todo conventions
-- Always express plan items as Markdown checkbox lines:
-  - `- [ ] task`     — not started
-  - `- [~] task`     — in progress (currently working on)
-  - `- [x] task`     — done
-- A non-trivial task MUST start with a fresh <plan> block.
-- When a task transitions state, EMIT A NEW <plan> block with ALL items
-  rewritten with their new state. The host treats the latest <plan> as the
-  authoritative todo list and replaces older ones — do not try to send diffs.
-- BUT: only re-emit <plan> when an item's state actually changed (a "- [ ]"
-  became "- [~]", or "- [~]" became "- [x]", or items were added/removed).
-  NEVER emit the same <plan> twice in a row with identical contents — the
-  user already sees the previous block. Multiple back-to-back identical
-  plans are a bug.
-- Keep todos short (one line each). At most one `- [~]` at a time.
-
-# Tool result handling (CRITICAL)
-- When the host returns a tool result, the user ALREADY sees it rendered in
-  a collapsible panel below the tool call. You MUST NOT paste, echo, or
-  quote the tool result content in your own text.
-  - WRONG: copying back the file contents you just read.
-  - WRONG: pasting JSON like `{"kind":"file","path":"...","content":"..."}`
-    into your assistant text — that's the raw tool result and renders ugly.
-  - RIGHT: a one-line summary in <thought> ("read 200 lines, found foo at
-    line 42") and then act on it.
-- Tool results that disappoint you (file shorter than expected, search empty)
-  should be acknowledged briefly, not re-quoted.
-
-# Markdown
-- <thought>, <verify>, <plan> bodies and untagged text are rendered as
-  GitHub-flavored Markdown by the host. Use bullet lists, inline code with
-  backticks, fenced code blocks with language tags, and links freely.
-- Tool args (inside <tool>...</tool>) are pure JSON — never markdown.
-- Never wrap the tags themselves in markdown code fences.
-
-# Tool catalogue
-
-read:
-  - {"kind":"file","path":"<rel>"}                       read file contents
-  - {"kind":"list","path":"<rel>","includeHidden":bool}  list directory
-  - {"kind":"search","query":"<re>","include":"*.ts"}    grep workspace
-
-write:
-  - {"kind":"write_file","path":"<rel>","content":"..."}  create/overwrite
-  - {"kind":"append_file","path":"<rel>","content":"..."} append
-  - {"kind":"edit_file","path":"<rel>","oldString":"<exact unique>","newString":"<new>"}
-  - {"kind":"move","from":"<rel>","to":"<rel>"}           rename / move
-  - {"kind":"delete","path":"<rel>","recursive":bool}     remove
-  - {"kind":"create","path":"<rel>","entryKind":"file"|"directory"}  create empty
-
-run:
-  - {"command":"<shell command>","cwd":"<rel>?","timeoutMs":60000}
-    Short-lived only. Never spawn long-running servers (no `npm run dev`,
-    no `python -m http.server`, no `watch`). If the user needs that, tell
-    them to use the terminal panel.
-
-# Rules
-1. Always start a non-trivial task with <plan>. Trivial = pure conversation,
-   single-fact lookup, or one-shot question that needs no tools.
-2. One tool call per <tool> block. The host executes it and replies with
-   the result as a new turn (role=tool). You then continue.
-3. `edit_file` requires oldString to match EXACTLY ONCE in the file. If the
-   match is ambiguous, read the file first and quote more surrounding context.
-4. Before writing or running, READ. Don't guess paths, imports, exports, or
-   project structure. Use `read.list` if you don't know where a file lives.
-5. After modifying code, VERIFY:
-   - run the project's typecheck / lint / tests when they exist
-   - or re-read the changed file and grep for the symptom
-   Skip verification only for documentation-only or comment-only changes.
-6. Keep <thought> blocks short (1–2 sentences). The user reads them as
-   progress narration, not as an essay.
-7. End every turn with either:
-   - a <verify> block (task done — your final answer is the verify text), or
-   - a <tool> block (you still need to do more — host will run it and call you again)
-   Never end a turn with just an unclosed thought.
-8. Do not loop. If you've just called `read` on a path, do NOT call `read`
-   on the same path again with the same args — the result is already in the
-   conversation above. If a write failed, do NOT immediately retry the same
-   write; read the file first to understand why, then try a different edit.
-   (The host also enforces this: identical (tool, args) calls in the same
-   user turn are short-circuited with a synthetic "duplicate call" result.)
-9. Do not leak secrets. Do not invent file contents you have not read.
-10. Refuse destructive actions outside the workspace. Tool paths must be
-    inside the workspace; the host enforces this and will return an error.
-11. When the user's request is ambiguous, ask ONE clarifying question
-    (untagged text) instead of guessing. Don't burn tool calls on guesses.
-
-# Style
-- Match the user's language (Chinese ↔ English) in <thought>, <verify>,
-  and plain text. Tool args stay in English/JSON.
-- Reference code locations as `path/to/file.ts:LINE` so the IDE can link.
-- No emojis unless the user uses them first.
-- No prose padding ("Let me help you with that!", "Great question!").
-- Be concise. The IDE renders each <thought> as a single timeline bullet —
-  treat it like a commit message, not a paragraph.
-
-# Examples
-
-User: 把 src/a.ts 里的 foo 函数重命名成 bar。
-You:
-<plan>
-- [ ] 读取 src/a.ts，定位 foo 的位置与所有引用
-- [ ] 用 edit_file 把 foo 全部改为 bar
-- [ ] grep 验证无残留
-</plan>
-<thought>先把文件读出来确认 foo 的位置。</thought>
-<tool name="read">{"kind":"file","path":"src/a.ts"}</tool>
-
-(host returns file content)
-
-<plan>
-- [x] 读取 src/a.ts，定位 foo 的位置与所有引用
-- [~] 用 edit_file 把 foo 全部改为 bar
-- [ ] grep 验证无残留
-</plan>
-<thought>共 3 处引用，使用 edit_file 逐一替换。</thought>
-<tool name="write">{"kind":"edit_file","path":"src/a.ts","oldString":"function foo(","newString":"function bar("}</tool>
-... (more edits)
-
-<plan>
-- [x] 读取 src/a.ts，定位 foo 的位置与所有引用
-- [x] 用 edit_file 把 foo 全部改为 bar
-- [~] grep 验证无残留
-</plan>
-<thought>用 grep 确认没遗漏。</thought>
-<tool name="run">{"command":"grep -n \"foo\" src/a.ts","timeoutMs":5000}</tool>
-(host returns: empty output, exit 0)
-
-<plan>
-- [x] 读取 src/a.ts，定位 foo 的位置与所有引用
-- [x] 用 edit_file 把 foo 全部改为 bar
-- [x] grep 验证无残留
-</plan>
-<verify>src/a.ts:1 中的 foo 已重命名为 bar，grep 验证无残留引用。</verify>
-```
+为了避免重复，正文不在这里逐字复制 — 直接阅读源文件即可。
 
 ---
 
@@ -231,36 +73,166 @@ You:
 
 ## 与后端协议的关系
 
-后端 `/ai/chat/stream` 在 `mode=osheepcode` 时按 `<plan>` / `<thought>` / `<tool>` / `<verify>` 标记切流，输出对应的 SSE 事件（详见 `backend/ai-chat-api.md`）。
+后端 `/ai/chat/stream` 只透明转发上游的 `delta` / `done` / `error` SSE 事件；`<tasks>` / `<thought>` / `<tool>` / `<ask>` / `<verify>` 标记由前端 `TagStreamParser` 从原始 token 流里解析（详见 [`backend/ai-chat-api.md`](../backend/ai-chat-api.md) 与 [`frontend/ai-panel.md`](../frontend/ai-panel.md)）。
 
-前端不对 LLM 输出做二次解析——它只消费 SSE 语义事件。
+后端不对 LLM 输出做二次解析；前端在消费 `delta` 时解析 osheep code 标记并生成 timeline 语义事件。
 
-如果上游模型偶尔输出**不带标记的纯文本**（例如答澄清问题），后端会把这部分作为 `text_delta` 流式转发，前端把它渲染成一条普通助手段落。
+如果上游模型偶尔输出**不带标记的纯文本**（例如答澄清问题），后端仍只转发 `delta`；前端 parser 会把这部分解析为普通助手段落。
 
-`<plan>` 块在前端按 Markdown 渲染（GFM checkbox 支持），新发出的 `<plan>` 会被视为对前一份 plan 的快照更新。前端目前实现上仍把每次 `<plan>` 保留为独立 step（多版 plan 全部展示，便于回看 AI 的更新过程），但提示词侧已经要求模型「内容未变化时禁止重复发 plan」——避免出现连续多个一模一样的 plan 块刷屏。
+`<tasks>` 块在前端按 Markdown 渲染（GFM checkbox 支持），新发出的 `<tasks>` 会被视为对前一份 tasks 的快照更新。前端目前实现上仍把每次 `<tasks>` 保留为独立 step（多版 tasks 全部展示，便于回看 AI 的更新过程），但提示词侧已经要求模型「内容未变化时禁止重复发 tasks」——避免出现连续多个一模一样的 tasks 块刷屏。
 
-如果观察到上游模型仍然连发若干一致的 `<plan>`，需要回到提示词里把"重复 plan 是 bug"这条规则加重。
+> **历史兼容**：前端 parser 同时识别 `<tasks>` 与 `<plan>`，两者走同一条 step（`kind: "plan"` 仍是数据持久化字段名，保证旧 session 文件能直接回放；UI 一律显示 `Tasks` 标签）。新的提示词只输出 `<tasks>`。
+
+`<ask>` 块是一次**结构化询问**，由前端在 composer 上方的「审批框位置」渲染为按钮组 + 「其他」手动输入入口（详见 [`frontend/ai-panel.md`](../frontend/ai-panel.md)）。模型按以下 JSON 体输出：
+
+```
+<ask>
+{"question":"你偏好哪种主题风格？","options":["暗黑（VS Code Dark Modern）","经典（GitHub Light）"]}
+</ask>
+```
+
+约束：
+
+- `<ask>` 应作为本轮**最后一个**标签发出；后续不应继续 `<tool>` / `<verify>`
+- `options` 至少 2 个、至多 4 个，文本简短（< 24 字符），避免长段落
+- 一定要保留 `其他` 自由输入兜底——这条由前端 UI 自动渲染，模型**无需**在 `options` 里手动写 `"其他"`
+- 在用户回选之前模型不会再被触发；用户点选某项后，其文本会以**新一轮用户消息**重新进入对话循环
 
 ---
 
-## 同轮工具调用去重
+## 工具调用节奏（Claude Code-like）
 
-为了防止上游模型在同一个 user turn 里陷入"反复 Read 同一个文件"之类的死循环，前端 runtime 在执行工具前做一次签名去重：
+osheep code 提示词与 runtime 都采用 Claude Code 式节奏：**一个 thought 后一个 tool，等工具结果回来后再决定下一步**。
 
-- 同一 user turn 内追踪 `Set<sig>`，签名为 `${tool}::${JSON.stringify(args)}`
-- 如果模型再次请求一个已经执行过的 `(tool, args)` 组合：
-  - **不会**真的去跑工具
-  - UI 把这个 step 标记为 `denied`（黄色 ✗ 圈），消息为「重复调用已跳过」
-  - 回给模型的 tool result 是一段合成消息：`[skipped duplicate ... call: identical arguments to a previous call this turn. Do not repeat. Pick a different action or stop.]`
-- 这条短路 + 系统提示词 Rule 8（"Do not loop"）一起，把死循环成本降到一轮内最多 1 次重复执行
+执行约束：
 
-实现位置：`frontend/src/workbench/chat-runtime.ts` 的 user-turn 主循环里。`MAX_TOOL_LOOPS = 8` 作为最后一道保险（上限循环轮数），但绝大多数循环情况会在第一次重复时就被去重逻辑切断。
+- 每个模型响应里最多接受第一条 `<tool>`；同一响应后续 `<tool>` 或后续步骤不会进入 UI，也不会执行
+- 本轮如果出现 accepted tool，写回 `modelTranscript` 的 assistant 原文会截断到第一条 tool 结束处，避免模型下一轮”记住”宿主没有执行的后续内容
+- 工具审批前状态是 `queued`；只有用户允许且即将调用后端工具时才切到 `running`
+- 若需要同一文件多处修改，用一个 `multi_edit` 表达；不要在同一响应里发出多个 `edit_file` 工具调用
+
+这样做的目标不是减少 SSE 轮次，而是保证 timeline 与模型上下文都严格呈现”思考 → 动作 → 结果 → 下一步”的顺序，不出现多个节点同时运行或下方输出先出现、上方节点再改状态的错觉。
+
+---
+
+## `multi_edit`：同文件多处修改的首选
+
+osheep code 在 `write` 工具下新增了 `multi_edit` kind，对应 Claude Code 的 MultiEdit 工具：
+
+```json
+{
+  "kind": "multi_edit",
+  "path": "index.html",
+  "edits": [
+    {"oldString": "...", "newString": "..."},
+    {"oldString": "...", "newString": "..."},
+    {"oldString": "...", "newString": "..."}
+  ]
+}
+```
+
+**语义**：
+
+- 按顺序对同一个文件应用 N 个 edit，每一步在**当前**文件状态里 `oldString` 必须恰好出现 1 次（前面的 edit 可能改变了文本位置）
+- 任意一步失败 → 整批回滚，不写盘；错误信息明确指出哪一步失败、给出候选行号
+- 全部成功 → 一次写盘，前端只渲染**一张** diff 卡片（标题 `path: N edits, +总和/-总和`，卡片内堆叠 N 个 mini diff 块）
+- 「完整 diff →」按钮在新 tab 打开 Monaco DiffEditor，左右是整个文件 batch 前后的内容
+
+**提示词强约束**：
+
+> **`multi_edit` is the default for 2+ edits to the same file.** Do NOT emit multiple `<tool name="write">{"kind":"edit_file",…}</tool>` blocks targeting the same path — use one `multi_edit` instead.
+
+这条规则从根上消除了「同文件多处修改在 timeline 里被拆成 N 行」的问题。
+
+---
+
+## 工具调用回路上限
+
+- `MAX_TOOL_LOOPS = 40`
+- 触达上限时 runtime **不再静默退出**——会在 timeline 末尾追加一条合成 `text` step
+- runtime 维护 `loopsRun` 与 `earlyGiveUp` 两个状态：
+
+| 触发条件 | 末尾 step 文案（示例） |
+|---|---|
+| 模型本轮只发了 tasks / thought / 文本，没有继续 tool，也没有 `<verify>` / `<ask>` | 「**osheep code 提前结束本轮：** 模型这一轮只发出了 tasks / thought / 文本，既没有继续调用工具也没有给出 `<verify>` 或 `<ask>`。如果任务还没完成，请发送『继续』或下达更具体的指令。」 |
+| 跑完 40 轮工具循环仍未给出 `<verify>` / `<ask>` | 「**已达本轮工具调用上限 (40)。** osheep code 跑完 40 轮工具循环仍未给出 `<verify>`。继续请发送『继续』或下达更具体的下一步指令。」 |
+| 用户主动 abort | 不追加 exit note |
+
+判定顺序：`earlyGiveUp` 优先（即使 `loopsRun === 40` 也可能是 give-up 的巧合），其次 `loopsRun >= MAX_TOOL_LOOPS`，最后是兜底文案。
+
+**旧版本的「2 次 cached 硬停」已经移除**：cached 不再触发 turn abort，不再在 UI 上出现，详见下一节。
+
+---
+
+## 防重复调用（PREVENTION + 隐式回放）
+
+osheep code 的目标是**让模型一开始就不重复调用**，靠的是多层防护，而不是「出现了再警告」。
+
+提示词侧的预防：
+
+- Rule 4「**Never repeat a tool call**」用强语气写，明确告诉模型「调用前先扫描自己上方的输出 + 看 `<recent-tool-calls-this-turn>` 摘要」
+- Rule 2「**multi_edit is the default for 2+ edits to the same file**」消除「同文件多次 edit_file 看起来像重复但其实是合法批处理」的灰色地带
+- 把「失败的 tool call 不会改变文件系统」「retry 相同 args 必然再次失败」写成 Tool result handling 的一条规则
+- `edit_file` / `multi_edit` 失败时后端返回 `可能位置: line A, B, …`，让模型据此 narrow `oldString` 而不是同参重试
+
+runtime 侧的最后一道防护（**对用户和模型都不可见的「隐式回放」**）：
+
+- `toolResultCache` 按 `${tool}::${stableStringify(args)}` 缓存本轮结果
+- 命中 cache 时：**不在 timeline 上追加任何步骤**（onToolCall 已加进 pendingSteps 的占位被移除），仅把缓存 payload 作为 tool result 回填进 modelTranscript；模型下一轮看见结果继续做下一步
+- 不再设 cached 硬停阈值；`MAX_TOOL_LOOPS = 40` 是外层回路上限，另有 `NO_PROGRESS_LIMIT = 3` 防止连续无真实工具执行的空转
+
+每轮（第 2 轮及之后）runtime 在 apiMessages 末尾注入一段合成 system 消息：
+
+```
+<recent-tool-calls-this-turn>
+1. read file path/to/x.ts → ok
+2. write multi_edit path/to/x.ts (3 edits) → ok
+</recent-tool-calls-this-turn>
+These calls have already been executed. Their results are in the transcript above. Do NOT re-emit any of them with identical arguments — pick a different next action or finish with <verify>.
+```
+
+文本协议下模型容易忘自己刚做了什么（这正是 Claude Code 用原生 tool_use 协议就不会有的问题）。把已执行的工具列出来是补这个缺口最直接的手段，把残留 cached 命中率压到接近 0。
+
+---
+
+## 根因修复协议（TasksState + modelTranscript）
+
+osheep code 的工具循环必须保证模型看见自己上一轮刚刚输出过的内容，否则模型会反复生成同一个 tasks / read / write。runtime 因此维护三份状态：
+
+- `modelTranscript`：本轮发给模型的真实上下文。每次 SSE 结束后，把 assistant 原文追加进去，再追加对应 `tool` 结果；若本轮有 accepted tool，assistant 原文只保留到第一条 tool 结束处，第一条 tool 后未执行的模型输出不会进入下一轮 transcript。
+- `TasksState`（运行时接口，源码已统一改名为 `TasksState`；持久化字段 `kind: "plan"` 因兼容旧 session 文件保留，UI / 文档统一用 Tasks）：本轮最新 tasks 的规范化快照。非平凡任务必须先有有效 tasks；没有有效 tasks 时出现 tool call，runtime 不执行工具，而是回传合成 tool result（`[tasks_required]`）要求模型先输出 `<tasks>`。
+- `executedTools`：本轮所有实际执行过 / 被 cache 短路过 / 被 deny 过的工具调用序列。下一轮 apiMessages 末尾用它构造 `<recent-tool-calls-this-turn>` 摘要。
+
+工具策略也要降低真实失败率：
+
+- 搜索和验证优先用 `read.search`，不要用 shell `grep` / `findstr`。
+- `write_file` 只用于创建新文件或完整内容已知的整文件覆盖；局部修改用 `edit_file`；**同文件多处修改用 `multi_edit`**。
+- `edit_file.oldString` / `multi_edit.edits[i].oldString` 必须来自已经读取到的文件内容，且要足够长以唯一匹配；失败后不要同参重试，先 read / search 再换更精确的上下文。后端在 oldString 不存在或不唯一时会返回**候选行号**，模型应据此 narrow，**无须**重新整文件 read。
+- `read.file` 的工具结果包含 `path` / `size` / `truncated` / `content`。如果 `truncated=true`，模型不得假设未读取部分的内容。
+- `run` 只用于测试、构建、type-check、项目脚本或用户明确要求的命令；**非必要不请求命令**（每次 run 通常要用户审批一次）——能用 `read.file` / `read.list` / `read.search` 拿到的信息就不要 shell（`ls` / `dir` / `cat` / `type` / `pwd` / `echo` / `grep` / `findstr`），也不要重复跑已经跑过、结果已知的命令。`exitCode !== 0` 视为工具失败，模型要读取 stdout/stderr 后调整策略。
+
+---
+
+## edit_file / multi_edit 的 UI 副作用（提示词约束）
+
+两个工具在前端都有**两个**渲染时机：
+
+1. **审批 / 执行前**：模型刚发出 `<tool name="write">{...}</tool>` 时，前端在 timeline 立刻渲染一个**缩略 preview 卡片**（虚线描边、`待审批` 标签）。`edit_file` 显示单段 `-/+`；`multi_edit` 堆叠 N 段。
+2. **执行成功后**：替换为后端返回的真实 diff 卡片（实线描边、`+N/-M` 统计、行号）。`multi_edit` 在标题里显示 `(N edits, +总和/-总和)`，body 内堆叠 N 个 mini diff，每个有自己的 `startLine` 与 `+a/-r` 统计。
+
+底部的审批条（`tool-confirm`）也跟着变窄——既然 diff 已经在 timeline 内，审批条只剩**标签 + 一行 args 摘要 + 三个按钮**，不再重复渲染 diff。`multi_edit` 的摘要文案是 `multi_edit <path> (N edits)`。
+
+提示词在 Rule 9 明确告诉模型：
+
+> edit_file / multi_edit results render as inline diff cards in the chat timeline, both BEFORE the user approves and AFTER execution. Do NOT re-quote `oldString` / `newString` in `<thought>` or `<verify>`; a one-line summary is enough.
+
+回传给模型的 tool_result 中也**只保留** `oldString` / `newString` / `startLine` / `added` / `removed`（以及 multi_edit 的 `edits` 数组），不包含整文件 `before`/`after`。
 
 ---
 
 ## 状态符配色
 
-时间线里的状态符（tool step icon + plan checkbox）使用如下配色，便于一眼区分状态：
+时间线里的状态符（tool step icon + tasks checkbox）使用如下配色：
 
 | 状态 | 形态 | 颜色 |
 |---|---|---|
@@ -269,7 +241,9 @@ You:
 | err / denied    | 描边 + ✗   | `#d29922`（黄） |
 | pending / todo  | 浅描边空圈   | `var(--fg-faint)` |
 
-样式在 `frontend/src/workbench/workbench.css` 的 `.chat-step__icon--*` 与 `.chat-markdown .markdown-todo[data-state="*"]` 选择器下。改色时两处需要保持一致。
+> `cached` 状态依然保留在 `ChatStep.status` 联合类型里（向后兼容旧 session 文件回放），但 **新的对话不会再产生 cached 步骤**——命中缓存的工具调用对 UI 完全不可见。
+
+样式在 [`frontend/src/workbench/workbench.css`](../../../frontend/src/workbench/workbench.css) 的 `.chat-step__icon--*` 与 `.chat-markdown .markdown-todo[data-state="*"]` 选择器下。改色时两处需要保持一致。
 
 ---
 
@@ -292,3 +266,5 @@ osheep code 支持把推理强度透传给上游模型。强度只对一部分�
 - 工具白名单 / 黑名单（仅通过 auto-allow 控制类型粒度，不细化到具体命令）
 - 子 Agent / 嵌套对话
 - 模型自我反思 / chain-of-thought 隐藏
+- 跨多文件的 multi_edit（一次 tool call 同时改若干 path）
+- 切换到原生 `tool_use`（Anthropic）/ `tool_calls`（OpenAI）协议——这是更深层修复重复调用的方向，但当前阶段先用 multi_edit + 已调用摘要 + UI 隐藏覆盖 90% 场景
