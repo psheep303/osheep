@@ -12,6 +12,7 @@ import { registerAgentRoutes } from "./routes/agents.js";
 import { registerSessionRoutes } from "./routes/sessions.js";
 import { registerWorkflowRoutes } from "./routes/workflows.js";
 import { registerAiRoutes } from "./routes/ai.js";
+import { registerAiSettingsRoutes } from "./routes/ai-settings.js";
 
 export async function buildServer() {
   const app = Fastify({
@@ -59,6 +60,7 @@ export async function buildServer() {
   await registerSessionRoutes(app);
   await registerWorkflowRoutes(app);
   await registerAiRoutes(app);
+  await registerAiSettingsRoutes(app);
 
   await ensureWorkspacesRoot();
   return app;

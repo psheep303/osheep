@@ -1,4 +1,7 @@
 import { spawn } from "node:child_process";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import { platform } from "./config.js";
 
 export type CliProviderKind = "claude-cli" | "codex-cli";
@@ -38,7 +41,10 @@ export function cliModelShortcuts(kind: CliProviderKind): string[] {
 }
 
 export async function runCliChat(opts: CliChatOptions): Promise<CliChatResult> {
-  const invocation = normalizeInvocation(buildInvocation(opts.kind, opts.model));
+  const outputCapture = opts.kind === "codex-cli" ? await createOutputCapture() : null;
+  const invocation = normalizeInvocation(
+    buildInvocation(opts.kind, opts.model, outputCapture?.file)
+  );
   const prompt = buildPrompt(opts.kind, opts.messages);
   const parser = new CliOutputParser(opts.onDelta);
 
@@ -102,14 +108,19 @@ export async function runCliChat(opts: CliChatOptions): Promise<CliChatResult> {
     });
 
     child.on("error", (e) => {
+      void cleanupOutputCapture(outputCapture);
       settle(() => reject(e));
     });
 
     child.on("close", (code, sig) => {
       parser.finish();
-      const parsedContent = parser.content();
-      settle(() => {
-        const content = parsedContent || stderr.trim();
+      void (async () => {
+        const parsedContent = parser.content();
+        const finalMessage = await readOutputCapture(outputCapture);
+        const content = finalizeContent(parsedContent, finalMessage, opts.onDelta) || stderr.trim();
+        await cleanupOutputCapture(outputCapture);
+
+        settle(() => {
         if (killedByAbort || opts.signal?.aborted) {
           resolve({ content, stderr, exitCode: null, signal: "SIGTERM" });
           return;
@@ -121,6 +132,7 @@ export async function runCliChat(opts: CliChatOptions): Promise<CliChatResult> {
         }
         resolve({ content, stderr, exitCode: code, signal: sig as NodeJS.Signals | null });
       });
+      })().catch((e) => settle(() => reject(e)));
     });
 
     child.stdin.on("error", () => {
@@ -132,7 +144,8 @@ export async function runCliChat(opts: CliChatOptions): Promise<CliChatResult> {
 
 function buildInvocation(
   kind: CliProviderKind,
-  model: string
+  model: string,
+  outputLastMessagePath?: string
 ): { command: string; args: string[] } {
   const useModel = model && model !== "default";
   if (kind === "claude-cli") {
@@ -151,14 +164,64 @@ function buildInvocation(
   const args = [
     "exec",
     "--json",
-    "--full-auto",
+    "--sandbox",
+    "workspace-write",
     "--skip-git-repo-check",
     "--color",
     "never",
   ];
   if (useModel) args.push("--model", model);
+  if (outputLastMessagePath) {
+    args.push("--output-last-message", outputLastMessagePath);
+  }
   args.push("-");
   return { command: platform === "windows" ? "codex.cmd" : "codex", args };
+}
+
+async function createOutputCapture(): Promise<{ dir: string; file: string }> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-codex-"));
+  return { dir, file: path.join(dir, "last-message.txt") };
+}
+
+async function readOutputCapture(capture: { file: string } | null): Promise<string> {
+  if (!capture) return "";
+  try {
+    return (await fs.readFile(capture.file, "utf8")).trim();
+  } catch {
+    return "";
+  }
+}
+
+async function cleanupOutputCapture(capture: { dir: string } | null): Promise<void> {
+  if (!capture) return;
+  try {
+    await fs.rm(capture.dir, { recursive: true, force: true });
+  } catch {
+    /* ignore */
+  }
+}
+
+function finalizeContent(
+  parsedContent: string,
+  finalMessage: string,
+  onDelta?: (chunk: string) => void
+): string {
+  const parsed = parsedContent.trim();
+  const final = finalMessage.trim();
+  if (!final) return parsedContent;
+  if (!parsed) {
+    onDelta?.(final);
+    return final;
+  }
+  if (parsed.includes(final)) return parsedContent;
+  if (final.includes(parsed)) {
+    const suffix = final.slice(final.indexOf(parsed) + parsed.length);
+    if (suffix) onDelta?.(suffix);
+    return final;
+  }
+  const joined = `${parsedContent.replace(/\s+$/g, "")}\n${final}`;
+  onDelta?.(`\n${final}`);
+  return joined;
 }
 
 function normalizeInvocation(invocation: {
