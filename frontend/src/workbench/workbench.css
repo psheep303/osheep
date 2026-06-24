@@ -1391,6 +1391,13 @@
   background: #8a3028;
 }
 
+.workflow-toolbar__btn--icon {
+  width: 28px;
+  padding: 0;
+  font-size: 17px;
+  line-height: 1;
+}
+
 .workflow-error {
   flex: none;
   display: flex;
@@ -1777,6 +1784,14 @@
   border-color: #765c99;
 }
 
+.workflow-node.is-markdown {
+  border-color: #4f8f85;
+}
+
+.workflow-node.is-mcp {
+  border-color: #8c6cc3;
+}
+
 .workflow-node.is-dragging {
   cursor: grabbing;
   z-index: 4;
@@ -1806,6 +1821,40 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   pointer-events: none;
+}
+
+.workflow-node__id {
+  position: absolute;
+  top: 4px;
+  left: 6px;
+  color: rgba(255, 255, 255, 0.38);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  pointer-events: none;
+}
+
+.workflow-node__icon {
+  position: absolute;
+  left: 19px;
+  top: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--fg-strong);
+  font-size: 11px;
+  font-weight: 700;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.workflow-node__icon + .workflow-node__name {
+  padding-left: 22px;
 }
 
 .workflow-node__handle {
@@ -2107,6 +2156,16 @@
   white-space: pre-wrap;
 }
 
+.workflow-inspector__markdown-preview {
+  min-height: 120px;
+  max-height: 280px;
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid #303030;
+  border-radius: 4px;
+  background: #161616;
+}
+
 .workflow-inspector__foot {
   display: flex;
   justify-content: flex-end;
@@ -2156,6 +2215,48 @@
   font-size: 12px;
   text-align: left;
   cursor: pointer;
+}
+
+.workflow-block-picker__categories button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.workflow-block-picker__items {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  align-content: start;
+}
+
+.workflow-block-picker__items button {
+  min-height: 58px;
+  display: grid;
+  grid-template-columns: 32px 1fr;
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
+}
+
+.workflow-block-picker__icon,
+.workflow-block-picker__item-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--fg-strong);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.workflow-block-picker__item-icon {
+  width: 32px;
+  height: 32px;
 }
 
 .workflow-block-picker__categories button:hover,
