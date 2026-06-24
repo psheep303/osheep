@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityBar, type ViewId } from "./ActivityBar";
+import { AiSettingsView } from "./AiSettingsView";
 import { AiPanel } from "./AiPanel";
 import { BottomPanel } from "./BottomPanel";
 import { DiffPane } from "./DiffPane";
@@ -581,6 +582,7 @@ export function Workbench() {
                 onOpenDiff={(p, base, head) => void openDiffTab(p, base, head)}
               />
             )}
+            {activeView === "ai-settings" && <AiSettingsView />}
           </div>
         )}
         <Resizer
