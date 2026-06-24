@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "apps": {
+    "claude": {
+      "providers": {
+        "default": {
+          "id": "default",
+          "name": "Claude live",
+          "settingsConfig": {
+            "env": {
+              "ANTHROPIC_BASE_URL": "https://muyuan.do",
+              "ANTHROPIC_AUTH_TOKEN": "sk-PWpsj5UGyLiOYOh56VUutP048hhePd1v478a5upfGol1eff9",
+              "ANTHROPIC_MODEL": "claude-opus-4-6",
+              "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-opus-4-6[1M]",
+              "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-4-6[1M]",
+              "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-opus-4-6"
+            }
+          },
+          "category": "custom",
+          "createdAt": 1782185173822
+        }
+      },
+      "current": "default"
+    },
+    "codex": {
+      "providers": {
+        "default": {
+          "id": "default",
+          "name": "Codex live",
+          "settingsConfig": {
+            "auth": {
+              "OPENAI_API_KEY": "sk-tIPTHglyVs4svVhFNQGHnb02ReSIoVC793rMJRnaALkOpoa6"
+            },
+            "config": "model_provider = \"custom\"\nmodel = \"gpt-5.5\"\nmodel_reasoning_effort = \"xhigh\"\ndisable_response_storage = true\napproval_policy = \"on-request\"\nsandbox_mode = \"workspace-write\"\n\n[features]\ngoals = true\n\n[windows]\nsandbox = \"elevated\"\n\n[model_providers.custom]\nname = \"OpenAI\"\nwire_api = \"responses\"\nrequires_openai_auth = true\nbase_url = \"https://a-ocnfniawgw.cn-shanghai.fcapp.run/v1\"\nexperimental_bearer_token = \"sk-tIPTHglyVs4svVhFNQGHnb02ReSIoVC793rMJRnaALkOpoa6\"\n\n[sandbox_workspace_write]\nnetwork_access = true\n\n[projects.\"d:\\\\project\\\\ai-calendar\"]\ntrust_level = \"trusted\"\n\n[projects.\"d:\\\\project\\\\osheep\"]\ntrust_level = \"trusted\"\n"
+          },
+          "category": "custom",
+          "createdAt": 1782113337283
+        }
+      },
+      "current": "default"
+    }
+  }
+}

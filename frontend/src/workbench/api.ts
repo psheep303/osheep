@@ -196,6 +196,92 @@ export async function putSettings(
 
 // ─── Terminal ───
 
+// AI Settings
+
+export type AiSettingsApp = "claude" | "codex";
+
+export interface AiSettingsProvider {
+  id: string;
+  name: string;
+  settingsConfig: unknown;
+  websiteUrl?: string;
+  category?: string;
+  createdAt?: number;
+  sortIndex?: number;
+  notes?: string;
+  meta?: Record<string, unknown>;
+  icon?: string;
+  iconColor?: string;
+  inFailoverQueue?: boolean;
+}
+
+export interface AiSettingsProviderManager {
+  providers: Record<string, AiSettingsProvider>;
+  current: string;
+}
+
+export interface AiSettingsState {
+  version: 1;
+  apps: Record<AiSettingsApp, AiSettingsProviderManager>;
+}
+
+export interface AiSettingsSnapshot {
+  state: AiSettingsState;
+  paths: {
+    store: string;
+    claude: { dir: string; settings: string; exists: boolean };
+    codex: {
+      dir: string;
+      auth: string;
+      config: string;
+      authExists: boolean;
+      configExists: boolean;
+    };
+  };
+}
+
+export async function getAiSettings(): Promise<AiSettingsSnapshot> {
+  return await http.get("/api/ai-settings");
+}
+
+export async function importAiLiveProvider(
+  app: AiSettingsApp
+): Promise<AiSettingsSnapshot> {
+  return await http.post("/api/ai-settings/import-live", { app });
+}
+
+export async function saveAiProvider(
+  app: AiSettingsApp,
+  provider: AiSettingsProvider,
+  originalId?: string,
+  apply = false
+): Promise<AiSettingsSnapshot> {
+  if (originalId) {
+    return await http.put(
+      `/api/ai-settings/providers/${encodeURIComponent(originalId)}`,
+      { app, provider, apply }
+    );
+  }
+  return await http.post("/api/ai-settings/providers", { app, provider, apply });
+}
+
+export async function deleteAiSettingsProvider(
+  app: AiSettingsApp,
+  id: string
+): Promise<AiSettingsSnapshot> {
+  const qs = new URLSearchParams({ app }).toString();
+  return await http.delete(
+    `/api/ai-settings/providers/${encodeURIComponent(id)}?${qs}`
+  );
+}
+
+export async function switchAiSettingsProvider(
+  app: AiSettingsApp,
+  id: string
+): Promise<AiSettingsSnapshot> {
+  return await http.post("/api/ai-settings/switch", { app, id });
+}
+
 export async function getProfiles(): Promise<{
   os: "windows" | "macos" | "linux";
   profiles: ShellProfile[];

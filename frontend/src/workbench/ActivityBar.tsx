@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-export type ViewId = "explorer" | "search" | "git";
+export type ViewId = "explorer" | "search" | "git" | "ai-settings";
 
 interface ActivityBarProps {
   activeView: ViewId;
@@ -19,6 +19,7 @@ const ITEMS: Item[] = [
   { id: "explorer", label: "资源管理器", icon: <FilesIcon /> },
   { id: "search", label: "搜索", icon: <SearchIcon /> },
   { id: "git", label: "源代码管理", icon: <GitIcon /> },
+  { id: "ai-settings", label: "AI 设置", icon: <AiSettingsIcon /> },
 ];
 
 export function ActivityBar({ activeView, collapsed, onSelect, onOpenSettings }: ActivityBarProps) {
@@ -89,6 +90,16 @@ function SettingsIcon() {
     <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round">
       <circle cx="12" cy="12" r="3" />
       <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.1a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.1A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6 1.65 1.65 0 0 0 10 3.09V3a2 2 0 1 1 4 0v.1A1.65 1.65 0 0 0 15 4.6a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.07.41.42.7.83.7H21a2 2 0 1 1 0 4h-.1a1.65 1.65 0 0 0-1.5 1.3z" />
+    </svg>
+  );
+}
+
+function AiSettingsIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 3l1.4 4.1L17.5 8.5l-4.1 1.4L12 14l-1.4-4.1L6.5 8.5l4.1-1.4L12 3z" />
+      <path d="M5 14l.8 2.2L8 17l-2.2.8L5 20l-.8-2.2L2 17l2.2-.8L5 14z" />
+      <path d="M18 13l.9 2.6 2.6.9-2.6.9L18 21l-.9-2.6-2.6-.9 2.6-.9L18 13z" />
     </svg>
   );
 }
