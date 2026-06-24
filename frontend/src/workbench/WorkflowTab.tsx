@@ -25,6 +25,7 @@ import {
   type WorkflowRun,
   type WorkflowRunStatus,
 } from "./api";
+import { MarkdownPreview } from "./MarkdownPreview";
 
 interface WorkflowTabProps {
   workspaceId: string;
@@ -57,11 +58,12 @@ interface NodeContextMenuState {
   nodeId: string;
 }
 
-type BlockCategoryId = "condition" | "command" | "ai" | "network" | "file";
+type BlockCategoryId = "condition" | "command" | "ai" | "network" | "file" | "output";
 
 interface BlockCategory {
   id: BlockCategoryId;
   label: string;
+  icon: string;
 }
 
 interface BlockTemplate {
@@ -72,14 +74,17 @@ interface BlockTemplate {
   providerKind?: WorkflowProviderKind;
   model?: string;
   prompt?: string;
+  icon: string;
+  config?: Record<string, unknown>;
 }
 
 interface LocalNodeResult {
-  raw: string;
-  summary: string;
+  output: WorkflowBlockOutput;
   changedFiles?: boolean;
   error?: string;
 }
+
+type WorkflowBlockOutput = Record<string, unknown>;
 
 const NODE_W = 168;
 const NODE_H = 46;
@@ -89,11 +94,12 @@ const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 1.8;
 const ZOOM_STEP = 0.1;
 const BLOCK_CATEGORIES: BlockCategory[] = [
-  { id: "condition", label: "条件" },
-  { id: "command", label: "命令" },
-  { id: "ai", label: "AI" },
-  { id: "network", label: "网络" },
-  { id: "file", label: "文件操作" },
+  { id: "condition", label: "条件", icon: "◇" },
+  { id: "command", label: "命令", icon: "⌁" },
+  { id: "ai", label: "AI", icon: "✦" },
+  { id: "network", label: "网络", icon: "↗" },
+  { id: "file", label: "文件操作", icon: "▣" },
+  { id: "output", label: "输出", icon: "◫" },
 ];
 const BLOCK_TEMPLATES: BlockTemplate[] = [
   {
@@ -101,12 +107,14 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
     label: "工作流运行时",
     title: "Workflow run",
     kind: "trigger",
+    icon: "◇",
   },
   {
     category: "command",
     label: "终端命令",
     title: "Run command",
     kind: "command",
+    icon: "⌁",
   },
   {
     category: "ai",
@@ -115,6 +123,7 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
     kind: "agent",
     providerKind: "claude-cli",
     model: "default",
+    icon: "C",
   },
   {
     category: "ai",
@@ -123,6 +132,7 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
     kind: "agent",
     providerKind: "codex-cli",
     model: "default",
+    icon: "X",
   },
   {
     category: "network",
@@ -130,18 +140,38 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
     title: "Fetch page text",
     kind: "web",
     prompt: "https://example.com",
+    icon: "↗",
   },
   {
     category: "file",
     label: "Read",
     title: "Read file",
     kind: "file-read",
+    icon: "R",
   },
   {
     category: "file",
     label: "Write",
     title: "Write file",
     kind: "file-write",
+    icon: "W",
+    config: { path: "", content: "" },
+  },
+  {
+    category: "output",
+    label: "Markdown render",
+    title: "Markdown",
+    kind: "markdown",
+    prompt: "## Result\n\n{{blocks[2].text}}",
+    icon: "M",
+  },
+  {
+    category: "output",
+    label: "MCP tool",
+    title: "MCP",
+    kind: "mcp",
+    icon: "P",
+    config: { server: "", tool: "", arguments: "{}" },
   },
 ];
 
@@ -175,6 +205,9 @@ export function WorkflowTab({
   const pendingSaveRef = useRef<WorkflowRecord | null>(null);
   const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const abortRef = useRef<AbortController | null>(null);
+  const undoStackRef = useRef<WorkflowRecord[]>([]);
+  const redoStackRef = useRef<WorkflowRecord[]>([]);
+  const [historyTick, setHistoryTick] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -184,6 +217,9 @@ export function WorkflowTab({
     void apiGetWorkflow(workspaceId, workflowId)
       .then((record) => {
         if (cancelled) return;
+        undoStackRef.current = [];
+        redoStackRef.current = [];
+        setHistoryTick((tick) => tick + 1);
         workflowRef.current = record;
         setWorkflow(record);
       })
@@ -270,10 +306,61 @@ export function WorkflowTab({
     const current = workflowRef.current;
     if (!current) return;
     const next = updater(current);
+    if (next === current) return;
+    pushHistory(current);
     workflowRef.current = next;
     setWorkflow(next);
     if (save) scheduleSave(next);
   };
+
+  const pushHistory = (record: WorkflowRecord) => {
+    undoStackRef.current = [...undoStackRef.current.slice(-99), cloneWorkflow(record)];
+    redoStackRef.current = [];
+    setHistoryTick((tick) => tick + 1);
+  };
+
+  const restoreHistory = (record: WorkflowRecord) => {
+    workflowRef.current = record;
+    setWorkflow(record);
+    scheduleSave(record);
+    setHistoryTick((tick) => tick + 1);
+  };
+
+  const undo = useCallback(() => {
+    if (running) return;
+    const current = workflowRef.current;
+    const previous = undoStackRef.current.pop();
+    if (!current || !previous) return;
+    redoStackRef.current = [...redoStackRef.current.slice(-99), cloneWorkflow(current)];
+    restoreHistory(previous);
+  }, [running]);
+
+  const redo = useCallback(() => {
+    if (running) return;
+    const current = workflowRef.current;
+    const next = redoStackRef.current.pop();
+    if (!current || !next) return;
+    undoStackRef.current = [...undoStackRef.current.slice(-99), cloneWorkflow(current)];
+    restoreHistory(next);
+  }, [running]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const mod = event.ctrlKey || event.metaKey;
+      if (!mod) return;
+      const key = event.key.toLowerCase();
+      if (key === "z") {
+        event.preventDefault();
+        if (event.shiftKey) redo();
+        else undo();
+      } else if (key === "y") {
+        event.preventDefault();
+        redo();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [redo, undo]);
 
   const commitNow = async (record: WorkflowRecord) => {
     workflowRef.current = record;
@@ -319,7 +406,7 @@ export function WorkflowTab({
       const last = record.nodes[record.nodes.length - 1];
       const x = last ? last.x + NODE_W + 120 : 80;
       const y = last ? last.y : 120;
-      const node = nodeFromTemplate(template, nodeId, x, y);
+      const node = nodeFromTemplate(template, nodeId, nextBlockId(record), x, y);
       return { ...record, nodes: [...record.nodes, node] };
     });
     setSelectedId(null);
@@ -353,6 +440,7 @@ export function WorkflowTab({
       const node: WorkflowNode = {
         ...copiedNode,
         id: nodeId,
+        blockId: nextBlockId(record),
         kind,
         title:
           kind === "trigger" ? copiedNode.title : `${copiedNode.title} copy`,
@@ -491,6 +579,32 @@ export function WorkflowTab({
     e.currentTarget.setPointerCapture(e.pointerId);
   };
 
+  const startInputEdgeDrag = (
+    to: string,
+    e: ReactPointerEvent<HTMLButtonElement>
+  ) => {
+    if (running || e.button !== 0) return;
+    const record = workflowRef.current;
+    const existing = record?.edges.find((edge) => edge.to === to);
+    if (!record || !existing) return;
+    const fromNode = record.nodes.find((node) => node.id === existing.from);
+    if (!fromNode) return;
+    e.preventDefault();
+    e.stopPropagation();
+    pushHistory(record);
+    const next = {
+      ...record,
+      edges: record.edges.filter((edge) => edge.id !== existing.id),
+    };
+    workflowRef.current = next;
+    setWorkflow(next);
+    scheduleSave(next);
+    const point = clientToCanvas(e.clientX, e.clientY);
+    setDraftEdgeState({ from: fromNode.id, ...point });
+    setConnectHoverId(to);
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+
   const moveEdgeDrag = (e: ReactPointerEvent<HTMLButtonElement>) => {
     const current = draftEdgeRef.current;
     if (!current) return;
@@ -591,10 +705,12 @@ export function WorkflowTab({
         const startedAt = Date.now();
         const kind = nodeKind(node);
         if (kind === "trigger") {
+          const output = triggerOutput(node);
+          const outputText = stringifyBlockOutput(output);
           current = patchNode(current, nodeId, {
             status: "success",
-            rawOutput: "Workflow run trigger fired.",
-            summary: "STATUS: success\nSUMMARY:\n- Workflow run trigger fired.",
+            rawOutput: outputText,
+            summary: outputText,
             error: "",
             startedAt,
             completedAt: Date.now(),
@@ -615,13 +731,14 @@ export function WorkflowTab({
         await commitNow(current);
 
         if (kind !== "agent") {
-          const local = await executeLocalNode(workspaceId, node);
+          const local = await executeLocalNode(workspaceId, current, node);
           current = workflowRef.current ?? current;
+          const outputText = stringifyBlockOutput(local.output);
           if (local.error) {
             current = patchNode(current, nodeId, {
               status: "error",
-              rawOutput: local.raw,
-              summary: local.summary,
+              rawOutput: outputText,
+              summary: outputText,
               error: local.error,
               completedAt: Date.now(),
             });
@@ -630,8 +747,8 @@ export function WorkflowTab({
           }
           current = patchNode(current, nodeId, {
             status: "success",
-            rawOutput: local.raw,
-            summary: local.summary,
+            rawOutput: outputText,
+            summary: outputText,
             error: "",
             completedAt: Date.now(),
           });
@@ -670,11 +787,20 @@ export function WorkflowTab({
           result.content ||
           raw ||
           `${node.providerKind === "codex-cli" ? "Codex CLI" : "Claude Code CLI"} completed without text output.`;
+        const output = agentOutput(node, raw, current);
+        const outputText = stringifyBlockOutput(output);
         current = workflowRef.current ?? current;
         if (result.aborted) {
+          const stoppedOutput = {
+            ...output,
+            status: "stopped",
+            text: textFromOutput(output) || raw.trim(),
+          };
+          const stoppedOutputText = stringifyBlockOutput(stoppedOutput);
           current = patchNode(current, nodeId, {
             status: "error",
-            rawOutput: raw,
+            rawOutput: stoppedOutputText,
+            summary: stoppedOutputText,
             error: "Stopped",
             completedAt: Date.now(),
           });
@@ -684,8 +810,8 @@ export function WorkflowTab({
         }
         current = patchNode(current, nodeId, {
           status: "success",
-          rawOutput: raw,
-          summary: extractSummary(raw),
+          rawOutput: outputText,
+          summary: outputText,
           error: "",
           completedAt: Date.now(),
         });
@@ -703,8 +829,17 @@ export function WorkflowTab({
       if (current) {
         const activeNode = current.nodes.find((node) => node.status === "running");
         if (activeNode) {
+          const output = stringifyBlockOutput({
+            type: nodeKind(activeNode),
+            status: "failed",
+            text: message,
+            error: message,
+            CHANGED_FILES: [],
+          });
           current = patchNode(current, activeNode.id, {
             status: "error",
+            rawOutput: activeNode.rawOutput || output,
+            summary: activeNode.summary || output,
             error: message,
             completedAt: Date.now(),
           });
@@ -739,6 +874,8 @@ export function WorkflowTab({
   const menuNode = nodeMenu
     ? workflow.nodes.find((node) => node.id === nodeMenu.nodeId)
     : null;
+  const canUndo = historyTick >= 0 && undoStackRef.current.length > 0;
+  const canRedo = historyTick >= 0 && redoStackRef.current.length > 0;
   const nodeMenuSections: CtxMenuSection[] = menuNode
     ? [
         {
@@ -782,6 +919,24 @@ export function WorkflowTab({
         <div className="workflow-toolbar__status">
           {saving ? "Saving" : running ? "Running" : "Saved"}
         </div>
+        <button
+          className="workflow-toolbar__btn workflow-toolbar__btn--icon"
+          onClick={undo}
+          disabled={running || !canUndo}
+          title="Undo (Ctrl+Z)"
+          aria-label="Undo"
+        >
+          ↶
+        </button>
+        <button
+          className="workflow-toolbar__btn workflow-toolbar__btn--icon"
+          onClick={redo}
+          disabled={running || !canRedo}
+          title="Redo (Ctrl+Shift+Z / Ctrl+Y)"
+          aria-label="Redo"
+        >
+          ↷
+        </button>
         <button
           className="workflow-toolbar__btn"
           onClick={() => {
@@ -934,6 +1089,7 @@ export function WorkflowTab({
                   onNodePointerUp={finishNodeDrag}
                   onNodePointerCancel={finishNodeDrag}
                   onStartEdgeDrag={(e) => startEdgeDrag(node.id, e)}
+                  onStartInputEdgeDrag={(e) => startInputEdgeDrag(node.id, e)}
                   onMoveEdgeDrag={moveEdgeDrag}
                   onFinishEdgeDrag={finishEdgeDrag}
                 />
@@ -1016,6 +1172,7 @@ function WorkflowBlockPicker({
               className={item.id === category ? "is-active" : ""}
               onClick={() => onCategoryChange(item.id)}
             >
+              <span className="workflow-block-picker__icon">{item.icon}</span>
               {item.label}
             </button>
           ))}
@@ -1027,7 +1184,8 @@ function WorkflowBlockPicker({
               type="button"
               onClick={() => onAdd(template)}
             >
-              {template.label}
+              <span className="workflow-block-picker__item-icon">{template.icon}</span>
+              <span>{template.label}</span>
             </button>
           ))}
         </div>
@@ -1049,6 +1207,7 @@ function WorkflowNodeBlock({
   onNodePointerUp,
   onNodePointerCancel,
   onStartEdgeDrag,
+  onStartInputEdgeDrag,
   onMoveEdgeDrag,
   onFinishEdgeDrag,
 }: {
@@ -1064,6 +1223,7 @@ function WorkflowNodeBlock({
   onNodePointerUp: (e: ReactPointerEvent<HTMLDivElement>) => void;
   onNodePointerCancel: (e: ReactPointerEvent<HTMLDivElement>) => void;
   onStartEdgeDrag: (e: ReactPointerEvent<HTMLButtonElement>) => void;
+  onStartInputEdgeDrag: (e: ReactPointerEvent<HTMLButtonElement>) => void;
   onMoveEdgeDrag: (e: ReactPointerEvent<HTMLButtonElement>) => void;
   onFinishEdgeDrag: (e: ReactPointerEvent<HTMLButtonElement>) => void;
 }) {
@@ -1079,6 +1239,8 @@ function WorkflowNodeBlock({
     (dragging ? " is-dragging" : "") +
     ` is-${nodeKind(node)}` +
     ` is-${node.status}`;
+  const hasInputHandle = nodeKind(node) !== "trigger";
+  const hasOutputHandle = nodeKind(node) !== "markdown";
 
   return (
     <div
@@ -1092,30 +1254,39 @@ function WorkflowNodeBlock({
       onPointerUp={onNodePointerUp}
       onPointerCancel={onNodePointerCancel}
     >
-      <button
-        type="button"
-        className={
-          "workflow-node__handle workflow-node__handle--in" +
-          (connectHover ? " is-connect-hover" : "")
-        }
-        data-workflow-input-id={node.id}
-        aria-label="Input connector"
-        title="Input"
-        disabled={running}
-        onPointerDown={(e) => e.stopPropagation()}
-      />
+      {hasInputHandle && (
+        <button
+          type="button"
+          className={
+            "workflow-node__handle workflow-node__handle--in" +
+            (connectHover ? " is-connect-hover" : "")
+          }
+          data-workflow-input-id={node.id}
+          aria-label="Input connector"
+          title="Input"
+          disabled={running}
+          onPointerDown={onStartInputEdgeDrag}
+          onPointerMove={onMoveEdgeDrag}
+          onPointerUp={onFinishEdgeDrag}
+          onPointerCancel={onFinishEdgeDrag}
+        />
+      )}
+      <span className="workflow-node__id">{displayBlockId(node)}</span>
+      <span className="workflow-node__icon">{nodeIcon(node)}</span>
       <span className="workflow-node__name">{node.title}</span>
-      <button
-        type="button"
-        className="workflow-node__handle workflow-node__handle--out"
-        aria-label="Output connector"
-        title="Output"
-        disabled={running}
-        onPointerDown={onStartEdgeDrag}
-        onPointerMove={onMoveEdgeDrag}
-        onPointerUp={onFinishEdgeDrag}
-        onPointerCancel={onFinishEdgeDrag}
-      />
+      {hasOutputHandle && (
+        <button
+          type="button"
+          className="workflow-node__handle workflow-node__handle--out"
+          aria-label="Output connector"
+          title="Output"
+          disabled={running}
+          onPointerDown={onStartEdgeDrag}
+          onPointerMove={onMoveEdgeDrag}
+          onPointerUp={onFinishEdgeDrag}
+          onPointerCancel={onFinishEdgeDrag}
+        />
+      )}
     </div>
   );
 }
@@ -1147,13 +1318,18 @@ function WorkflowNodeInspector({
   const kind = nodeKind(node);
   const isTrigger = kind === "trigger";
   const isAgent = kind === "agent";
+  const isFileWrite = kind === "file-write";
+  const isMcp = kind === "mcp";
+  const isMarkdown = kind === "markdown";
+  const writeConfig = fileWriteConfig(node);
+  const mcpConfig = mcpNodeConfig(node);
 
   return (
     <aside className="workflow-inspector">
       <div className="workflow-inspector__head">
         <div>
           <div className="workflow-inspector__eyebrow">
-            {blockEyebrow(kind)}
+            {blockEyebrow(kind)} #{displayBlockId(node)}
           </div>
           <span className={`workflow-inspector__status is-${node.status}`}>
             {node.status}
@@ -1213,7 +1389,88 @@ function WorkflowNodeInspector({
         </>
       )}
 
-      {!isTrigger && (
+      {isFileWrite ? (
+        <>
+          <label className="workflow-inspector__field">
+            <span>Path</span>
+            <input
+              value={writeConfig.path}
+              onChange={(e) =>
+                onUpdate({
+                  config: {
+                    ...(node.config ?? {}),
+                    path: e.target.value,
+                  },
+                })
+              }
+              disabled={running}
+            />
+          </label>
+          <label className="workflow-inspector__field">
+            <span>Content</span>
+            <textarea
+              value={writeConfig.content}
+              onChange={(e) =>
+                onUpdate({
+                  config: {
+                    ...(node.config ?? {}),
+                    content: e.target.value,
+                  },
+                })
+              }
+              disabled={running}
+            />
+          </label>
+        </>
+      ) : isMcp ? (
+        <>
+          <label className="workflow-inspector__field">
+            <span>Server</span>
+            <input
+              value={mcpConfig.server}
+              onChange={(e) =>
+                onUpdate({
+                  config: {
+                    ...(node.config ?? {}),
+                    server: e.target.value,
+                  },
+                })
+              }
+              disabled={running}
+            />
+          </label>
+          <label className="workflow-inspector__field">
+            <span>Tool</span>
+            <input
+              value={mcpConfig.tool}
+              onChange={(e) =>
+                onUpdate({
+                  config: {
+                    ...(node.config ?? {}),
+                    tool: e.target.value,
+                  },
+                })
+              }
+              disabled={running}
+            />
+          </label>
+          <label className="workflow-inspector__field">
+            <span>Arguments JSON</span>
+            <textarea
+              value={mcpConfig.arguments}
+              onChange={(e) =>
+                onUpdate({
+                  config: {
+                    ...(node.config ?? {}),
+                    arguments: e.target.value,
+                  },
+                })
+              }
+              disabled={running}
+            />
+          </label>
+        </>
+      ) : !isTrigger && (
         <label className="workflow-inspector__field">
           <span>{inputLabelForKind(kind)}</span>
           <textarea
@@ -1222,6 +1479,15 @@ function WorkflowNodeInspector({
             disabled={running}
           />
         </label>
+      )}
+
+      {isMarkdown && (
+        <div className="workflow-inspector__section">
+          <div className="workflow-inspector__section-title">Preview</div>
+          <div className="workflow-inspector__markdown-preview">
+            <MarkdownPreview source={node.prompt} />
+          </div>
+        </div>
       )}
 
       {incoming.length > 0 && (
@@ -1357,9 +1623,10 @@ function topoOrder(record: WorkflowRecord): { nodeIds: string[]; error?: string 
 
 async function executeLocalNode(
   workspaceId: string,
+  record: WorkflowRecord,
   node: WorkflowNode
 ): Promise<LocalNodeResult> {
-  const input = node.prompt.trim();
+  const input = resolveBlockTemplate(node.prompt, record).trim();
   const kind = nodeKind(node);
   if (!input) throw new Error(`${node.title} has no input.`);
 
@@ -1368,11 +1635,20 @@ async function executeLocalNode(
       command: input,
       timeoutMs: 600_000,
     });
-    const raw = formatRunResult(result);
     const failed = result.exitCode !== 0;
     return {
-      raw,
-      summary: localSummary(failed ? "failed" : "success", raw),
+      output: {
+        type: "command",
+        status: failed ? "failed" : "success",
+        command: result.command,
+        shell: result.shell ?? "auto",
+        exitCode: result.exitCode,
+        signal: result.signal,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        truncated: result.truncated,
+        CHANGED_FILES: [],
+      },
       changedFiles: !failed,
       error: failed ? `${node.title} exited with ${result.exitCode ?? "signal"}.` : undefined,
     };
@@ -1384,11 +1660,18 @@ async function executeLocalNode(
       shell: "cmd",
       timeoutMs: 120_000,
     });
-    const raw = formatRunResult(result);
     const failed = result.exitCode !== 0;
     return {
-      raw,
-      summary: localSummary(failed ? "failed" : "success", result.stdout || raw),
+      output: {
+        type: "web",
+        status: failed ? "failed" : "success",
+        url: input,
+        text: result.stdout,
+        stderr: result.stderr,
+        exitCode: result.exitCode,
+        truncated: result.truncated,
+        CHANGED_FILES: [],
+      },
       error: failed ? `Failed to fetch ${input}.` : undefined,
     };
   }
@@ -1396,19 +1679,66 @@ async function executeLocalNode(
   if (kind === "file-read") {
     const file = await readFile(workspaceId, input);
     return {
-      raw: file.content,
-      summary: localSummary("success", `Read ${input}\n${file.content}`),
+      output: {
+        type: "file-read",
+        status: "success",
+        path: input,
+        content: file.content,
+        size: file.size,
+        mtime: file.mtime,
+        CHANGED_FILES: [],
+      },
     };
   }
 
   if (kind === "file-write") {
-    const parsed = parseFileWriteInput(node.prompt);
+    const config = fileWriteConfig(node);
+    const parsed = {
+      path: resolveBlockTemplate(config.path, record).trim(),
+      content: resolveBlockTemplate(config.content, record),
+    };
     if (!parsed.path) throw new Error(`${node.title} has no path.`);
     await writeFile(workspaceId, parsed.path, parsed.content, true);
     return {
-      raw: `Wrote ${parsed.path}\n${parsed.content}`,
-      summary: localSummary("success", `Wrote ${parsed.path}`),
+      output: {
+        type: "file-write",
+        status: "success",
+        path: parsed.path,
+        bytes: new Blob([parsed.content]).size,
+        content: parsed.content,
+        CHANGED_FILES: [parsed.path],
+      },
       changedFiles: true,
+    };
+  }
+
+  if (kind === "markdown") {
+    const markdown = resolveBlockTemplate(node.prompt, record);
+    return {
+      output: {
+        type: "markdown",
+        status: "success",
+        markdown,
+        text: markdown,
+        CHANGED_FILES: [],
+      },
+    };
+  }
+
+  if (kind === "mcp") {
+    const config = mcpNodeConfig(node);
+    const resolvedArgs = resolveBlockTemplate(config.arguments, record);
+    const args = parseJsonObject(resolvedArgs) ?? {};
+    return {
+      output: {
+        type: "mcp",
+        status: "not_configured",
+        server: resolveBlockTemplate(config.server, record),
+        tool: resolveBlockTemplate(config.tool, record),
+        arguments: args,
+        text: "MCP runtime is not connected yet.",
+        CHANGED_FILES: [],
+      },
     };
   }
 
@@ -1427,69 +1757,145 @@ function buildBlockPrompt(record: WorkflowRecord, node: WorkflowNode): string {
 
   return [
     `You are executing osheep workflow block "${node.title}".`,
-    "Run as a local coding agent in the current project root.",
-    "Inspect, edit, and verify files directly with your native CLI capabilities.",
-    "Do not ask the host for chat-style clarification unless the task is impossible.",
+    "Return exactly one JSON object and no markdown fences.",
+    "The JSON object must include: text, status, CHANGED_FILES, VERIFICATION, NEXT.",
+    "Put the user-facing answer in text. CHANGED_FILES and VERIFICATION must be arrays.",
+    "If the prompt asks for project work, use your native CLI capabilities to inspect, edit, and verify files in the current project root.",
+    "If the prompt is conversational, answer naturally inside text and keep CHANGED_FILES empty.",
     "",
     "Incoming summaries:",
     incoming.length ? incoming.join("\n\n") : "None.",
     "",
     "Block prompt:",
-    node.prompt,
-    "",
-    "When finished, print this exact summary envelope and nothing after it:",
-    "<osheep-summary>",
-    "STATUS: success|blocked|failed",
-    "CHANGED_FILES:",
-    "- path or none",
-    "VERIFICATION:",
-    "- command/result or not run",
-    "SUMMARY:",
-    "- concise result",
-    "NEXT:",
-    "- useful handoff for downstream blocks or none",
-    "</osheep-summary>",
+    resolveBlockTemplate(node.prompt, record),
   ].join("\n");
 }
 
-function extractSummary(raw: string): string {
-  const startTag = "<osheep-summary>";
-  const endTag = "</osheep-summary>";
-  const start = raw.indexOf(startTag);
-  const end = raw.indexOf(endTag);
-  if (start >= 0 && end > start) {
-    return raw.slice(start + startTag.length, end).trim();
+function triggerOutput(node: WorkflowNode): WorkflowBlockOutput {
+  return {
+    type: "trigger",
+    status: "success",
+    id: displayBlockId(node),
+    text: "Workflow run trigger fired.",
+    CHANGED_FILES: [],
+  };
+}
+
+function agentOutput(
+  node: WorkflowNode,
+  raw: string,
+  record: WorkflowRecord
+): WorkflowBlockOutput {
+  const parsed = parseJsonObject(raw);
+  if (parsed) {
+    return normalizeOutputObject(parsed, {
+      type: node.providerKind === "claude-cli" ? "claude" : "codex",
+      status: "success",
+      text: textFromOutput(parsed) || raw.trim(),
+      CHANGED_FILES: [],
+    });
   }
-  const trimmed = raw.trim();
-  return trimmed || "No summary returned.";
+
+  return {
+    type: node.providerKind === "claude-cli" ? "claude" : "codex",
+    status: "success",
+    text: raw.trim(),
+    CHANGED_FILES: inferChangedFiles(record),
+    VERIFICATION: [],
+  };
 }
 
-function localSummary(status: "success" | "failed", raw: string): string {
-  const text = raw.trim().slice(0, 2400) || "No output.";
-  return [
-    `STATUS: ${status}`,
-    "CHANGED_FILES:",
-    "- unknown",
-    "VERIFICATION:",
-    "- workflow local block executed",
-    "SUMMARY:",
-    text,
-    "NEXT:",
-    "- none",
-  ].join("\n");
+function normalizeOutputObject(
+  value: WorkflowBlockOutput,
+  defaults: WorkflowBlockOutput
+): WorkflowBlockOutput {
+  return {
+    ...defaults,
+    ...value,
+    CHANGED_FILES: Array.isArray(value.CHANGED_FILES)
+      ? value.CHANGED_FILES
+      : defaults.CHANGED_FILES,
+  };
 }
 
-function formatRunResult(result: Awaited<ReturnType<typeof execRun>>): string {
-  return [
-    `$ ${result.command}`,
-    `shell: ${result.shell ?? "auto"}`,
-    `exit: ${result.exitCode ?? result.signal ?? "unknown"}`,
-    result.stdout ? `\nstdout:\n${result.stdout}` : "",
-    result.stderr ? `\nstderr:\n${result.stderr}` : "",
-    result.truncated ? "\n[output truncated]" : "",
-  ]
-    .filter(Boolean)
-    .join("\n");
+function stringifyBlockOutput(output: WorkflowBlockOutput): string {
+  return JSON.stringify(output, null, 2);
+}
+
+function parseBlockOutput(node: WorkflowNode): WorkflowBlockOutput | null {
+  return parseJsonObject(node.rawOutput || node.summary || "");
+}
+
+function parseJsonObject(text: string): WorkflowBlockOutput | null {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as WorkflowBlockOutput)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function textFromOutput(output: WorkflowBlockOutput): string {
+  const text = output.text ?? output.summary ?? output.content ?? output.stdout;
+  return typeof text === "string" ? text : "";
+}
+
+function inferChangedFiles(record: WorkflowRecord): string[] {
+  const changed = new Set<string>();
+  for (const node of record.nodes) {
+    const output = parseBlockOutput(node);
+    const files = output?.CHANGED_FILES;
+    if (!Array.isArray(files)) continue;
+    for (const file of files) {
+      if (typeof file === "string" && file.trim()) changed.add(file.trim());
+    }
+  }
+  return [...changed];
+}
+
+function resolveBlockTemplate(input: string, record: WorkflowRecord): string {
+  return input.replace(/\{\{\s*blocks\[(\d+)\]((?:\.[A-Za-z_$][\w$]*|\[[^\]]+\])*)\s*\}\}/g, (
+    _match,
+    idText: string,
+    pathText: string
+  ) => {
+    const blockId = Number(idText);
+    const node = record.nodes.find((item) => displayBlockId(item) === blockId);
+    const output = node ? parseBlockOutput(node) : null;
+    if (!output) return "";
+    const value = getPathValue(output, pathText);
+    return stringifyTemplateValue(value);
+  });
+}
+
+function getPathValue(value: unknown, pathText: string): unknown {
+  let current = value;
+  const re = /\.([A-Za-z_$][\w$]*)|\[("([^"]+)"|'([^']+)'|(\d+))\]/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(pathText)) !== null) {
+    const key = match[1] ?? match[3] ?? match[4] ?? match[5] ?? "";
+    if (!key) return undefined;
+    if (Array.isArray(current)) {
+      const index = Number(key);
+      current = Number.isInteger(index) ? current[index] : undefined;
+    } else if (current && typeof current === "object") {
+      current = (current as Record<string, unknown>)[key];
+    } else {
+      return undefined;
+    }
+  }
+  return current;
+}
+
+function stringifyTemplateValue(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return JSON.stringify(value);
 }
 
 function buildFetchCommand(url: string): string {
@@ -1553,10 +1959,12 @@ function findInputNodeFromPoint(clientX: number, clientY: number): string | null
 }
 
 function blockEyebrow(kind: WorkflowNodeKind): string {
-  if (kind === "trigger") return "Condition";
+  if (kind === "trigger") return "Trigger";
   if (kind === "command") return "Command";
   if (kind === "web") return "Network";
   if (kind === "file-read" || kind === "file-write") return "File";
+  if (kind === "markdown") return "Output";
+  if (kind === "mcp") return "MCP";
   return "AI";
 }
 
@@ -1565,6 +1973,8 @@ function inputLabelForKind(kind: WorkflowNodeKind): string {
   if (kind === "web") return "URL";
   if (kind === "file-read") return "Path";
   if (kind === "file-write") return "Path / content";
+  if (kind === "markdown") return "Markdown";
+  if (kind === "mcp") return "MCP";
   return "Prompt";
 }
 
@@ -1574,7 +1984,9 @@ function nodeKind(node: WorkflowNode): WorkflowNodeKind {
     node.kind === "command" ||
     node.kind === "web" ||
     node.kind === "file-read" ||
-    node.kind === "file-write"
+    node.kind === "file-write" ||
+    node.kind === "markdown" ||
+    node.kind === "mcp"
   ) {
     return node.kind;
   }
@@ -1584,20 +1996,73 @@ function nodeKind(node: WorkflowNode): WorkflowNodeKind {
 function nodeFromTemplate(
   template: BlockTemplate,
   id: string,
+  blockId: number,
   x: number,
   y: number
 ): WorkflowNode {
   return {
     id,
+    blockId,
     kind: template.kind,
     title: template.title,
     providerKind: template.providerKind ?? "codex-cli",
     model: template.model ?? "default",
     prompt: template.prompt ?? "",
+    config: { ...(template.config ?? {}), icon: template.icon },
     x,
     y,
     status: "idle",
   };
+}
+
+function nodeIcon(node: WorkflowNode): string {
+  const icon = node.config?.icon;
+  if (typeof icon === "string" && icon.trim()) return icon.trim().slice(0, 2);
+  const kind = nodeKind(node);
+  if (kind === "trigger") return "◇";
+  if (kind === "command") return "⌁";
+  if (kind === "web") return "↗";
+  if (kind === "file-read") return "R";
+  if (kind === "file-write") return "W";
+  if (kind === "markdown") return "M";
+  if (kind === "mcp") return "P";
+  return node.providerKind === "claude-cli" ? "C" : "X";
+}
+
+function fileWriteConfig(node: WorkflowNode): { path: string; content: string } {
+  const config = node.config ?? {};
+  const legacy = parseFileWriteInput(node.prompt);
+  return {
+    path: typeof config.path === "string" ? config.path : legacy.path,
+    content: typeof config.content === "string" ? config.content : legacy.content,
+  };
+}
+
+function mcpNodeConfig(node: WorkflowNode): {
+  server: string;
+  tool: string;
+  arguments: string;
+} {
+  const config = node.config ?? {};
+  return {
+    server: typeof config.server === "string" ? config.server : "",
+    tool: typeof config.tool === "string" ? config.tool : "",
+    arguments: typeof config.arguments === "string" ? config.arguments : "{}",
+  };
+}
+
+function cloneWorkflow(record: WorkflowRecord): WorkflowRecord {
+  return JSON.parse(JSON.stringify(record)) as WorkflowRecord;
+}
+
+function displayBlockId(node: WorkflowNode): number {
+  return typeof node.blockId === "number" && Number.isInteger(node.blockId) && node.blockId > 0
+    ? node.blockId
+    : 0;
+}
+
+function nextBlockId(record: WorkflowRecord): number {
+  return Math.max(0, ...record.nodes.map(displayBlockId)) + 1;
 }
 
 function clamp(value: number, min: number, max: number): number {

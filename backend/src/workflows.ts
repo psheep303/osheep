@@ -14,12 +14,15 @@ export type WorkflowNodeKind =
   | "command"
   | "web"
   | "file-read"
-  | "file-write";
+  | "file-write"
+  | "markdown"
+  | "mcp";
 export type WorkflowNodeStatus = "idle" | "running" | "success" | "error";
 export type WorkflowRunStatus = "idle" | "running" | "success" | "error" | "stopped";
 
 export interface WorkflowNode {
   id: string;
+  blockId?: number;
   kind: WorkflowNodeKind;
   title: string;
   providerKind: WorkflowProviderKind;
@@ -31,6 +34,7 @@ export interface WorkflowNode {
   summary?: string;
   rawOutput?: string;
   error?: string;
+  config?: Record<string, unknown>;
   startedAt?: number;
   completedAt?: number;
 }
@@ -120,7 +124,9 @@ function asNodeKind(value: unknown): WorkflowNodeKind {
     value === "command" ||
     value === "web" ||
     value === "file-read" ||
-    value === "file-write"
+    value === "file-write" ||
+    value === "markdown" ||
+    value === "mcp"
   ) {
     return value;
   }
@@ -148,6 +154,12 @@ function asFiniteNumber(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
+function asPositiveInteger(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value > 0
+    ? value
+    : undefined;
+}
+
 function sanitizeNode(raw: unknown, index: number): WorkflowNode | null {
   if (!raw || typeof raw !== "object") return null;
   const r = raw as Partial<WorkflowNode>;
@@ -157,6 +169,7 @@ function sanitizeNode(raw: unknown, index: number): WorkflowNode | null {
       : generateWorkflowNodeId();
   const node: WorkflowNode = {
     id,
+    blockId: asPositiveInteger(r.blockId) ?? index + 1,
     kind: asNodeKind(r.kind),
     title:
       typeof r.title === "string" && r.title.trim()
@@ -174,6 +187,9 @@ function sanitizeNode(raw: unknown, index: number): WorkflowNode | null {
   if (typeof r.summary === "string") node.summary = r.summary;
   if (typeof r.rawOutput === "string") node.rawOutput = r.rawOutput;
   if (typeof r.error === "string") node.error = r.error;
+  if (r.config && typeof r.config === "object" && !Array.isArray(r.config)) {
+    node.config = r.config as Record<string, unknown>;
+  }
   if (typeof r.startedAt === "number") node.startedAt = r.startedAt;
   if (typeof r.completedAt === "number") node.completedAt = r.completedAt;
   return node;
@@ -217,6 +233,7 @@ function defaultNodes(): WorkflowNode[] {
   return [
     {
       id: generateWorkflowNodeId(),
+      blockId: 1,
       kind: "trigger",
       title: "Workflow run",
       providerKind: "codex-cli",
@@ -228,6 +245,7 @@ function defaultNodes(): WorkflowNode[] {
     },
     {
       id: generateWorkflowNodeId(),
+      blockId: 2,
       kind: "agent",
       title: "Codex",
       providerKind: "codex-cli",
