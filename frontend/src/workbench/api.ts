@@ -764,7 +764,9 @@ export type WorkflowNodeKind =
   | "command"
   | "web"
   | "file-read"
-  | "file-write";
+  | "file-write"
+  | "markdown"
+  | "mcp";
 export type WorkflowNodeStatus = "idle" | "running" | "success" | "error";
 export type WorkflowRunStatus =
   | "idle"
@@ -775,6 +777,7 @@ export type WorkflowRunStatus =
 
 export interface WorkflowNode {
   id: string;
+  blockId?: number;
   kind?: WorkflowNodeKind;
   title: string;
   providerKind: WorkflowProviderKind;
@@ -786,6 +789,7 @@ export interface WorkflowNode {
   summary?: string;
   rawOutput?: string;
   error?: string;
+  config?: Record<string, unknown>;
   startedAt?: number;
   completedAt?: number;
 }
