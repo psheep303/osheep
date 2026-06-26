@@ -879,6 +879,60 @@ export async function deleteWorkflow(
 
 // ─── AI proxy ───
 
+// Remote MCP
+
+export interface RemoteMcpTool {
+  name: string;
+  description?: string;
+  inputSchema?: unknown;
+  [key: string]: unknown;
+}
+
+export interface RemoteMcpConnectionInput {
+  remoteLink: string;
+  postUrl?: string;
+  headers?: Record<string, string>;
+  apiKey?: string;
+}
+
+export interface RemoteMcpDiscovery {
+  remoteLink: string;
+  postUrl: string;
+  tools: RemoteMcpTool[];
+  raw: unknown;
+  connectedAt: number;
+}
+
+export interface RemoteMcpCallResult {
+  remoteLink: string;
+  postUrl: string;
+  ok: boolean;
+  status?: "success" | "failed";
+  result?: unknown;
+  error?: unknown;
+  response: unknown;
+}
+
+const mcpUrl = (id: string, suffix: string) =>
+  `/api/workspaces/${encodeURIComponent(id)}/mcp${suffix}`;
+
+export async function discoverRemoteMcp(
+  workspaceId: string,
+  input: RemoteMcpConnectionInput
+): Promise<RemoteMcpDiscovery> {
+  return await http.post(mcpUrl(workspaceId, "/discover"), input);
+}
+
+export async function callRemoteMcp(
+  workspaceId: string,
+  input: RemoteMcpConnectionInput & {
+    name: string;
+    arguments?: Record<string, unknown>;
+  }
+): Promise<RemoteMcpCallResult> {
+  return await http.post(mcpUrl(workspaceId, "/call"), input);
+}
+
 export interface AiChatMessage {
   role: "system" | "user" | "assistant" | "tool";
   content: string;
