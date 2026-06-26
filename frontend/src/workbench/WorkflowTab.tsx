@@ -10,17 +10,23 @@ import {
   type ReactNode,
   type WheelEvent as ReactWheelEvent,
 } from "react";
+import { Terminal as XTerm } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
 import { ContextMenu, type CtxMenuSection } from "./ContextMenu";
 import {
   aiChatStream,
+  aiChatTerminalStream,
   callRemoteMcp,
   discoverRemoteMcp,
   execRun,
   execRunStream,
   getWorkflow as apiGetWorkflow,
+  openTerminalSocket,
   readFile,
   saveWorkflow as apiSaveWorkflow,
   writeFile,
+  type AiTerminalFrame,
+  type AiTerminalResult,
   type RunResult,
   type RemoteMcpTool,
   type WorkflowEdge,
@@ -159,6 +165,8 @@ interface WorkflowRunDetailSnapshot {
   stdout: string;
   stderr: string;
   transcript: string;
+  terminalSessionId?: string;
+  paused?: boolean;
   exitCode?: number | null;
   signal?: string | null;
   durationMs?: number;
@@ -1040,44 +1048,53 @@ export function WorkflowTab({
         }
         const ac = new AbortController();
         abortRef.current = ac;
-        let raw = "";
-        let lastUiAt = 0;
         let lastDetailsAt = 0;
         const runLogs: Array<{ stream: "stdout" | "stderr"; content: string }> = [];
+        let terminalSessionId = "";
+        const updateAgentDetails = (
+          status: WorkflowRunDetailSnapshot["status"],
+          completedAt?: number,
+          paused?: boolean
+        ) => {
+          setLiveNodePatch(nodeId, {
+            config: {
+              ...(node.config ?? {}),
+              runDetails: agentRunSnapshot(
+                node,
+                status,
+                startedAt,
+                completedAt,
+                runLogs,
+                terminalSessionId || undefined,
+                paused
+              ),
+            },
+          });
+        };
         const appendLog = (entry: { stream: "stdout" | "stderr"; content: string }) => {
           runLogs.push(entry);
           const now = Date.now();
           if (now - lastDetailsAt > 220) {
             lastDetailsAt = now;
-            setLiveNodePatch(nodeId, {
-              config: {
-                ...(node.config ?? {}),
-                runDetails: agentRunSnapshot(node, "running", startedAt, undefined, runLogs),
-              },
-            });
+            updateAgentDetails("running");
           }
         };
-        setLiveNodePatch(nodeId, {
-          config: {
-            ...(node.config ?? {}),
-            runDetails: agentRunSnapshot(node, "running", startedAt, undefined, runLogs),
-          },
-        });
+        updateAgentDetails("running");
         const mcpTools = collectMcpToolsForAgent(current, node);
         const prompt = buildBlockPrompt(current, node, mcpTools);
-        const result = await runAiChatStreamWithRetries(
+        const result = await runAiTerminalWithRetries(
           workspaceId,
           {
             model: node.model || "default",
             kind: node.providerKind,
             messages: [{ role: "user", content: prompt }],
           },
-          (chunk) => {
-            raw += chunk;
-            const now = Date.now();
-            if (now - lastUiAt > 160) {
-              lastUiAt = now;
-              setLiveNodePatch(nodeId, { rawOutput: raw });
+          (frame) => {
+            if (frame.type === "session" && frame.sessionId) {
+              terminalSessionId = frame.sessionId;
+              updateAgentDetails("running");
+            } else if (frame.type === "output" && typeof frame.data === "string") {
+              appendLog({ stream: "stdout", content: frame.data });
             }
           },
           ac.signal,
@@ -1085,9 +1102,8 @@ export function WorkflowTab({
           appendLog
         );
         abortRef.current = null;
-        raw =
-          result.content ||
-          raw ||
+        let raw =
+          result.result?.content ||
           `${node.providerKind === "codex-cli" ? "Codex CLI" : "Claude Code CLI"} completed without text output.`;
         const toolRun = result.aborted
           ? null
@@ -1120,7 +1136,14 @@ export function WorkflowTab({
             error: "Stopped",
             config: {
               ...(node.config ?? {}),
-              runDetails: agentRunSnapshot(node, "stopped", startedAt, Date.now(), runLogs),
+              runDetails: agentRunSnapshot(
+                node,
+                "stopped",
+                startedAt,
+                Date.now(),
+                runLogs,
+                terminalSessionId || result.result?.sessionId
+              ),
             },
             completedAt: Date.now(),
           });
@@ -1135,7 +1158,14 @@ export function WorkflowTab({
           error: "",
           config: {
             ...(node.config ?? {}),
-            runDetails: agentRunSnapshot(node, "success", startedAt, Date.now(), runLogs),
+            runDetails: agentRunSnapshot(
+              node,
+              "success",
+              startedAt,
+              Date.now(),
+              runLogs,
+              terminalSessionId || result.result?.sessionId
+            ),
           },
           completedAt: Date.now(),
         });
@@ -1751,14 +1781,151 @@ function WorkflowDetailsPanel({
           <span />
           <strong>{snapshot?.commandLine || "No run captured"}</strong>
         </div>
-        <pre>
-          {snapshot?.transcript ||
-            snapshot?.stdout ||
-            snapshot?.stderr ||
-            "Run this block to capture a terminal snapshot."}
-        </pre>
+        {snapshot?.kind === "agent" &&
+        snapshot.terminalSessionId &&
+        snapshot.status === "running" ? (
+          <WorkflowAgentTerminal sessionId={snapshot.terminalSessionId} />
+        ) : (
+          <pre>
+            {snapshot?.transcript ||
+              snapshot?.stdout ||
+              snapshot?.stderr ||
+              "Run this block to capture a terminal snapshot."}
+          </pre>
+        )}
       </div>
     </aside>
+  );
+}
+
+function WorkflowAgentTerminal({ sessionId }: { sessionId: string }) {
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  const termRef = useRef<XTerm | null>(null);
+  const fitRef = useRef<FitAddon | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const [paused, setPaused] = useState(false);
+
+  useEffect(() => {
+    if (!hostRef.current) return;
+    const term = new XTerm({
+      convertEol: false,
+      cursorBlink: true,
+      fontFamily: "Cascadia Mono, Consolas, Courier New, monospace",
+      fontSize: 12.5,
+      scrollback: 8000,
+      theme: {
+        background: "#101010",
+        foreground: "#d6d6d6",
+        cursor: "#d8eaff",
+        selectionBackground: "#264f78",
+      },
+    });
+    const fit = new FitAddon();
+    term.loadAddon(fit);
+    term.open(hostRef.current);
+    termRef.current = term;
+    fitRef.current = fit;
+    try {
+      fit.fit();
+    } catch {
+      /* layout race */
+    }
+
+    const ws = openTerminalSocket(`/api/terminals/${encodeURIComponent(sessionId)}/io`);
+    wsRef.current = ws;
+    ws.onopen = () => {
+      ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+      term.focus();
+    };
+    ws.onmessage = (ev) => {
+      try {
+        const msg = JSON.parse(ev.data) as {
+          type?: string;
+          data?: string;
+          code?: number | null;
+          signal?: number | string | null;
+        };
+        if (msg.type === "output" && typeof msg.data === "string") {
+          term.write(msg.data);
+        } else if (msg.type === "exit") {
+          term.writeln(
+            `\r\n\x1b[2m[osheep] terminal exited code=${msg.code ?? "null"} signal=${
+              msg.signal ?? "null"
+            }\x1b[0m`
+          );
+        } else if (msg.type === "ping") {
+          ws.send(JSON.stringify({ type: "pong" }));
+        } else if (msg.type === "error") {
+          term.writeln(`\r\n\x1b[31m[osheep] terminal session is no longer available\x1b[0m`);
+        }
+      } catch {
+        /* ignore */
+      }
+    };
+
+    const inputSub = term.onData((data) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "input", data }));
+      }
+    });
+    const resizeObs = new ResizeObserver(() => {
+      try {
+        fit.fit();
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+        }
+      } catch {
+        /* layout race */
+      }
+    });
+    resizeObs.observe(hostRef.current);
+
+    return () => {
+      resizeObs.disconnect();
+      inputSub.dispose();
+      ws.close();
+      term.dispose();
+      wsRef.current = null;
+      termRef.current = null;
+      fitRef.current = null;
+    };
+  }, [sessionId]);
+
+  const sendInput = (data: string) => {
+    const ws = wsRef.current;
+    if (ws?.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "input", data }));
+    }
+  };
+
+  return (
+    <div className="workflow-run-details__xterm">
+      <div className="workflow-run-details__controls">
+        <button
+          type="button"
+          className={paused ? "is-active" : ""}
+          onClick={() => {
+            setPaused(true);
+            sendInput("\x03");
+            termRef.current?.focus();
+          }}
+        >
+          pause
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setPaused(false);
+            sendInput("\r");
+            termRef.current?.focus();
+          }}
+        >
+          continue
+        </button>
+        <span>{paused ? "manual input enabled" : "live terminal"}</span>
+      </div>
+      <div className="workflow-run-details__xterm-host" ref={hostRef} />
+    </div>
   );
 }
 
@@ -2786,18 +2953,18 @@ async function maybeRunAgentMcpToolCalls(
   };
 }
 
-async function runAiChatStreamWithRetries(
+async function runAiTerminalWithRetries(
   workspaceId: string,
   input: {
     model: string;
     messages: Array<{ role: "user"; content: string }>;
     kind?: "claude-cli" | "codex-cli";
   },
-  onDelta: (chunk: string) => void,
+  onFrame: (frame: AiTerminalFrame) => void,
   signal: AbortSignal,
   retries: number,
   onLog: (entry: { stream: "stdout" | "stderr"; content: string }) => void
-): Promise<{ content: string; aborted: boolean }> {
+): Promise<{ result: AiTerminalResult | null; aborted: boolean }> {
   let lastError: unknown = null;
   const attempts = Math.max(1, retries + 1);
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
@@ -2805,14 +2972,7 @@ async function runAiChatStreamWithRetries(
       if (attempt > 1) {
         onLog({ stream: "stderr", content: `\n[osheep] retry ${attempt - 1}/${retries}\n` });
       }
-      return await aiChatStream(
-        workspaceId,
-        input,
-        onDelta,
-        signal,
-        undefined,
-        onLog
-      );
+      return await aiChatTerminalStream(workspaceId, input, onFrame, signal);
     } catch (e) {
       lastError = e;
       if (signal.aborted || attempt >= attempts) throw e;
@@ -2836,7 +2996,9 @@ function agentRunSnapshot(
   status: WorkflowRunDetailSnapshot["status"],
   startedAt: number,
   completedAt: number | undefined,
-  logs: Array<{ stream: "stdout" | "stderr"; content: string }>
+  logs: Array<{ stream: "stdout" | "stderr"; content: string }>,
+  terminalSessionId?: string,
+  paused?: boolean
 ): WorkflowRunDetailSnapshot {
   const snapshot: WorkflowRunDetailSnapshot = {
     kind: "agent",
@@ -2849,6 +3011,8 @@ function agentRunSnapshot(
     transcript: formatTerminalTranscript(logs),
   };
   if (completedAt !== undefined) snapshot.completedAt = completedAt;
+  if (terminalSessionId) snapshot.terminalSessionId = terminalSessionId;
+  if (paused !== undefined) snapshot.paused = paused;
   return snapshot;
 }
 
@@ -3549,6 +3713,9 @@ function runDetailsSnapshot(node: WorkflowNode): WorkflowRunDetailSnapshot | nul
     stdout: typeof raw.stdout === "string" ? raw.stdout : "",
     stderr: typeof raw.stderr === "string" ? raw.stderr : "",
     transcript: typeof raw.transcript === "string" ? raw.transcript : "",
+    terminalSessionId:
+      typeof raw.terminalSessionId === "string" ? raw.terminalSessionId : undefined,
+    paused: typeof raw.paused === "boolean" ? raw.paused : undefined,
     exitCode:
       typeof raw.exitCode === "number" || raw.exitCode === null ? raw.exitCode : undefined,
     signal:

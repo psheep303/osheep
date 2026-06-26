@@ -2507,6 +2507,62 @@
   text-align: left;
 }
 
+.workflow-run-details__xterm {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: #101010;
+}
+
+.workflow-run-details__controls {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 9px;
+  border-bottom: 1px solid #242424;
+  background: #141414;
+}
+
+.workflow-run-details__controls button {
+  height: 24px;
+  padding: 0 9px;
+  border: 1px solid #343434;
+  border-radius: 4px;
+  background: #1b1b1b;
+  color: var(--fg-default);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.workflow-run-details__controls button:hover,
+.workflow-run-details__controls button.is-active {
+  border-color: #6aa8ff;
+  color: #d8eaff;
+  background: rgba(106, 168, 255, 0.12);
+}
+
+.workflow-run-details__controls span {
+  color: var(--fg-muted);
+  font-size: 11px;
+}
+
+.workflow-run-details__xterm-host {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 8px;
+}
+
+.workflow-run-details__xterm-host .xterm {
+  height: 100%;
+}
+
+.workflow-run-details__xterm-host .xterm-viewport {
+  scrollbar-color: #3a3a3a transparent;
+}
+
 .workflow-mpe-panel__body {
   flex: 1 1 auto;
   min-height: 0;
