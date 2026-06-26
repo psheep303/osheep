@@ -362,6 +362,9 @@ export async function registerAiRoutes(app: FastifyInstance) {
             emitted = true;
             send("delta", { content });
           },
+          onLog: (entry) => {
+            send("log", entry);
+          },
         });
         if (!emitted && result.content.trim()) {
           send("delta", { content: result.content });
@@ -639,5 +642,73 @@ export async function registerAiRoutes(app: FastifyInstance) {
       typeof b.shell === "string" ? b.shell : undefined
     );
     return result;
+  });
+
+  app.post<{
+    Params: { id: string };
+    Body: {
+      command?: string;
+      cwd?: string;
+      shell?: string;
+      timeoutMs?: number;
+    };
+  }>("/api/workspaces/:id/ai/exec/run/stream", async (req, reply) => {
+    const ws = await resolveWorkspace(req.params.id);
+    const b = req.body ?? {};
+    if (typeof b.command !== "string" || !b.command.trim()) {
+      throw errors.invalidQuery("缂哄皯 command");
+    }
+
+    reply.hijack();
+    reply.raw.writeHead(200, {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-cache, no-transform",
+      connection: "keep-alive",
+      "x-accel-buffering": "no",
+    });
+
+    let doneSent = false;
+    const send = (event: string, data: unknown) => {
+      if (reply.raw.destroyed || reply.raw.writableEnded) return;
+      if (event === "done") {
+        if (doneSent) return;
+        doneSent = true;
+      }
+      reply.raw.write(`event: ${event}\n`);
+      reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
+    };
+
+    const abort = new AbortController();
+    let runDone = false;
+    const onSocketClose = () => {
+      if (!runDone) abort.abort();
+    };
+    reply.raw.on("close", onSocketClose);
+
+    try {
+      const result = await execRun(
+        ws.path,
+        b.command,
+        typeof b.cwd === "string" ? b.cwd : "",
+        typeof b.timeoutMs === "number" ? b.timeoutMs : 60_000,
+        typeof b.shell === "string" ? b.shell : undefined,
+        {
+          signal: abort.signal,
+          onLog: (entry) => {
+            send("log", entry);
+          },
+        }
+      );
+      send("result", result);
+    } catch (e) {
+      if (!abort.signal.aborted) {
+        send("error", { message: (e as Error).message });
+      }
+    } finally {
+      runDone = true;
+      send("done", {});
+      if (!reply.raw.destroyed && !reply.raw.writableEnded) reply.raw.end();
+      reply.raw.off("close", onSocketClose);
+    }
   });
 }

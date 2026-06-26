@@ -37,6 +37,17 @@ export interface RunResult {
   attempts: RunAttempt[];
 }
 
+export interface RunLogEntry {
+  stream: "stdout" | "stderr";
+  content: string;
+  shell: string;
+}
+
+export interface ExecRunOptions {
+  signal?: AbortSignal;
+  onLog?: (entry: RunLogEntry) => void;
+}
+
 const MAX_OUTPUT = 256 * 1024;
 const DEFAULT_TIMEOUT_MS = 60_000;
 const MAX_TIMEOUT_MS = 600_000;
@@ -283,7 +294,8 @@ async function runOnce(
   workspaceRoot: string,
   command: string,
   cwdRel: string,
-  timeout: number
+  timeout: number,
+  options: ExecRunOptions = {}
 ): Promise<RunResult> {
   const absCwd = resolveWorkspacePath(workspaceRoot, cwdRel || "");
   const start = Date.now();
@@ -298,6 +310,15 @@ async function runOnce(
     let truncated = false;
     let killed = false;
     let signal: NodeJS.Signals | null = null;
+    let settled = false;
+
+    const finish = (result: RunResult) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      options.signal?.removeEventListener("abort", onAbort);
+      resolve(result);
+    };
 
     const timer = setTimeout(() => {
       killed = true;
@@ -309,27 +330,49 @@ async function runOnce(
       }
     }, timeout);
 
-    const cap = (chunk: Buffer, into: (s: string) => void, current: string) => {
+    const onAbort = () => {
+      killed = true;
+      signal = "SIGTERM";
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        /* ignore */
+      }
+    };
+
+    if (options.signal?.aborted) {
+      onAbort();
+    } else {
+      options.signal?.addEventListener("abort", onAbort, { once: true });
+    }
+
+    const cap = (chunk: Buffer, stream: "stdout" | "stderr") => {
       const text = chunk.toString("utf-8");
+      const current = stream === "stdout" ? stdout : stderr;
       const room = MAX_OUTPUT - current.length;
       if (room <= 0) {
         truncated = true;
         return;
       }
-      if (text.length > room) {
-        into(current + text.slice(0, room));
-        truncated = true;
+      const captured = text.length > room ? text.slice(0, room) : text;
+      if (stream === "stdout") {
+        stdout = current + captured;
       } else {
-        into(current + text);
+        stderr = current + captured;
+      }
+      if (captured) {
+        options.onLog?.({ stream, content: captured, shell: spec.id });
+      }
+      if (text.length > room) {
+        truncated = true;
       }
     };
 
-    child.stdout.on("data", (b: Buffer) => cap(b, (s) => (stdout = s), stdout));
-    child.stderr.on("data", (b: Buffer) => cap(b, (s) => (stderr = s), stderr));
+    child.stdout.on("data", (b: Buffer) => cap(b, "stdout"));
+    child.stderr.on("data", (b: Buffer) => cap(b, "stderr"));
 
     child.on("close", (code, sig) => {
-      clearTimeout(timer);
-      resolve({
+      finish({
         command,
         cwd: cwdRel || "",
         shell: spec.id,
@@ -343,8 +386,10 @@ async function runOnce(
       });
     });
     child.on("error", (e) => {
-      clearTimeout(timer);
-      resolve({
+      const message = `[spawn error] ${e.message}`;
+      stderr = stderr + (stderr ? "\n" : "") + message;
+      options.onLog?.({ stream: "stderr", content: message, shell: spec.id });
+      finish({
         command,
         cwd: cwdRel || "",
         shell: spec.id,
@@ -352,7 +397,7 @@ async function runOnce(
         signal: null,
         durationMs: Date.now() - start,
         stdout,
-        stderr: stderr + (stderr ? "\n" : "") + `[spawn error] ${e.message}`,
+        stderr,
         truncated,
         attempts: [],
       });
@@ -365,7 +410,8 @@ export async function execRun(
   command: string,
   cwdRel: string,
   timeoutMs: number,
-  shellId?: string
+  shellId?: string,
+  options: ExecRunOptions = {}
 ): Promise<RunResult> {
   if (typeof command !== "string" || !command.trim()) {
     throw errors.invalidQuery("command cannot be empty");
@@ -385,7 +431,14 @@ export async function execRun(
   const attempts: RunAttempt[] = [];
   let last: RunResult | null = null;
   for (let i = 0; i < candidates.length; i += 1) {
-    const result = await runOnce(candidates[i]!, workspaceRoot, command, cwdRel, timeout);
+    const result = await runOnce(
+      candidates[i]!,
+      workspaceRoot,
+      command,
+      cwdRel,
+      timeout,
+      options
+    );
     attempts.push({
       shell: result.shell,
       exitCode: result.exitCode,
