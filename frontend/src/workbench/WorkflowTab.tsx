@@ -7,16 +7,20 @@ import {
   type CSSProperties,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
+  type ReactNode,
   type WheelEvent as ReactWheelEvent,
 } from "react";
 import { ContextMenu, type CtxMenuSection } from "./ContextMenu";
 import {
   aiChatStream,
+  callRemoteMcp,
+  discoverRemoteMcp,
   execRun,
   getWorkflow as apiGetWorkflow,
   readFile,
   saveWorkflow as apiSaveWorkflow,
   writeFile,
+  type RemoteMcpTool,
   type WorkflowEdge,
   type WorkflowNode,
   type WorkflowNodeKind,
@@ -41,6 +45,7 @@ interface CanvasPoint {
 
 interface DraftEdge extends CanvasPoint {
   from: string;
+  reconnecting?: boolean;
 }
 
 interface NodeDragState {
@@ -59,11 +64,25 @@ interface NodeContextMenuState {
 }
 
 type BlockCategoryId = "condition" | "command" | "ai" | "network" | "file" | "output";
+type WorkflowIconName =
+  | "trigger"
+  | "command"
+  | "ai"
+  | "network"
+  | "file"
+  | "output"
+  | "claude"
+  | "codex"
+  | "web"
+  | "read"
+  | "write"
+  | "markdown"
+  | "mcp";
 
 interface BlockCategory {
   id: BlockCategoryId;
   label: string;
-  icon: string;
+  icon: WorkflowIconName;
 }
 
 interface BlockTemplate {
@@ -74,7 +93,7 @@ interface BlockTemplate {
   providerKind?: WorkflowProviderKind;
   model?: string;
   prompt?: string;
-  icon: string;
+  icon: WorkflowIconName;
   config?: Record<string, unknown>;
 }
 
@@ -82,9 +101,29 @@ interface LocalNodeResult {
   output: WorkflowBlockOutput;
   changedFiles?: boolean;
   error?: string;
+  nodePatch?: Partial<WorkflowNode>;
 }
 
 type WorkflowBlockOutput = Record<string, unknown>;
+
+interface McpNodeConfig {
+  remoteLink: string;
+  postUrl: string;
+  headers: string;
+  apiKey: string;
+  toolName: string;
+  arguments: string;
+  tools: RemoteMcpTool[];
+  connectedAt?: number;
+  connectionStatus: string;
+  connectionError: string;
+}
+
+interface McpRuntimeTool {
+  node: WorkflowNode;
+  config: McpNodeConfig;
+  tool: RemoteMcpTool;
+}
 
 const NODE_W = 168;
 const NODE_H = 46;
@@ -94,12 +133,12 @@ const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 1.8;
 const ZOOM_STEP = 0.1;
 const BLOCK_CATEGORIES: BlockCategory[] = [
-  { id: "condition", label: "条件", icon: "◇" },
-  { id: "command", label: "命令", icon: "⌁" },
-  { id: "ai", label: "AI", icon: "✦" },
-  { id: "network", label: "网络", icon: "↗" },
-  { id: "file", label: "文件操作", icon: "▣" },
-  { id: "output", label: "输出", icon: "◫" },
+  { id: "condition", label: "条件", icon: "trigger" },
+  { id: "command", label: "命令", icon: "command" },
+  { id: "ai", label: "AI", icon: "ai" },
+  { id: "network", label: "网络", icon: "network" },
+  { id: "file", label: "文件操作", icon: "file" },
+  { id: "output", label: "输出", icon: "output" },
 ];
 const BLOCK_TEMPLATES: BlockTemplate[] = [
   {
@@ -107,14 +146,14 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
     label: "工作流运行时",
     title: "Workflow run",
     kind: "trigger",
-    icon: "◇",
+    icon: "trigger",
   },
   {
     category: "command",
     label: "终端命令",
     title: "Run command",
     kind: "command",
-    icon: "⌁",
+    icon: "command",
   },
   {
     category: "ai",
@@ -123,7 +162,7 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
     kind: "agent",
     providerKind: "claude-cli",
     model: "default",
-    icon: "C",
+    icon: "claude",
   },
   {
     category: "ai",
@@ -132,7 +171,7 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
     kind: "agent",
     providerKind: "codex-cli",
     model: "default",
-    icon: "X",
+    icon: "codex",
   },
   {
     category: "network",
@@ -140,21 +179,21 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
     title: "Fetch page text",
     kind: "web",
     prompt: "https://example.com",
-    icon: "↗",
+    icon: "web",
   },
   {
     category: "file",
     label: "Read",
     title: "Read file",
     kind: "file-read",
-    icon: "R",
+    icon: "read",
   },
   {
     category: "file",
     label: "Write",
     title: "Write file",
     kind: "file-write",
-    icon: "W",
+    icon: "write",
     config: { path: "", content: "" },
   },
   {
@@ -163,15 +202,25 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
     title: "Markdown",
     kind: "markdown",
     prompt: "## Result\n\n{{blocks[2].text}}",
-    icon: "M",
+    icon: "markdown",
   },
   {
     category: "output",
     label: "MCP tool",
     title: "MCP",
     kind: "mcp",
-    icon: "P",
-    config: { server: "", tool: "", arguments: "{}" },
+    icon: "mcp",
+    config: {
+      remoteLink: "",
+      postUrl: "",
+      headers: "{}",
+      apiKey: "",
+      toolName: "",
+      arguments: "{}",
+      tools: [],
+      connectionStatus: "",
+      connectionError: "",
+    },
   },
 ];
 
@@ -301,13 +350,14 @@ export function WorkflowTab({
 
   const updateWorkflow = (
     updater: (record: WorkflowRecord) => WorkflowRecord,
-    save = true
+    save = true,
+    recordHistory = false
   ) => {
     const current = workflowRef.current;
     if (!current) return;
     const next = updater(current);
     if (next === current) return;
-    pushHistory(current);
+    if (recordHistory) pushHistory(current);
     workflowRef.current = next;
     setWorkflow(next);
     if (save) scheduleSave(next);
@@ -320,9 +370,14 @@ export function WorkflowTab({
   };
 
   const restoreHistory = (record: WorkflowRecord) => {
-    workflowRef.current = record;
-    setWorkflow(record);
-    scheduleSave(record);
+    const current = workflowRef.current;
+    const next = current ? restoreTopologyOnly(record, current) : record;
+    workflowRef.current = next;
+    setWorkflow(next);
+    if (selectedId && !next.nodes.some((node) => node.id === selectedId)) {
+      setSelectedId(null);
+    }
+    scheduleSave(next);
     setHistoryTick((tick) => tick + 1);
   };
 
@@ -389,6 +444,81 @@ export function WorkflowTab({
     updateWorkflow((record) => patchNode(record, nodeId, patch));
   };
 
+  const connectMcpNode = async (nodeId: string) => {
+    const record = workflowRef.current;
+    const node = record?.nodes.find((item) => item.id === nodeId);
+    if (!record || !node || running) return;
+    const config = mcpNodeConfig(node);
+    const remoteLink = resolveBlockTemplate(config.remoteLink, record).trim();
+    if (!remoteLink) {
+      updateNode(nodeId, {
+        config: {
+          ...(node.config ?? {}),
+          connectionStatus: "error",
+          connectionError: "Remote MCP Link is required.",
+        },
+      });
+      return;
+    }
+    updateNode(nodeId, {
+      config: {
+        ...(node.config ?? {}),
+        connectionStatus: "connecting",
+        connectionError: "",
+      },
+    });
+    try {
+      const headers = parseJsonObject(config.headers) ?? {};
+      const discovery = await discoverRemoteMcp(workspaceId, {
+        remoteLink,
+        postUrl: config.postUrl || undefined,
+        headers: stringRecord(headers),
+        apiKey: config.apiKey || undefined,
+      });
+      const currentNode =
+        workflowRef.current?.nodes.find((item) => item.id === nodeId) ?? node;
+      const firstTool = discovery.tools[0]?.name ?? "";
+      updateNode(nodeId, {
+        config: {
+          ...(currentNode.config ?? {}),
+          remoteLink: discovery.remoteLink,
+          postUrl: discovery.postUrl,
+          tools: discovery.tools,
+          connectedAt: discovery.connectedAt,
+          connectionStatus: "connected",
+          connectionError: "",
+          toolName: config.toolName || firstTool,
+        },
+        rawOutput: stringifyBlockOutput({
+          type: "mcp",
+          status: "connected",
+          remoteLink: discovery.remoteLink,
+          postUrl: discovery.postUrl,
+          tools: discovery.tools.map((tool) => tool.name),
+          text: `Connected. Discovered ${discovery.tools.length} tool${discovery.tools.length === 1 ? "" : "s"}.`,
+          CHANGED_FILES: [],
+        }),
+        summary: stringifyBlockOutput({
+          type: "mcp",
+          status: "connected",
+          tools: discovery.tools.map((tool) => tool.name),
+          text: `Connected. Discovered ${discovery.tools.length} tool${discovery.tools.length === 1 ? "" : "s"}: ${discovery.tools.map((tool) => tool.name).join(", ") || "none"}.`,
+          CHANGED_FILES: [],
+        }),
+      });
+    } catch (e) {
+      const currentNode =
+        workflowRef.current?.nodes.find((item) => item.id === nodeId) ?? node;
+      updateNode(nodeId, {
+        config: {
+          ...(currentNode.config ?? {}),
+          connectionStatus: "error",
+          connectionError: (e as Error).message,
+        },
+      });
+    }
+  };
+
   const moveNodeLive = (nodeId: string, x: number, y: number) => {
     updateWorkflow(
       (record) =>
@@ -408,7 +538,7 @@ export function WorkflowTab({
       const y = last ? last.y : 120;
       const node = nodeFromTemplate(template, nodeId, nextBlockId(record), x, y);
       return { ...record, nodes: [...record.nodes, node] };
-    });
+    }, true, true);
     setSelectedId(null);
     setBlockPickerOpen(false);
   };
@@ -422,7 +552,7 @@ export function WorkflowTab({
       );
       if (selectedId === nodeId) setSelectedId(null);
       return { ...record, nodes, edges };
-    });
+    }, true, true);
   };
 
   const copyNode = (nodeId: string) => {
@@ -454,11 +584,11 @@ export function WorkflowTab({
         completedAt: undefined,
       };
       return { ...record, nodes: [...record.nodes, node] };
-    });
+    }, true, true);
     setSelectedId(nodeId);
   };
 
-  const addEdge = (from: string, to: string) => {
+  const addEdgeWithHistory = (from: string, to: string, recordHistory: boolean) => {
     if (!from || !to || from === to) return;
     updateWorkflow((record) => {
       if (record.edges.some((edge) => edge.from === from && edge.to === to)) {
@@ -471,7 +601,7 @@ export function WorkflowTab({
           { id: makeId("edge"), from, to, passSummary: true },
         ],
       };
-    });
+    }, true, recordHistory);
   };
 
   const updateEdge = (edgeId: string, patch: Partial<WorkflowEdge>) => {
@@ -480,14 +610,14 @@ export function WorkflowTab({
       edges: record.edges.map((edge) =>
         edge.id === edgeId ? { ...edge, ...patch } : edge
       ),
-    }));
+    }), true, true);
   };
 
   const deleteEdge = (edgeId: string) => {
     updateWorkflow((record) => ({
       ...record,
       edges: record.edges.filter((edge) => edge.id !== edgeId),
-    }));
+    }), true, true);
   };
 
   const clientToCanvas = useCallback(
@@ -600,7 +730,7 @@ export function WorkflowTab({
     setWorkflow(next);
     scheduleSave(next);
     const point = clientToCanvas(e.clientX, e.clientY);
-    setDraftEdgeState({ from: fromNode.id, ...point });
+    setDraftEdgeState({ from: fromNode.id, reconnecting: true, ...point });
     setConnectHoverId(to);
     e.currentTarget.setPointerCapture(e.pointerId);
   };
@@ -628,7 +758,7 @@ export function WorkflowTab({
     const target = hovering && hovering !== current.from ? hovering : null;
     setDraftEdgeState(null);
     setConnectHoverId(null);
-    if (target) addEdge(current.from, target);
+    if (target) addEdgeWithHistory(current.from, target, !current.reconnecting);
   };
 
   const setZoomValue = (value: number) => {
@@ -718,8 +848,6 @@ export function WorkflowTab({
           await commitNow(current);
           continue;
         }
-        setBlockPickerOpen(false);
-        setSelectedId(nodeId);
         current = patchNode(current, nodeId, {
           status: "running",
           rawOutput: "",
@@ -731,11 +859,14 @@ export function WorkflowTab({
         await commitNow(current);
 
         if (kind !== "agent") {
-          const local = await executeLocalNode(workspaceId, current, node);
+          const local = await executeLocalNode(workspaceId, current, node, {
+            allowMcpToolCall: nodeIds.length === 1,
+          });
           current = workflowRef.current ?? current;
           const outputText = stringifyBlockOutput(local.output);
           if (local.error) {
             current = patchNode(current, nodeId, {
+              ...(local.nodePatch ?? {}),
               status: "error",
               rawOutput: outputText,
               summary: outputText,
@@ -746,6 +877,7 @@ export function WorkflowTab({
             throw new Error(local.error);
           }
           current = patchNode(current, nodeId, {
+            ...(local.nodePatch ?? {}),
             status: "success",
             rawOutput: outputText,
             summary: outputText,
@@ -764,7 +896,8 @@ export function WorkflowTab({
         abortRef.current = ac;
         let raw = "";
         let lastUiAt = 0;
-        const prompt = buildBlockPrompt(current, node);
+        const mcpTools = collectMcpToolsForAgent(current, node);
+        const prompt = buildBlockPrompt(current, node, mcpTools);
         const result = await aiChatStream(
           workspaceId,
           {
@@ -787,6 +920,19 @@ export function WorkflowTab({
           result.content ||
           raw ||
           `${node.providerKind === "codex-cli" ? "Codex CLI" : "Claude Code CLI"} completed without text output.`;
+        const toolRun = result.aborted
+          ? null
+          : await maybeRunAgentMcpToolCalls(
+              workspaceId,
+              current,
+              node,
+              mcpTools,
+              raw,
+              ac.signal
+            );
+        if (toolRun) {
+          raw = toolRun.raw;
+        }
         const output = agentOutput(node, raw, current);
         const outputText = stringifyBlockOutput(output);
         current = workflowRef.current ?? current;
@@ -1101,11 +1247,13 @@ export function WorkflowTab({
         {selectedNode && !blockPickerOpen && (
           <div className="workflow-panel-shell">
             <WorkflowNodeInspector
+              record={workflow}
               node={selectedNode}
               nodes={workflow.nodes}
               edges={workflow.edges}
               running={running}
               onUpdate={(patch) => updateNode(selectedNode.id, patch)}
+              onConnectMcp={() => void connectMcpNode(selectedNode.id)}
               onClose={() => setSelectedId(null)}
               onDelete={() => deleteNode(selectedNode.id)}
               onUpdateEdge={updateEdge}
@@ -1172,7 +1320,9 @@ function WorkflowBlockPicker({
               className={item.id === category ? "is-active" : ""}
               onClick={() => onCategoryChange(item.id)}
             >
-              <span className="workflow-block-picker__icon">{item.icon}</span>
+              <span className="workflow-block-picker__icon">
+                <WorkflowIcon name={item.icon} />
+              </span>
               {item.label}
             </button>
           ))}
@@ -1184,7 +1334,9 @@ function WorkflowBlockPicker({
               type="button"
               onClick={() => onAdd(template)}
             >
-              <span className="workflow-block-picker__item-icon">{template.icon}</span>
+              <span className="workflow-block-picker__item-icon">
+                <WorkflowIcon name={template.icon} />
+              </span>
               <span>{template.label}</span>
             </button>
           ))}
@@ -1272,7 +1424,9 @@ function WorkflowNodeBlock({
         />
       )}
       <span className="workflow-node__id">{displayBlockId(node)}</span>
-      <span className="workflow-node__icon">{nodeIcon(node)}</span>
+      <span className="workflow-node__icon">
+        <WorkflowIcon name={nodeIconName(node)} />
+      </span>
       <span className="workflow-node__name">{node.title}</span>
       {hasOutputHandle && (
         <button
@@ -1292,21 +1446,25 @@ function WorkflowNodeBlock({
 }
 
 function WorkflowNodeInspector({
+  record,
   node,
   nodes,
   edges,
   running,
   onUpdate,
+  onConnectMcp,
   onClose,
   onDelete,
   onUpdateEdge,
   onDeleteEdge,
 }: {
+  record: WorkflowRecord;
   node: WorkflowNode;
   nodes: WorkflowNode[];
   edges: WorkflowEdge[];
   running: boolean;
   onUpdate: (patch: Partial<WorkflowNode>) => void;
+  onConnectMcp: () => void;
   onClose: () => void;
   onDelete: () => void;
   onUpdateEdge: (edgeId: string, patch: Partial<WorkflowEdge>) => void;
@@ -1323,6 +1481,8 @@ function WorkflowNodeInspector({
   const isMarkdown = kind === "markdown";
   const writeConfig = fileWriteConfig(node);
   const mcpConfig = mcpNodeConfig(node);
+  const markdownSource = isMarkdown ? resolveBlockTemplate(node.prompt, record) : "";
+  const showOutput = kind !== "markdown";
 
   return (
     <aside className="workflow-inspector">
@@ -1348,9 +1508,9 @@ function WorkflowNodeInspector({
 
       <label className="workflow-inspector__field">
         <span>Name</span>
-        <input
+        <TemplateInput
           value={node.title}
-          onChange={(e) => onUpdate({ title: e.target.value })}
+          onChange={(value) => onUpdate({ title: value })}
           disabled={running}
         />
       </label>
@@ -1380,9 +1540,9 @@ function WorkflowNodeInspector({
 
           <label className="workflow-inspector__field">
             <span>Model</span>
-            <input
+            <TemplateInput
               value={node.model}
-              onChange={(e) => onUpdate({ model: e.target.value || "default" })}
+              onChange={(value) => onUpdate({ model: value || "default" })}
               disabled={running}
             />
           </label>
@@ -1393,13 +1553,13 @@ function WorkflowNodeInspector({
         <>
           <label className="workflow-inspector__field">
             <span>Path</span>
-            <input
+            <TemplateInput
               value={writeConfig.path}
-              onChange={(e) =>
+              onChange={(value) =>
                 onUpdate({
                   config: {
                     ...(node.config ?? {}),
-                    path: e.target.value,
+                    path: value,
                   },
                 })
               }
@@ -1408,13 +1568,13 @@ function WorkflowNodeInspector({
           </label>
           <label className="workflow-inspector__field">
             <span>Content</span>
-            <textarea
+            <TemplateTextarea
               value={writeConfig.content}
-              onChange={(e) =>
+              onChange={(value) =>
                 onUpdate({
                   config: {
                     ...(node.config ?? {}),
-                    content: e.target.value,
+                    content: value,
                   },
                 })
               }
@@ -1425,14 +1585,16 @@ function WorkflowNodeInspector({
       ) : isMcp ? (
         <>
           <label className="workflow-inspector__field">
-            <span>Server</span>
-            <input
-              value={mcpConfig.server}
-              onChange={(e) =>
+            <span>Remote MCP Link</span>
+            <TemplateInput
+              value={mcpConfig.remoteLink}
+              onChange={(value) =>
                 onUpdate({
                   config: {
                     ...(node.config ?? {}),
-                    server: e.target.value,
+                    remoteLink: value,
+                    connectionStatus: "",
+                    connectionError: "",
                   },
                 })
               }
@@ -1440,14 +1602,94 @@ function WorkflowNodeInspector({
             />
           </label>
           <label className="workflow-inspector__field">
-            <span>Tool</span>
-            <input
-              value={mcpConfig.tool}
-              onChange={(e) =>
+            <span>Headers JSON</span>
+            <TemplateTextarea
+              value={mcpConfig.headers}
+              onChange={(value) =>
                 onUpdate({
                   config: {
                     ...(node.config ?? {}),
-                    tool: e.target.value,
+                    headers: value,
+                    connectionStatus: "",
+                    connectionError: "",
+                  },
+                })
+              }
+              disabled={running}
+            />
+          </label>
+          <label className="workflow-inspector__field">
+            <span>API Key</span>
+            <TemplateInput
+              value={mcpConfig.apiKey}
+              onChange={(value) =>
+                onUpdate({
+                  config: {
+                    ...(node.config ?? {}),
+                    apiKey: value,
+                    connectionStatus: "",
+                    connectionError: "",
+                  },
+                })
+              }
+              disabled={running}
+            />
+          </label>
+          <div className="workflow-inspector__mcp-actions">
+            <button
+              type="button"
+              onClick={onConnectMcp}
+              disabled={running || !mcpConfig.remoteLink.trim()}
+            >
+              {mcpConfig.connectionStatus === "connecting" ? "Connecting..." : "Connect"}
+            </button>
+            <span className={`workflow-inspector__mcp-state is-${mcpConfig.connectionStatus || "idle"}`}>
+              {mcpConnectionLabel(mcpConfig)}
+            </span>
+          </div>
+          {mcpConfig.connectionError && (
+            <div className="workflow-inspector__mcp-error">
+              {mcpConfig.connectionError}
+            </div>
+          )}
+          {mcpConfig.tools.length > 0 && (
+            <div className="workflow-inspector__section">
+              <div className="workflow-inspector__section-title">Discovered tools</div>
+              <div className="workflow-inspector__chips">
+                {mcpConfig.tools.map((tool) => (
+                  <button
+                    key={tool.name}
+                    type="button"
+                    className={
+                      "workflow-inspector__chip workflow-inspector__chip-button" +
+                      (tool.name === mcpConfig.toolName ? " is-active" : "")
+                    }
+                    onClick={() =>
+                      onUpdate({
+                        config: {
+                          ...(node.config ?? {}),
+                          toolName: tool.name,
+                        },
+                      })
+                    }
+                    disabled={running}
+                    title={tool.description || tool.name}
+                  >
+                    {tool.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          <label className="workflow-inspector__field">
+            <span>Tool</span>
+            <TemplateInput
+              value={mcpConfig.toolName}
+              onChange={(value) =>
+                onUpdate({
+                  config: {
+                    ...(node.config ?? {}),
+                    toolName: value,
                   },
                 })
               }
@@ -1456,13 +1698,13 @@ function WorkflowNodeInspector({
           </label>
           <label className="workflow-inspector__field">
             <span>Arguments JSON</span>
-            <textarea
+            <TemplateTextarea
               value={mcpConfig.arguments}
-              onChange={(e) =>
+              onChange={(value) =>
                 onUpdate({
                   config: {
                     ...(node.config ?? {}),
-                    arguments: e.target.value,
+                    arguments: value,
                   },
                 })
               }
@@ -1473,19 +1715,19 @@ function WorkflowNodeInspector({
       ) : !isTrigger && (
         <label className="workflow-inspector__field">
           <span>{inputLabelForKind(kind)}</span>
-          <textarea
+          <TemplateTextarea
             value={node.prompt}
-            onChange={(e) => onUpdate({ prompt: e.target.value })}
+            onChange={(value) => onUpdate({ prompt: value })}
             disabled={running}
           />
         </label>
       )}
 
       {isMarkdown && (
-        <div className="workflow-inspector__section">
-          <div className="workflow-inspector__section-title">Preview</div>
+        <div className="workflow-inspector__section workflow-inspector__section--grow">
+          <div className="workflow-inspector__section-title">MPE</div>
           <div className="workflow-inspector__markdown-preview">
-            <MarkdownPreview source={node.prompt} />
+            <MarkdownPreview source={markdownSource} />
           </div>
         </div>
       )}
@@ -1539,12 +1781,14 @@ function WorkflowNodeInspector({
         </div>
       )}
 
-      <div className="workflow-inspector__section workflow-inspector__section--grow">
-        <div className="workflow-inspector__section-title">Output</div>
-        <pre className="workflow-inspector__output">
-          {bodyText || "No summary yet."}
-        </pre>
-      </div>
+      {showOutput && (
+        <div className="workflow-inspector__section workflow-inspector__section--grow">
+          <div className="workflow-inspector__section-title">Output</div>
+          <pre className="workflow-inspector__output">
+            {bodyText || "No summary yet."}
+          </pre>
+        </div>
+      )}
 
       <div className="workflow-inspector__foot">
         <button onClick={onDelete} disabled={running || nodes.length <= 1}>
@@ -1553,6 +1797,111 @@ function WorkflowNodeInspector({
       </div>
     </aside>
   );
+}
+
+interface TemplateControlProps {
+  value: string;
+  onChange: (value: string) => void;
+  disabled?: boolean;
+}
+
+function TemplateInput({ value, onChange, disabled }: TemplateControlProps) {
+  const mirrorRef = useRef<HTMLDivElement | null>(null);
+
+  return (
+    <span
+      className={
+        "workflow-template-editor workflow-template-editor--input" +
+        (disabled ? " is-disabled" : "")
+      }
+    >
+      <span ref={mirrorRef} className="workflow-template-editor__mirror" aria-hidden>
+        {renderTemplateHighlight(value)}
+      </span>
+      <input
+        className="workflow-template-editor__control"
+        value={value}
+        onChange={(e) => onChange(normalizeTemplateSpacing(e.target.value))}
+        onScroll={(e) => {
+          if (mirrorRef.current) mirrorRef.current.scrollLeft = e.currentTarget.scrollLeft;
+        }}
+        disabled={disabled}
+        spellCheck={false}
+      />
+    </span>
+  );
+}
+
+function TemplateTextarea({ value, onChange, disabled }: TemplateControlProps) {
+  const mirrorRef = useRef<HTMLDivElement | null>(null);
+
+  return (
+    <span
+      className={
+        "workflow-template-editor workflow-template-editor--textarea" +
+        (disabled ? " is-disabled" : "")
+      }
+    >
+      <span ref={mirrorRef} className="workflow-template-editor__mirror" aria-hidden>
+        {renderTemplateHighlight(value)}
+      </span>
+      <textarea
+        className="workflow-template-editor__control"
+        value={value}
+        onChange={(e) => onChange(normalizeTemplateSpacing(e.target.value))}
+        onScroll={(e) => {
+          if (!mirrorRef.current) return;
+          mirrorRef.current.scrollTop = e.currentTarget.scrollTop;
+          mirrorRef.current.scrollLeft = e.currentTarget.scrollLeft;
+        }}
+        disabled={disabled}
+        spellCheck={false}
+      />
+    </span>
+  );
+}
+
+function renderTemplateHighlight(value: string): ReactNode {
+  if (!value) return "\u00a0";
+  const parts: ReactNode[] = [];
+  const re = /\{\{[\s\S]*?\}\}/g;
+  let index = 0;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(value)) !== null) {
+    if (match.index > index) {
+      parts.push(value.slice(index, match.index));
+    }
+    parts.push(
+      <span key={`${match.index}:${match[0]}`} className="workflow-template-token">
+        {formatTemplateToken(match[0])}
+      </span>
+    );
+    index = match.index + match[0].length;
+  }
+  if (index < value.length) parts.push(value.slice(index));
+  if (value.endsWith("\n")) parts.push("\u00a0");
+  return parts;
+}
+
+function normalizeTemplateSpacing(value: string): string {
+  const re = /\{\{[\s\S]*?\}\}/g;
+  let output = "";
+  let index = 0;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(value)) !== null) {
+    output += value.slice(index, match.index);
+    if (output && !/\s$/.test(output)) output += " ";
+    output += formatTemplateToken(match[0]);
+    index = match.index + match[0].length;
+    if (value[index] && !/\s/.test(value[index])) output += " ";
+  }
+  output += value.slice(index);
+  return output;
+}
+
+function formatTemplateToken(token: string): string {
+  const inner = token.slice(2, -2).trim();
+  return `{{ ${inner} }}`;
 }
 
 function patchNode(
@@ -1624,11 +1973,14 @@ function topoOrder(record: WorkflowRecord): { nodeIds: string[]; error?: string 
 async function executeLocalNode(
   workspaceId: string,
   record: WorkflowRecord,
-  node: WorkflowNode
+  node: WorkflowNode,
+  options: { allowMcpToolCall?: boolean } = {}
 ): Promise<LocalNodeResult> {
   const input = resolveBlockTemplate(node.prompt, record).trim();
   const kind = nodeKind(node);
-  if (!input) throw new Error(`${node.title} has no input.`);
+  if (!input && kind !== "mcp" && kind !== "file-write" && kind !== "markdown") {
+    throw new Error(`${node.title} has no input.`);
+  }
 
   if (kind === "command") {
     const result = await execRun(workspaceId, {
@@ -1727,25 +2079,111 @@ async function executeLocalNode(
 
   if (kind === "mcp") {
     const config = mcpNodeConfig(node);
+    const remoteLink = resolveBlockTemplate(config.remoteLink, record).trim();
+    const toolName = resolveBlockTemplate(config.toolName, record).trim();
     const resolvedArgs = resolveBlockTemplate(config.arguments, record);
     const args = parseJsonObject(resolvedArgs) ?? {};
+    if (!remoteLink) throw new Error(`${node.title} has no Remote MCP Link.`);
+    if (!options.allowMcpToolCall) {
+      if (config.tools.length > 0) {
+        return {
+          output: {
+            type: "mcp",
+            status: "connected",
+            remoteLink,
+            postUrl: config.postUrl,
+            tools: config.tools.map((tool) => ({
+              name: tool.name,
+              description: tool.description ?? "",
+              inputSchema: tool.inputSchema,
+            })),
+            text: `Ready. Discovered ${config.tools.length} tool${config.tools.length === 1 ? "" : "s"}: ${config.tools.map((tool) => tool.name).join(", ")}.`,
+            CHANGED_FILES: [],
+          },
+        };
+      }
+      const headers = parseJsonObject(resolveBlockTemplate(config.headers, record)) ?? {};
+      const discovery = await discoverRemoteMcp(workspaceId, {
+        remoteLink,
+        postUrl: config.postUrl || undefined,
+        headers: stringRecord(headers),
+        apiKey: config.apiKey || undefined,
+      });
+      const firstTool = discovery.tools[0]?.name ?? "";
+      return {
+        output: {
+          type: "mcp",
+          status: "connected",
+          remoteLink: discovery.remoteLink,
+          postUrl: discovery.postUrl,
+          tools: discovery.tools.map((tool) => ({
+            name: tool.name,
+            description: tool.description ?? "",
+            inputSchema: tool.inputSchema,
+          })),
+          text: `Ready. Discovered ${discovery.tools.length} tool${discovery.tools.length === 1 ? "" : "s"}: ${discovery.tools.map((tool) => tool.name).join(", ") || "none"}.`,
+          CHANGED_FILES: [],
+        },
+        nodePatch: {
+          config: {
+            ...(node.config ?? {}),
+            remoteLink: discovery.remoteLink,
+            postUrl: discovery.postUrl,
+            tools: discovery.tools,
+            connectedAt: discovery.connectedAt,
+            connectionStatus: "connected",
+            connectionError: "",
+            toolName: config.toolName || firstTool,
+          },
+        },
+      };
+    }
+    if (!toolName) throw new Error(`${node.title} has no tool selected.`);
+    const headers = parseJsonObject(resolveBlockTemplate(config.headers, record)) ?? {};
+    const result = await callRemoteMcp(workspaceId, {
+      remoteLink,
+      postUrl: config.postUrl || undefined,
+      headers: stringRecord(headers),
+      apiKey: config.apiKey || undefined,
+      name: toolName,
+      arguments: args,
+    });
+    const output = {
+      type: "mcp",
+      status: result.ok ? "success" : "failed",
+      remoteLink: result.remoteLink,
+      postUrl: result.postUrl,
+      tool: toolName,
+      arguments: args,
+      result: result.result,
+      error: result.error,
+      response: result.response,
+      text: mcpResultText(result.result, result.error),
+      CHANGED_FILES: [],
+    };
     return {
-      output: {
-        type: "mcp",
-        status: "not_configured",
-        server: resolveBlockTemplate(config.server, record),
-        tool: resolveBlockTemplate(config.tool, record),
-        arguments: args,
-        text: "MCP runtime is not connected yet.",
-        CHANGED_FILES: [],
+      output,
+      nodePatch: {
+        config: {
+          ...(node.config ?? {}),
+          remoteLink: result.remoteLink,
+          postUrl: result.postUrl,
+          connectionStatus: result.ok ? "connected" : "error",
+          connectionError: result.ok ? "" : stringifyTemplateValue(result.error),
+        },
       },
+      error: result.ok ? undefined : `MCP tool ${toolName} failed.`,
     };
   }
 
   throw new Error(`${node.title} cannot run as a local block.`);
 }
 
-function buildBlockPrompt(record: WorkflowRecord, node: WorkflowNode): string {
+function buildBlockPrompt(
+  record: WorkflowRecord,
+  node: WorkflowNode,
+  mcpTools: McpRuntimeTool[] = []
+): string {
   const incoming = record.edges
     .filter((edge) => edge.to === node.id && edge.passSummary)
     .map((edge) => record.nodes.find((item) => item.id === edge.from))
@@ -1755,6 +2193,29 @@ function buildBlockPrompt(record: WorkflowRecord, node: WorkflowNode): string {
       return `### ${source.title}\n${summary}`;
     });
 
+  const mcpToolSpecs = mcpTools.map(({ node: sourceNode, tool }) => ({
+    type: "function",
+    function: {
+      name: tool.name,
+      description: tool.description ?? "",
+      parameters:
+        tool.inputSchema && typeof tool.inputSchema === "object"
+          ? tool.inputSchema
+          : { type: "object", properties: {} },
+    },
+    sourceBlock: displayBlockId(sourceNode),
+  }));
+  const mcpInstructions = mcpToolSpecs.length
+    ? [
+        "",
+        "Remote MCP tools are available. If you need one before producing the final answer, return JSON with a tool_calls array and keep text brief.",
+        "Each tool call must be: {\"name\":\"tool_name\",\"arguments\":{...}}.",
+        "Available tools in OpenAI-compatible function shape:",
+        JSON.stringify(mcpToolSpecs, null, 2),
+        "After osheep executes the tool calls, it will run you again with the results. Do not invent tool results.",
+      ]
+    : [];
+
   return [
     `You are executing osheep workflow block "${node.title}".`,
     "Return exactly one JSON object and no markdown fences.",
@@ -1762,6 +2223,7 @@ function buildBlockPrompt(record: WorkflowRecord, node: WorkflowNode): string {
     "Put the user-facing answer in text. CHANGED_FILES and VERIFICATION must be arrays.",
     "If the prompt asks for project work, use your native CLI capabilities to inspect, edit, and verify files in the current project root.",
     "If the prompt is conversational, answer naturally inside text and keep CHANGED_FILES empty.",
+    ...mcpInstructions,
     "",
     "Incoming summaries:",
     incoming.length ? incoming.join("\n\n") : "None.",
@@ -1769,6 +2231,173 @@ function buildBlockPrompt(record: WorkflowRecord, node: WorkflowNode): string {
     "Block prompt:",
     resolveBlockTemplate(node.prompt, record),
   ].join("\n");
+}
+
+async function maybeRunAgentMcpToolCalls(
+  workspaceId: string,
+  record: WorkflowRecord,
+  node: WorkflowNode,
+  mcpTools: McpRuntimeTool[],
+  raw: string,
+  signal: AbortSignal
+): Promise<{ raw: string } | null> {
+  if (mcpTools.length === 0) return null;
+  const calls = extractMcpToolCalls(raw);
+  if (calls.length === 0) return null;
+
+  const byName = new Map<string, McpRuntimeTool>();
+  for (const runtimeTool of mcpTools) {
+    if (!byName.has(runtimeTool.tool.name)) byName.set(runtimeTool.tool.name, runtimeTool);
+  }
+
+  const results: WorkflowBlockOutput[] = [];
+  for (let i = 0; i < calls.length; i += 1) {
+    const call = calls[i]!;
+    const runtimeTool = byName.get(call.name);
+    if (!runtimeTool) {
+      results.push({
+        type: "mcp",
+        status: "failed",
+        tool: call.name,
+        arguments: call.arguments,
+        error: `No connected MCP node provides ${call.name}.`,
+      });
+      continue;
+    }
+    const resolvedRemoteLink = resolveBlockTemplate(
+      runtimeTool.config.remoteLink,
+      record
+    ).trim();
+    const headers =
+      parseJsonObject(resolveBlockTemplate(runtimeTool.config.headers, record)) ?? {};
+    const result = await callRemoteMcp(workspaceId, {
+      remoteLink: resolvedRemoteLink,
+      postUrl: runtimeTool.config.postUrl || undefined,
+      headers: stringRecord(headers),
+      apiKey: runtimeTool.config.apiKey || undefined,
+      name: call.name,
+      arguments: call.arguments,
+    });
+    results.push({
+      type: "mcp",
+      status: result.ok ? "success" : "failed",
+      sourceBlock: displayBlockId(runtimeTool.node),
+      tool: call.name,
+      arguments: call.arguments,
+      result: result.result,
+      error: result.error,
+      response: result.response,
+      text: mcpResultText(result.result, result.error),
+    });
+  }
+
+  const followup = buildMcpFollowupPrompt(record, node, raw, results);
+  let acc = "";
+  const response = await aiChatStream(
+    workspaceId,
+    {
+      model: node.model || "default",
+      kind: node.providerKind,
+      messages: [{ role: "user", content: followup }],
+    },
+    (chunk) => {
+      acc += chunk;
+    },
+    signal
+  );
+  return {
+    raw: response.content || acc || raw,
+  };
+}
+
+function buildMcpFollowupPrompt(
+  record: WorkflowRecord,
+  node: WorkflowNode,
+  firstResponse: string,
+  toolResults: WorkflowBlockOutput[]
+): string {
+  return [
+    `You are continuing osheep workflow block "${node.title}".`,
+    "You asked to call Remote MCP tools. The tool results are below.",
+    "Now return exactly one final JSON object and no markdown fences.",
+    "The JSON object must include: text, status, CHANGED_FILES, VERIFICATION, NEXT.",
+    "Do not include tool_calls in the final JSON unless another tool call is strictly required.",
+    "",
+    "Original block prompt:",
+    resolveBlockTemplate(node.prompt, record),
+    "",
+    "Your previous JSON:",
+    firstResponse.trim(),
+    "",
+    "MCP tool results:",
+    JSON.stringify(toolResults, null, 2),
+  ].join("\n");
+}
+
+function collectMcpToolsForAgent(
+  record: WorkflowRecord,
+  node: WorkflowNode
+): McpRuntimeTool[] {
+  const visited = new Set<string>();
+  const queue = record.edges
+    .filter((edge) => edge.to === node.id)
+    .map((edge) => edge.from);
+  const out: McpRuntimeTool[] = [];
+  while (queue.length) {
+    const id = queue.shift()!;
+    if (visited.has(id)) continue;
+    visited.add(id);
+    const source = record.nodes.find((item) => item.id === id);
+    if (!source) continue;
+    if (nodeKind(source) === "mcp") {
+      const config = mcpNodeConfig(source);
+      for (const tool of config.tools) {
+        if (tool.name) out.push({ node: source, config, tool });
+      }
+    }
+    for (const edge of record.edges) {
+      if (edge.to === id) queue.push(edge.from);
+    }
+  }
+  return out;
+}
+
+function extractMcpToolCalls(raw: string): Array<{
+  name: string;
+  arguments: Record<string, unknown>;
+}> {
+  const parsed = parseJsonObject(raw);
+  const value = parsed?.tool_calls ?? parsed?.toolCalls ?? parsed?.tools;
+  if (!Array.isArray(value)) return [];
+  const calls: Array<{ name: string; arguments: Record<string, unknown> }> = [];
+  for (const item of value) {
+    const obj = item && typeof item === "object" && !Array.isArray(item)
+      ? (item as Record<string, unknown>)
+      : null;
+    if (!obj) continue;
+    const nested = obj.function && typeof obj.function === "object"
+      ? (obj.function as Record<string, unknown>)
+      : null;
+    const name =
+      typeof obj.name === "string"
+        ? obj.name
+        : typeof nested?.name === "string"
+          ? nested.name
+          : "";
+    if (!name.trim()) continue;
+    let argsValue = obj.arguments ?? nested?.arguments ?? {};
+    if (typeof argsValue === "string") {
+      argsValue = parseJsonObject(argsValue) ?? {};
+    }
+    calls.push({
+      name: name.trim(),
+      arguments:
+        argsValue && typeof argsValue === "object" && !Array.isArray(argsValue)
+          ? (argsValue as Record<string, unknown>)
+          : {},
+    });
+  }
+  return calls;
 }
 
 function triggerOutput(node: WorkflowNode): WorkflowBlockOutput {
@@ -2015,18 +2644,175 @@ function nodeFromTemplate(
   };
 }
 
-function nodeIcon(node: WorkflowNode): string {
-  const icon = node.config?.icon;
-  if (typeof icon === "string" && icon.trim()) return icon.trim().slice(0, 2);
+function nodeIconName(node: WorkflowNode): WorkflowIconName {
+  const icon = toWorkflowIconName(node.config?.icon);
+  if (icon) return icon;
   const kind = nodeKind(node);
-  if (kind === "trigger") return "◇";
-  if (kind === "command") return "⌁";
-  if (kind === "web") return "↗";
-  if (kind === "file-read") return "R";
-  if (kind === "file-write") return "W";
-  if (kind === "markdown") return "M";
-  if (kind === "mcp") return "P";
-  return node.providerKind === "claude-cli" ? "C" : "X";
+  if (kind === "trigger") return "trigger";
+  if (kind === "command") return "command";
+  if (kind === "web") return "web";
+  if (kind === "file-read") return "read";
+  if (kind === "file-write") return "write";
+  if (kind === "markdown") return "markdown";
+  if (kind === "mcp") return "mcp";
+  return node.providerKind === "claude-cli" ? "claude" : "codex";
+}
+
+function toWorkflowIconName(value: unknown): WorkflowIconName | null {
+  if (typeof value !== "string") return null;
+  const icon = value.trim();
+  const current = new Set<WorkflowIconName>([
+    "trigger",
+    "command",
+    "ai",
+    "network",
+    "file",
+    "output",
+    "claude",
+    "codex",
+    "web",
+    "read",
+    "write",
+    "markdown",
+    "mcp",
+  ]);
+  if (current.has(icon as WorkflowIconName)) return icon as WorkflowIconName;
+  const legacy: Record<string, WorkflowIconName> = {
+    "◇": "trigger",
+    "⌁": "command",
+    "✦": "ai",
+    "↗": "web",
+    "▣": "file",
+    "◫": "output",
+    C: "claude",
+    X: "codex",
+    R: "read",
+    W: "write",
+    M: "markdown",
+    P: "mcp",
+  };
+  return legacy[icon] ?? null;
+}
+
+function WorkflowIcon({ name }: { name: WorkflowIconName }) {
+  const common = {
+    viewBox: "0 0 24 24",
+    width: "22",
+    height: "22",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: "1.5",
+    strokeLinecap: "round" as const,
+    strokeLinejoin: "round" as const,
+    "aria-hidden": true,
+  };
+
+  switch (name) {
+    case "trigger":
+      return (
+        <svg {...common}>
+          <path d="M12 3.5 20.5 12 12 20.5 3.5 12 12 3.5z" />
+          <path d="m10.5 8.7 4.2 3.3-4.2 3.3V8.7z" />
+        </svg>
+      );
+    case "command":
+      return (
+        <svg {...common}>
+          <path d="M4.5 6.5h15v11h-15z" />
+          <path d="m8 10 2.2 2L8 14" />
+          <path d="M12.5 14h3.5" />
+        </svg>
+      );
+    case "ai":
+      return (
+        <svg {...common}>
+          <path d="M12 3.5 13.6 8 18 9.6l-4.4 1.6L12 15.5l-1.6-4.3L6 9.6 10.4 8 12 3.5z" />
+          <path d="M5.7 15.2 6.5 17l1.8.8-1.8.7-.8 1.9-.7-1.9-1.8-.7L5 17l.7-1.8z" />
+          <path d="m18.2 14.2.7 1.9 1.9.7-1.9.8-.7 1.9-.8-1.9-1.9-.8 1.9-.7.8-1.9z" />
+        </svg>
+      );
+    case "network":
+    case "web":
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="7.5" />
+          <path d="M4.8 12h14.4" />
+          <path d="M12 4.5c2 2.1 3 4.6 3 7.5s-1 5.4-3 7.5" />
+          <path d="M12 4.5c-2 2.1-3 4.6-3 7.5s1 5.4 3 7.5" />
+        </svg>
+      );
+    case "file":
+    case "read":
+      return (
+        <svg {...common}>
+          <path d="M7 3.8h6.6L18 8.2v12H7z" />
+          <path d="M13.5 4v4.5H18" />
+          <path d="M9.5 12h5" />
+          <path d="M9.5 15.5h5" />
+        </svg>
+      );
+    case "write":
+      return (
+        <svg {...common}>
+          <path d="M6.5 4h7L18 8.5V20H6.5z" />
+          <path d="M13.5 4.2v4.5H18" />
+          <path d="m10 16.4 5.4-5.4 1.6 1.6-5.4 5.4H10v-1.6z" />
+        </svg>
+      );
+    case "output":
+      return (
+        <svg {...common}>
+          <path d="M5 6.5h14v11H5z" />
+          <path d="M8 10h8" />
+          <path d="M8 13.5h5" />
+          <path d="M16.5 13.5 19 16l-2.5 2.5" />
+        </svg>
+      );
+    case "markdown":
+      return (
+        <svg {...common}>
+          <path d="M4.5 7.5v9" />
+          <path d="m4.5 7.5 4 5 4-5v9" />
+          <path d="M16 7.5v9" />
+          <path d="m13.8 14.3 2.2 2.2 2.2-2.2" />
+        </svg>
+      );
+    case "mcp":
+      return (
+        <svg {...common}>
+          <circle cx="7" cy="7" r="2.4" />
+          <circle cx="17" cy="7" r="2.4" />
+          <circle cx="12" cy="17" r="2.4" />
+          <path d="M9.2 8.7 11 12" />
+          <path d="m14.8 8.7-1.8 3.3" />
+          <path d="M9.3 7h5.4" />
+        </svg>
+      );
+    case "claude":
+      return (
+        <svg {...common}>
+          <path d="M12 4.2 14.2 9l5 .8-3.6 3.5.9 5-4.5-2.4-4.5 2.4.9-5-3.6-3.5 5-.8L12 4.2z" />
+          <path d="M12 8.5v6.8" />
+          <path d="M8.7 12h6.6" />
+        </svg>
+      );
+    case "codex":
+      return (
+        <svg {...common}>
+          <path d="m8.3 8.2-3.2 3.8 3.2 3.8" />
+          <path d="m15.7 8.2 3.2 3.8-3.2 3.8" />
+          <path d="M13.2 6.8 10.8 17.2" />
+        </svg>
+      );
+    default:
+      return (
+        <svg {...common}>
+          <path d="M5 6.5h14v11H5z" />
+          <path d="M8 10h8" />
+          <path d="M8 13.5h5" />
+        </svg>
+      );
+  }
 }
 
 function fileWriteConfig(node: WorkflowNode): { path: string; content: string } {
@@ -2038,21 +2824,114 @@ function fileWriteConfig(node: WorkflowNode): { path: string; content: string } 
   };
 }
 
-function mcpNodeConfig(node: WorkflowNode): {
-  server: string;
-  tool: string;
-  arguments: string;
-} {
+function mcpNodeConfig(node: WorkflowNode): McpNodeConfig {
   const config = node.config ?? {};
+  const legacyServer = typeof config.server === "string" ? config.server : "";
+  const legacyTool = typeof config.tool === "string" ? config.tool : "";
+  const tools = Array.isArray(config.tools)
+    ? config.tools.filter(isRemoteMcpTool)
+    : [];
   return {
-    server: typeof config.server === "string" ? config.server : "",
-    tool: typeof config.tool === "string" ? config.tool : "",
+    remoteLink:
+      typeof config.remoteLink === "string" ? config.remoteLink : legacyServer,
+    postUrl: typeof config.postUrl === "string" ? config.postUrl : "",
+    headers: typeof config.headers === "string" ? config.headers : "{}",
+    apiKey: typeof config.apiKey === "string" ? config.apiKey : "",
+    toolName:
+      typeof config.toolName === "string" ? config.toolName : legacyTool,
     arguments: typeof config.arguments === "string" ? config.arguments : "{}",
+    tools,
+    connectedAt:
+      typeof config.connectedAt === "number" ? config.connectedAt : undefined,
+    connectionStatus:
+      typeof config.connectionStatus === "string" ? config.connectionStatus : "",
+    connectionError:
+      typeof config.connectionError === "string" ? config.connectionError : "",
   };
+}
+
+function isRemoteMcpTool(value: unknown): value is RemoteMcpTool {
+  return (
+    !!value &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    typeof (value as { name?: unknown }).name === "string" &&
+    !!(value as { name: string }).name.trim()
+  );
+}
+
+function stringRecord(value: WorkflowBlockOutput): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, raw] of Object.entries(value)) {
+    if (typeof raw === "string") out[key] = raw;
+    else if (typeof raw === "number" || typeof raw === "boolean") out[key] = String(raw);
+  }
+  return out;
+}
+
+function mcpResultText(result: unknown, error: unknown): string {
+  if (error !== undefined && error !== null) return `MCP error: ${jsonPreview(error)}`;
+  const text = textFromMcpContent(result);
+  return text || jsonPreview(result);
+}
+
+function textFromMcpContent(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map(textFromMcpContent).filter(Boolean).join("\n");
+  if (!value || typeof value !== "object") return "";
+  const obj = value as Record<string, unknown>;
+  if (typeof obj.text === "string") return obj.text;
+  if (typeof obj.content === "string") return obj.content;
+  if (Array.isArray(obj.content)) {
+    return obj.content.map(textFromMcpContent).filter(Boolean).join("\n");
+  }
+  if (obj.result !== undefined) return textFromMcpContent(obj.result);
+  return "";
+}
+
+function jsonPreview(value: unknown): string {
+  if (value === undefined) return "";
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function mcpConnectionLabel(config: McpNodeConfig): string {
+  if (config.connectionStatus === "connecting") return "Connecting";
+  if (config.connectionStatus === "error") return "Connection failed";
+  if (config.connectionStatus === "connected") {
+    return `Connected. ${config.tools.length} tool${config.tools.length === 1 ? "" : "s"}`;
+  }
+  if (config.tools.length > 0) {
+    return `Discovered ${config.tools.length} tool${config.tools.length === 1 ? "" : "s"}`;
+  }
+  return "Not connected";
 }
 
 function cloneWorkflow(record: WorkflowRecord): WorkflowRecord {
   return JSON.parse(JSON.stringify(record)) as WorkflowRecord;
+}
+
+function restoreTopologyOnly(
+  historyRecord: WorkflowRecord,
+  currentRecord: WorkflowRecord
+): WorkflowRecord {
+  const currentById = new Map(currentRecord.nodes.map((node) => [node.id, node]));
+  const nodes = historyRecord.nodes.map((historyNode) => {
+    const current = currentById.get(historyNode.id);
+    return current ?? historyNode;
+  });
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const edges = historyRecord.edges.filter(
+    (edge) => nodeIds.has(edge.from) && nodeIds.has(edge.to)
+  );
+  return {
+    ...currentRecord,
+    nodes,
+    edges,
+  };
 }
 
 function displayBlockId(node: WorkflowNode): number {

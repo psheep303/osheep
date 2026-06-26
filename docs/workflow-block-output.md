@@ -115,18 +115,22 @@ Markdown blocks render their `markdown` field in the inspector. They are output-
 
 ## MCP Block
 
-MCP blocks store a server name, tool name, and JSON arguments. The current UI defines the contract; the runtime output reports `not_configured` until a real MCP execution backend is connected.
+MCP blocks store a Remote MCP Link, optional headers/API key, discovered tools, a selected tool name, and JSON arguments. Connecting opens the remote SSE stream, captures the endpoint event, sends `tools/list`, and caches the returned POST URL plus tool schemas on the node. Running the block sends `tools/call` to that POST URL.
 
 ```json
 {
   "type": "mcp",
-  "status": "not_configured",
-  "server": "github",
+  "status": "success",
+  "remoteLink": "https://api.example.com/mcp/sse",
+  "postUrl": "https://api.example.com/mcp/messages",
   "tool": "search_issues",
   "arguments": {
     "query": "bug"
   },
-  "text": "MCP runtime is not connected yet.",
+  "result": {
+    "content": [{ "type": "text", "text": "..." }]
+  },
+  "text": "...",
   "CHANGED_FILES": []
 }
 ```
