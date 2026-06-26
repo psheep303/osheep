@@ -19,6 +19,7 @@ export interface CliChatOptions {
   messages: CliChatMessage[];
   signal?: AbortSignal;
   onDelta?: (chunk: string) => void;
+  onLog?: (entry: { stream: "stdout" | "stderr"; content: string }) => void;
 }
 
 export interface CliChatResult {
@@ -97,11 +98,14 @@ export async function runCliChat(opts: CliChatOptions): Promise<CliChatResult> {
     opts.signal?.addEventListener("abort", onAbort, { once: true });
 
     child.stdout.on("data", (chunk: Buffer) => {
-      parser.feed(chunk.toString("utf-8"));
+      const text = chunk.toString("utf-8");
+      opts.onLog?.({ stream: "stdout", content: text });
+      parser.feed(text);
     });
 
     child.stderr.on("data", (chunk: Buffer) => {
       const text = chunk.toString("utf-8");
+      opts.onLog?.({ stream: "stderr", content: text });
       const room = MAX_STDERR - stderr.length;
       if (room <= 0) return;
       stderr += text.length > room ? text.slice(0, room) : text;
