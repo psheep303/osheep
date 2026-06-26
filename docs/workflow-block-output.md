@@ -115,7 +115,7 @@ Markdown blocks render their `markdown` field in the inspector. They are output-
 
 ## MCP Block
 
-MCP blocks store a Remote MCP Link, optional headers/API key, discovered tools, a selected tool name, and JSON arguments. Connecting opens the remote SSE stream, captures the endpoint event, sends `tools/list`, and caches the returned POST URL plus tool schemas on the node. Running the block sends `tools/call` to that POST URL.
+MCP blocks store a Remote MCP Link, optional headers/API key, discovered tools, a selected tool name, and JSON arguments. The backend adds default MCP headers, including `MCP-Protocol-Version: 2025-03-26`, unless the node overrides them. Connecting first tries the SSE transport, captures the endpoint event, sends `initialize` and `tools/list`, and caches the returned POST URL plus tool schemas on the node. If the remote returns 405 for SSE, the backend automatically falls back to Streamable HTTP and sends `initialize` / `tools/list` directly to the Remote MCP Link. Running the block sends `tools/call`.
 
 ```json
 {
