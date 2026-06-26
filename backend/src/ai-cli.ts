@@ -46,7 +46,7 @@ export async function runCliChat(opts: CliChatOptions): Promise<CliChatResult> {
   const invocation = normalizeInvocation(
     buildInvocation(opts.kind, opts.model, outputCapture?.file)
   );
-  const prompt = buildPrompt(opts.kind, opts.messages);
+  const prompt = buildCliPrompt(opts.kind, opts.messages);
   const parser = new CliOutputParser(opts.onDelta);
 
   return await new Promise<CliChatResult>((resolve, reject) => {
@@ -244,7 +244,7 @@ function normalizeInvocation(invocation: {
   return invocation;
 }
 
-function buildPrompt(kind: CliProviderKind, messages: CliChatMessage[]): string {
+export function buildCliPrompt(kind: CliProviderKind, messages: CliChatMessage[]): string {
   const head = [
     `You are being invoked by osheep through ${labelFor(kind)}.`,
     "The current working directory is the project root.",
