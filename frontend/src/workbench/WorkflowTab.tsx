@@ -106,6 +106,14 @@ interface LocalNodeResult {
 
 type WorkflowBlockOutput = Record<string, unknown>;
 
+const DEFAULT_MCP_HEADERS_JSON = JSON.stringify(
+  {
+    "MCP-Protocol-Version": "2025-03-26",
+  },
+  null,
+  2
+);
+
 interface McpNodeConfig {
   remoteLink: string;
   postUrl: string;
@@ -213,7 +221,7 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
     config: {
       remoteLink: "",
       postUrl: "",
-      headers: "{}",
+      headers: DEFAULT_MCP_HEADERS_JSON,
       apiKey: "",
       toolName: "",
       arguments: "{}",
@@ -478,6 +486,8 @@ export function WorkflowTab({
       const currentNode =
         workflowRef.current?.nodes.find((item) => item.id === nodeId) ?? node;
       const firstTool = discovery.tools[0]?.name ?? "";
+      const nextToolName = config.toolName || firstTool;
+      const nextTool = discovery.tools.find((tool) => tool.name === nextToolName);
       updateNode(nodeId, {
         config: {
           ...(currentNode.config ?? {}),
@@ -487,13 +497,16 @@ export function WorkflowTab({
           connectedAt: discovery.connectedAt,
           connectionStatus: "connected",
           connectionError: "",
-          toolName: config.toolName || firstTool,
+          toolName: nextToolName,
+          arguments: shouldReplaceMcpArguments(config.arguments)
+            ? argumentsTemplateFromTool(nextTool)
+            : config.arguments,
         },
         rawOutput: stringifyBlockOutput({
           type: "mcp",
           status: "connected",
-          remoteLink: discovery.remoteLink,
-          postUrl: discovery.postUrl,
+          remoteLink: redactUrl(discovery.remoteLink),
+          postUrl: redactUrl(discovery.postUrl),
           tools: discovery.tools.map((tool) => tool.name),
           text: `Connected. Discovered ${discovery.tools.length} tool${discovery.tools.length === 1 ? "" : "s"}.`,
           CHANGED_FILES: [],
@@ -501,6 +514,8 @@ export function WorkflowTab({
         summary: stringifyBlockOutput({
           type: "mcp",
           status: "connected",
+          remoteLink: redactUrl(discovery.remoteLink),
+          postUrl: redactUrl(discovery.postUrl),
           tools: discovery.tools.map((tool) => tool.name),
           text: `Connected. Discovered ${discovery.tools.length} tool${discovery.tools.length === 1 ? "" : "s"}: ${discovery.tools.map((tool) => tool.name).join(", ") || "none"}.`,
           CHANGED_FILES: [],
@@ -1669,6 +1684,9 @@ function WorkflowNodeInspector({
                         config: {
                           ...(node.config ?? {}),
                           toolName: tool.name,
+                          arguments: shouldReplaceMcpArguments(mcpConfig.arguments)
+                            ? argumentsTemplateFromTool(tool)
+                            : mcpConfig.arguments,
                         },
                       })
                     }
@@ -1685,14 +1703,19 @@ function WorkflowNodeInspector({
             <span>Tool</span>
             <TemplateInput
               value={mcpConfig.toolName}
-              onChange={(value) =>
+              onChange={(value) => {
+                const nextTool = mcpConfig.tools.find((tool) => tool.name === value);
                 onUpdate({
                   config: {
                     ...(node.config ?? {}),
                     toolName: value,
+                    arguments:
+                      nextTool && shouldReplaceMcpArguments(mcpConfig.arguments)
+                        ? argumentsTemplateFromTool(nextTool)
+                        : mcpConfig.arguments,
                   },
-                })
-              }
+                });
+              }}
               disabled={running}
             />
           </label>
@@ -2090,8 +2113,8 @@ async function executeLocalNode(
           output: {
             type: "mcp",
             status: "connected",
-            remoteLink,
-            postUrl: config.postUrl,
+            remoteLink: redactUrl(remoteLink),
+            postUrl: redactUrl(config.postUrl),
             tools: config.tools.map((tool) => ({
               name: tool.name,
               description: tool.description ?? "",
@@ -2110,12 +2133,14 @@ async function executeLocalNode(
         apiKey: config.apiKey || undefined,
       });
       const firstTool = discovery.tools[0]?.name ?? "";
+      const nextToolName = config.toolName || firstTool;
+      const nextTool = discovery.tools.find((tool) => tool.name === nextToolName);
       return {
         output: {
           type: "mcp",
           status: "connected",
-          remoteLink: discovery.remoteLink,
-          postUrl: discovery.postUrl,
+          remoteLink: redactUrl(discovery.remoteLink),
+          postUrl: redactUrl(discovery.postUrl),
           tools: discovery.tools.map((tool) => ({
             name: tool.name,
             description: tool.description ?? "",
@@ -2133,7 +2158,10 @@ async function executeLocalNode(
             connectedAt: discovery.connectedAt,
             connectionStatus: "connected",
             connectionError: "",
-            toolName: config.toolName || firstTool,
+            toolName: nextToolName,
+            arguments: shouldReplaceMcpArguments(config.arguments)
+              ? argumentsTemplateFromTool(nextTool)
+              : config.arguments,
           },
         },
       };
@@ -2151,8 +2179,8 @@ async function executeLocalNode(
     const output = {
       type: "mcp",
       status: result.ok ? "success" : "failed",
-      remoteLink: result.remoteLink,
-      postUrl: result.postUrl,
+      remoteLink: redactUrl(result.remoteLink),
+      postUrl: redactUrl(result.postUrl),
       tool: toolName,
       arguments: args,
       result: result.result,
@@ -2282,6 +2310,8 @@ async function maybeRunAgentMcpToolCalls(
       type: "mcp",
       status: result.ok ? "success" : "failed",
       sourceBlock: displayBlockId(runtimeTool.node),
+      remoteLink: redactUrl(result.remoteLink),
+      postUrl: redactUrl(result.postUrl),
       tool: call.name,
       arguments: call.arguments,
       result: result.result,
@@ -2525,6 +2555,76 @@ function stringifyTemplateValue(value: unknown): string {
   if (typeof value === "string") return value;
   if (typeof value === "number" || typeof value === "boolean") return String(value);
   return JSON.stringify(value);
+}
+
+function shouldReplaceMcpArguments(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed || trimmed === "{}") return true;
+  const parsed = parseJsonObject(trimmed);
+  return !!parsed && Object.keys(parsed).length === 0;
+}
+
+function argumentsTemplateFromTool(tool: RemoteMcpTool | undefined): string {
+  const schema = objectValue(tool?.inputSchema);
+  const value = valueFromJsonSchema(schema, true);
+  const obj =
+    value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+  return JSON.stringify(obj, null, 2);
+}
+
+function valueFromJsonSchema(
+  schema: Record<string, unknown> | null,
+  root = false
+): unknown {
+  if (!schema) return root ? {} : null;
+  const examples = Array.isArray(schema.examples) ? schema.examples : [];
+  if (examples.length > 0) return examples[0];
+  if (schema.default !== undefined) return schema.default;
+  if (Array.isArray(schema.enum) && schema.enum.length > 0) return schema.enum[0];
+
+  const type = schemaType(schema);
+  if (type === "object" || root) {
+    const properties = objectValue(schema.properties) ?? {};
+    const required = new Set(
+      Array.isArray(schema.required)
+        ? schema.required.filter((item): item is string => typeof item === "string")
+        : []
+    );
+    const keys = Object.keys(properties).filter(
+      (key) => required.size === 0 || required.has(key)
+    );
+    const out: Record<string, unknown> = {};
+    for (const key of keys) {
+      out[key] = valueFromJsonSchema(objectValue(properties[key]));
+    }
+    return out;
+  }
+  if (type === "array") {
+    return [valueFromJsonSchema(objectValue(schema.items))];
+  }
+  if (type === "integer" || type === "number") return 0;
+  if (type === "boolean") return false;
+  if (type === "null") return null;
+  return "";
+}
+
+function schemaType(schema: Record<string, unknown>): string {
+  if (typeof schema.type === "string") return schema.type;
+  if (Array.isArray(schema.type)) {
+    const first = schema.type.find((item): item is string => typeof item === "string");
+    if (first) return first;
+  }
+  if (schema.properties) return "object";
+  if (schema.items) return "array";
+  return "string";
+}
+
+function objectValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
 }
 
 function buildFetchCommand(url: string): string {
@@ -2835,7 +2935,10 @@ function mcpNodeConfig(node: WorkflowNode): McpNodeConfig {
     remoteLink:
       typeof config.remoteLink === "string" ? config.remoteLink : legacyServer,
     postUrl: typeof config.postUrl === "string" ? config.postUrl : "",
-    headers: typeof config.headers === "string" ? config.headers : "{}",
+    headers:
+      typeof config.headers === "string" && config.headers.trim()
+        ? config.headers
+        : DEFAULT_MCP_HEADERS_JSON,
     apiKey: typeof config.apiKey === "string" ? config.apiKey : "",
     toolName:
       typeof config.toolName === "string" ? config.toolName : legacyTool,
@@ -2908,6 +3011,28 @@ function mcpConnectionLabel(config: McpNodeConfig): string {
     return `Discovered ${config.tools.length} tool${config.tools.length === 1 ? "" : "s"}`;
   }
   return "Not connected";
+}
+
+function redactUrl(value: string): string {
+  if (!value) return "";
+  try {
+    const url = new URL(value);
+    for (const key of [...url.searchParams.keys()]) {
+      if (isSensitiveParam(key)) url.searchParams.set(key, "redacted");
+    }
+    if (url.username) url.username = "redacted";
+    if (url.password) url.password = "redacted";
+    return url.toString();
+  } catch {
+    return value.replace(
+      /([?&](?:api[_-]?key|key|token|access[_-]?token|auth|authorization)=)[^&#]+/gi,
+      "$1redacted"
+    );
+  }
+}
+
+function isSensitiveParam(key: string): boolean {
+  return /^(api[_-]?key|key|token|access[_-]?token|auth|authorization)$/i.test(key);
 }
 
 function cloneWorkflow(record: WorkflowRecord): WorkflowRecord {
