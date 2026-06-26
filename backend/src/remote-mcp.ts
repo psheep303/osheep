@@ -39,6 +39,12 @@ interface JsonRpcRequest {
   params?: unknown;
 }
 
+interface JsonRpcNotification {
+  jsonrpc: "2.0";
+  method: string;
+  params?: unknown;
+}
+
 interface JsonRpcResponse {
   jsonrpc?: string;
   id?: string | number | null;
@@ -48,6 +54,10 @@ interface JsonRpcResponse {
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000;
+const MCP_PROTOCOL_VERSION = "2025-03-26";
+const DEFAULT_PROTOCOL_HEADERS: Record<string, string> = {
+  "MCP-Protocol-Version": MCP_PROTOCOL_VERSION,
+};
 const FORBIDDEN_HEADERS = new Set([
   "connection",
   "content-length",
@@ -59,9 +69,7 @@ const FORBIDDEN_HEADERS = new Set([
 export async function discoverRemoteMcp(
   options: RemoteMcpRequestOptions
 ): Promise<RemoteMcpDiscovery> {
-  const session = new RemoteMcpSseSession(options);
-  try {
-    await session.connect();
+  return await withRemoteMcpSession(options, async (session) => {
     const response = await session.request({
       jsonrpc: "2.0",
       id: "init-1",
@@ -77,9 +85,7 @@ export async function discoverRemoteMcp(
       raw: response.result,
       connectedAt: Date.now(),
     };
-  } finally {
-    session.close();
-  }
+  });
 }
 
 export async function callRemoteMcp(
@@ -88,9 +94,7 @@ export async function callRemoteMcp(
     arguments?: Record<string, unknown>;
   }
 ): Promise<RemoteMcpCallResult> {
-  const session = new RemoteMcpSseSession(options);
-  try {
-    await session.connect();
+  return await withRemoteMcpSession(options, async (session) => {
     const response = await session.request({
       jsonrpc: "2.0",
       id: `run-${Date.now().toString(36)}`,
@@ -108,12 +112,89 @@ export async function callRemoteMcp(
       error: response.error,
       response,
     };
-  } finally {
-    session.close();
+  });
+}
+
+interface RemoteMcpSession {
+  readonly remoteLink: string;
+  readonly postUrl: string;
+  connect(): Promise<void>;
+  request(payload: JsonRpcRequest): Promise<JsonRpcResponse>;
+  notify(payload: JsonRpcNotification): Promise<void>;
+  close(): void;
+}
+
+class McpTransportError extends Error {
+  constructor(
+    message: string,
+    readonly status?: number
+  ) {
+    super(message);
   }
 }
 
-class RemoteMcpSseSession {
+async function withRemoteMcpSession<T>(
+  options: RemoteMcpRequestOptions,
+  fn: (session: RemoteMcpSession) => Promise<T>
+): Promise<T> {
+  const sse = new RemoteMcpSseSession(options);
+  try {
+    await sse.connect();
+    await initializeRemoteMcpSession(sse);
+    return await fn(sse);
+  } catch (e) {
+    sse.close();
+    if (!shouldFallbackToStreamableHttp(e)) {
+      throw toUpstreamError(e);
+    }
+  }
+
+  const http = new RemoteMcpHttpSession(options);
+  try {
+    await http.connect();
+    await initializeRemoteMcpSession(http);
+    return await fn(http);
+  } catch (e) {
+    throw toUpstreamError(e);
+  } finally {
+    http.close();
+  }
+}
+
+async function initializeRemoteMcpSession(session: RemoteMcpSession): Promise<void> {
+  const response = await session.request({
+    jsonrpc: "2.0",
+    id: `initialize-${Date.now().toString(36)}`,
+    method: "initialize",
+    params: {
+      protocolVersion: MCP_PROTOCOL_VERSION,
+      capabilities: {},
+      clientInfo: {
+        name: "osheep",
+        version: "0.0.1",
+      },
+    },
+  });
+  if (response.error !== undefined) {
+    throw new McpTransportError(`MCP initialize failed: ${jsonString(response.error)}`);
+  }
+  await session.notify({
+    jsonrpc: "2.0",
+    method: "notifications/initialized",
+  });
+}
+
+function shouldFallbackToStreamableHttp(e: unknown): boolean {
+  return e instanceof McpTransportError && e.status === 405;
+}
+
+function toUpstreamError(e: unknown): Error {
+  if (e instanceof McpTransportError) return errors.upstreamFailed(e.message);
+  if (e instanceof Error) return errors.upstreamFailed(e.message);
+  return errors.upstreamFailed(String(e));
+}
+
+class RemoteMcpSseSession implements RemoteMcpSession {
   readonly remoteLink: string;
   private readonly headers: Record<string, string>;
   private readonly timeoutMs: number;
@@ -134,7 +215,10 @@ class RemoteMcpSseSession {
 
   constructor(options: RemoteMcpRequestOptions) {
     this.remoteLink = normalizeRemoteLink(options.remoteLink);
-    this.headers = buildAuthHeaders(options.headers, options.apiKey);
+    this.headers = {
+      ...DEFAULT_PROTOCOL_HEADERS,
+      ...buildAuthHeaders(options.headers, options.apiKey),
+    };
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     if (options.postUrl) {
       this.resolvedPostUrl = resolveEndpointUrl(this.remoteLink, options.postUrl);
@@ -155,8 +239,9 @@ class RemoteMcpSseSession {
       signal: this.abort.signal,
     });
     if (!response.ok) {
-      throw errors.upstreamFailed(
-        `MCP SSE connect failed (${response.status}): ${await response.text().catch(() => "")}`
+      throw new McpTransportError(
+        `MCP SSE connect failed (${response.status}): ${await response.text().catch(() => "")}`,
+        response.status
       );
     }
     if (!response.body) throw errors.upstreamFailed("MCP SSE response has no body");
@@ -195,6 +280,24 @@ class RemoteMcpSseSession {
     const text = await response.text().catch(() => "");
     if (text.trim()) this.handlePostBody(text);
     return await wait;
+  }
+
+  async notify(payload: JsonRpcNotification): Promise<void> {
+    const response = await fetch(this.resolvedPostUrl, {
+      method: "POST",
+      headers: withDefaults(this.headers, {
+        accept: "application/json, text/event-stream",
+        "content-type": "application/json",
+      }),
+      body: JSON.stringify(payload),
+      signal: this.abort.signal,
+    });
+    if (!response.ok) {
+      throw new McpTransportError(
+        `MCP notification failed (${response.status}): ${await response.text().catch(() => "")}`,
+        response.status
+      );
+    }
   }
 
   close(): void {
@@ -332,6 +435,88 @@ class RemoteMcpSseSession {
   }
 }
 
+class RemoteMcpHttpSession implements RemoteMcpSession {
+  readonly remoteLink: string;
+  private readonly headers: Record<string, string>;
+  private readonly timeoutMs: number;
+  private readonly abort = new AbortController();
+  private sessionId = "";
+
+  constructor(options: RemoteMcpRequestOptions) {
+    this.remoteLink = normalizeRemoteLink(options.remoteLink);
+    this.headers = {
+      ...DEFAULT_PROTOCOL_HEADERS,
+      ...buildAuthHeaders(options.headers, options.apiKey),
+    };
+    this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  }
+
+  get postUrl(): string {
+    return this.remoteLink;
+  }
+
+  async connect(): Promise<void> {
+    return;
+  }
+
+  async request(payload: JsonRpcRequest): Promise<JsonRpcResponse> {
+    const response = await fetch(this.remoteLink, {
+      method: "POST",
+      headers: this.requestHeaders(),
+      body: JSON.stringify(payload),
+      signal: this.abort.signal,
+    });
+    if (!response.ok) {
+      throw new McpTransportError(
+        `MCP Streamable HTTP request failed (${response.status}): ${await response.text().catch(() => "")}`,
+        response.status
+      );
+    }
+    this.captureSessionId(response);
+    const parsed = await parseRpcResponseBody(response, this.timeoutMs);
+    const id = String(payload.id);
+    const match = findRpcResponse(parsed, id);
+    if (!match) {
+      throw new McpTransportError(`MCP Streamable HTTP response did not include id ${id}`);
+    }
+    return match;
+  }
+
+  async notify(payload: JsonRpcNotification): Promise<void> {
+    const response = await fetch(this.remoteLink, {
+      method: "POST",
+      headers: this.requestHeaders(),
+      body: JSON.stringify(payload),
+      signal: this.abort.signal,
+    });
+    if (!response.ok) {
+      throw new McpTransportError(
+        `MCP Streamable HTTP notification failed (${response.status}): ${await response.text().catch(() => "")}`,
+        response.status
+      );
+    }
+    this.captureSessionId(response);
+  }
+
+  close(): void {
+    this.abort.abort();
+  }
+
+  private requestHeaders(): Record<string, string> {
+    const headers = withDefaults(this.headers, {
+      accept: "application/json, text/event-stream",
+      "content-type": "application/json",
+    });
+    if (this.sessionId) headers["Mcp-Session-Id"] = this.sessionId;
+    return headers;
+  }
+
+  private captureSessionId(response: Response): void {
+    const id = response.headers.get("mcp-session-id");
+    if (id?.trim()) this.sessionId = id.trim();
+  }
+}
+
 function normalizeRemoteLink(value: string): string {
   if (typeof value !== "string" || !value.trim()) {
     throw errors.invalidQuery("Remote MCP Link is required");
@@ -399,7 +584,14 @@ function endpointFromData(data: string): string {
 
 function resolveEndpointUrl(remoteLink: string, endpoint: string): string {
   try {
-    return new URL(endpoint, remoteLink).toString();
+    const remote = new URL(remoteLink);
+    const resolved = new URL(endpoint, remoteLink);
+    if (resolved.origin === remote.origin) {
+      for (const [key, value] of remote.searchParams) {
+        if (!resolved.searchParams.has(key)) resolved.searchParams.set(key, value);
+      }
+    }
+    return resolved.toString();
   } catch {
     throw errors.upstreamFailed(`MCP endpoint URL is invalid: ${endpoint}`);
   }
@@ -446,6 +638,36 @@ function parseSseTextPayloads(text: string): unknown[] {
   }
   flush();
   return payloads;
+}
+
+async function parseRpcResponseBody(
+  response: Response,
+  timeoutMs: number
+): Promise<unknown> {
+  const text = await withTimeout(
+    response.text(),
+    timeoutMs,
+    "Timed out reading MCP HTTP response"
+  );
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith("event:") || trimmed.startsWith("data:")) {
+    return parseSseTextPayloads(trimmed);
+  }
+  return parseJson(trimmed);
+}
+
+function findRpcResponse(payload: unknown, id: string): JsonRpcResponse | null {
+  if (Array.isArray(payload)) {
+    for (const item of payload) {
+      const found = findRpcResponse(item, id);
+      if (found) return found;
+    }
+    return null;
+  }
+  const obj = objectValue(payload);
+  if (!obj || obj.id === undefined || obj.id === null) return null;
+  return String(obj.id) === id ? (obj as JsonRpcResponse) : null;
 }
 
 function parseJson(text: string): unknown | null {
