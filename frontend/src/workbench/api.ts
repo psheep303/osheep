@@ -1169,6 +1169,143 @@ export async function aiChatStream(
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
+export interface AiTerminalFrame {
+  type: "session" | "output" | "status" | "exit";
+  sessionId?: string;
+  data?: string;
+  status?: "starting" | "ready" | "prompt-sent" | "exited";
+  code?: number | null;
+  signal?: number | string | null;
+}
+
+export interface AiTerminalResult {
+  sessionId: string;
+  content: string;
+  transcript: string;
+  exitCode: number | null;
+  signal: number | string | null;
+}
+
+export async function aiChatTerminalStream(
+  workspaceId: string,
+  input: {
+    model: string;
+    messages: AiChatMessage[];
+    kind?: "claude-cli" | "codex-cli";
+  },
+  onFrame: (frame: AiTerminalFrame) => void,
+  signal?: AbortSignal
+): Promise<{ result: AiTerminalResult | null; aborted: boolean }> {
+  const url = `/api/workspaces/${encodeURIComponent(workspaceId)}/ai/chat/terminal`;
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      signal,
+      headers: {
+        "content-type": "application/json",
+        accept: "text/event-stream",
+      },
+      body: JSON.stringify(input),
+    });
+  } catch (e) {
+    if ((e as Error).name === "AbortError") return { result: null, aborted: true };
+    throw e;
+  }
+
+  if (!res.ok || !res.body) {
+    const txt = await res.text().catch(() => "");
+    let msg = `HTTP ${res.status}`;
+    try {
+      const parsed = JSON.parse(txt) as ApiErrorBody;
+      msg = parsed.error?.message ?? msg;
+    } catch {
+      if (txt) msg = txt;
+    }
+    throw new ApiClientError(res.status, "TERMINAL_STREAM_FAILED", msg);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let buffer = "";
+  let event = "";
+  let dataLine = "";
+  let result: AiTerminalResult | null = null;
+  let serverError: string | null = null;
+  let aborted = false;
+  let done = false;
+
+  const flushEvent = () => {
+    if (!event && !dataLine) return;
+    if (event === "result") {
+      try {
+        result = JSON.parse(dataLine) as AiTerminalResult;
+      } catch {
+        serverError = "malformed terminal result";
+      }
+    } else if (event === "done") {
+      done = true;
+    } else if (event === "error") {
+      try {
+        const obj = JSON.parse(dataLine) as { message?: string };
+        serverError = obj.message ?? "terminal stream error";
+      } catch {
+        serverError = "terminal stream error";
+      }
+    } else if (event) {
+      try {
+        onFrame(JSON.parse(dataLine) as AiTerminalFrame);
+      } catch {
+        /* ignore malformed payload */
+      }
+    }
+    event = "";
+    dataLine = "";
+  };
+
+  try {
+    while (!done) {
+      const r = await reader.read();
+      if (r.done) break;
+      buffer += decoder.decode(r.value, { stream: true });
+      let nl: number;
+      while ((nl = buffer.indexOf("\n")) !== -1) {
+        const raw = buffer.slice(0, nl);
+        buffer = buffer.slice(nl + 1);
+        const line = raw.replace(/\r$/, "");
+        if (line === "") {
+          flushEvent();
+          continue;
+        }
+        if (line.startsWith("event:")) {
+          event = line.slice(6).trim();
+        } else if (line.startsWith("data:")) {
+          const piece = line.slice(5).trimStart();
+          dataLine = dataLine ? dataLine + "\n" + piece : piece;
+        }
+      }
+    }
+    flushEvent();
+  } catch (e) {
+    if ((e as Error).name === "AbortError") {
+      aborted = true;
+    } else {
+      throw e;
+    }
+  } finally {
+    try {
+      await reader.cancel();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  if (serverError && !aborted) {
+    throw new ApiClientError(502, "TERMINAL_STREAM_FAILED", serverError);
+  }
+  return { result, aborted };
+}
+
 function isRetryableStreamError(e: unknown): boolean {
   if (e instanceof ApiClientError) {
     if (e.status === 408 || e.status === 425 || e.status === 429) return true;

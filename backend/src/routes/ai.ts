@@ -13,11 +13,13 @@ import {
 import { searchWorkspace } from "../search.js";
 import { execRun } from "../ai-exec.js";
 import {
+  buildCliPrompt,
   cliModelShortcuts,
   isCliProviderKind,
   runCliChat,
   type CliProviderKind,
 } from "../ai-cli.js";
+import { runAgentTerminal } from "../ai-terminal.js";
 
 type ProviderKind = CliProviderKind | "unsupported";
 
@@ -273,6 +275,73 @@ export async function registerAiRoutes(app: FastifyInstance) {
       return { models: cliModelShortcuts(kind) };
     }
     throw errors.invalidQuery("osheep code only supports Claude Code CLI or Codex CLI");
+  });
+
+  app.post<{
+    Params: { id: string };
+    Body: {
+      model?: string;
+      messages?: ChatMessageIn[];
+      kind?: ProviderKind;
+    };
+  }>("/api/workspaces/:id/ai/chat/terminal", async (req, reply) => {
+    const { model, messages } = req.body ?? {};
+    const kind = parseKind(req.body?.kind);
+    if (!isCliProviderKind(kind)) {
+      throw errors.invalidQuery("osheep code only supports Claude Code CLI or Codex CLI");
+    }
+    const ws = await resolveWorkspace(req.params.id);
+    const cleaned = sanitizeMessages(messages);
+    const prompt = buildCliPrompt(kind, cleaned);
+
+    reply.hijack();
+    reply.raw.writeHead(200, {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-cache, no-transform",
+      connection: "keep-alive",
+      "x-accel-buffering": "no",
+    });
+
+    let doneSent = false;
+    const send = (event: string, data: unknown) => {
+      if (reply.raw.destroyed || reply.raw.writableEnded) return;
+      if (event === "done") {
+        if (doneSent) return;
+        doneSent = true;
+      }
+      reply.raw.write(`event: ${event}\n`);
+      reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
+    };
+
+    const abort = new AbortController();
+    let runDone = false;
+    const onSocketClose = () => {
+      if (!runDone) abort.abort();
+    };
+    reply.raw.on("close", onSocketClose);
+
+    try {
+      const result = await runAgentTerminal({
+        workspace: ws,
+        kind,
+        model: typeof model === "string" && model ? model : "default",
+        prompt,
+        signal: abort.signal,
+        onFrame: (frame) => {
+          send(frame.type, frame);
+        },
+      });
+      send("result", result);
+    } catch (e) {
+      if (!abort.signal.aborted) {
+        send("error", { message: (e as Error).message });
+      }
+    } finally {
+      runDone = true;
+      send("done", {});
+      if (!reply.raw.destroyed && !reply.raw.writableEnded) reply.raw.end();
+      reply.raw.off("close", onSocketClose);
+    }
   });
 
   app.post<{
