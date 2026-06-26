@@ -985,7 +985,8 @@ async function aiChatStreamOnce(
   },
   onDelta: (chunk: string) => void,
   signal?: AbortSignal,
-  onReasoningDelta?: (chunk: string) => void
+  onReasoningDelta?: (chunk: string) => void,
+  onLog?: (entry: { stream: "stdout" | "stderr"; content: string }) => void
 ): Promise<{ content: string; aborted: boolean }> {
   const url = `/api/workspaces/${encodeURIComponent(
     workspaceId
@@ -1049,6 +1050,18 @@ async function aiChatStreamOnce(
         const obj = JSON.parse(dataLine) as { content?: string };
         const piece = typeof obj.content === "string" ? obj.content : "";
         if (piece) onReasoningDelta?.(piece);
+      } catch {
+        /* ignore malformed payload */
+      }
+    } else if (event === "log") {
+      try {
+        const obj = JSON.parse(dataLine) as {
+          stream?: "stdout" | "stderr";
+          content?: string;
+        };
+        if ((obj.stream === "stdout" || obj.stream === "stderr") && typeof obj.content === "string") {
+          onLog?.({ stream: obj.stream, content: obj.content });
+        }
       } catch {
         /* ignore malformed payload */
       }
@@ -1121,7 +1134,8 @@ export async function aiChatStream(
   },
   onDelta: (chunk: string) => void,
   signal?: AbortSignal,
-  onReasoningDelta?: (chunk: string) => void
+  onReasoningDelta?: (chunk: string) => void,
+  onLog?: (entry: { stream: "stdout" | "stderr"; content: string }) => void
 ): Promise<{ content: string; aborted: boolean }> {
   const maxRetries = 3;
   const maxAttempts = 1 + maxRetries;
@@ -1140,7 +1154,8 @@ export async function aiChatStream(
         (chunk) => {
           emitted = true;
           onReasoningDelta?.(chunk);
-        }
+        },
+        onLog
       );
       return result;
     } catch (e) {
@@ -1347,6 +1362,132 @@ export async function execRun(
     `/api/workspaces/${encodeURIComponent(workspaceId)}/ai/exec/run`,
     args
   );
+}
+
+export async function execRunStream(
+  workspaceId: string,
+  args: RunArgs,
+  options: {
+    signal?: AbortSignal;
+    onLog?: (entry: { stream: "stdout" | "stderr"; content: string; shell?: string }) => void;
+  } = {}
+): Promise<{ result: RunResult | null; aborted: boolean }> {
+  const url = `/api/workspaces/${encodeURIComponent(workspaceId)}/ai/exec/run/stream`;
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      signal: options.signal,
+      headers: {
+        "content-type": "application/json",
+        accept: "text/event-stream",
+      },
+      body: JSON.stringify(args),
+    });
+  } catch (e) {
+    if ((e as Error).name === "AbortError") return { result: null, aborted: true };
+    throw e;
+  }
+
+  if (!res.ok || !res.body) {
+    const txt = await res.text().catch(() => "");
+    let msg = `HTTP ${res.status}`;
+    try {
+      const parsed = JSON.parse(txt) as ApiErrorBody;
+      msg = parsed.error?.message ?? msg;
+    } catch {
+      if (txt) msg = txt;
+    }
+    throw new ApiClientError(res.status, "STREAM_FAILED", msg);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let buffer = "";
+  let event = "";
+  let dataLine = "";
+  let result: RunResult | null = null;
+  let serverError: string | null = null;
+  let aborted = false;
+  let done = false;
+
+  const flushEvent = () => {
+    if (!event && !dataLine) return;
+    if (event === "log") {
+      try {
+        const obj = JSON.parse(dataLine) as {
+          stream?: "stdout" | "stderr";
+          content?: string;
+          shell?: string;
+        };
+        if ((obj.stream === "stdout" || obj.stream === "stderr") && typeof obj.content === "string") {
+          options.onLog?.({ stream: obj.stream, content: obj.content, shell: obj.shell });
+        }
+      } catch {
+        /* ignore malformed payload */
+      }
+    } else if (event === "result") {
+      try {
+        result = JSON.parse(dataLine) as RunResult;
+      } catch {
+        serverError = "malformed run result";
+      }
+    } else if (event === "done") {
+      done = true;
+    } else if (event === "error") {
+      try {
+        const obj = JSON.parse(dataLine) as { message?: string };
+        serverError = obj.message ?? "stream error";
+      } catch {
+        serverError = "stream error";
+      }
+    }
+    event = "";
+    dataLine = "";
+  };
+
+  try {
+    while (!done) {
+      const r = await reader.read();
+      if (r.done) break;
+      buffer += decoder.decode(r.value, { stream: true });
+      let nl: number;
+      while ((nl = buffer.indexOf("\n")) !== -1) {
+        const raw = buffer.slice(0, nl);
+        buffer = buffer.slice(nl + 1);
+        const line = raw.replace(/\r$/, "");
+        if (line === "") {
+          flushEvent();
+          continue;
+        }
+        if (line.startsWith("event:")) {
+          event = line.slice(6).trim();
+        } else if (line.startsWith("data:")) {
+          const piece = line.slice(5).trimStart();
+          dataLine = dataLine ? dataLine + "\n" + piece : piece;
+        }
+      }
+    }
+    flushEvent();
+  } catch (e) {
+    if ((e as Error).name === "AbortError") {
+      aborted = true;
+    } else {
+      throw e;
+    }
+  } finally {
+    try {
+      await reader.cancel();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  if (serverError && !aborted) {
+    throw new ApiClientError(502, "RUN_STREAM_FAILED", serverError);
+  }
+
+  return { result, aborted };
 }
 
 // ─── osheep code tag-aware streaming ───

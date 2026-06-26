@@ -16,10 +16,12 @@ import {
   callRemoteMcp,
   discoverRemoteMcp,
   execRun,
+  execRunStream,
   getWorkflow as apiGetWorkflow,
   readFile,
   saveWorkflow as apiSaveWorkflow,
   writeFile,
+  type RunResult,
   type RemoteMcpTool,
   type WorkflowEdge,
   type WorkflowNode,
@@ -45,7 +47,6 @@ interface CanvasPoint {
 
 interface DraftEdge extends CanvasPoint {
   from: string;
-  reconnecting?: boolean;
 }
 
 interface NodeDragState {
@@ -61,6 +62,21 @@ interface NodeContextMenuState {
   x: number;
   y: number;
   nodeId: string;
+}
+
+interface EdgeContextMenuState {
+  x: number;
+  y: number;
+  edgeId: string;
+}
+
+interface CanvasPanState {
+  pointerId: number;
+  startX: number;
+  startY: number;
+  scrollLeft: number;
+  scrollTop: number;
+  moved: boolean;
 }
 
 type BlockCategoryId = "condition" | "command" | "ai" | "network" | "file" | "output";
@@ -131,6 +147,21 @@ interface McpRuntimeTool {
   node: WorkflowNode;
   config: McpNodeConfig;
   tool: RemoteMcpTool;
+}
+
+interface WorkflowRunDetailSnapshot {
+  kind: "agent" | "command";
+  title: string;
+  status: "running" | "success" | "error" | "stopped";
+  startedAt: number;
+  completedAt?: number;
+  commandLine: string;
+  stdout: string;
+  stderr: string;
+  transcript: string;
+  exitCode?: number | null;
+  signal?: string | null;
+  durationMs?: number;
 }
 
 const NODE_W = 168;
@@ -250,13 +281,20 @@ export function WorkflowTab({
   const draftEdgeRef = useRef<DraftEdge | null>(null);
   const [connectHoverId, setConnectHoverId] = useState<string | null>(null);
   const [draggingNodeId, setDraggingNodeId] = useState<string | null>(null);
+  const [panningCanvas, setPanningCanvas] = useState(false);
   const [nodeMenu, setNodeMenu] = useState<NodeContextMenuState | null>(null);
+  const [edgeMenu, setEdgeMenu] = useState<EdgeContextMenuState | null>(null);
   const [copiedNode, setCopiedNode] = useState<WorkflowNode | null>(null);
   const [blockPickerOpen, setBlockPickerOpen] = useState(false);
   const [blockPickerCategory, setBlockPickerCategory] =
     useState<BlockCategoryId>("condition");
+  const [detailNodeId, setDetailNodeId] = useState<string | null>(null);
+  const [mpeNodeId, setMpeNodeId] = useState<string | null>(null);
   const nodeDragRef = useRef<NodeDragState | null>(null);
   const suppressNodeClickRef = useRef<string | null>(null);
+  const canvasPanRef = useRef<CanvasPanState | null>(null);
+  const suppressContextMenuRef = useRef(false);
+  const canvasWrapRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const saveTimerRef = useRef<number | null>(null);
   const pendingSaveRef = useRef<WorkflowRecord | null>(null);
@@ -728,26 +766,10 @@ export function WorkflowTab({
     to: string,
     e: ReactPointerEvent<HTMLButtonElement>
   ) => {
-    if (running || e.button !== 0) return;
-    const record = workflowRef.current;
-    const existing = record?.edges.find((edge) => edge.to === to);
-    if (!record || !existing) return;
-    const fromNode = record.nodes.find((node) => node.id === existing.from);
-    if (!fromNode) return;
     e.preventDefault();
     e.stopPropagation();
-    pushHistory(record);
-    const next = {
-      ...record,
-      edges: record.edges.filter((edge) => edge.id !== existing.id),
-    };
-    workflowRef.current = next;
-    setWorkflow(next);
-    scheduleSave(next);
-    const point = clientToCanvas(e.clientX, e.clientY);
-    setDraftEdgeState({ from: fromNode.id, reconnecting: true, ...point });
+    if (running || e.button !== 0) return;
     setConnectHoverId(to);
-    e.currentTarget.setPointerCapture(e.pointerId);
   };
 
   const moveEdgeDrag = (e: ReactPointerEvent<HTMLButtonElement>) => {
@@ -773,7 +795,7 @@ export function WorkflowTab({
     const target = hovering && hovering !== current.from ? hovering : null;
     setDraftEdgeState(null);
     setConnectHoverId(null);
-    if (target) addEdgeWithHistory(current.from, target, !current.reconnecting);
+    if (target) addEdgeWithHistory(current.from, target, true);
   };
 
   const setZoomValue = (value: number) => {
@@ -781,12 +803,70 @@ export function WorkflowTab({
   };
 
   const handleWheelZoom = (e: ReactWheelEvent<HTMLDivElement>) => {
-    if (!e.ctrlKey && !e.metaKey) return;
     e.preventDefault();
     const delta = e.deltaY > 0 ? -ZOOM_STEP : ZOOM_STEP;
     setZoom((current) =>
       clamp(Math.round((current + delta) * 10) / 10, MIN_ZOOM, MAX_ZOOM)
     );
+  };
+
+  const startCanvasPan = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (running || e.button !== 2) return;
+    const wrap = canvasWrapRef.current;
+    if (!wrap) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setNodeMenu(null);
+    setEdgeMenu(null);
+    setBlockPickerOpen(false);
+    suppressContextMenuRef.current = false;
+    canvasPanRef.current = {
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      scrollLeft: wrap.scrollLeft,
+      scrollTop: wrap.scrollTop,
+      moved: false,
+    };
+    setPanningCanvas(true);
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+
+  const moveCanvasPan = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const pan = canvasPanRef.current;
+    const wrap = canvasWrapRef.current;
+    if (!pan || !wrap || pan.pointerId !== e.pointerId) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const dx = e.clientX - pan.startX;
+    const dy = e.clientY - pan.startY;
+    if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
+      pan.moved = true;
+      suppressContextMenuRef.current = true;
+    }
+    wrap.scrollLeft = pan.scrollLeft - dx;
+    wrap.scrollTop = pan.scrollTop - dy;
+  };
+
+  const finishCanvasPan = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const pan = canvasPanRef.current;
+    if (!pan || pan.pointerId !== e.pointerId) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+    if (pan.moved) suppressContextMenuRef.current = true;
+    canvasPanRef.current = null;
+    setPanningCanvas(false);
+  };
+
+  const handleCanvasContextMenu = (e: ReactMouseEvent<HTMLDivElement>) => {
+    if (suppressContextMenuRef.current) {
+      e.preventDefault();
+      e.stopPropagation();
+      suppressContextMenuRef.current = false;
+    }
   };
 
   const stopRun = () => {
@@ -874,6 +954,57 @@ export function WorkflowTab({
         await commitNow(current);
 
         if (kind !== "agent") {
+          if (kind === "command") {
+            const commandRun = await executeCommandNodeStream(
+              workspaceId,
+              current,
+              node,
+              startedAt,
+              nodeId,
+              setLiveNodePatch,
+              (controller) => {
+                abortRef.current = controller;
+              }
+            );
+            current = workflowRef.current ?? current;
+            const outputText = stringifyBlockOutput(commandRun.output);
+            if (commandRun.aborted) {
+              current = patchNode(current, nodeId, {
+                ...(commandRun.nodePatch ?? {}),
+                status: "error",
+                rawOutput: outputText,
+                summary: outputText,
+                error: "Stopped",
+                completedAt: Date.now(),
+              });
+              current = finishRun(current, run.id, "stopped", "Stopped");
+              await commitNow(current);
+              return;
+            }
+            if (commandRun.error) {
+              current = patchNode(current, nodeId, {
+                ...(commandRun.nodePatch ?? {}),
+                status: "error",
+                rawOutput: outputText,
+                summary: outputText,
+                error: commandRun.error,
+                completedAt: Date.now(),
+              });
+              await commitNow(current);
+              throw new Error(commandRun.error);
+            }
+            current = patchNode(current, nodeId, {
+              ...(commandRun.nodePatch ?? {}),
+              status: "success",
+              rawOutput: outputText,
+              summary: outputText,
+              error: "",
+              completedAt: Date.now(),
+            });
+            await commitNow(current);
+            if (commandRun.changedFiles) onFilesChanged();
+            continue;
+          }
           const local = await executeLocalNode(workspaceId, current, node, {
             allowMcpToolCall: nodeIds.length === 1,
           });
@@ -911,9 +1042,30 @@ export function WorkflowTab({
         abortRef.current = ac;
         let raw = "";
         let lastUiAt = 0;
+        let lastDetailsAt = 0;
+        const runLogs: Array<{ stream: "stdout" | "stderr"; content: string }> = [];
+        const appendLog = (entry: { stream: "stdout" | "stderr"; content: string }) => {
+          runLogs.push(entry);
+          const now = Date.now();
+          if (now - lastDetailsAt > 220) {
+            lastDetailsAt = now;
+            setLiveNodePatch(nodeId, {
+              config: {
+                ...(node.config ?? {}),
+                runDetails: agentRunSnapshot(node, "running", startedAt, undefined, runLogs),
+              },
+            });
+          }
+        };
+        setLiveNodePatch(nodeId, {
+          config: {
+            ...(node.config ?? {}),
+            runDetails: agentRunSnapshot(node, "running", startedAt, undefined, runLogs),
+          },
+        });
         const mcpTools = collectMcpToolsForAgent(current, node);
         const prompt = buildBlockPrompt(current, node, mcpTools);
-        const result = await aiChatStream(
+        const result = await runAiChatStreamWithRetries(
           workspaceId,
           {
             model: node.model || "default",
@@ -928,7 +1080,9 @@ export function WorkflowTab({
               setLiveNodePatch(nodeId, { rawOutput: raw });
             }
           },
-          ac.signal
+          ac.signal,
+          agentRetryCount(node),
+          appendLog
         );
         abortRef.current = null;
         raw =
@@ -943,7 +1097,8 @@ export function WorkflowTab({
               node,
               mcpTools,
               raw,
-              ac.signal
+              ac.signal,
+              appendLog
             );
         if (toolRun) {
           raw = toolRun.raw;
@@ -963,6 +1118,10 @@ export function WorkflowTab({
             rawOutput: stoppedOutputText,
             summary: stoppedOutputText,
             error: "Stopped",
+            config: {
+              ...(node.config ?? {}),
+              runDetails: agentRunSnapshot(node, "stopped", startedAt, Date.now(), runLogs),
+            },
             completedAt: Date.now(),
           });
           current = finishRun(current, run.id, "stopped", "Stopped");
@@ -974,6 +1133,10 @@ export function WorkflowTab({
           rawOutput: outputText,
           summary: outputText,
           error: "",
+          config: {
+            ...(node.config ?? {}),
+            runDetails: agentRunSnapshot(node, "success", startedAt, Date.now(), runLogs),
+          },
           completedAt: Date.now(),
         });
         await commitNow(current);
@@ -1002,6 +1165,7 @@ export function WorkflowTab({
             rawOutput: activeNode.rawOutput || output,
             summary: activeNode.summary || output,
             error: message,
+            config: finalizeRunDetailsOnError(activeNode, message),
             completedAt: Date.now(),
           });
         }
@@ -1035,6 +1199,9 @@ export function WorkflowTab({
   const menuNode = nodeMenu
     ? workflow.nodes.find((node) => node.id === nodeMenu.nodeId)
     : null;
+  const menuEdge = edgeMenu
+    ? workflow.edges.find((edge) => edge.id === edgeMenu.edgeId)
+    : null;
   const canUndo = historyTick >= 0 && undoStackRef.current.length > 0;
   const canRedo = historyTick >= 0 && redoStackRef.current.length > 0;
   const nodeMenuSections: CtxMenuSection[] = menuNode
@@ -1062,6 +1229,23 @@ export function WorkflowTab({
               danger: true,
               disabled: running || workflow.nodes.length <= 1,
               onSelect: () => deleteNode(menuNode.id),
+            },
+          ],
+        },
+      ]
+    : [];
+  const edgeMenuSections: CtxMenuSection[] = menuEdge
+    ? [
+        {
+          items: [
+            {
+              label: "Delete connection",
+              danger: true,
+              disabled: running,
+              onSelect: () => {
+                deleteEdge(menuEdge.id);
+                setEdgeMenu(null);
+              },
             },
           ],
         },
@@ -1169,21 +1353,33 @@ export function WorkflowTab({
 
       <div className="workflow-body">
         <div
+          ref={canvasWrapRef}
           className="workflow-canvas-wrap"
           onWheel={handleWheelZoom}
+          onPointerDown={startCanvasPan}
+          onPointerMove={moveCanvasPan}
+          onPointerUp={finishCanvasPan}
+          onPointerCancel={finishCanvasPan}
+          onContextMenu={handleCanvasContextMenu}
           style={{
             backgroundSize: `${32 * zoom}px ${32 * zoom}px, ${32 * zoom}px ${
               32 * zoom
             }px, auto`,
           }}
         >
-          <div className="workflow-canvas-viewport" style={scaledCanvasStyle}>
+          <div
+            className={
+              "workflow-canvas-viewport" + (panningCanvas ? " is-panning" : "")
+            }
+            style={scaledCanvasStyle}
+          >
             <div
               ref={canvasRef}
               className="workflow-canvas"
               style={canvasStyle}
               onPointerDown={(e) => {
                 setNodeMenu(null);
+                setEdgeMenu(null);
                 if (e.target === e.currentTarget) setSelectedId(null);
               }}
             >
@@ -1210,15 +1406,27 @@ export function WorkflowTab({
                   const from = workflow.nodes.find((node) => node.id === edge.from);
                   const to = workflow.nodes.find((node) => node.id === edge.to);
                   if (!from || !to) return null;
+                  const path = edgePath(from, to);
                   return (
-                    <path
-                      key={edge.id}
-                      className={
-                        "workflow-edge" + (edge.passSummary ? "" : " is-muted")
-                      }
-                      d={edgePath(from, to)}
-                      markerEnd="url(#workflow-arrow)"
-                    />
+                    <g key={edge.id} className="workflow-edge-group">
+                      <path
+                        className="workflow-edge-hit"
+                        d={path}
+                        onContextMenu={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setNodeMenu(null);
+                          setEdgeMenu({ x: e.clientX, y: e.clientY, edgeId: edge.id });
+                        }}
+                      />
+                      <path
+                        className={
+                          "workflow-edge" + (edge.passSummary ? "" : " is-muted")
+                        }
+                        d={path}
+                        markerEnd="url(#workflow-arrow)"
+                      />
+                    </g>
                   );
                 })}
                 {draftEdge && draftFrom && (
@@ -1240,9 +1448,16 @@ export function WorkflowTab({
                   connectHover={node.id === connectHoverId}
                   onSelect={() => selectNodeFromClick(node.id)}
                   onContextMenu={(e) => {
+                    if (suppressContextMenuRef.current) {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      suppressContextMenuRef.current = false;
+                      return;
+                    }
                     e.preventDefault();
                     e.stopPropagation();
                     setBlockPickerOpen(false);
+                    setEdgeMenu(null);
                     setNodeMenu({ x: e.clientX, y: e.clientY, nodeId: node.id });
                   }}
                   onNodePointerDown={(e) => startNodeDrag(node, e)}
@@ -1262,13 +1477,14 @@ export function WorkflowTab({
         {selectedNode && !blockPickerOpen && (
           <div className="workflow-panel-shell">
             <WorkflowNodeInspector
-              record={workflow}
               node={selectedNode}
               nodes={workflow.nodes}
               edges={workflow.edges}
               running={running}
               onUpdate={(patch) => updateNode(selectedNode.id, patch)}
               onConnectMcp={() => void connectMcpNode(selectedNode.id)}
+              onShowDetails={() => setDetailNodeId(selectedNode.id)}
+              onShowMpe={() => setMpeNodeId(selectedNode.id)}
               onClose={() => setSelectedId(null)}
               onDelete={() => deleteNode(selectedNode.id)}
               onUpdateEdge={updateEdge}
@@ -1294,6 +1510,33 @@ export function WorkflowTab({
           sections={nodeMenuSections}
           onClose={() => setNodeMenu(null)}
         />
+      )}
+      {edgeMenu && menuEdge && (
+        <ContextMenu
+          x={edgeMenu.x}
+          y={edgeMenu.y}
+          sections={edgeMenuSections}
+          onClose={() => setEdgeMenu(null)}
+        />
+      )}
+      {detailNodeId && workflow.nodes.some((node) => node.id === detailNodeId) && (
+        <div className="workflow-panel-shell">
+          <WorkflowDetailsPanel
+            node={workflow.nodes.find((node) => node.id === detailNodeId)!}
+            onClose={() => setDetailNodeId(null)}
+          />
+        </div>
+      )}
+      {mpeNodeId && workflow.nodes.some((node) => node.id === mpeNodeId) && (
+        <div className="workflow-panel-shell">
+          <WorkflowMpePanel
+            markdown={resolveBlockTemplate(
+              workflow.nodes.find((node) => node.id === mpeNodeId)!.prompt,
+              workflow
+            )}
+            onClose={() => setMpeNodeId(null)}
+          />
+        </div>
       )}
     </div>
   );
@@ -1436,6 +1679,10 @@ function WorkflowNodeBlock({
           onPointerMove={onMoveEdgeDrag}
           onPointerUp={onFinishEdgeDrag}
           onPointerCancel={onFinishEdgeDrag}
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          }}
         />
       )}
       <span className="workflow-node__id">{displayBlockId(node)}</span>
@@ -1454,32 +1701,120 @@ function WorkflowNodeBlock({
           onPointerMove={onMoveEdgeDrag}
           onPointerUp={onFinishEdgeDrag}
           onPointerCancel={onFinishEdgeDrag}
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          }}
         />
       )}
     </div>
   );
 }
 
+function WorkflowDetailsPanel({
+  node,
+  onClose,
+}: {
+  node: WorkflowNode;
+  onClose: () => void;
+}) {
+  const snapshot = runDetailsSnapshot(node);
+  const title = snapshot?.title || node.title;
+  return (
+    <aside className="workflow-inspector workflow-run-details">
+      <div className="workflow-inspector__head">
+        <div>
+          <div className="workflow-inspector__eyebrow">Run details</div>
+          <span className={`workflow-inspector__status is-${snapshot?.status ?? node.status}`}>
+            {snapshot?.status ?? node.status}
+          </span>
+        </div>
+        <button
+          type="button"
+          className="workflow-inspector__close"
+          onClick={onClose}
+          aria-label="Close details"
+          title="Close"
+        >
+          x
+        </button>
+      </div>
+      <div className="workflow-run-details__meta">
+        <span>{title}</span>
+        {snapshot?.durationMs !== undefined && <span>{snapshot.durationMs}ms</span>}
+        {snapshot?.exitCode !== undefined && <span>exit {snapshot.exitCode ?? "signal"}</span>}
+      </div>
+      <div className="workflow-run-details__terminal">
+        <div className="workflow-run-details__bar">
+          <span />
+          <span />
+          <span />
+          <strong>{snapshot?.commandLine || "No run captured"}</strong>
+        </div>
+        <pre>
+          {snapshot?.transcript ||
+            snapshot?.stdout ||
+            snapshot?.stderr ||
+            "Run this block to capture a terminal snapshot."}
+        </pre>
+      </div>
+    </aside>
+  );
+}
+
+function WorkflowMpePanel({
+  markdown,
+  onClose,
+}: {
+  markdown: string;
+  onClose: () => void;
+}) {
+  return (
+    <aside className="workflow-inspector workflow-mpe-panel">
+      <div className="workflow-inspector__head">
+        <div>
+          <div className="workflow-inspector__eyebrow">MPE</div>
+          <span className="workflow-inspector__status is-success">preview</span>
+        </div>
+        <button
+          type="button"
+          className="workflow-inspector__close"
+          onClick={onClose}
+          aria-label="Close MPE"
+          title="Close"
+        >
+          x
+        </button>
+      </div>
+      <div className="workflow-mpe-panel__body">
+        <MarkdownPreview source={markdown} />
+      </div>
+    </aside>
+  );
+}
+
 function WorkflowNodeInspector({
-  record,
   node,
   nodes,
   edges,
   running,
   onUpdate,
   onConnectMcp,
+  onShowDetails,
+  onShowMpe,
   onClose,
   onDelete,
   onUpdateEdge,
   onDeleteEdge,
 }: {
-  record: WorkflowRecord;
   node: WorkflowNode;
   nodes: WorkflowNode[];
   edges: WorkflowEdge[];
   running: boolean;
   onUpdate: (patch: Partial<WorkflowNode>) => void;
   onConnectMcp: () => void;
+  onShowDetails: () => void;
+  onShowMpe: () => void;
   onClose: () => void;
   onDelete: () => void;
   onUpdateEdge: (edgeId: string, patch: Partial<WorkflowEdge>) => void;
@@ -1496,8 +1831,8 @@ function WorkflowNodeInspector({
   const isMarkdown = kind === "markdown";
   const writeConfig = fileWriteConfig(node);
   const mcpConfig = mcpNodeConfig(node);
-  const markdownSource = isMarkdown ? resolveBlockTemplate(node.prompt, record) : "";
   const showOutput = kind !== "markdown";
+  const runDetails = runDetailsSnapshot(node);
 
   return (
     <aside className="workflow-inspector">
@@ -1509,6 +1844,13 @@ function WorkflowNodeInspector({
           <span className={`workflow-inspector__status is-${node.status}`}>
             {node.status}
           </span>
+        </div>
+        <div className="workflow-inspector__head-actions">
+          {(isAgent || kind === "command") && runDetails && (
+            <button type="button" onClick={onShowDetails}>
+              see details
+            </button>
+          )}
         </div>
         <button
           type="button"
@@ -1532,25 +1874,8 @@ function WorkflowNodeInspector({
 
       {isAgent && (
         <>
-          <div className="workflow-inspector__segmented">
-            <button
-              className={node.providerKind === "codex-cli" ? "is-active" : ""}
-              onClick={() =>
-                onUpdate({ providerKind: "codex-cli", model: "default" })
-              }
-              disabled={running}
-            >
-              Codex
-            </button>
-            <button
-              className={node.providerKind === "claude-cli" ? "is-active" : ""}
-              onClick={() =>
-                onUpdate({ providerKind: "claude-cli", model: "default" })
-              }
-              disabled={running}
-            >
-              Claude
-            </button>
+          <div className="workflow-inspector__provider-static">
+            {node.providerKind === "codex-cli" ? "Codex" : "Claude Code"}
           </div>
 
           <label className="workflow-inspector__field">
@@ -1558,6 +1883,24 @@ function WorkflowNodeInspector({
             <TemplateInput
               value={node.model}
               onChange={(value) => onUpdate({ model: value || "default" })}
+              disabled={running}
+            />
+          </label>
+          <label className="workflow-inspector__field">
+            <span>Retries</span>
+            <input
+              type="number"
+              min={0}
+              max={5}
+              value={agentRetryCount(node)}
+              onChange={(e) =>
+                onUpdate({
+                  config: {
+                    ...(node.config ?? {}),
+                    retries: clamp(Number(e.target.value) || 0, 0, 5),
+                  },
+                })
+              }
               disabled={running}
             />
           </label>
@@ -1747,11 +2090,10 @@ function WorkflowNodeInspector({
       )}
 
       {isMarkdown && (
-        <div className="workflow-inspector__section workflow-inspector__section--grow">
-          <div className="workflow-inspector__section-title">MPE</div>
-          <div className="workflow-inspector__markdown-preview">
-            <MarkdownPreview source={markdownSource} />
-          </div>
+        <div className="workflow-inspector__mpe-link-row">
+          <button type="button" onClick={onShowMpe}>
+            see MPE
+          </button>
         </div>
       )}
 
@@ -2005,30 +2347,6 @@ async function executeLocalNode(
     throw new Error(`${node.title} has no input.`);
   }
 
-  if (kind === "command") {
-    const result = await execRun(workspaceId, {
-      command: input,
-      timeoutMs: 600_000,
-    });
-    const failed = result.exitCode !== 0;
-    return {
-      output: {
-        type: "command",
-        status: failed ? "failed" : "success",
-        command: result.command,
-        shell: result.shell ?? "auto",
-        exitCode: result.exitCode,
-        signal: result.signal,
-        stdout: result.stdout,
-        stderr: result.stderr,
-        truncated: result.truncated,
-        CHANGED_FILES: [],
-      },
-      changedFiles: !failed,
-      error: failed ? `${node.title} exited with ${result.exitCode ?? "signal"}.` : undefined,
-    };
-  }
-
   if (kind === "web") {
     const result = await execRun(workspaceId, {
       command: buildFetchCommand(input),
@@ -2207,6 +2525,131 @@ async function executeLocalNode(
   throw new Error(`${node.title} cannot run as a local block.`);
 }
 
+async function executeCommandNodeStream(
+  workspaceId: string,
+  record: WorkflowRecord,
+  node: WorkflowNode,
+  startedAt: number,
+  nodeId: string,
+  setLiveNodePatch: (nodeId: string, patch: Partial<WorkflowNode>) => void,
+  setAbortController: (controller: AbortController | null) => void
+): Promise<LocalNodeResult & { aborted?: boolean }> {
+  const commandLine = resolveBlockTemplate(node.prompt, record).trim();
+  if (!commandLine) throw new Error(`${node.title} has no input.`);
+
+  const ac = new AbortController();
+  setAbortController(ac);
+  const logs: Array<{ stream: "stdout" | "stderr"; content: string }> = [
+    { stream: "stdout", content: `$ ${commandLine}\n` },
+  ];
+  let lastDetailsAt = 0;
+  const updateSnapshot = (status: WorkflowRunDetailSnapshot["status"]) => {
+    setLiveNodePatch(nodeId, {
+      config: {
+        ...(node.config ?? {}),
+        runDetails: commandRunSnapshot(
+          node,
+          status,
+          startedAt,
+          undefined,
+          commandLine,
+          logs
+        ),
+      },
+    });
+  };
+  updateSnapshot("running");
+
+  let streamed: { result: RunResult | null; aborted: boolean };
+  try {
+    streamed = await execRunStream(
+      workspaceId,
+      {
+        command: commandLine,
+        timeoutMs: 600_000,
+      },
+      {
+        signal: ac.signal,
+        onLog: (entry) => {
+          logs.push({ stream: entry.stream, content: entry.content });
+          const now = Date.now();
+          if (now - lastDetailsAt > 180) {
+            lastDetailsAt = now;
+            updateSnapshot("running");
+          }
+        },
+      }
+    );
+  } finally {
+    setAbortController(null);
+  }
+
+  if (streamed.aborted || !streamed.result) {
+    logs.push({ stream: "stderr", content: "\n[osheep] stopped\n" });
+    const snapshot = commandRunSnapshot(
+      node,
+      "stopped",
+      startedAt,
+      Date.now(),
+      commandLine,
+      logs
+    );
+    return {
+      output: {
+        type: "command",
+        status: "stopped",
+        command: commandLine,
+        stdout: snapshot.stdout,
+        stderr: snapshot.stderr,
+        CHANGED_FILES: [],
+      },
+      nodePatch: {
+        config: {
+          ...(node.config ?? {}),
+          runDetails: snapshot,
+        },
+      },
+      aborted: true,
+      changedFiles: false,
+      error: "Stopped",
+    };
+  }
+
+  const result = streamed.result;
+  const failed = result.exitCode !== 0;
+  const snapshot = commandRunSnapshot(
+    node,
+    failed ? "error" : "success",
+    startedAt,
+    Date.now(),
+    result.command,
+    logs,
+    result
+  );
+  return {
+    output: {
+      type: "command",
+      status: failed ? "failed" : "success",
+      command: result.command,
+      shell: result.shell ?? "auto",
+      exitCode: result.exitCode,
+      signal: result.signal,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      truncated: result.truncated,
+      CHANGED_FILES: [],
+    },
+    nodePatch: {
+      config: {
+        ...(node.config ?? {}),
+        runDetails: snapshot,
+      },
+    },
+    changedFiles: !failed,
+    error: failed ? `${node.title} exited with ${result.exitCode ?? "signal"}.` : undefined,
+  };
+}
+
 function buildBlockPrompt(
   record: WorkflowRecord,
   node: WorkflowNode,
@@ -2267,7 +2710,8 @@ async function maybeRunAgentMcpToolCalls(
   node: WorkflowNode,
   mcpTools: McpRuntimeTool[],
   raw: string,
-  signal: AbortSignal
+  signal: AbortSignal,
+  onLog?: (entry: { stream: "stdout" | "stderr"; content: string }) => void
 ): Promise<{ raw: string } | null> {
   if (mcpTools.length === 0) return null;
   const calls = extractMcpToolCalls(raw);
@@ -2333,11 +2777,138 @@ async function maybeRunAgentMcpToolCalls(
     (chunk) => {
       acc += chunk;
     },
-    signal
+    signal,
+    undefined,
+    onLog
   );
   return {
     raw: response.content || acc || raw,
   };
+}
+
+async function runAiChatStreamWithRetries(
+  workspaceId: string,
+  input: {
+    model: string;
+    messages: Array<{ role: "user"; content: string }>;
+    kind?: "claude-cli" | "codex-cli";
+  },
+  onDelta: (chunk: string) => void,
+  signal: AbortSignal,
+  retries: number,
+  onLog: (entry: { stream: "stdout" | "stderr"; content: string }) => void
+): Promise<{ content: string; aborted: boolean }> {
+  let lastError: unknown = null;
+  const attempts = Math.max(1, retries + 1);
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      if (attempt > 1) {
+        onLog({ stream: "stderr", content: `\n[osheep] retry ${attempt - 1}/${retries}\n` });
+      }
+      return await aiChatStream(
+        workspaceId,
+        input,
+        onDelta,
+        signal,
+        undefined,
+        onLog
+      );
+    } catch (e) {
+      lastError = e;
+      if (signal.aborted || attempt >= attempts) throw e;
+      onLog({
+        stream: "stderr",
+        content: `\n[osheep] attempt ${attempt} failed: ${(e as Error).message}\n`,
+      });
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+function agentRetryCount(node: WorkflowNode): number {
+  const value = node.config?.retries;
+  if (typeof value !== "number" || !Number.isInteger(value)) return 0;
+  return clamp(value, 0, 5);
+}
+
+function agentRunSnapshot(
+  node: WorkflowNode,
+  status: WorkflowRunDetailSnapshot["status"],
+  startedAt: number,
+  completedAt: number | undefined,
+  logs: Array<{ stream: "stdout" | "stderr"; content: string }>
+): WorkflowRunDetailSnapshot {
+  const snapshot: WorkflowRunDetailSnapshot = {
+    kind: "agent",
+    title: node.title,
+    status,
+    startedAt,
+    commandLine: `${node.providerKind === "codex-cli" ? "codex" : "claude"} ${node.model || "default"}`,
+    stdout: logs.filter((log) => log.stream === "stdout").map((log) => log.content).join(""),
+    stderr: logs.filter((log) => log.stream === "stderr").map((log) => log.content).join(""),
+    transcript: formatTerminalTranscript(logs),
+  };
+  if (completedAt !== undefined) snapshot.completedAt = completedAt;
+  return snapshot;
+}
+
+function commandRunSnapshot(
+  node: WorkflowNode,
+  status: WorkflowRunDetailSnapshot["status"],
+  startedAt: number,
+  completedAt: number | undefined,
+  commandLine: string,
+  logs: Array<{ stream: "stdout" | "stderr"; content: string }>,
+  result?: RunResult
+): WorkflowRunDetailSnapshot {
+  const snapshot: WorkflowRunDetailSnapshot = {
+    kind: "command",
+    title: node.title,
+    status,
+    startedAt,
+    commandLine,
+    stdout:
+      result?.stdout ??
+      logs.filter((log) => log.stream === "stdout").map((log) => log.content).join(""),
+    stderr:
+      result?.stderr ??
+      logs.filter((log) => log.stream === "stderr").map((log) => log.content).join(""),
+    transcript: formatTerminalTranscript(logs),
+  };
+  if (completedAt !== undefined) snapshot.completedAt = completedAt;
+  if (result) {
+    snapshot.exitCode = result.exitCode;
+    snapshot.signal = result.signal;
+    snapshot.durationMs = result.durationMs;
+  }
+  return snapshot;
+}
+
+function finalizeRunDetailsOnError(
+  node: WorkflowNode,
+  message: string
+): Record<string, unknown> | undefined {
+  const snapshot = runDetailsSnapshot(node);
+  if (!snapshot) return node.config;
+  return {
+    ...(node.config ?? {}),
+    runDetails: {
+      ...snapshot,
+      status: "error",
+      completedAt: Date.now(),
+      stderr: [snapshot.stderr, message].filter(Boolean).join("\n"),
+      transcript: [snapshot.transcript, `[stderr] ${message}`].filter(Boolean).join("\n"),
+    },
+  };
+}
+
+function formatTerminalTranscript(
+  logs: Array<{ stream: "stdout" | "stderr"; content: string }>
+): string {
+  return logs
+    .filter((log) => log.content)
+    .map((log) => `[${log.stream}] ${log.content.replace(/\s+$/g, "")}`)
+    .join("\n");
 }
 
 function buildMcpFollowupPrompt(
@@ -2950,6 +3521,39 @@ function mcpNodeConfig(node: WorkflowNode): McpNodeConfig {
       typeof config.connectionStatus === "string" ? config.connectionStatus : "",
     connectionError:
       typeof config.connectionError === "string" ? config.connectionError : "",
+  };
+}
+
+function runDetailsSnapshot(node: WorkflowNode): WorkflowRunDetailSnapshot | null {
+  const value = node.config?.runDetails;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const raw = value as Partial<WorkflowRunDetailSnapshot>;
+  if (raw.kind !== "agent" && raw.kind !== "command") return null;
+  return {
+    kind: raw.kind,
+    title: typeof raw.title === "string" ? raw.title : node.title,
+    status:
+      raw.status === "running" ||
+      raw.status === "success" ||
+      raw.status === "error" ||
+      raw.status === "stopped"
+        ? raw.status
+        : node.status === "running"
+          ? "running"
+          : node.status === "error"
+            ? "error"
+            : "success",
+    startedAt: typeof raw.startedAt === "number" ? raw.startedAt : node.startedAt ?? Date.now(),
+    completedAt: typeof raw.completedAt === "number" ? raw.completedAt : undefined,
+    commandLine: typeof raw.commandLine === "string" ? raw.commandLine : "",
+    stdout: typeof raw.stdout === "string" ? raw.stdout : "",
+    stderr: typeof raw.stderr === "string" ? raw.stderr : "",
+    transcript: typeof raw.transcript === "string" ? raw.transcript : "",
+    exitCode:
+      typeof raw.exitCode === "number" || raw.exitCode === null ? raw.exitCode : undefined,
+    signal:
+      typeof raw.signal === "string" || raw.signal === null ? raw.signal : undefined,
+    durationMs: typeof raw.durationMs === "number" ? raw.durationMs : undefined,
   };
 }
 

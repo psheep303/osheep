@@ -1423,6 +1423,7 @@
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
+  cursor: default;
   background:
     linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
     linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px),
@@ -1448,6 +1449,15 @@
   stroke: #6aa8ff;
   stroke-width: 2;
   opacity: 0.82;
+  pointer-events: none;
+}
+
+.workflow-edge-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 14;
+  pointer-events: stroke;
+  cursor: context-menu;
 }
 
 .workflow-edge.is-muted {
@@ -1722,6 +1732,11 @@
   min-height: 100%;
 }
 
+.workflow-canvas-viewport.is-panning,
+.workflow-canvas-viewport.is-panning .workflow-node {
+  cursor: grabbing;
+}
+
 .workflow-canvas {
   min-width: 0;
   min-height: 0;
@@ -1948,6 +1963,32 @@
   min-width: 0;
 }
 
+.workflow-inspector__head-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.workflow-inspector__head-actions button {
+  height: 24px;
+  padding: 0 9px;
+  border: 1px solid #343434;
+  border-radius: 4px;
+  background: linear-gradient(180deg, #242424, #191919);
+  color: #a9d6ff;
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0;
+  cursor: pointer;
+}
+
+.workflow-inspector__head-actions button:hover {
+  border-color: #5f92c8;
+  color: #d8eaff;
+  background: #242a31;
+}
+
 .workflow-inspector__close {
   flex: none;
   width: 28px;
@@ -1999,6 +2040,11 @@
 .workflow-inspector__status.is-error {
   color: #f4a293;
   border-color: #9f3a2d;
+}
+
+.workflow-inspector__status.is-stopped {
+  color: #c9c9c9;
+  border-color: #5a5a5a;
 }
 
 .workflow-inspector__field {
@@ -2162,6 +2208,18 @@
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 6px;
+}
+
+.workflow-inspector__provider-static {
+  height: 30px;
+  display: flex;
+  align-items: center;
+  padding: 0 9px;
+  border: 1px solid #343434;
+  border-radius: 4px;
+  background: #181818;
+  color: #d8eaff;
+  font-size: 12px;
 }
 
 .workflow-inspector__segmented button,
@@ -2338,6 +2396,130 @@
   border: 1px solid #303030;
   border-radius: 4px;
   background: #161616;
+}
+
+.workflow-inspector__mpe-link-row {
+  margin-top: auto;
+  display: flex;
+  justify-content: flex-start;
+}
+
+.workflow-inspector__mpe-link-row button {
+  border: 0;
+  background: transparent;
+  color: #91c7f8;
+  padding: 0;
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0;
+  cursor: pointer;
+}
+
+.workflow-inspector__mpe-link-row button:hover {
+  color: #d8eaff;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.workflow-run-details,
+.workflow-mpe-panel {
+  width: clamp(420px, 52%, 700px);
+  height: clamp(320px, 56%, 620px);
+}
+
+.workflow-run-details__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.workflow-run-details__meta span {
+  padding: 3px 7px;
+  border: 1px solid #303030;
+  border-radius: 4px;
+  background: #181818;
+}
+
+.workflow-run-details__terminal {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #303030;
+  border-radius: 6px;
+  background: #101010;
+  overflow: hidden;
+}
+
+.workflow-run-details__bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 9px;
+  border-bottom: 1px solid #282828;
+  background: #181818;
+  color: var(--fg-muted);
+  font-size: 11px;
+}
+
+.workflow-run-details__bar span {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #565656;
+}
+
+.workflow-run-details__bar span:nth-child(1) {
+  background: #c95f50;
+}
+
+.workflow-run-details__bar span:nth-child(2) {
+  background: #d3a94f;
+}
+
+.workflow-run-details__bar span:nth-child(3) {
+  background: #5aa06f;
+}
+
+.workflow-run-details__bar strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.workflow-run-details__terminal pre {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  margin: 0;
+  padding: 12px;
+  color: #d6d6d6;
+  font-family: "Cascadia Mono", Consolas, "Courier New", monospace;
+  font-size: 11.5px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  text-align: left;
+}
+
+.workflow-mpe-panel__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 14px;
+  border: 1px solid #303030;
+  border-radius: 4px;
+  background: #161616;
+  text-align: left;
+}
+
+.workflow-mpe-panel__body * {
+  text-align: left;
 }
 
 .workflow-inspector__foot {
