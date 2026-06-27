@@ -17,13 +17,19 @@ import {
   aiChatStream,
   aiChatTerminalStream,
   callRemoteMcp,
+  continueAiTerminal,
   discoverRemoteMcp,
   execRun,
   execRunStream,
   getWorkflow as apiGetWorkflow,
+  injectAiTerminalPrompt,
   openTerminalSocket,
+  pauseAiTerminal,
   readFile,
+  runWorkflow as apiRunWorkflow,
   saveWorkflow as apiSaveWorkflow,
+  setAiTerminalAutoContinue,
+  stopWorkflow as apiStopWorkflow,
   writeFile,
   type AiTerminalFrame,
   type AiTerminalResult,
@@ -85,12 +91,22 @@ interface CanvasPanState {
   moved: boolean;
 }
 
-type BlockCategoryId = "condition" | "command" | "ai" | "network" | "file" | "output";
+type BlockCategoryId = "triggers" | "logic" | "command" | "ai" | "network" | "file" | "output";
 type WorkflowIconName =
   | "trigger"
+  | "cron"
+  | "webhook"
   | "command"
   | "ai"
   | "network"
+  | "http"
+  | "set"
+  | "if"
+  | "merge"
+  | "code"
+  | "wait"
+  | "json"
+  | "loop"
   | "file"
   | "output"
   | "claude"
@@ -149,6 +165,47 @@ interface McpNodeConfig {
   connectionError: string;
 }
 
+interface HttpRequestNodeConfig {
+  method: string;
+  url: string;
+  headers: string;
+  body: string;
+  responseType: string;
+}
+
+interface SetNodeConfig {
+  data: string;
+}
+
+interface IfNodeConfig {
+  left: string;
+  operator: string;
+  right: string;
+}
+
+interface MergeNodeConfig {
+  mode: string;
+}
+
+interface CodeNodeConfig {
+  code: string;
+}
+
+interface LoopItemsNodeConfig {
+  source: string;
+  batchSize: number;
+  mode: string;
+}
+
+interface WaitNodeConfig {
+  seconds: number;
+}
+
+interface JsonNodeConfig {
+  source: string;
+  path: string;
+}
+
 interface McpRuntimeTool {
   node: WorkflowNode;
   config: McpNodeConfig;
@@ -166,6 +223,8 @@ interface WorkflowRunDetailSnapshot {
   stderr: string;
   transcript: string;
   terminalSessionId?: string;
+  terminalStatus?: string;
+  autoContinue?: boolean;
   paused?: boolean;
   exitCode?: number | null;
   signal?: string | null;
@@ -175,12 +234,44 @@ interface WorkflowRunDetailSnapshot {
 const NODE_W = 168;
 const NODE_H = 46;
 const CANVAS_PADDING = 180;
+const CANVAS_MIN_W = 6000;
+const CANVAS_MIN_H = 3600;
 const SAVE_DELAY_MS = 450;
 const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 1.8;
 const ZOOM_STEP = 0.1;
+const CONFIGURED_LOCAL_KINDS = new Set<WorkflowNodeKind>([
+  "http-request",
+  "set",
+  "if",
+  "merge",
+  "code",
+  "loop-items",
+  "wait",
+  "json",
+  "mcp",
+  "file-write",
+  "markdown",
+  "cron",
+  "manual-trigger",
+  "webhook-trigger",
+]);
+const HTTP_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
+const HTTP_RESPONSE_TYPES = ["auto", "json", "text"] as const;
+const IF_OPERATORS = [
+  "equals",
+  "notEquals",
+  "contains",
+  "greaterThan",
+  "lessThan",
+  "exists",
+  "isEmpty",
+] as const;
+const MERGE_MODES = ["object", "array"] as const;
+const LOOP_MODES = ["items", "batches"] as const;
 const BLOCK_CATEGORIES: BlockCategory[] = [
-  { id: "condition", label: "条件", icon: "trigger" },
+  { id: "triggers", label: "Triggers", icon: "trigger" },
+  { id: "logic", label: "Logic", icon: "if" },
   { id: "command", label: "命令", icon: "command" },
   { id: "ai", label: "AI", icon: "ai" },
   { id: "network", label: "网络", icon: "network" },
@@ -189,11 +280,40 @@ const BLOCK_CATEGORIES: BlockCategory[] = [
 ];
 const BLOCK_TEMPLATES: BlockTemplate[] = [
   {
-    category: "condition",
+    category: "triggers",
     label: "工作流运行时",
     title: "Workflow run",
     kind: "trigger",
     icon: "trigger",
+  },
+  {
+    category: "triggers",
+    label: "Manual Trigger",
+    title: "Manual Trigger",
+    kind: "manual-trigger",
+    icon: "trigger",
+  },
+  {
+    category: "triggers",
+    label: "Cron",
+    title: "Cron",
+    kind: "cron",
+    icon: "cron",
+    config: {
+      cron: "0 9 * * 1-5",
+      timezone: "local",
+    },
+  },
+  {
+    category: "triggers",
+    label: "Webhook Trigger",
+    title: "Webhook Trigger",
+    kind: "webhook-trigger",
+    icon: "webhook",
+    config: {
+      method: "POST",
+      path: "/workflow-hook",
+    },
   },
   {
     category: "command",
@@ -227,6 +347,91 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
     kind: "web",
     prompt: "https://example.com",
     icon: "web",
+  },
+  {
+    category: "network",
+    label: "HTTP Request",
+    title: "HTTP Request",
+    kind: "http-request",
+    icon: "http",
+    config: {
+      method: "GET",
+      url: "https://api.example.com",
+      headers: "{\n  \"accept\": \"application/json\"\n}",
+      body: "",
+      responseType: "auto",
+    },
+  },
+  {
+    category: "logic",
+    label: "IF",
+    title: "IF",
+    kind: "if",
+    icon: "if",
+    config: {
+      left: "{{blocks[1].status}}",
+      operator: "equals",
+      right: "success",
+    },
+  },
+  {
+    category: "logic",
+    label: "Wait",
+    title: "Wait",
+    kind: "wait",
+    icon: "wait",
+    config: { seconds: 1 },
+  },
+  {
+    category: "output",
+    label: "Set Data",
+    title: "Set Data",
+    kind: "set",
+    icon: "set",
+    config: {
+      data: "{\n  \"text\": \"{{blocks[1].text}}\"\n}",
+    },
+  },
+  {
+    category: "output",
+    label: "Merge",
+    title: "Merge",
+    kind: "merge",
+    icon: "merge",
+    config: { mode: "object" },
+  },
+  {
+    category: "output",
+    label: "JSON Extract",
+    title: "JSON Extract",
+    kind: "json",
+    icon: "json",
+    config: {
+      source: "{{blocks[1].text}}",
+      path: "",
+    },
+  },
+  {
+    category: "command",
+    label: "Code in JavaScript",
+    title: "Code in JavaScript",
+    kind: "code",
+    icon: "code",
+    config: {
+      code: "return {\n  text: input.text || input.content || input.stdout || \"\",\n  input\n};",
+    },
+  },
+  {
+    category: "logic",
+    label: "Loop Over Items",
+    title: "Loop Over Items",
+    kind: "loop-items",
+    icon: "loop",
+    config: {
+      source: "{{blocks[1].data}}",
+      batchSize: 1,
+      mode: "items",
+    },
   },
   {
     category: "file",
@@ -295,7 +500,7 @@ export function WorkflowTab({
   const [copiedNode, setCopiedNode] = useState<WorkflowNode | null>(null);
   const [blockPickerOpen, setBlockPickerOpen] = useState(false);
   const [blockPickerCategory, setBlockPickerCategory] =
-    useState<BlockCategoryId>("condition");
+    useState<BlockCategoryId>("triggers");
   const [detailNodeId, setDetailNodeId] = useState<string | null>(null);
   const [mpeNodeId, setMpeNodeId] = useState<string | null>(null);
   const nodeDragRef = useRef<NodeDragState | null>(null);
@@ -325,6 +530,7 @@ export function WorkflowTab({
         setHistoryTick((tick) => tick + 1);
         workflowRef.current = record;
         setWorkflow(record);
+        setRunning(workflowIsRunning(record));
       })
       .catch((e) => {
         if (!cancelled) setError((e as Error).message);
@@ -342,6 +548,32 @@ export function WorkflowTab({
     };
   }, [workspaceId, workflowId]);
 
+  useEffect(() => {
+    if (!workflowId || !workspaceId) return;
+    let cancelled = false;
+    const refresh = async () => {
+      if (pendingSaveRef.current) return;
+      try {
+        const record = await apiGetWorkflow(workspaceId, workflowId);
+        if (cancelled) return;
+        const isRunning = workflowIsRunning(record);
+        workflowRef.current = record;
+        setWorkflow(record);
+        setRunning(isRunning);
+        if (!isRunning) onWorkflowChanged();
+      } catch {
+        /* keep the current snapshot while the workspace is changing */
+      }
+    };
+    const timer = window.setInterval(() => {
+      void refresh();
+    }, 1500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [workspaceId, workflowId, onWorkflowChanged]);
+
   const selectedNode = useMemo(
     () => workflow?.nodes.find((node) => node.id === selectedId) ?? null,
     [workflow, selectedId]
@@ -358,8 +590,8 @@ export function WorkflowTab({
       ...nodes.map((node) => node.y + NODE_H + CANVAS_PADDING)
     );
     return {
-      width: Math.max(980, maxX),
-      height: Math.max(620, maxY),
+      width: Math.max(CANVAS_MIN_W, maxX),
+      height: Math.max(CANVAS_MIN_H, maxY),
     };
   }, [workflow]);
 
@@ -879,11 +1111,12 @@ export function WorkflowTab({
 
   const stopRun = () => {
     abortRef.current?.abort();
+    void stopBackendRun();
   };
 
   const runSelected = async () => {
     if (!selectedNode) return;
-    await runNodes([selectedNode.id]);
+    await startBackendRun([selectedNode.id]);
   };
 
   const runWorkflow = async () => {
@@ -893,7 +1126,34 @@ export function WorkflowTab({
       setError(ordered.error);
       return;
     }
-    await runNodes(ordered.nodeIds);
+    await startBackendRun(ordered.nodeIds);
+  };
+
+  const startBackendRun = async (nodeIds: string[]) => {
+    let current = workflowRef.current;
+    if (!current || running) return;
+    await flushPendingSave();
+    setRunning(true);
+    setError(null);
+    try {
+      const result = await apiRunWorkflow(workspaceId, current.id, nodeIds);
+      workflowRef.current = result.workflow;
+      setWorkflow(result.workflow);
+      onWorkflowChanged();
+    } catch (e) {
+      setRunning(false);
+      setError((e as Error).message);
+    }
+  };
+
+  const stopBackendRun = async () => {
+    if (!workflowRef.current) return;
+    try {
+      await apiStopWorkflow(workspaceId, workflowRef.current.id);
+      onWorkflowChanged();
+    } catch (e) {
+      setError((e as Error).message);
+    }
   };
 
   const runNodes = async (nodeIds: string[]) => {
@@ -937,7 +1197,7 @@ export function WorkflowTab({
         if (!current || !node) continue;
         const startedAt = Date.now();
         const kind = nodeKind(node);
-        if (kind === "trigger") {
+        if (isTriggerNodeKind(kind)) {
           const output = triggerOutput(node);
           const outputText = stringifyBlockOutput(output);
           current = patchNode(current, nodeId, {
@@ -1051,6 +1311,8 @@ export function WorkflowTab({
         let lastDetailsAt = 0;
         const runLogs: Array<{ stream: "stdout" | "stderr"; content: string }> = [];
         let terminalSessionId = "";
+        let terminalStatus = "";
+        const autoContinue = agentAutoContinue(node);
         const updateAgentDetails = (
           status: WorkflowRunDetailSnapshot["status"],
           completedAt?: number,
@@ -1066,6 +1328,8 @@ export function WorkflowTab({
                 completedAt,
                 runLogs,
                 terminalSessionId || undefined,
+                terminalStatus || undefined,
+                autoContinue,
                 paused
               ),
             },
@@ -1082,12 +1346,15 @@ export function WorkflowTab({
         updateAgentDetails("running");
         const mcpTools = collectMcpToolsForAgent(current, node);
         const prompt = buildBlockPrompt(current, node, mcpTools);
+        const terminalPrompt = buildTerminalPrompt(current, node);
         const result = await runAiTerminalWithRetries(
           workspaceId,
           {
             model: node.model || "default",
             kind: node.providerKind,
             messages: [{ role: "user", content: prompt }],
+            terminalPrompt,
+            autoContinue,
           },
           (frame) => {
             if (frame.type === "session" && frame.sessionId) {
@@ -1095,6 +1362,9 @@ export function WorkflowTab({
               updateAgentDetails("running");
             } else if (frame.type === "output" && typeof frame.data === "string") {
               appendLog({ stream: "stdout", content: frame.data });
+            } else if (frame.type === "status" && frame.status) {
+              terminalStatus = frame.status;
+              updateAgentDetails("running");
             }
           },
           ac.signal,
@@ -1123,6 +1393,18 @@ export function WorkflowTab({
         const outputText = stringifyBlockOutput(output);
         current = workflowRef.current ?? current;
         if (result.aborted) {
+          const stoppedDetails = agentRunSnapshot(
+            node,
+            "stopped",
+            startedAt,
+            Date.now(),
+            runLogs,
+            terminalSessionId || result.result?.sessionId,
+            terminalStatus || undefined,
+            autoContinue
+          );
+          if (result.result?.transcript) stoppedDetails.transcript = result.result.transcript;
+          if (result.result?.content) stoppedDetails.stdout = result.result.content;
           const stoppedOutput = {
             ...output,
             status: "stopped",
@@ -1136,20 +1418,32 @@ export function WorkflowTab({
             error: "Stopped",
             config: {
               ...(node.config ?? {}),
-              runDetails: agentRunSnapshot(
-                node,
-                "stopped",
-                startedAt,
-                Date.now(),
-                runLogs,
-                terminalSessionId || result.result?.sessionId
-              ),
+              runDetails: stoppedDetails,
             },
             completedAt: Date.now(),
           });
           current = finishRun(current, run.id, "stopped", "Stopped");
           await commitNow(current);
           return;
+        }
+        const successDetails = agentRunSnapshot(
+          node,
+          "success",
+          startedAt,
+          Date.now(),
+          runLogs,
+          terminalSessionId || result.result?.sessionId,
+          terminalStatus || undefined,
+          autoContinue
+        );
+        if (result.result?.transcript) successDetails.transcript = result.result.transcript;
+        if (result.result?.content) successDetails.stdout = result.result.content;
+        if (result.result) {
+          successDetails.exitCode = result.result.exitCode;
+          successDetails.signal =
+            typeof result.result.signal === "string" || result.result.signal === null
+              ? result.result.signal
+              : String(result.result.signal);
         }
         current = patchNode(current, nodeId, {
           status: "success",
@@ -1158,14 +1452,7 @@ export function WorkflowTab({
           error: "",
           config: {
             ...(node.config ?? {}),
-            runDetails: agentRunSnapshot(
-              node,
-              "success",
-              startedAt,
-              Date.now(),
-              runLogs,
-              terminalSessionId || result.result?.sessionId
-            ),
+            runDetails: successDetails,
           },
           completedAt: Date.now(),
         });
@@ -1208,6 +1495,7 @@ export function WorkflowTab({
       setRunning(false);
     }
   };
+  void runNodes;
 
   if (loading) return <div className="empty-hint">Loading workflow...</div>;
   if (!workflow) {
@@ -1222,6 +1510,7 @@ export function WorkflowTab({
     width: canvasSize.width,
     height: canvasSize.height,
     transform: `scale(${zoom})`,
+    backgroundSize: "32px 32px, 32px 32px, auto",
   };
   const draftFrom = draftEdge
     ? workflow.nodes.find((node) => node.id === draftEdge.from)
@@ -1391,11 +1680,6 @@ export function WorkflowTab({
           onPointerUp={finishCanvasPan}
           onPointerCancel={finishCanvasPan}
           onContextMenu={handleCanvasContextMenu}
-          style={{
-            backgroundSize: `${32 * zoom}px ${32 * zoom}px, ${32 * zoom}px ${
-              32 * zoom
-            }px, auto`,
-          }}
         >
           <div
             className={
@@ -1552,6 +1836,7 @@ export function WorkflowTab({
       {detailNodeId && workflow.nodes.some((node) => node.id === detailNodeId) && (
         <div className="workflow-panel-shell">
           <WorkflowDetailsPanel
+            workspaceId={workspaceId}
             node={workflow.nodes.find((node) => node.id === detailNodeId)!}
             onClose={() => setDetailNodeId(null)}
           />
@@ -1679,7 +1964,7 @@ function WorkflowNodeBlock({
     (dragging ? " is-dragging" : "") +
     ` is-${nodeKind(node)}` +
     ` is-${node.status}`;
-  const hasInputHandle = nodeKind(node) !== "trigger";
+  const hasInputHandle = !isTriggerNodeKind(nodeKind(node));
   const hasOutputHandle = nodeKind(node) !== "markdown";
 
   return (
@@ -1742,9 +2027,11 @@ function WorkflowNodeBlock({
 }
 
 function WorkflowDetailsPanel({
+  workspaceId,
   node,
   onClose,
 }: {
+  workspaceId: string;
   node: WorkflowNode;
   onClose: () => void;
 }) {
@@ -1784,7 +2071,12 @@ function WorkflowDetailsPanel({
         {snapshot?.kind === "agent" &&
         snapshot.terminalSessionId &&
         snapshot.status === "running" ? (
-          <WorkflowAgentTerminal sessionId={snapshot.terminalSessionId} />
+          <WorkflowAgentTerminal
+            workspaceId={workspaceId}
+            sessionId={snapshot.terminalSessionId}
+            terminalStatus={snapshot.terminalStatus}
+            initialAutoContinue={snapshot.autoContinue ?? true}
+          />
         ) : (
           <pre>
             {snapshot?.transcript ||
@@ -1798,12 +2090,28 @@ function WorkflowDetailsPanel({
   );
 }
 
-function WorkflowAgentTerminal({ sessionId }: { sessionId: string }) {
+function WorkflowAgentTerminal({
+  workspaceId,
+  sessionId,
+  terminalStatus,
+  initialAutoContinue,
+}: {
+  workspaceId: string;
+  sessionId: string;
+  terminalStatus?: string;
+  initialAutoContinue: boolean;
+}) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<XTerm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const [paused, setPaused] = useState(false);
+  const [injecting, setInjecting] = useState(false);
+  const [autoContinue, setAutoContinue] = useState(initialAutoContinue);
+
+  useEffect(() => {
+    setAutoContinue(initialAutoContinue);
+  }, [initialAutoContinue, sessionId]);
 
   useEffect(() => {
     if (!hostRef.current) return;
@@ -1891,10 +2199,56 @@ function WorkflowAgentTerminal({ sessionId }: { sessionId: string }) {
     };
   }, [sessionId]);
 
-  const sendInput = (data: string) => {
-    const ws = wsRef.current;
-    if (ws?.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "input", data }));
+  const injectPrompt = async () => {
+    setInjecting(true);
+    try {
+      await injectAiTerminalPrompt(workspaceId, sessionId, {
+        submit: autoContinue,
+      });
+      termRef.current?.focus();
+    } catch (e) {
+      termRef.current?.writeln(`\r\n\x1b[31m[osheep] inject failed: ${(e as Error).message}\x1b[0m`);
+    } finally {
+      setInjecting(false);
+    }
+  };
+
+  const updateAutoContinue = async (enabled: boolean) => {
+    setAutoContinue(enabled);
+    try {
+      await setAiTerminalAutoContinue(workspaceId, sessionId, enabled);
+      termRef.current?.focus();
+    } catch (e) {
+      setAutoContinue(!enabled);
+      termRef.current?.writeln(
+        `\r\n\x1b[31m[osheep] auto continue update failed: ${
+          (e as Error).message
+        }\x1b[0m`
+      );
+    }
+  };
+
+  const pauseSession = async () => {
+    setPaused(true);
+    try {
+      await pauseAiTerminal(workspaceId, sessionId);
+      termRef.current?.focus();
+    } catch (e) {
+      setPaused(false);
+      termRef.current?.writeln(`\r\n\x1b[31m[osheep] pause failed: ${(e as Error).message}\x1b[0m`);
+    }
+  };
+
+  const continueSession = async () => {
+    setPaused(false);
+    try {
+      await continueAiTerminal(workspaceId, sessionId);
+      termRef.current?.focus();
+    } catch (e) {
+      setPaused(true);
+      termRef.current?.writeln(
+        `\r\n\x1b[31m[osheep] continue failed: ${(e as Error).message}\x1b[0m`
+      );
     }
   };
 
@@ -1904,25 +2258,42 @@ function WorkflowAgentTerminal({ sessionId }: { sessionId: string }) {
         <button
           type="button"
           className={paused ? "is-active" : ""}
-          onClick={() => {
-            setPaused(true);
-            sendInput("\x03");
-            termRef.current?.focus();
-          }}
+          onClick={() => void pauseSession()}
         >
           pause
         </button>
         <button
           type="button"
-          onClick={() => {
-            setPaused(false);
-            sendInput("\r");
-            termRef.current?.focus();
-          }}
+          onClick={() => void continueSession()}
         >
           continue
         </button>
-        <span>{paused ? "manual input enabled" : "live terminal"}</span>
+        <button type="button" onClick={injectPrompt} disabled={injecting}>
+          {injecting ? "injecting" : "inject prompt"}
+        </button>
+        <label className="workflow-run-details__toggle">
+          <input
+            type="checkbox"
+            checked={autoContinue}
+            onChange={(e) => void updateAutoContinue(e.target.checked)}
+          />
+          <span>auto continue</span>
+        </label>
+        <span>
+          {paused
+            ? "manual input enabled"
+            : terminalStatus === "waiting-for-input"
+              ? "waiting for CLI input"
+              : terminalStatus === "prompt-injected"
+                ? "prompt injected"
+              : terminalStatus === "prompt-sent"
+                ? "prompt injected"
+                : terminalStatus === "prompt-timeout"
+                  ? "auto inject timed out"
+                  : terminalStatus === "auto-finished"
+                    ? "answer captured"
+                  : "live terminal"}
+        </span>
       </div>
       <div className="workflow-run-details__xterm-host" ref={hostRef} />
     </div>
@@ -1992,14 +2363,35 @@ function WorkflowNodeInspector({
   const bodyText = node.rawOutput || node.summary || node.error || "";
   const kind = nodeKind(node);
   const isTrigger = kind === "trigger";
+  const isManualTrigger = kind === "manual-trigger";
+  const isCron = kind === "cron";
+  const isWebhookTrigger = kind === "webhook-trigger";
   const isAgent = kind === "agent";
   const isFileWrite = kind === "file-write";
   const isMcp = kind === "mcp";
   const isMarkdown = kind === "markdown";
+  const isHttpRequest = kind === "http-request";
+  const isSet = kind === "set";
+  const isIf = kind === "if";
+  const isMerge = kind === "merge";
+  const isCode = kind === "code";
+  const isLoopItems = kind === "loop-items";
+  const isWait = kind === "wait";
+  const isJson = kind === "json";
   const writeConfig = fileWriteConfig(node);
   const mcpConfig = mcpNodeConfig(node);
+  const httpConfig = httpRequestConfig(node);
+  const setConfig = setNodeConfig(node);
+  const ifConfig = ifNodeConfig(node);
+  const mergeConfig = mergeNodeConfig(node);
+  const codeConfig = codeNodeConfig(node);
+  const loopConfig = loopItemsConfig(node);
+  const waitConfig = waitNodeConfig(node);
+  const jsonConfig = jsonNodeConfig(node);
   const showOutput = kind !== "markdown";
   const runDetails = runDetailsSnapshot(node);
+  const updateConfig = (patch: Record<string, unknown>) =>
+    onUpdate({ config: { ...(node.config ?? {}), ...patch } });
 
   return (
     <aside className="workflow-inspector">
@@ -2041,10 +2433,6 @@ function WorkflowNodeInspector({
 
       {isAgent && (
         <>
-          <div className="workflow-inspector__provider-static">
-            {node.providerKind === "codex-cli" ? "Codex" : "Claude Code"}
-          </div>
-
           <label className="workflow-inspector__field">
             <span>Model</span>
             <TemplateInput
@@ -2071,23 +2459,73 @@ function WorkflowNodeInspector({
               disabled={running}
             />
           </label>
+          <label className="workflow-inspector__check">
+            <input
+              type="checkbox"
+              checked={agentAutoContinue(node)}
+              onChange={(e) =>
+                onUpdate({
+                  config: {
+                    ...(node.config ?? {}),
+                    autoContinue: e.target.checked,
+                  },
+                })
+              }
+              disabled={running}
+            />
+            <span>Auto continue</span>
+          </label>
         </>
       )}
 
-      {isFileWrite ? (
+      {isManualTrigger ? (
+        <div className="workflow-inspector__section-title">Runs when started manually.</div>
+      ) : isCron ? (
+        <>
+          <label className="workflow-inspector__field">
+            <span>Cron Expression</span>
+            <TemplateInput
+              value={typeof node.config?.cron === "string" ? node.config.cron : "0 9 * * 1-5"}
+              onChange={(value) => updateConfig({ cron: value })}
+              disabled={running}
+            />
+          </label>
+          <label className="workflow-inspector__field">
+            <span>Timezone</span>
+            <TemplateInput
+              value={typeof node.config?.timezone === "string" ? node.config.timezone : "local"}
+              onChange={(value) => updateConfig({ timezone: value })}
+              disabled={running}
+            />
+          </label>
+        </>
+      ) : isWebhookTrigger ? (
+        <>
+          <label className="workflow-inspector__field">
+            <span>Method</span>
+            <SegmentedControl
+              value={typeof node.config?.method === "string" ? node.config.method : "POST"}
+              options={HTTP_METHODS}
+              onChange={(value) => updateConfig({ method: value })}
+              disabled={running}
+            />
+          </label>
+          <label className="workflow-inspector__field">
+            <span>Path</span>
+            <TemplateInput
+              value={typeof node.config?.path === "string" ? node.config.path : "/workflow-hook"}
+              onChange={(value) => updateConfig({ path: value })}
+              disabled={running}
+            />
+          </label>
+        </>
+      ) : isFileWrite ? (
         <>
           <label className="workflow-inspector__field">
             <span>Path</span>
             <TemplateInput
               value={writeConfig.path}
-              onChange={(value) =>
-                onUpdate({
-                  config: {
-                    ...(node.config ?? {}),
-                    path: value,
-                  },
-                })
-              }
+              onChange={(value) => updateConfig({ path: value })}
               disabled={running}
             />
           </label>
@@ -2095,14 +2533,170 @@ function WorkflowNodeInspector({
             <span>Content</span>
             <TemplateTextarea
               value={writeConfig.content}
-              onChange={(value) =>
-                onUpdate({
-                  config: {
-                    ...(node.config ?? {}),
-                    content: value,
-                  },
-                })
-              }
+              onChange={(value) => updateConfig({ content: value })}
+              disabled={running}
+            />
+          </label>
+        </>
+      ) : isHttpRequest ? (
+        <>
+          <label className="workflow-inspector__field">
+            <span>Method</span>
+            <SegmentedControl
+              value={httpConfig.method}
+              options={HTTP_METHODS}
+              onChange={(value) => updateConfig({ method: value })}
+              disabled={running}
+            />
+          </label>
+          <label className="workflow-inspector__field">
+            <span>URL</span>
+            <TemplateInput
+              value={httpConfig.url}
+              onChange={(value) => updateConfig({ url: value })}
+              disabled={running}
+            />
+          </label>
+          <label className="workflow-inspector__field">
+            <span>Headers JSON</span>
+            <TemplateTextarea
+              value={httpConfig.headers}
+              onChange={(value) => updateConfig({ headers: value })}
+              disabled={running}
+            />
+          </label>
+          <label className="workflow-inspector__field">
+            <span>Body</span>
+            <TemplateTextarea
+              value={httpConfig.body}
+              onChange={(value) => updateConfig({ body: value })}
+              disabled={running}
+            />
+          </label>
+          <label className="workflow-inspector__field">
+            <span>Response</span>
+            <SegmentedControl
+              value={httpConfig.responseType}
+              options={HTTP_RESPONSE_TYPES}
+              onChange={(value) => updateConfig({ responseType: value })}
+              disabled={running}
+            />
+          </label>
+        </>
+      ) : isSet ? (
+        <label className="workflow-inspector__field">
+          <span>Data JSON</span>
+          <TemplateTextarea
+            value={setConfig.data}
+            onChange={(value) => updateConfig({ data: value })}
+            disabled={running}
+          />
+        </label>
+      ) : isIf ? (
+        <>
+          <label className="workflow-inspector__field">
+            <span>Left</span>
+            <TemplateInput
+              value={ifConfig.left}
+              onChange={(value) => updateConfig({ left: value })}
+              disabled={running}
+            />
+          </label>
+          <label className="workflow-inspector__field">
+            <span>Operator</span>
+            <SegmentedControl
+              value={ifConfig.operator}
+              options={IF_OPERATORS}
+              onChange={(value) => updateConfig({ operator: value })}
+              disabled={running}
+            />
+          </label>
+          <label className="workflow-inspector__field">
+            <span>Right</span>
+            <TemplateInput
+              value={ifConfig.right}
+              onChange={(value) => updateConfig({ right: value })}
+              disabled={running}
+            />
+          </label>
+        </>
+      ) : isMerge ? (
+        <label className="workflow-inspector__field">
+          <span>Mode</span>
+          <SegmentedControl
+            value={mergeConfig.mode}
+            options={MERGE_MODES}
+            onChange={(value) => updateConfig({ mode: value })}
+            disabled={running}
+          />
+        </label>
+      ) : isCode ? (
+        <label className="workflow-inspector__field">
+          <span>JavaScript</span>
+          <TemplateTextarea
+            value={codeConfig.code}
+            onChange={(value) => updateConfig({ code: value })}
+            disabled={running}
+          />
+        </label>
+      ) : isLoopItems ? (
+        <>
+          <label className="workflow-inspector__field">
+            <span>Items Source</span>
+            <TemplateTextarea
+              value={loopConfig.source}
+              onChange={(value) => updateConfig({ source: value })}
+              disabled={running}
+            />
+          </label>
+          <label className="workflow-inspector__field">
+            <span>Mode</span>
+            <SegmentedControl
+              value={loopConfig.mode}
+              options={LOOP_MODES}
+              onChange={(value) => updateConfig({ mode: value })}
+              disabled={running}
+            />
+          </label>
+          <label className="workflow-inspector__field">
+            <span>Batch Size</span>
+            <input
+              type="number"
+              min={1}
+              step={1}
+              value={loopConfig.batchSize}
+              onChange={(e) => updateConfig({ batchSize: Math.max(1, Number(e.target.value) || 1) })}
+              disabled={running}
+            />
+          </label>
+        </>
+      ) : isWait ? (
+        <label className="workflow-inspector__field">
+          <span>Seconds</span>
+          <input
+            type="number"
+            min={0}
+            step={0.1}
+            value={waitConfig.seconds}
+            onChange={(e) => updateConfig({ seconds: Math.max(0, Number(e.target.value) || 0) })}
+            disabled={running}
+          />
+        </label>
+      ) : isJson ? (
+        <>
+          <label className="workflow-inspector__field">
+            <span>Source JSON</span>
+            <TemplateTextarea
+              value={jsonConfig.source}
+              onChange={(value) => updateConfig({ source: value })}
+              disabled={running}
+            />
+          </label>
+          <label className="workflow-inspector__field">
+            <span>Path</span>
+            <TemplateInput
+              value={jsonConfig.path}
+              onChange={(value) => updateConfig({ path: value })}
               disabled={running}
             />
           </label>
@@ -2114,13 +2708,10 @@ function WorkflowNodeInspector({
             <TemplateInput
               value={mcpConfig.remoteLink}
               onChange={(value) =>
-                onUpdate({
-                  config: {
-                    ...(node.config ?? {}),
-                    remoteLink: value,
-                    connectionStatus: "",
-                    connectionError: "",
-                  },
+                updateConfig({
+                  remoteLink: value,
+                  connectionStatus: "",
+                  connectionError: "",
                 })
               }
               disabled={running}
@@ -2131,13 +2722,10 @@ function WorkflowNodeInspector({
             <TemplateTextarea
               value={mcpConfig.headers}
               onChange={(value) =>
-                onUpdate({
-                  config: {
-                    ...(node.config ?? {}),
-                    headers: value,
-                    connectionStatus: "",
-                    connectionError: "",
-                  },
+                updateConfig({
+                  headers: value,
+                  connectionStatus: "",
+                  connectionError: "",
                 })
               }
               disabled={running}
@@ -2148,13 +2736,10 @@ function WorkflowNodeInspector({
             <TemplateInput
               value={mcpConfig.apiKey}
               onChange={(value) =>
-                onUpdate({
-                  config: {
-                    ...(node.config ?? {}),
-                    apiKey: value,
-                    connectionStatus: "",
-                    connectionError: "",
-                  },
+                updateConfig({
+                  apiKey: value,
+                  connectionStatus: "",
+                  connectionError: "",
                 })
               }
               disabled={running}
@@ -2190,14 +2775,11 @@ function WorkflowNodeInspector({
                       (tool.name === mcpConfig.toolName ? " is-active" : "")
                     }
                     onClick={() =>
-                      onUpdate({
-                        config: {
-                          ...(node.config ?? {}),
-                          toolName: tool.name,
-                          arguments: shouldReplaceMcpArguments(mcpConfig.arguments)
-                            ? argumentsTemplateFromTool(tool)
-                            : mcpConfig.arguments,
-                        },
+                      updateConfig({
+                        toolName: tool.name,
+                        arguments: shouldReplaceMcpArguments(mcpConfig.arguments)
+                          ? argumentsTemplateFromTool(tool)
+                          : mcpConfig.arguments,
                       })
                     }
                     disabled={running}
@@ -2215,15 +2797,12 @@ function WorkflowNodeInspector({
               value={mcpConfig.toolName}
               onChange={(value) => {
                 const nextTool = mcpConfig.tools.find((tool) => tool.name === value);
-                onUpdate({
-                  config: {
-                    ...(node.config ?? {}),
-                    toolName: value,
-                    arguments:
-                      nextTool && shouldReplaceMcpArguments(mcpConfig.arguments)
-                        ? argumentsTemplateFromTool(nextTool)
-                        : mcpConfig.arguments,
-                  },
+                updateConfig({
+                  toolName: value,
+                  arguments:
+                    nextTool && shouldReplaceMcpArguments(mcpConfig.arguments)
+                      ? argumentsTemplateFromTool(nextTool)
+                      : mcpConfig.arguments,
                 });
               }}
               disabled={running}
@@ -2233,14 +2812,7 @@ function WorkflowNodeInspector({
             <span>Arguments JSON</span>
             <TemplateTextarea
               value={mcpConfig.arguments}
-              onChange={(value) =>
-                onUpdate({
-                  config: {
-                    ...(node.config ?? {}),
-                    arguments: value,
-                  },
-                })
-              }
+              onChange={(value) => updateConfig({ arguments: value })}
               disabled={running}
             />
           </label>
@@ -2393,6 +2965,34 @@ function TemplateTextarea({ value, onChange, disabled }: TemplateControlProps) {
   );
 }
 
+function SegmentedControl<T extends string>({
+  value,
+  options,
+  onChange,
+  disabled,
+}: {
+  value: string;
+  options: readonly T[];
+  onChange: (value: T) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="workflow-inspector__segmented workflow-inspector__segmented--wrap">
+      {options.map((option) => (
+        <button
+          key={option}
+          type="button"
+          className={value === option ? "is-active" : ""}
+          onClick={() => onChange(option)}
+          disabled={disabled}
+        >
+          {option}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function renderTemplateHighlight(value: string): ReactNode {
   if (!value) return "\u00a0";
   const parts: ReactNode[] = [];
@@ -2510,7 +3110,7 @@ async function executeLocalNode(
 ): Promise<LocalNodeResult> {
   const input = resolveBlockTemplate(node.prompt, record).trim();
   const kind = nodeKind(node);
-  if (!input && kind !== "mcp" && kind !== "file-write" && kind !== "markdown") {
+  if (!input && !CONFIGURED_LOCAL_KINDS.has(kind)) {
     throw new Error(`${node.title} has no input.`);
   }
 
@@ -2533,6 +3133,71 @@ async function executeLocalNode(
         CHANGED_FILES: [],
       },
       error: failed ? `Failed to fetch ${input}.` : undefined,
+    };
+  }
+
+  if (kind === "http-request") {
+    const config = httpRequestConfig(node);
+    const method = resolveBlockTemplate(config.method, record).trim().toUpperCase() || "GET";
+    const url = resolveBlockTemplate(config.url, record).trim();
+    const body = resolveBlockTemplate(config.body, record);
+    const responseType =
+      HTTP_RESPONSE_TYPES.includes(config.responseType as (typeof HTTP_RESPONSE_TYPES)[number])
+        ? config.responseType
+        : "auto";
+    if (!url) throw new Error(`${node.title} has no URL.`);
+    const headersParsed = parseTemplatedJsonValue(config.headers, record);
+    if (!headersParsed.ok) {
+      throw new Error(`${node.title} headers JSON is invalid: ${headersParsed.error}`);
+    }
+    const headersObject = objectValue(headersParsed.value);
+    if (!headersObject) throw new Error(`${node.title} headers must be a JSON object.`);
+
+    const result = await execRun(workspaceId, {
+      command: buildHttpRequestCommand({
+        method,
+        url,
+        headers: stringRecord(headersObject),
+        body,
+        responseType,
+      }),
+      shell: "cmd",
+      timeoutMs: 120_000,
+    });
+    const parsed = parseJsonObject(result.stdout);
+    if (result.exitCode !== 0 || !parsed) {
+      return {
+        output: {
+          type: "http-request",
+          status: "failed",
+          method,
+          url,
+          stdout: result.stdout,
+          stderr: result.stderr,
+          exitCode: result.exitCode,
+          truncated: result.truncated,
+          text: result.stderr || result.stdout,
+          CHANGED_FILES: [],
+        },
+        error: `${node.title} request failed.`,
+      };
+    }
+    const ok = parsed.ok === true;
+    return {
+      output: {
+        ...parsed,
+        type: "http-request",
+        status: ok ? "success" : "http-error",
+        method,
+        requestedUrl: url,
+        text:
+          typeof parsed.text === "string"
+            ? parsed.text
+            : parsed.body !== undefined
+              ? stringifyTemplateValue(parsed.body)
+              : result.stdout,
+        CHANGED_FILES: [],
+      },
     };
   }
 
@@ -2569,6 +3234,142 @@ async function executeLocalNode(
         CHANGED_FILES: [parsed.path],
       },
       changedFiles: true,
+    };
+  }
+
+  if (kind === "set") {
+    const config = setNodeConfig(node);
+    const parsed = parseTemplatedJsonValue(config.data, record);
+    if (!parsed.ok) throw new Error(`${node.title} data JSON is invalid: ${parsed.error}`);
+    const obj = objectValue(parsed.value);
+    return {
+      output: {
+        ...(obj ?? {}),
+        type: "set",
+        status: "success",
+        data: parsed.value,
+        text: textFromAny(parsed.value),
+        CHANGED_FILES: [],
+      },
+    };
+  }
+
+  if (kind === "if") {
+    const config = ifNodeConfig(node);
+    const left = resolveTemplateValue(config.left, record);
+    const right = resolveTemplateValue(config.right, record);
+    const result = compareValues(left, config.operator, right);
+    return {
+      output: {
+        type: "if",
+        status: "success",
+        result,
+        operator: config.operator,
+        left,
+        right,
+        text: result ? "true" : "false",
+        CHANGED_FILES: [],
+      },
+    };
+  }
+
+  if (kind === "merge") {
+    const config = mergeNodeConfig(node);
+    const items = incomingOutputs(record, node);
+    const mode = config.mode === "array" ? "array" : "object";
+    const data =
+      mode === "array"
+        ? items.map((item) => item.data ?? item)
+        : Object.assign(
+            {},
+            ...items.map((item) => objectValue(item.data) ?? item)
+          );
+    return {
+      output: {
+        type: "merge",
+        status: "success",
+        mode,
+        data,
+        items,
+        text: jsonPreview(data),
+        CHANGED_FILES: [],
+      },
+    };
+  }
+
+  if (kind === "code") {
+    const config = codeNodeConfig(node);
+    const items = incomingOutputs(record, node);
+    const inputValue = items[0] ?? {};
+    const value = await runCodeBlock(config.code, inputValue, items);
+    return {
+      output: outputFromValue("code", value),
+    };
+  }
+
+  if (kind === "loop-items") {
+    const config = loopItemsConfig(node);
+    const source = config.source.trim()
+      ? resolveTemplateValue(config.source, record)
+      : incomingOutputs(record, node)[0]?.data ?? incomingOutputs(record, node)[0] ?? [];
+    const items = Array.isArray(source) ? source : [source].filter((item) => item !== undefined);
+    const batches = chunk(items, Math.max(1, config.batchSize));
+    const data = config.mode === "batches" ? batches : items;
+    return {
+      output: {
+        type: "loop-items",
+        status: "success",
+        mode: config.mode,
+        batchSize: config.batchSize,
+        items,
+        batches,
+        data,
+        count: items.length,
+        text: jsonPreview(data),
+        CHANGED_FILES: [],
+      },
+    };
+  }
+
+  if (kind === "wait") {
+    const config = waitNodeConfig(node);
+    const seconds = Math.max(0, config.seconds);
+    const startedAt = Date.now();
+    await waitMs(seconds * 1000);
+    const durationMs = Date.now() - startedAt;
+    return {
+      output: {
+        type: "wait",
+        status: "success",
+        seconds,
+        durationMs,
+        text: `Waited ${(durationMs / 1000).toFixed(1)}s.`,
+        CHANGED_FILES: [],
+      },
+    };
+  }
+
+  if (kind === "json") {
+    const config = jsonNodeConfig(node);
+    const incoming = incomingOutputs(record, node);
+    const source = config.source.trim()
+      ? resolveTemplateValue(config.source, record)
+      : incoming[0] ?? "";
+    const parsedSource = parseMaybeJson(source);
+    const value = config.path.trim()
+      ? getLoosePathValue(parsedSource, config.path)
+      : parsedSource;
+    return {
+      output: {
+        type: "json",
+        status: "success",
+        path: config.path,
+        source: parsedSource,
+        value,
+        data: value,
+        text: textFromAny(value),
+        CHANGED_FILES: [],
+      },
     };
   }
 
@@ -2871,6 +3672,10 @@ function buildBlockPrompt(
   ].join("\n");
 }
 
+function buildTerminalPrompt(record: WorkflowRecord, node: WorkflowNode): string {
+  return resolveBlockTemplate(node.prompt, record).trim();
+}
+
 async function maybeRunAgentMcpToolCalls(
   workspaceId: string,
   record: WorkflowRecord,
@@ -2959,6 +3764,8 @@ async function runAiTerminalWithRetries(
     model: string;
     messages: Array<{ role: "user"; content: string }>;
     kind?: "claude-cli" | "codex-cli";
+    terminalPrompt?: string;
+    autoContinue?: boolean;
   },
   onFrame: (frame: AiTerminalFrame) => void,
   signal: AbortSignal,
@@ -2991,6 +3798,10 @@ function agentRetryCount(node: WorkflowNode): number {
   return clamp(value, 0, 5);
 }
 
+function agentAutoContinue(node: WorkflowNode): boolean {
+  return node.config?.autoContinue !== false;
+}
+
 function agentRunSnapshot(
   node: WorkflowNode,
   status: WorkflowRunDetailSnapshot["status"],
@@ -2998,6 +3809,8 @@ function agentRunSnapshot(
   completedAt: number | undefined,
   logs: Array<{ stream: "stdout" | "stderr"; content: string }>,
   terminalSessionId?: string,
+  terminalStatus?: string,
+  autoContinue?: boolean,
   paused?: boolean
 ): WorkflowRunDetailSnapshot {
   const snapshot: WorkflowRunDetailSnapshot = {
@@ -3012,6 +3825,8 @@ function agentRunSnapshot(
   };
   if (completedAt !== undefined) snapshot.completedAt = completedAt;
   if (terminalSessionId) snapshot.terminalSessionId = terminalSessionId;
+  if (terminalStatus) snapshot.terminalStatus = terminalStatus;
+  if (autoContinue !== undefined) snapshot.autoContinue = autoContinue;
   if (paused !== undefined) snapshot.paused = paused;
   return snapshot;
 }
@@ -3166,11 +3981,20 @@ function extractMcpToolCalls(raw: string): Array<{
 }
 
 function triggerOutput(node: WorkflowNode): WorkflowBlockOutput {
+  const kind = nodeKind(node);
+  const config = node.config ?? {};
   return {
-    type: "trigger",
+    type: kind,
     status: "success",
     id: displayBlockId(node),
-    text: "Workflow run trigger fired.",
+    schedule: typeof config.cron === "string" ? config.cron : undefined,
+    webhookPath: typeof config.path === "string" ? config.path : undefined,
+    text:
+      kind === "cron"
+        ? "Cron trigger evaluated for manual run."
+        : kind === "webhook-trigger"
+          ? "Webhook trigger evaluated for manual run."
+          : "Workflow run trigger fired.",
     CHANGED_FILES: [],
   };
 }
@@ -3233,9 +4057,46 @@ function parseJsonObject(text: string): WorkflowBlockOutput | null {
   }
 }
 
+function parseJsonValue(text: string): unknown {
+  const trimmed = text.trim();
+  if (!trimmed) return undefined;
+  return JSON.parse(trimmed) as unknown;
+}
+
+function parseTemplatedJsonValue(
+  input: string,
+  record: WorkflowRecord
+): { ok: true; value: unknown } | { ok: false; error: string } {
+  const resolved = resolveJsonTemplate(input, record).trim();
+  if (!resolved) return { ok: true, value: {} };
+  try {
+    return { ok: true, value: parseJsonValue(resolved) };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+}
+
+function parseMaybeJson(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  try {
+    return JSON.parse(trimmed) as unknown;
+  } catch {
+    return value;
+  }
+}
+
 function textFromOutput(output: WorkflowBlockOutput): string {
   const text = output.text ?? output.summary ?? output.content ?? output.stdout;
   return typeof text === "string" ? text : "";
+}
+
+function textFromAny(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return jsonPreview(value);
 }
 
 function inferChangedFiles(record: WorkflowRecord): string[] {
@@ -3257,13 +4118,69 @@ function resolveBlockTemplate(input: string, record: WorkflowRecord): string {
     idText: string,
     pathText: string
   ) => {
-    const blockId = Number(idText);
-    const node = record.nodes.find((item) => displayBlockId(item) === blockId);
-    const output = node ? parseBlockOutput(node) : null;
-    if (!output) return "";
-    const value = getPathValue(output, pathText);
-    return stringifyTemplateValue(value);
+    return stringifyTemplateValue(resolveBlockReference(record, idText, pathText));
   });
+}
+
+function resolveTemplateValue(input: string, record: WorkflowRecord): unknown {
+  const trimmed = input.trim();
+  const whole = trimmed.match(
+    /^\{\{\s*blocks\[(\d+)\]((?:\.[A-Za-z_$][\w$]*|\[[^\]]+\])*)\s*\}\}$/
+  );
+  if (whole) {
+    return resolveBlockReference(record, whole[1], whole[2] ?? "");
+  }
+  return parseMaybeJson(resolveBlockTemplate(input, record));
+}
+
+function resolveJsonTemplate(input: string, record: WorkflowRecord): string {
+  const re = /\{\{\s*blocks\[(\d+)\]((?:\.[A-Za-z_$][\w$]*|\[[^\]]+\])*)\s*\}\}/g;
+  let output = "";
+  let index = 0;
+  let inString = false;
+  let escaped = false;
+  let match: RegExpExecArray | null;
+  const updateState = (chunk: string) => {
+    for (const ch of chunk) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else if (ch === "\"") {
+        inString = !inString;
+      }
+    }
+  };
+
+  while ((match = re.exec(input)) !== null) {
+    const before = input.slice(index, match.index);
+    output += before;
+    updateState(before);
+    const value = resolveBlockReference(record, match[1] ?? "", match[2] ?? "");
+    output += inString
+      ? escapeJsonStringContent(stringifyTemplateValue(value))
+      : JSON.stringify(value ?? null);
+    index = match.index + match[0].length;
+  }
+  const rest = input.slice(index);
+  output += rest;
+  return output;
+}
+
+function resolveBlockReference(
+  record: WorkflowRecord,
+  idText: string,
+  pathText: string
+): unknown {
+  const blockId = Number(idText);
+  const node = record.nodes.find((item) => displayBlockId(item) === blockId);
+  const output = node ? parseBlockOutput(node) : null;
+  if (!output) return undefined;
+  return getPathValue(output, pathText);
+}
+
+function escapeJsonStringContent(value: string): string {
+  return JSON.stringify(value).slice(1, -1);
 }
 
 function getPathValue(value: unknown, pathText: string): unknown {
@@ -3285,11 +4202,130 @@ function getPathValue(value: unknown, pathText: string): unknown {
   return current;
 }
 
+function getLoosePathValue(value: unknown, pathText: string): unknown {
+  const trimmed = pathText.trim();
+  if (!trimmed) return value;
+  const normalized = trimmed.startsWith(".") || trimmed.startsWith("[")
+    ? trimmed
+    : `.${trimmed}`;
+  return getPathValue(value, normalized);
+}
+
 function stringifyTemplateValue(value: unknown): string {
   if (value === null || value === undefined) return "";
   if (typeof value === "string") return value;
   if (typeof value === "number" || typeof value === "boolean") return String(value);
   return JSON.stringify(value);
+}
+
+function incomingOutputs(record: WorkflowRecord, node: WorkflowNode): WorkflowBlockOutput[] {
+  return record.edges
+    .filter((edge) => edge.to === node.id)
+    .map((edge) => record.nodes.find((item) => item.id === edge.from))
+    .filter((item): item is WorkflowNode => !!item)
+    .map(parseBlockOutput)
+    .filter((item): item is WorkflowBlockOutput => !!item);
+}
+
+function compareValues(left: unknown, operator: string, right: unknown): boolean {
+  const lhs = parseMaybeJson(left);
+  const rhs = parseMaybeJson(right);
+  if (operator === "exists") return lhs !== undefined && lhs !== null && lhs !== "";
+  if (operator === "isEmpty") {
+    if (lhs === undefined || lhs === null || lhs === "") return true;
+    if (Array.isArray(lhs)) return lhs.length === 0;
+    if (typeof lhs === "object") return Object.keys(lhs).length === 0;
+    return false;
+  }
+  if (operator === "contains") {
+    if (typeof lhs === "string") return lhs.includes(String(rhs ?? ""));
+    if (Array.isArray(lhs)) return lhs.some((item) => valuesEqual(item, rhs));
+    if (lhs && typeof lhs === "object") return Object.prototype.hasOwnProperty.call(lhs, String(rhs));
+    return false;
+  }
+  if (operator === "greaterThan" || operator === "lessThan") {
+    const leftNumber = Number(lhs);
+    const rightNumber = Number(rhs);
+    if (!Number.isNaN(leftNumber) && !Number.isNaN(rightNumber)) {
+      return operator === "greaterThan"
+        ? leftNumber > rightNumber
+        : leftNumber < rightNumber;
+    }
+    const leftText = String(lhs ?? "");
+    const rightText = String(rhs ?? "");
+    return operator === "greaterThan"
+      ? leftText > rightText
+      : leftText < rightText;
+  }
+  const equal = valuesEqual(lhs, rhs);
+  return operator === "notEquals" ? !equal : equal;
+}
+
+function valuesEqual(left: unknown, right: unknown): boolean {
+  if (left === right) return true;
+  if (
+    (typeof left === "number" || typeof left === "string") &&
+    (typeof right === "number" || typeof right === "string")
+  ) {
+    const leftNumber = Number(left);
+    const rightNumber = Number(right);
+    if (!Number.isNaN(leftNumber) && !Number.isNaN(rightNumber)) {
+      return leftNumber === rightNumber;
+    }
+  }
+  return jsonPreview(left) === jsonPreview(right);
+}
+
+async function runCodeBlock(
+  code: string,
+  input: WorkflowBlockOutput,
+  items: WorkflowBlockOutput[]
+): Promise<unknown> {
+  const helpers = {
+    jsonPreview,
+    textFromAny,
+  };
+  const fn = new Function(
+    "input",
+    "items",
+    "helpers",
+    `"use strict";\nreturn (async () => {\n${code}\n})();`
+  ) as (
+    input: WorkflowBlockOutput,
+    items: WorkflowBlockOutput[],
+    helpers: Record<string, unknown>
+  ) => Promise<unknown>;
+  return await fn(input, items, helpers);
+}
+
+function outputFromValue(type: string, value: unknown): WorkflowBlockOutput {
+  const obj = objectValue(value);
+  if (obj) {
+    return normalizeOutputObject(obj, {
+      type,
+      status: "success",
+      data: value,
+      text: textFromAny(obj.text ?? obj.data ?? value),
+      CHANGED_FILES: [],
+    });
+  }
+  return {
+    type,
+    status: "success",
+    data: value,
+    text: textFromAny(value),
+    CHANGED_FILES: [],
+  };
+}
+
+function waitMs(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function chunk<T>(items: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
 }
 
 function shouldReplaceMcpArguments(value: string): boolean {
@@ -3379,6 +4415,42 @@ function buildFetchCommand(url: string): string {
   return `node -e "${cmdArg(script)}" "${cmdArg(url)}"`;
 }
 
+function buildHttpRequestCommand(input: {
+  method: string;
+  url: string;
+  headers: Record<string, string>;
+  body: string;
+  responseType: string;
+}): string {
+  const script = [
+    "const payload=JSON.parse(process.argv[1]);",
+    "const method=String(payload.method||'GET').toUpperCase();",
+    "const headers=payload.headers&&typeof payload.headers==='object'?payload.headers:{};",
+    "const init={method,headers};",
+    "if(!['GET','HEAD'].includes(method)&&payload.body!=='')init.body=String(payload.body??'');",
+    "const limit=200000;",
+    "fetch(payload.url,init).then(async res=>{",
+    "const raw=await res.text();",
+    "const clipped=raw.length>limit;",
+    "const text=clipped?raw.slice(0,limit):raw;",
+    "const contentType=res.headers.get('content-type')||'';",
+    "const outHeaders={};",
+    "res.headers.forEach((value,key)=>{outHeaders[key]=value;});",
+    "let body=text;",
+    "const wantsJson=payload.responseType==='json'||(payload.responseType==='auto'&&/json/i.test(contentType));",
+    "if(wantsJson){",
+    "try{",
+    "const parsed=raw?JSON.parse(raw):null;",
+    "const serialized=JSON.stringify(parsed);",
+    "body=serialized&&serialized.length>limit?{truncated:true,preview:text}:parsed;",
+    "}catch(e){if(payload.responseType==='json')throw e;}",
+    "}",
+    "console.log(JSON.stringify({ok:res.ok,statusCode:res.status,statusText:res.statusText,url:res.url,headers:outHeaders,body,text,truncated:clipped}));",
+    "}).catch(err=>{console.error(err&&err.stack?err.stack:String(err&&err.message?err.message:err));process.exit(1);});",
+  ].join("");
+  return `node -e "${cmdArg(script)}" "${cmdArg(JSON.stringify(input))}"`;
+}
+
 function cmdArg(value: string): string {
   return value.replace(/"/g, '\\"');
 }
@@ -3423,11 +4495,13 @@ function findInputNodeFromPoint(clientX: number, clientY: number): string | null
 }
 
 function blockEyebrow(kind: WorkflowNodeKind): string {
-  if (kind === "trigger") return "Trigger";
+  if (kind === "trigger" || kind === "manual-trigger" || kind === "cron" || kind === "webhook-trigger") return "Trigger";
   if (kind === "command") return "Command";
-  if (kind === "web") return "Network";
+  if (kind === "web" || kind === "http-request") return "Network";
+  if (kind === "if" || kind === "wait" || kind === "loop-items") return "Logic";
+  if (kind === "code") return "Code";
   if (kind === "file-read" || kind === "file-write") return "File";
-  if (kind === "markdown") return "Output";
+  if (kind === "markdown" || kind === "set" || kind === "merge" || kind === "json") return "Data";
   if (kind === "mcp") return "MCP";
   return "AI";
 }
@@ -3435,6 +4509,14 @@ function blockEyebrow(kind: WorkflowNodeKind): string {
 function inputLabelForKind(kind: WorkflowNodeKind): string {
   if (kind === "command") return "Command";
   if (kind === "web") return "URL";
+  if (kind === "http-request") return "Request";
+  if (kind === "set") return "Data JSON";
+  if (kind === "if") return "Condition";
+  if (kind === "merge") return "Merge";
+  if (kind === "code") return "JavaScript";
+  if (kind === "loop-items") return "Items";
+  if (kind === "wait") return "Seconds";
+  if (kind === "json") return "JSON";
   if (kind === "file-read") return "Path";
   if (kind === "file-write") return "Path / content";
   if (kind === "markdown") return "Markdown";
@@ -3445,8 +4527,19 @@ function inputLabelForKind(kind: WorkflowNodeKind): string {
 function nodeKind(node: WorkflowNode): WorkflowNodeKind {
   if (
     node.kind === "trigger" ||
+    node.kind === "manual-trigger" ||
+    node.kind === "cron" ||
+    node.kind === "webhook-trigger" ||
     node.kind === "command" ||
     node.kind === "web" ||
+    node.kind === "http-request" ||
+    node.kind === "set" ||
+    node.kind === "if" ||
+    node.kind === "merge" ||
+    node.kind === "code" ||
+    node.kind === "loop-items" ||
+    node.kind === "wait" ||
+    node.kind === "json" ||
     node.kind === "file-read" ||
     node.kind === "file-write" ||
     node.kind === "markdown" ||
@@ -3455,6 +4548,15 @@ function nodeKind(node: WorkflowNode): WorkflowNodeKind {
     return node.kind;
   }
   return "agent";
+}
+
+function isTriggerNodeKind(kind: WorkflowNodeKind): boolean {
+  return (
+    kind === "trigger" ||
+    kind === "manual-trigger" ||
+    kind === "cron" ||
+    kind === "webhook-trigger"
+  );
 }
 
 function nodeFromTemplate(
@@ -3484,8 +4586,19 @@ function nodeIconName(node: WorkflowNode): WorkflowIconName {
   if (icon) return icon;
   const kind = nodeKind(node);
   if (kind === "trigger") return "trigger";
+  if (kind === "manual-trigger") return "trigger";
+  if (kind === "cron") return "cron";
+  if (kind === "webhook-trigger") return "webhook";
   if (kind === "command") return "command";
   if (kind === "web") return "web";
+  if (kind === "http-request") return "http";
+  if (kind === "set") return "set";
+  if (kind === "if") return "if";
+  if (kind === "merge") return "merge";
+  if (kind === "code") return "code";
+  if (kind === "loop-items") return "loop";
+  if (kind === "wait") return "wait";
+  if (kind === "json") return "json";
   if (kind === "file-read") return "read";
   if (kind === "file-write") return "write";
   if (kind === "markdown") return "markdown";
@@ -3498,6 +4611,8 @@ function toWorkflowIconName(value: unknown): WorkflowIconName | null {
   const icon = value.trim();
   const current = new Set<WorkflowIconName>([
     "trigger",
+    "cron",
+    "webhook",
     "command",
     "ai",
     "network",
@@ -3506,6 +4621,14 @@ function toWorkflowIconName(value: unknown): WorkflowIconName | null {
     "claude",
     "codex",
     "web",
+    "http",
+    "set",
+    "if",
+    "merge",
+    "code",
+    "wait",
+    "json",
+    "loop",
     "read",
     "write",
     "markdown",
@@ -3550,6 +4673,25 @@ function WorkflowIcon({ name }: { name: WorkflowIconName }) {
           <path d="m10.5 8.7 4.2 3.3-4.2 3.3V8.7z" />
         </svg>
       );
+    case "cron":
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="7.5" />
+          <path d="M12 7.5V12l3.2 2" />
+          <path d="M7 3.8V2.5" />
+          <path d="M17 3.8V2.5" />
+        </svg>
+      );
+    case "webhook":
+      return (
+        <svg {...common}>
+          <path d="M7.5 8.5a3 3 0 1 1 2.6-1.5l-2.4 4.1" />
+          <path d="M16.5 8.5a3 3 0 1 0-2.6-1.5l2.4 4.1" />
+          <path d="M12 19a3 3 0 1 0 0-6 3 3 0 0 0 0 6z" />
+          <path d="M10.4 13.6 7.7 11" />
+          <path d="m13.6 13.6 2.7-2.6" />
+        </svg>
+      );
     case "command":
       return (
         <svg {...common}>
@@ -3568,12 +4710,69 @@ function WorkflowIcon({ name }: { name: WorkflowIconName }) {
       );
     case "network":
     case "web":
+    case "http":
       return (
         <svg {...common}>
           <circle cx="12" cy="12" r="7.5" />
           <path d="M4.8 12h14.4" />
           <path d="M12 4.5c2 2.1 3 4.6 3 7.5s-1 5.4-3 7.5" />
           <path d="M12 4.5c-2 2.1-3 4.6-3 7.5s1 5.4 3 7.5" />
+        </svg>
+      );
+    case "set":
+      return (
+        <svg {...common}>
+          <path d="M5 6.5h14" />
+          <path d="M5 12h14" />
+          <path d="M5 17.5h9" />
+          <path d="M8 4.5v15" />
+        </svg>
+      );
+    case "if":
+      return (
+        <svg {...common}>
+          <path d="M6 5.5h6a4 4 0 0 1 4 4v9" />
+          <path d="M6 18.5h6a4 4 0 0 0 4-4v-5" />
+          <path d="m18.5 16-2.5 2.5-2.5-2.5" />
+        </svg>
+      );
+    case "merge":
+      return (
+        <svg {...common}>
+          <path d="M5 5.5h3a4 4 0 0 1 4 4v9" />
+          <path d="M19 5.5h-3a4 4 0 0 0-4 4" />
+          <path d="m14.5 16-2.5 2.5L9.5 16" />
+        </svg>
+      );
+    case "code":
+      return (
+        <svg {...common}>
+          <path d="m8.3 8.2-3.2 3.8 3.2 3.8" />
+          <path d="m15.7 8.2 3.2 3.8-3.2 3.8" />
+          <path d="M13.2 6.8 10.8 17.2" />
+        </svg>
+      );
+    case "wait":
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="7.5" />
+          <path d="M12 7.5V12l3 2" />
+        </svg>
+      );
+    case "json":
+      return (
+        <svg {...common}>
+          <path d="M8 5.5H6.5A2.5 2.5 0 0 0 4 8v1.2A2.8 2.8 0 0 1 2.8 12 2.8 2.8 0 0 1 4 14.8V16a2.5 2.5 0 0 0 2.5 2.5H8" />
+          <path d="M16 5.5h1.5A2.5 2.5 0 0 1 20 8v1.2a2.8 2.8 0 0 0 1.2 2.8A2.8 2.8 0 0 0 20 14.8V16a2.5 2.5 0 0 1-2.5 2.5H16" />
+        </svg>
+      );
+    case "loop":
+      return (
+        <svg {...common}>
+          <path d="M17 7.5H8.5a4 4 0 0 0 0 8H10" />
+          <path d="m14.5 5 2.5 2.5-2.5 2.5" />
+          <path d="M7 16.5h8.5a4 4 0 0 0 0-8H14" />
+          <path d="m9.5 19-2.5-2.5L9.5 14" />
         </svg>
       );
     case "file":
@@ -3659,6 +4858,95 @@ function fileWriteConfig(node: WorkflowNode): { path: string; content: string } 
   };
 }
 
+function httpRequestConfig(node: WorkflowNode): HttpRequestNodeConfig {
+  const config = node.config ?? {};
+  const rawMethod = typeof config.method === "string" ? config.method.toUpperCase() : "GET";
+  const rawResponseType =
+    typeof config.responseType === "string" ? config.responseType : "auto";
+  return {
+    method: HTTP_METHODS.includes(rawMethod as (typeof HTTP_METHODS)[number])
+      ? rawMethod
+      : "GET",
+    url: typeof config.url === "string" ? config.url : node.prompt,
+    headers:
+      typeof config.headers === "string" && config.headers.trim()
+        ? config.headers
+        : "{\n  \"accept\": \"application/json\"\n}",
+    body: typeof config.body === "string" ? config.body : "",
+    responseType: HTTP_RESPONSE_TYPES.includes(
+      rawResponseType as (typeof HTTP_RESPONSE_TYPES)[number]
+    )
+      ? rawResponseType
+      : "auto",
+  };
+}
+
+function setNodeConfig(node: WorkflowNode): SetNodeConfig {
+  const config = node.config ?? {};
+  return {
+    data: typeof config.data === "string" ? config.data : "{\n  \"text\": \"\"\n}",
+  };
+}
+
+function ifNodeConfig(node: WorkflowNode): IfNodeConfig {
+  const config = node.config ?? {};
+  const operator = typeof config.operator === "string" ? config.operator : "equals";
+  return {
+    left: typeof config.left === "string" ? config.left : "",
+    operator: IF_OPERATORS.includes(operator as (typeof IF_OPERATORS)[number])
+      ? operator
+      : "equals",
+    right: typeof config.right === "string" ? config.right : "",
+  };
+}
+
+function mergeNodeConfig(node: WorkflowNode): MergeNodeConfig {
+  const config = node.config ?? {};
+  const mode = typeof config.mode === "string" ? config.mode : "object";
+  return {
+    mode: MERGE_MODES.includes(mode as (typeof MERGE_MODES)[number])
+      ? mode
+      : "object",
+  };
+}
+
+function codeNodeConfig(node: WorkflowNode): CodeNodeConfig {
+  const config = node.config ?? {};
+  return {
+    code:
+      typeof config.code === "string"
+        ? config.code
+        : "return {\n  text: input.text || input.content || input.stdout || \"\",\n  input\n};",
+  };
+}
+
+function waitNodeConfig(node: WorkflowNode): WaitNodeConfig {
+  const config = node.config ?? {};
+  const seconds = Number(config.seconds);
+  return {
+    seconds: Number.isFinite(seconds) ? clamp(seconds, 0, 86_400) : 1,
+  };
+}
+
+function loopItemsConfig(node: WorkflowNode): LoopItemsNodeConfig {
+  const config = node.config ?? {};
+  const batchSize = Number(config.batchSize);
+  const mode = typeof config.mode === "string" ? config.mode : "items";
+  return {
+    source: typeof config.source === "string" ? config.source : "",
+    batchSize: Number.isFinite(batchSize) ? clamp(batchSize, 1, 1000) : 1,
+    mode: LOOP_MODES.includes(mode as (typeof LOOP_MODES)[number]) ? mode : "items",
+  };
+}
+
+function jsonNodeConfig(node: WorkflowNode): JsonNodeConfig {
+  const config = node.config ?? {};
+  return {
+    source: typeof config.source === "string" ? config.source : "",
+    path: typeof config.path === "string" ? config.path : "",
+  };
+}
+
 function mcpNodeConfig(node: WorkflowNode): McpNodeConfig {
   const config = node.config ?? {};
   const legacyServer = typeof config.server === "string" ? config.server : "";
@@ -3715,6 +5003,10 @@ function runDetailsSnapshot(node: WorkflowNode): WorkflowRunDetailSnapshot | nul
     transcript: typeof raw.transcript === "string" ? raw.transcript : "",
     terminalSessionId:
       typeof raw.terminalSessionId === "string" ? raw.terminalSessionId : undefined,
+    terminalStatus:
+      typeof raw.terminalStatus === "string" ? raw.terminalStatus : undefined,
+    autoContinue:
+      typeof raw.autoContinue === "boolean" ? raw.autoContinue : undefined,
     paused: typeof raw.paused === "boolean" ? raw.paused : undefined,
     exitCode:
       typeof raw.exitCode === "number" || raw.exitCode === null ? raw.exitCode : undefined,
@@ -3828,6 +5120,13 @@ function restoreTopologyOnly(
     nodes,
     edges,
   };
+}
+
+function workflowIsRunning(record: WorkflowRecord): boolean {
+  return (
+    record.nodes.some((node) => node.status === "running") ||
+    record.runs.some((run) => run.status === "running")
+  );
 }
 
 function displayBlockId(node: WorkflowNode): number {

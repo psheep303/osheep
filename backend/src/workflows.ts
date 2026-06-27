@@ -11,8 +11,19 @@ export type WorkflowProviderKind = "codex-cli" | "claude-cli";
 export type WorkflowNodeKind =
   | "agent"
   | "trigger"
+  | "manual-trigger"
+  | "cron"
+  | "webhook-trigger"
   | "command"
   | "web"
+  | "http-request"
+  | "set"
+  | "if"
+  | "merge"
+  | "code"
+  | "loop-items"
+  | "wait"
+  | "json"
   | "file-read"
   | "file-write"
   | "markdown"
@@ -121,8 +132,19 @@ function asProviderKind(value: unknown): WorkflowProviderKind {
 function asNodeKind(value: unknown): WorkflowNodeKind {
   if (
     value === "trigger" ||
+    value === "manual-trigger" ||
+    value === "cron" ||
+    value === "webhook-trigger" ||
     value === "command" ||
     value === "web" ||
+    value === "http-request" ||
+    value === "set" ||
+    value === "if" ||
+    value === "merge" ||
+    value === "code" ||
+    value === "loop-items" ||
+    value === "wait" ||
+    value === "json" ||
     value === "file-read" ||
     value === "file-write" ||
     value === "markdown" ||
@@ -294,6 +316,7 @@ function sanitize(raw: unknown, fallbackId: string): WorkflowRecord {
 }
 
 function workflowStatus(record: WorkflowRecord): WorkflowRunStatus {
+  if (record.runs.some((run) => run.status === "running")) return "running";
   if (record.nodes.some((node) => node.status === "running")) return "running";
   const latest = record.runs[record.runs.length - 1];
   return latest?.status ?? "idle";
@@ -385,6 +408,20 @@ export async function saveWorkflow(
   next.updatedAt = Date.now();
   await writeWorkflowFile(workspaceRoot, next);
   return next;
+}
+
+export async function updateWorkflow(
+  workspaceRoot: string,
+  id: string,
+  updater: (record: WorkflowRecord) => WorkflowRecord | Promise<WorkflowRecord>
+): Promise<WorkflowRecord> {
+  validateWorkflowId(id);
+  const current = await getWorkflow(workspaceRoot, id);
+  const updated = await updater(current);
+  if (!updated || updated.id !== id) {
+    throw errors.invalidPath("workflow id does not match URL");
+  }
+  return await saveWorkflow(workspaceRoot, updated);
 }
 
 export async function deleteWorkflow(

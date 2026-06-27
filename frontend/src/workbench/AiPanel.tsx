@@ -45,6 +45,14 @@ export function AiPanel({
     void reload();
   }, [reload, refreshSignal]);
 
+  useEffect(() => {
+    if (!workspaceId) return;
+    const timer = window.setInterval(() => {
+      void reload();
+    }, 2500);
+    return () => window.clearInterval(timer);
+  }, [workspaceId, reload]);
+
   const filtered = useMemo(() => {
     if (!searchText.trim()) return workflows;
     const q = searchText.trim().toLowerCase();
@@ -167,7 +175,7 @@ function WorkflowItem({
         {workflow.title || "New workflow"}
       </span>
       <span className="ai-panel__item-time">
-        {formatRelative(workflow.updatedAt)}
+        {running ? "RUNNING" : formatRelative(workflow.updatedAt)}
       </span>
       <button
         className="ai-panel__item-del"
