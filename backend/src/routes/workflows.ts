@@ -9,6 +9,10 @@ import {
   saveWorkflow,
   type WorkflowRecord,
 } from "../workflows.js";
+import {
+  startWorkflowRun,
+  stopWorkflowRun,
+} from "../workflow-runner.js";
 
 export async function registerWorkflowRoutes(app: FastifyInstance) {
   app.get<{ Params: { id: string } }>(
@@ -47,6 +51,24 @@ export async function registerWorkflowRoutes(app: FastifyInstance) {
     }
     return await saveWorkflow(ws.path, body);
   });
+
+  app.post<{
+    Params: { id: string; wid: string };
+    Body: { nodeIds?: string[] };
+  }>("/api/workspaces/:id/workflows/:wid/run", async (req) => {
+    const nodeIds = Array.isArray(req.body?.nodeIds)
+      ? req.body.nodeIds.filter((id): id is string => typeof id === "string")
+      : undefined;
+    return await startWorkflowRun(req.params.id, req.params.wid, nodeIds);
+  });
+
+  app.post<{ Params: { id: string; wid: string } }>(
+    "/api/workspaces/:id/workflows/:wid/stop",
+    async (req) => {
+      const stopped = stopWorkflowRun(req.params.id, req.params.wid);
+      return { ok: true, stopped };
+    }
+  );
 
   app.delete<{ Params: { id: string; wid: string } }>(
     "/api/workspaces/:id/workflows/:wid",

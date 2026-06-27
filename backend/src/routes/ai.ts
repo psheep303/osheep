@@ -13,13 +13,18 @@ import {
 import { searchWorkspace } from "../search.js";
 import { execRun } from "../ai-exec.js";
 import {
-  buildCliPrompt,
   cliModelShortcuts,
   isCliProviderKind,
   runCliChat,
   type CliProviderKind,
 } from "../ai-cli.js";
-import { runAgentTerminal } from "../ai-terminal.js";
+import {
+  continueAgentTerminal,
+  injectAgentTerminalPrompt,
+  pauseAgentTerminal,
+  runAgentTerminal,
+  setAgentTerminalAutoContinue,
+} from "../ai-terminal.js";
 
 type ProviderKind = CliProviderKind | "unsupported";
 
@@ -265,6 +270,18 @@ function sanitizeMessages(messages: unknown): ChatMessageIn[] {
   return cleaned;
 }
 
+function terminalPromptFromMessages(messages: ChatMessageIn[]): string {
+  return messages
+    .map((m) => {
+      const role = m.role === "tool" ? `tool:${m.tool_call_id ?? "result"}` : m.role;
+      return messages.length === 1 && m.role === "user"
+        ? m.content
+        : `### ${role}\n${m.content}`;
+    })
+    .join("\n\n")
+    .trim();
+}
+
 export async function registerAiRoutes(app: FastifyInstance) {
   app.post<{
     Params: { id: string };
@@ -283,6 +300,8 @@ export async function registerAiRoutes(app: FastifyInstance) {
       model?: string;
       messages?: ChatMessageIn[];
       kind?: ProviderKind;
+      terminalPrompt?: string;
+      autoContinue?: boolean;
     };
   }>("/api/workspaces/:id/ai/chat/terminal", async (req, reply) => {
     const { model, messages } = req.body ?? {};
@@ -292,7 +311,10 @@ export async function registerAiRoutes(app: FastifyInstance) {
     }
     const ws = await resolveWorkspace(req.params.id);
     const cleaned = sanitizeMessages(messages);
-    const prompt = buildCliPrompt(kind, cleaned);
+    const prompt =
+      typeof req.body?.terminalPrompt === "string"
+        ? req.body.terminalPrompt
+        : terminalPromptFromMessages(cleaned);
 
     reply.hijack();
     reply.raw.writeHead(200, {
@@ -326,6 +348,7 @@ export async function registerAiRoutes(app: FastifyInstance) {
         kind,
         model: typeof model === "string" && model ? model : "default",
         prompt,
+        autoContinue: req.body?.autoContinue !== false,
         signal: abort.signal,
         onFrame: (frame) => {
           send(frame.type, frame);
@@ -342,6 +365,45 @@ export async function registerAiRoutes(app: FastifyInstance) {
       if (!reply.raw.destroyed && !reply.raw.writableEnded) reply.raw.end();
       reply.raw.off("close", onSocketClose);
     }
+  });
+
+  app.post<{
+    Params: { id: string; sessionId: string };
+    Body: { submit?: boolean };
+  }>("/api/workspaces/:id/ai/chat/terminal/:sessionId/inject", async (req) => {
+    await resolveWorkspace(req.params.id);
+    await injectAgentTerminalPrompt(req.params.sessionId, {
+      submit: req.body?.submit,
+    });
+    return { ok: true };
+  });
+
+  app.post<{
+    Params: { id: string; sessionId: string };
+    Body: { autoContinue?: boolean };
+  }>("/api/workspaces/:id/ai/chat/terminal/:sessionId/auto-continue", async (req) => {
+    await resolveWorkspace(req.params.id);
+    const result = setAgentTerminalAutoContinue(
+      req.params.sessionId,
+      req.body?.autoContinue !== false
+    );
+    return { ok: true, ...result };
+  });
+
+  app.post<{
+    Params: { id: string; sessionId: string };
+  }>("/api/workspaces/:id/ai/chat/terminal/:sessionId/pause", async (req) => {
+    await resolveWorkspace(req.params.id);
+    pauseAgentTerminal(req.params.sessionId);
+    return { ok: true };
+  });
+
+  app.post<{
+    Params: { id: string; sessionId: string };
+  }>("/api/workspaces/:id/ai/chat/terminal/:sessionId/continue", async (req) => {
+    await resolveWorkspace(req.params.id);
+    continueAgentTerminal(req.params.sessionId);
+    return { ok: true };
   });
 
   app.post<{
