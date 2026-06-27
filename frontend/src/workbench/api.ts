@@ -761,8 +761,19 @@ export type WorkflowProviderKind = "codex-cli" | "claude-cli";
 export type WorkflowNodeKind =
   | "agent"
   | "trigger"
+  | "manual-trigger"
+  | "cron"
+  | "webhook-trigger"
   | "command"
   | "web"
+  | "http-request"
+  | "set"
+  | "if"
+  | "merge"
+  | "code"
+  | "loop-items"
+  | "wait"
+  | "json"
   | "file-read"
   | "file-write"
   | "markdown"
@@ -865,6 +876,26 @@ export async function saveWorkflow(
   return await http.put(
     workflowsUrl(workspaceId, `/${encodeURIComponent(record.id)}`),
     record
+  );
+}
+
+export async function runWorkflow(
+  workspaceId: string,
+  workflowId: string,
+  nodeIds?: string[]
+): Promise<{ runId: string; workflow: WorkflowRecord }> {
+  return await http.post(
+    workflowsUrl(workspaceId, `/${encodeURIComponent(workflowId)}/run`),
+    { nodeIds }
+  );
+}
+
+export async function stopWorkflow(
+  workspaceId: string,
+  workflowId: string
+): Promise<{ ok: boolean; stopped: boolean }> {
+  return await http.post(
+    workflowsUrl(workspaceId, `/${encodeURIComponent(workflowId)}/stop`)
   );
 }
 
@@ -1173,7 +1204,15 @@ export interface AiTerminalFrame {
   type: "session" | "output" | "status" | "exit";
   sessionId?: string;
   data?: string;
-  status?: "starting" | "ready" | "prompt-sent" | "exited";
+  status?:
+      | "starting"
+      | "waiting-for-input"
+      | "ready"
+      | "prompt-injected"
+      | "prompt-sent"
+      | "prompt-timeout"
+      | "auto-finished"
+      | "exited";
   code?: number | null;
   signal?: number | string | null;
 }
@@ -1192,6 +1231,8 @@ export async function aiChatTerminalStream(
     model: string;
     messages: AiChatMessage[];
     kind?: "claude-cli" | "codex-cli";
+    terminalPrompt?: string;
+    autoContinue?: boolean;
   },
   onFrame: (frame: AiTerminalFrame) => void,
   signal?: AbortSignal
@@ -1304,6 +1345,54 @@ export async function aiChatTerminalStream(
     throw new ApiClientError(502, "TERMINAL_STREAM_FAILED", serverError);
   }
   return { result, aborted };
+}
+
+export async function injectAiTerminalPrompt(
+  workspaceId: string,
+  sessionId: string,
+  options?: { submit?: boolean }
+): Promise<void> {
+  await http.post(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/ai/chat/terminal/${encodeURIComponent(
+      sessionId
+    )}/inject`,
+    options ?? {}
+  );
+}
+
+export async function setAiTerminalAutoContinue(
+  workspaceId: string,
+  sessionId: string,
+  autoContinue: boolean
+): Promise<void> {
+  await http.post(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/ai/chat/terminal/${encodeURIComponent(
+      sessionId
+    )}/auto-continue`,
+    { autoContinue }
+  );
+}
+
+export async function pauseAiTerminal(
+  workspaceId: string,
+  sessionId: string
+): Promise<void> {
+  await http.post(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/ai/chat/terminal/${encodeURIComponent(
+      sessionId
+    )}/pause`
+  );
+}
+
+export async function continueAiTerminal(
+  workspaceId: string,
+  sessionId: string
+): Promise<void> {
+  await http.post(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/ai/chat/terminal/${encodeURIComponent(
+      sessionId
+    )}/continue`
+  );
 }
 
 function isRetryableStreamError(e: unknown): boolean {

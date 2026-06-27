@@ -64,8 +64,8 @@ const SETTINGS_PATH = "__settings__";
 const WORKFLOW_PREFIX = "__workflow__:";
 const workflowPath = (workflowId: string) => WORKFLOW_PREFIX + workflowId;
 
-const DEFAULT_LEFT_WIDTH = 260;
-const DEFAULT_RIGHT_WIDTH = 320;
+const DEFAULT_LEFT_WIDTH = 230;
+const DEFAULT_RIGHT_WIDTH = 280;
 const DEFAULT_BOTTOM_HEIGHT = 200;
 const SIDE_THRESHOLD = 80;
 const BOTTOM_THRESHOLD = 60;
