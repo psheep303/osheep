@@ -1,8 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { promisify } from "node:util";
 import {
   addCodexMarketplace,
   createLocalCodexPlugin,
@@ -12,9 +14,13 @@ import {
   normalizePluginName,
   parseCliJson,
   removeLocalCodexPlugin,
+  toWindowsCmdCommandLine,
+  toMarketplaceSourcePath,
   uninstallCodexPlugin,
   type CodexPluginPaths,
 } from "./codex-plugins.js";
+
+const execFileAsync = promisify(execFile);
 
 test("normalizePluginName creates lower-case kebab-case names", () => {
   assert.equal(normalizePluginName(" My Super_Plugin!! "), "my-super-plugin");
@@ -35,6 +41,50 @@ test("parseCliJson reports a useful error when stdout has no JSON", () => {
     () => parseCliJson("Active code page: 65001\nnot json"),
     /Codex CLI did not return JSON/
   );
+});
+
+test("toWindowsCmdCommandLine quotes arguments with spaces", () => {
+  assert.equal(
+    toWindowsCmdCommandLine("codex.cmd", [
+      "plugin",
+      "marketplace",
+      "add",
+      "C:/Users/Jane Doe/plugins/debug",
+      "--json",
+    ]),
+    'call "codex.cmd" "plugin" "marketplace" "add" "C:/Users/Jane Doe/plugins/debug" "--json"'
+  );
+});
+
+test("toWindowsCmdCommandLine rejects unsafe shell metacharacters", () => {
+  assert.throws(
+    () => toWindowsCmdCommandLine("codex.cmd", ["plugin", "add", "sample@debug & whoami"]),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "INVALID_QUERY"
+  );
+});
+
+test("toWindowsCmdCommandLine runs cmd files with arguments containing spaces", async () => {
+  if (process.platform !== "win32") return;
+
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-cmd-args-"));
+  const script = path.join(root, "arg dump.cmd");
+  await fs.writeFile(script, "@echo off\r\necho source=%~1\r\n", "utf8");
+
+  const result = await execFileAsync(
+    "cmd.exe",
+    [
+      "/d",
+      "/s",
+      "/c",
+      toWindowsCmdCommandLine(script, ["C:/Users/Jane Doe/plugins/debug"]),
+    ],
+    { encoding: "utf8", windowsVerbatimArguments: true }
+  );
+
+  assert.match(result.stdout, /source=C:\/Users\/Jane Doe\/plugins\/debug/);
 });
 
 async function makeFixturePaths(): Promise<CodexPluginPaths> {
@@ -232,6 +282,84 @@ test("createLocalCodexPlugin writes manifest and initial personal marketplace", 
   assert.equal(marketplace.plugins[0]?.source.path, "./plugins/my-tools");
 });
 
+test("createLocalCodexPlugin rejects malformed personal marketplace files", async () => {
+  const paths = await makeFixturePaths();
+  await fs.mkdir(path.dirname(paths.personalMarketplace), { recursive: true });
+  await fs.writeFile(paths.personalMarketplace, "{ bad json", "utf8");
+
+  await assert.rejects(
+    () =>
+      createLocalCodexPlugin(
+        { name: "broken-marketplace", displayName: "Broken Marketplace" },
+        { paths, runCli: async () => "{}" }
+      ),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "INVALID_QUERY"
+  );
+
+  const text = await fs.readFile(paths.personalMarketplace, "utf8");
+  assert.equal(text, "{ bad json");
+});
+
+test("createLocalCodexPlugin rejects personal marketplace files with invalid plugins shape", async () => {
+  const paths = await makeFixturePaths();
+  await writeJson(paths.personalMarketplace, {
+    name: "personal",
+    interface: { displayName: "Personal" },
+    plugins: {},
+  });
+
+  await assert.rejects(
+    () =>
+      createLocalCodexPlugin(
+        { name: "broken-shape", displayName: "Broken Shape" },
+        { paths, runCli: async () => "{}" }
+      ),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "INVALID_QUERY"
+  );
+
+  const marketplace = JSON.parse(await fs.readFile(paths.personalMarketplace, "utf8")) as {
+    plugins: unknown;
+  };
+  assert.deepEqual(marketplace.plugins, {});
+});
+
+test("createLocalCodexPlugin refuses to overwrite an existing plugin manifest", async () => {
+  const paths = await makeFixturePaths();
+  const manifestPath = path.join(
+    paths.personalPluginRoot,
+    "my-tools",
+    ".codex-plugin",
+    "plugin.json"
+  );
+  await writeJson(manifestPath, {
+    name: "my-tools",
+    interface: { displayName: "Original" },
+  });
+
+  await assert.rejects(
+    () =>
+      createLocalCodexPlugin(
+        { name: "My Tools", displayName: "Replacement" },
+        { paths, runCli: async () => "{}" }
+      ),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "ENTRY_EXISTS"
+  );
+
+  const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8")) as {
+    interface?: { displayName?: string };
+  };
+  assert.equal(manifest.interface?.displayName, "Original");
+});
+
 test("importLocalCodexPlugin adds existing manifest to personal marketplace", async () => {
   const paths = await makeFixturePaths();
   const pluginPath = path.join(paths.personalPluginRoot, "imported");
@@ -245,6 +373,16 @@ test("importLocalCodexPlugin adds existing manifest to personal marketplace", as
   const snapshot = await getCodexPluginSnapshot({ paths, runCli: async () => '{"installed":[],"available":[]}' });
   assert.equal(snapshot.plugins[0]?.selector, "imported@personal");
   assert.equal(snapshot.plugins[0]?.displayName, "Imported");
+});
+
+test("toMarketplaceSourcePath keeps absolute paths for different-drive imports", () => {
+  if (process.platform !== "win32") return;
+  const marketplacePath = String.raw`D:\users\me\.agents\plugins\marketplace.json`;
+  const pluginRoot = String.raw`E:\plugins\imported`;
+  assert.equal(
+    toMarketplaceSourcePath(marketplacePath, pluginRoot),
+    "E:/plugins/imported"
+  );
 });
 
 test("removeLocalCodexPlugin refuses to delete source outside the personal plugin root", async () => {
@@ -274,6 +412,28 @@ test("removeLocalCodexPlugin refuses to delete source outside the personal plugi
   );
 });
 
+test("removeLocalCodexPlugin does not delete an untracked personal plugin directory", async () => {
+  const paths = await makeFixturePaths();
+  const pluginRoot = path.join(paths.personalPluginRoot, "orphaned-plugin");
+  await writeJson(path.join(pluginRoot, ".codex-plugin", "plugin.json"), {
+    name: "orphaned-plugin",
+  });
+
+  await assert.rejects(
+    () =>
+      removeLocalCodexPlugin("orphaned-plugin", true, {
+        paths,
+        runCli: async () => "{}",
+      }),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "NOT_FOUND"
+  );
+
+  await fs.access(pluginRoot);
+});
+
 test("install, uninstall, and marketplace add call Codex CLI with JSON flags", async () => {
   const calls: string[][] = [];
   const runCli = async (args: string[]) => {
@@ -288,4 +448,61 @@ test("install, uninstall, and marketplace add call Codex CLI with JSON flags", a
     ["plugin", "remove", "sample@debug", "--json"],
     ["plugin", "marketplace", "add", "C:/plugins/debug", "--json"],
   ]);
+});
+
+test("addCodexMarketplace preserves marketplace sources containing spaces", async () => {
+  const calls: string[][] = [];
+  const runCli = async (args: string[]) => {
+    calls.push(args);
+    return '{"ok":true}';
+  };
+
+  await addCodexMarketplace("C:/Users/Jane Doe/plugins/debug", { runCli });
+
+  assert.deepEqual(calls, [
+    ["plugin", "marketplace", "add", "C:/Users/Jane Doe/plugins/debug", "--json"],
+  ]);
+});
+
+test("install and uninstall reject unsafe plugin selectors before invoking Codex CLI", async () => {
+  let calls = 0;
+  const runCli = async () => {
+    calls += 1;
+    return '{"ok":true}';
+  };
+
+  await assert.rejects(
+    () => installCodexPlugin("sample@debug & whoami", { runCli }),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "INVALID_QUERY"
+  );
+  await assert.rejects(
+    () => uninstallCodexPlugin("sample@debug | whoami", { runCli }),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "INVALID_QUERY"
+  );
+
+  assert.equal(calls, 0);
+});
+
+test("addCodexMarketplace rejects unsafe source strings before invoking Codex CLI", async () => {
+  let calls = 0;
+  const runCli = async () => {
+    calls += 1;
+    return '{"ok":true}';
+  };
+
+  await assert.rejects(
+    () => addCodexMarketplace('C:/plugins/debug & echo "oops"', { runCli }),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "INVALID_QUERY"
+  );
+
+  assert.equal(calls, 0);
 });
