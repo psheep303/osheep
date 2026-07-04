@@ -755,6 +755,107 @@ export async function deleteSession(
   );
 }
 
+// Codex Plugins
+
+export interface CodexPluginRecord {
+  name: string;
+  marketplace?: string;
+  selector: string;
+  displayName: string;
+  version?: string;
+  description?: string;
+  status: {
+    installed: boolean;
+    available: boolean;
+    enabled: boolean;
+    cached: boolean;
+    local: boolean;
+  };
+  source: {
+    kind: "marketplace" | "personal" | "cache" | "config";
+    path?: string;
+  };
+}
+
+export interface CodexMarketplaceRecord {
+  name: string;
+  source?: string;
+  path?: string;
+}
+
+export interface CodexPluginSnapshot {
+  plugins: CodexPluginRecord[];
+  marketplaces: CodexMarketplaceRecord[];
+  warnings: string[];
+  paths: {
+    codexDir: string;
+    codexConfig: string;
+    codexPluginCache: string;
+    personalMarketplace: string;
+    personalPluginRoot: string;
+  };
+}
+
+export async function getCodexPlugins(): Promise<CodexPluginSnapshot> {
+  return await http.get("/api/codex-plugins");
+}
+
+export async function installCodexPluginApi(
+  selector: string
+): Promise<CodexPluginSnapshot> {
+  const result = await http.post<{ snapshot: CodexPluginSnapshot }>(
+    "/api/codex-plugins/install",
+    { selector }
+  );
+  return result.snapshot;
+}
+
+export async function uninstallCodexPluginApi(
+  selector: string
+): Promise<CodexPluginSnapshot> {
+  const result = await http.post<{ snapshot: CodexPluginSnapshot }>(
+    "/api/codex-plugins/uninstall",
+    { selector }
+  );
+  return result.snapshot;
+}
+
+export async function createLocalCodexPluginApi(input: {
+  name: string;
+  displayName?: string;
+  description?: string;
+}): Promise<CodexPluginSnapshot> {
+  return await http.post("/api/codex-plugins/local", input);
+}
+
+export async function importLocalCodexPluginApi(
+  path: string
+): Promise<CodexPluginSnapshot> {
+  return await http.post("/api/codex-plugins/import-local", { path });
+}
+
+export async function removeLocalCodexPluginApi(
+  name: string,
+  deleteSource: boolean
+): Promise<CodexPluginSnapshot> {
+  const qs = new URLSearchParams({
+    deleteSource: deleteSource ? "true" : "false",
+  }).toString();
+  return await http.delete(
+    `/api/codex-plugins/local/${encodeURIComponent(name)}?${qs}`
+  );
+}
+
+export async function addCodexMarketplaceApi(
+  source: string
+): Promise<CodexPluginSnapshot> {
+  const result = await http.post<{ snapshot: CodexPluginSnapshot }>(
+    "/api/codex-plugins/marketplaces",
+    { source }
+  );
+  return result.snapshot;
+}
+
 // Workflows
 
 export type WorkflowProviderKind = "codex-cli" | "claude-cli";
