@@ -84,11 +84,22 @@ interface EdgeContextMenuState {
 
 interface CanvasPanState {
   pointerId: number;
+  button: number;
   startX: number;
   startY: number;
-  scrollLeft: number;
-  scrollTop: number;
+  startPanX: number;
+  startPanY: number;
   moved: boolean;
+}
+
+interface PanOffset {
+  x: number;
+  y: number;
+}
+
+interface ViewportSize {
+  width: number;
+  height: number;
 }
 
 type BlockCategoryId = "triggers" | "logic" | "command" | "ai" | "network" | "file" | "output";
@@ -231,11 +242,15 @@ interface WorkflowRunDetailSnapshot {
   durationMs?: number;
 }
 
-const NODE_W = 168;
-const NODE_H = 46;
-const CANVAS_PADDING = 180;
-const CANVAS_MIN_W = 6000;
-const CANVAS_MIN_H = 3600;
+const NODE_W = 176;
+const NODE_H = 42;
+const CANVAS_PADDING = 220;
+const CANVAS_MIN_W = 24000;
+const CANVAS_MIN_H = 16000;
+const CANVAS_ORIGIN_X = CANVAS_MIN_W / 2;
+const CANVAS_ORIGIN_Y = CANVAS_MIN_H / 2;
+const WORLD_MIN_X = -CANVAS_ORIGIN_X + CANVAS_PADDING;
+const WORLD_MIN_Y = -CANVAS_ORIGIN_Y + CANVAS_PADDING;
 const SAVE_DELAY_MS = 450;
 const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 1.8;
@@ -490,6 +505,10 @@ export function WorkflowTab({
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState<PanOffset>({ x: 0, y: 0 });
+  const panRef = useRef<PanOffset>({ x: 0, y: 0 });
+  const zoomRef = useRef(1);
+  const [wrapSize, setWrapSize] = useState<ViewportSize>({ width: 0, height: 0 });
   const [draftEdge, setDraftEdge] = useState<DraftEdge | null>(null);
   const draftEdgeRef = useRef<DraftEdge | null>(null);
   const [connectHoverId, setConnectHoverId] = useState<string | null>(null);
@@ -503,6 +522,10 @@ export function WorkflowTab({
     useState<BlockCategoryId>("triggers");
   const [detailNodeId, setDetailNodeId] = useState<string | null>(null);
   const [mpeNodeId, setMpeNodeId] = useState<string | null>(null);
+  const [titleMenu, setTitleMenu] = useState<{ x: number; y: number } | null>(null);
+  const [titleRenaming, setTitleRenaming] = useState(false);
+  const [renameSeq, setRenameSeq] = useState(0);
+  const [renameTarget, setRenameTarget] = useState<string | null>(null);
   const nodeDragRef = useRef<NodeDragState | null>(null);
   const suppressNodeClickRef = useRef<string | null>(null);
   const canvasPanRef = useRef<CanvasPanState | null>(null);
@@ -531,6 +554,9 @@ export function WorkflowTab({
         workflowRef.current = record;
         setWorkflow(record);
         setRunning(workflowIsRunning(record));
+        window.requestAnimationFrame(() => {
+          if (!cancelled) centerView(record);
+        });
       })
       .catch((e) => {
         if (!cancelled) setError((e as Error).message);
@@ -574,6 +600,27 @@ export function WorkflowTab({
     };
   }, [workspaceId, workflowId, onWorkflowChanged]);
 
+  useEffect(() => {
+    panRef.current = pan;
+  }, [pan]);
+
+  useEffect(() => {
+    zoomRef.current = zoom;
+  }, [zoom]);
+
+  useEffect(() => {
+    const wrap = canvasWrapRef.current;
+    if (!wrap) return;
+    const measure = () => {
+      const rect = wrap.getBoundingClientRect();
+      setWrapSize({ width: rect.width, height: rect.height });
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(wrap);
+    return () => observer.disconnect();
+  }, [loading]);
+
   const selectedNode = useMemo(
     () => workflow?.nodes.find((node) => node.id === selectedId) ?? null,
     [workflow, selectedId]
@@ -583,11 +630,11 @@ export function WorkflowTab({
     const nodes = workflow?.nodes ?? [];
     const maxX = Math.max(
       0,
-      ...nodes.map((node) => node.x + NODE_W + CANVAS_PADDING)
+      ...nodes.map((node) => worldToCanvasX(node.x) + NODE_W + CANVAS_PADDING)
     );
     const maxY = Math.max(
       0,
-      ...nodes.map((node) => node.y + NODE_H + CANVAS_PADDING)
+      ...nodes.map((node) => worldToCanvasY(node.y) + NODE_H + CANVAS_PADDING)
     );
     return {
       width: Math.max(CANVAS_MIN_W, maxX),
@@ -816,8 +863,8 @@ export function WorkflowTab({
     updateWorkflow(
       (record) =>
         patchNode(record, nodeId, {
-          x: Math.max(20, Math.round(x)),
-          y: Math.max(20, Math.round(y)),
+          x: Math.max(WORLD_MIN_X, Math.round(x)),
+          y: Math.max(WORLD_MIN_Y, Math.round(y)),
         }),
       false
     );
@@ -827,8 +874,8 @@ export function WorkflowTab({
     const nodeId = makeId("node");
     updateWorkflow((record) => {
       const last = record.nodes[record.nodes.length - 1];
-      const x = last ? last.x + NODE_W + 120 : 80;
-      const y = last ? last.y : 120;
+      const x = last ? last.x + NODE_W + 96 : 0;
+      const y = last ? last.y : 0;
       const node = nodeFromTemplate(template, nodeId, nextBlockId(record), x, y);
       return { ...record, nodes: [...record.nodes, node] };
     }, true, true);
@@ -867,8 +914,8 @@ export function WorkflowTab({
         kind,
         title:
           kind === "trigger" ? copiedNode.title : `${copiedNode.title} copy`,
-        x: Math.max(20, (anchor?.x ?? copiedNode.x) + 40),
-        y: Math.max(20, (anchor?.y ?? copiedNode.y) + 40),
+        x: Math.max(WORLD_MIN_X, (anchor?.x ?? copiedNode.x) + 32),
+        y: Math.max(WORLD_MIN_Y, (anchor?.y ?? copiedNode.y) + 32),
         status: "idle",
         summary: "",
         rawOutput: "",
@@ -915,14 +962,15 @@ export function WorkflowTab({
 
   const clientToCanvas = useCallback(
     (clientX: number, clientY: number): CanvasPoint => {
-      const rect = canvasRef.current?.getBoundingClientRect();
+      const rect = canvasWrapRef.current?.getBoundingClientRect();
       if (!rect) return { x: 0, y: 0 };
+      const z = zoomRef.current || 1;
       return {
-        x: (clientX - rect.left) / zoom,
-        y: (clientY - rect.top) / zoom,
+        x: (clientX - rect.left - panRef.current.x) / z - CANVAS_ORIGIN_X,
+        y: (clientY - rect.top - panRef.current.y) / z - CANVAS_ORIGIN_Y,
       };
     },
-    [zoom]
+    []
   );
 
   const setDraftEdgeState = useCallback((next: DraftEdge | null) => {
@@ -1038,34 +1086,148 @@ export function WorkflowTab({
     if (target) addEdgeWithHistory(current.from, target, true);
   };
 
+  const centerView = useCallback((record?: WorkflowRecord) => {
+    const wf = record ?? workflowRef.current;
+    const wrap = canvasWrapRef.current;
+    if (!wrap) return;
+    const rect = wrap.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return;
+    const nextZoom = 1;
+    let centerX = CANVAS_ORIGIN_X;
+    let centerY = CANVAS_ORIGIN_Y;
+    if (wf && wf.nodes.length) {
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      for (const node of wf.nodes) {
+        minX = Math.min(minX, node.x);
+        minY = Math.min(minY, node.y);
+        maxX = Math.max(maxX, node.x + NODE_W);
+        maxY = Math.max(maxY, node.y + NODE_H);
+      }
+      centerX = worldToCanvasX((minX + maxX) / 2);
+      centerY = worldToCanvasY((minY + maxY) / 2);
+    }
+    const nextPan = snapPan({
+      x: rect.width / 2 - centerX * nextZoom,
+      y: rect.height / 2 - centerY * nextZoom,
+    });
+    zoomRef.current = nextZoom;
+    setZoom(nextZoom);
+    panRef.current = nextPan;
+    setPan(nextPan);
+  }, []);
+
+  const zoomAround = useCallback(
+    (rawZoom: number, originClientX: number, originClientY: number) => {
+      const wrap = canvasWrapRef.current;
+      const next = clamp(Math.round(rawZoom * 100) / 100, MIN_ZOOM, MAX_ZOOM);
+      if (!wrap) {
+        zoomRef.current = next;
+        setZoom(next);
+        return;
+      }
+      const rect = wrap.getBoundingClientRect();
+      const mx = originClientX - rect.left;
+      const my = originClientY - rect.top;
+      const old = zoomRef.current || 1;
+      const cx = (mx - panRef.current.x) / old;
+      const cy = (my - panRef.current.y) / old;
+      const nextPan = snapPan({ x: mx - cx * next, y: my - cy * next });
+      zoomRef.current = next;
+      setZoom(next);
+      panRef.current = nextPan;
+      setPan(nextPan);
+    },
+    []
+  );
+
   const setZoomValue = (value: number) => {
-    setZoom(clamp(Math.round(value * 10) / 10, MIN_ZOOM, MAX_ZOOM));
+    const rect = canvasWrapRef.current?.getBoundingClientRect();
+    const cx = rect ? rect.left + rect.width / 2 : 0;
+    const cy = rect ? rect.top + rect.height / 2 : 0;
+    zoomAround(value, cx, cy);
   };
 
   const handleWheelZoom = (e: ReactWheelEvent<HTMLDivElement>) => {
     e.preventDefault();
     const delta = e.deltaY > 0 ? -ZOOM_STEP : ZOOM_STEP;
-    setZoom((current) =>
-      clamp(Math.round((current + delta) * 10) / 10, MIN_ZOOM, MAX_ZOOM)
+    zoomAround(zoomRef.current + delta, e.clientX, e.clientY);
+  };
+
+  const fitView = useCallback((record?: WorkflowRecord) => {
+    const wf = record ?? workflowRef.current;
+    const wrap = canvasWrapRef.current;
+    if (!wf || !wrap || wf.nodes.length === 0) return;
+    const rect = wrap.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return;
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const node of wf.nodes) {
+      minX = Math.min(minX, node.x);
+      minY = Math.min(minY, node.y);
+      maxX = Math.max(maxX, node.x + NODE_W);
+      maxY = Math.max(maxY, node.y + NODE_H);
+    }
+    const pad = 72;
+    const contentW = maxX - minX + pad * 2;
+    const contentH = maxY - minY + pad * 2;
+    const fitZoom = clamp(
+      Math.round(Math.min(rect.width / contentW, rect.height / contentH) * 100) / 100,
+      MIN_ZOOM,
+      1
     );
+    const centerX = worldToCanvasX((minX + maxX) / 2);
+    const centerY = worldToCanvasY((minY + maxY) / 2);
+    const nextPan = snapPan({
+      x: rect.width / 2 - centerX * fitZoom,
+      y: rect.height / 2 - centerY * fitZoom,
+    });
+    zoomRef.current = fitZoom;
+    setZoom(fitZoom);
+    panRef.current = nextPan;
+    setPan(nextPan);
+  }, []);
+
+  const autoArrange = () => {
+    const current = workflowRef.current;
+    if (!current || running) return;
+    updateWorkflow((record) => autoLayout(record), true, false);
+    window.requestAnimationFrame(() => fitView(workflowRef.current ?? undefined));
   };
 
   const startCanvasPan = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if (running || e.button !== 2) return;
+    if (running) return;
+    if (e.button !== 0 && e.button !== 2) return;
+    if (e.button === 0) {
+      const el = e.target as HTMLElement;
+      if (
+        el.closest(".workflow-node") ||
+        el.closest(".workflow-minimap") ||
+        el.closest("[data-workflow-input-id]")
+      ) {
+        return;
+      }
+    }
     const wrap = canvasWrapRef.current;
     if (!wrap) return;
-    e.preventDefault();
-    e.stopPropagation();
+    if (e.button === 2) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
     setNodeMenu(null);
     setEdgeMenu(null);
-    setBlockPickerOpen(false);
     suppressContextMenuRef.current = false;
     canvasPanRef.current = {
       pointerId: e.pointerId,
+      button: e.button,
       startX: e.clientX,
       startY: e.clientY,
-      scrollLeft: wrap.scrollLeft,
-      scrollTop: wrap.scrollTop,
+      startPanX: panRef.current.x,
+      startPanY: panRef.current.y,
       moved: false,
     };
     setPanningCanvas(true);
@@ -1073,33 +1235,46 @@ export function WorkflowTab({
   };
 
   const moveCanvasPan = (e: ReactPointerEvent<HTMLDivElement>) => {
-    const pan = canvasPanRef.current;
-    const wrap = canvasWrapRef.current;
-    if (!pan || !wrap || pan.pointerId !== e.pointerId) return;
+    const state = canvasPanRef.current;
+    if (!state || state.pointerId !== e.pointerId) return;
     e.preventDefault();
     e.stopPropagation();
-    const dx = e.clientX - pan.startX;
-    const dy = e.clientY - pan.startY;
+    const dx = e.clientX - state.startX;
+    const dy = e.clientY - state.startY;
     if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
-      pan.moved = true;
-      suppressContextMenuRef.current = true;
+      state.moved = true;
+      if (state.button === 2) suppressContextMenuRef.current = true;
     }
-    wrap.scrollLeft = pan.scrollLeft - dx;
-    wrap.scrollTop = pan.scrollTop - dy;
+    const next = snapPan({ x: state.startPanX + dx, y: state.startPanY + dy });
+    panRef.current = next;
+    setPan(next);
   };
 
   const finishCanvasPan = (e: ReactPointerEvent<HTMLDivElement>) => {
-    const pan = canvasPanRef.current;
-    if (!pan || pan.pointerId !== e.pointerId) return;
+    const state = canvasPanRef.current;
+    if (!state || state.pointerId !== e.pointerId) return;
     e.preventDefault();
     e.stopPropagation();
     if (e.currentTarget.hasPointerCapture(e.pointerId)) {
       e.currentTarget.releasePointerCapture(e.pointerId);
     }
-    if (pan.moved) suppressContextMenuRef.current = true;
+    if (state.moved && state.button === 2) suppressContextMenuRef.current = true;
     canvasPanRef.current = null;
     setPanningCanvas(false);
   };
+
+  const navigateToCanvasPoint = useCallback((canvasX: number, canvasY: number) => {
+    const rect = canvasWrapRef.current?.getBoundingClientRect();
+    const z = zoomRef.current || 1;
+    const width = rect?.width ?? 0;
+    const height = rect?.height ?? 0;
+    const next = snapPan({
+      x: width / 2 - worldToCanvasX(canvasX) * z,
+      y: height / 2 - worldToCanvasY(canvasY) * z,
+    });
+    panRef.current = next;
+    setPan(next);
+  }, []);
 
   const handleCanvasContextMenu = (e: ReactMouseEvent<HTMLDivElement>) => {
     if (suppressContextMenuRef.current) {
@@ -1502,15 +1677,16 @@ export function WorkflowTab({
     return <div className="empty-hint">{error ?? "Workflow failed to load."}</div>;
   }
 
-  const scaledCanvasStyle: CSSProperties = {
-    width: canvasSize.width * zoom,
-    height: canvasSize.height * zoom,
+  const wrapGridStyle: CSSProperties = {
+    backgroundSize: `${32 * zoom}px ${32 * zoom}px, ${32 * zoom}px ${32 * zoom}px`,
+    backgroundPosition: `${Math.round(pan.x)}px ${Math.round(pan.y)}px, ${Math.round(
+      pan.x
+    )}px ${Math.round(pan.y)}px`,
   };
   const canvasStyle: CSSProperties = {
     width: canvasSize.width,
     height: canvasSize.height,
-    transform: `scale(${zoom})`,
-    backgroundSize: "32px 32px, 32px 32px, auto",
+    transform: `translate3d(${Math.round(pan.x)}px, ${Math.round(pan.y)}px, 0) scale(${zoom})`,
   };
   const draftFrom = draftEdge
     ? workflow.nodes.find((node) => node.id === draftEdge.from)
@@ -1523,10 +1699,20 @@ export function WorkflowTab({
     : null;
   const canUndo = historyTick >= 0 && undoStackRef.current.length > 0;
   const canRedo = historyTick >= 0 && redoStackRef.current.length > 0;
+  const toolbarStatus = saving ? "saving" : running ? "running" : "saved";
   const nodeMenuSections: CtxMenuSection[] = menuNode
     ? [
         {
           items: [
+            {
+              label: "重命名",
+              onSelect: () => {
+                setBlockPickerOpen(false);
+                setSelectedId(menuNode.id);
+                setRenameTarget(menuNode.id);
+                setRenameSeq((seq) => seq + 1);
+              },
+            },
             {
               label: "Copy block",
               shortcut: "Ctrl+C",
@@ -1574,91 +1760,131 @@ export function WorkflowTab({
   return (
     <div className="workflow-tab">
       <div className="workflow-toolbar">
-        <input
-          className="workflow-toolbar__title"
-          value={workflow.title}
-          onChange={(e) => updateTitle(e.target.value)}
-          title="Workflow title"
-        />
-        <div className="workflow-toolbar__status">
-          {saving ? "Saving" : running ? "Running" : "Saved"}
-        </div>
-        <button
-          className="workflow-toolbar__btn workflow-toolbar__btn--icon"
-          onClick={undo}
-          disabled={running || !canUndo}
-          title="Undo (Ctrl+Z)"
-          aria-label="Undo"
-        >
-          ↶
-        </button>
-        <button
-          className="workflow-toolbar__btn workflow-toolbar__btn--icon"
-          onClick={redo}
-          disabled={running || !canRedo}
-          title="Redo (Ctrl+Shift+Z / Ctrl+Y)"
-          aria-label="Redo"
-        >
-          ↷
-        </button>
-        <button
-          className="workflow-toolbar__btn"
-          onClick={() => {
-            setSelectedId(null);
-            setNodeMenu(null);
-            setBlockPickerOpen(true);
-          }}
-        >
-          Add block
-        </button>
-        <div className="workflow-toolbar__zoom">
-          <button
-            className="workflow-toolbar__btn"
-            onClick={() => setZoomValue(zoom - ZOOM_STEP)}
-            disabled={zoom <= MIN_ZOOM}
-            title="Zoom out"
+        <div className="workflow-toolbar__cluster workflow-toolbar__cluster--identity">
+          <div
+            className="workflow-toolbar__title-label"
+            title="右键重命名"
+            onContextMenu={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setTitleMenu({ x: e.clientX, y: e.clientY });
+            }}
           >
-            -
-          </button>
-          <input
-            type="range"
-            min={MIN_ZOOM}
-            max={MAX_ZOOM}
-            step={ZOOM_STEP}
-            value={zoom}
-            onChange={(e) => setZoomValue(Number(e.target.value))}
-            aria-label="Zoom"
-          />
-          <span>{Math.round(zoom * 100)}%</span>
-          <button
-            className="workflow-toolbar__btn"
-            onClick={() => setZoomValue(zoom + ZOOM_STEP)}
-            disabled={zoom >= MAX_ZOOM}
-            title="Zoom in"
-          >
-            +
-          </button>
+            {workflow.title || "未命名工作流"}
+          </div>
+          <div className={`workflow-toolbar__status is-${toolbarStatus}`}>
+            {toolbarStatus === "saving"
+              ? "Saving"
+              : toolbarStatus === "running"
+                ? "Running"
+                : "Saved"}
+          </div>
         </div>
         <span className="workflow-toolbar__spacer" />
-        <button
-          className="workflow-toolbar__btn"
-          onClick={() => void runSelected()}
-          disabled={running || !selectedNode}
-        >
-          Run block
-        </button>
-        {running ? (
-          <button className="workflow-toolbar__btn is-danger" onClick={stopRun}>
-            Stop
-          </button>
-        ) : (
+        <div className="workflow-toolbar__cluster">
           <button
-            className="workflow-toolbar__btn is-primary"
-            onClick={() => void runWorkflow()}
+            className="workflow-toolbar__btn workflow-toolbar__btn--icon"
+            onClick={() => {
+              setSelectedId(null);
+              setNodeMenu(null);
+              setBlockPickerOpen(true);
+            }}
+            title="添加块"
+            aria-label="Add block"
           >
-            Run workflow
+            <IconAddBlock />
           </button>
-        )}
+          <button
+            className="workflow-toolbar__btn workflow-toolbar__btn--icon"
+            onClick={autoArrange}
+            disabled={running}
+            title="自动整理"
+            aria-label="Auto arrange"
+          >
+            <IconArrange />
+          </button>
+          <button
+            className="workflow-toolbar__btn workflow-toolbar__btn--icon"
+            onClick={() => void fitView()}
+            title="适应视图"
+            aria-label="Fit view"
+          >
+            <IconFit />
+          </button>
+        </div>
+        <div className="workflow-toolbar__cluster">
+          <button
+            className="workflow-toolbar__btn workflow-toolbar__btn--icon"
+            onClick={undo}
+            disabled={running || !canUndo}
+            title="撤销 (Ctrl+Z)"
+            aria-label="Undo"
+          >
+            <IconUndo />
+          </button>
+          <button
+            className="workflow-toolbar__btn workflow-toolbar__btn--icon"
+            onClick={redo}
+            disabled={running || !canRedo}
+            title="重做 (Ctrl+Shift+Z / Ctrl+Y)"
+            aria-label="Redo"
+          >
+            <IconRedo />
+          </button>
+        </div>
+        <div className="workflow-toolbar__cluster workflow-toolbar__cluster--zoom">
+          <div className="workflow-toolbar__zoom">
+            <button
+              className="workflow-toolbar__btn workflow-toolbar__btn--icon"
+              onClick={() => setZoomValue(zoom - ZOOM_STEP)}
+              disabled={zoom <= MIN_ZOOM}
+              title="缩小"
+              aria-label="Zoom out"
+            >
+              <IconZoomOut />
+            </button>
+            <span>{Math.round(zoom * 100)}%</span>
+            <button
+              className="workflow-toolbar__btn workflow-toolbar__btn--icon"
+              onClick={() => setZoomValue(zoom + ZOOM_STEP)}
+              disabled={zoom >= MAX_ZOOM}
+              title="放大"
+              aria-label="Zoom in"
+            >
+              <IconZoomIn />
+            </button>
+          </div>
+        </div>
+        <div className="workflow-toolbar__cluster workflow-toolbar__cluster--run">
+          <button
+            className="workflow-toolbar__btn workflow-toolbar__btn--icon"
+            onClick={() => void runSelected()}
+            disabled={running || !selectedNode}
+            title="运行选中块"
+            aria-label="Run block"
+          >
+            <IconPlay />
+          </button>
+          {running ? (
+            <button
+              className="workflow-toolbar__btn workflow-toolbar__btn--icon is-danger"
+              onClick={stopRun}
+              title="停止"
+              aria-label="Stop"
+            >
+              <IconStop />
+            </button>
+          ) : (
+            <button
+              className="workflow-toolbar__btn workflow-toolbar__btn--icon is-primary"
+              onClick={() => void runWorkflow()}
+              title="运行工作流"
+              aria-label="Run workflow"
+            >
+              <IconPlay solid />
+            </button>
+          )}
+        </div>
       </div>
 
       {error && (
@@ -1673,7 +1899,8 @@ export function WorkflowTab({
       <div className="workflow-body">
         <div
           ref={canvasWrapRef}
-          className="workflow-canvas-wrap"
+          className={"workflow-canvas-wrap" + (panningCanvas ? " is-panning" : "")}
+          style={wrapGridStyle}
           onWheel={handleWheelZoom}
           onPointerDown={startCanvasPan}
           onPointerMove={moveCanvasPan}
@@ -1682,21 +1909,15 @@ export function WorkflowTab({
           onContextMenu={handleCanvasContextMenu}
         >
           <div
-            className={
-              "workflow-canvas-viewport" + (panningCanvas ? " is-panning" : "")
-            }
-            style={scaledCanvasStyle}
+            ref={canvasRef}
+            className="workflow-canvas"
+            style={canvasStyle}
+            onPointerDown={(e) => {
+              setNodeMenu(null);
+              setEdgeMenu(null);
+              if (e.target === e.currentTarget) setSelectedId(null);
+            }}
           >
-            <div
-              ref={canvasRef}
-              className="workflow-canvas"
-              style={canvasStyle}
-              onPointerDown={(e) => {
-                setNodeMenu(null);
-                setEdgeMenu(null);
-                if (e.target === e.currentTarget) setSelectedId(null);
-              }}
-            >
               <svg
                 className="workflow-edges"
                 width={canvasSize.width}
@@ -1785,13 +2006,26 @@ export function WorkflowTab({
                 />
               ))}
             </div>
-          </div>
+          <WorkflowMinimap
+            nodes={workflow.nodes}
+            pan={pan}
+            zoom={zoom}
+            wrapSize={wrapSize}
+            selectedId={selectedId}
+            onNavigate={navigateToCanvasPoint}
+          />
         </div>
 
         {selectedNode && !blockPickerOpen && (
           <div className="workflow-panel-shell">
             <WorkflowNodeInspector
+              key={
+                renameTarget === selectedNode.id
+                  ? `insp-${selectedNode.id}-${renameSeq}`
+                  : `insp-${selectedNode.id}`
+              }
               node={selectedNode}
+              autoFocusName={renameTarget === selectedNode.id}
               nodes={workflow.nodes}
               edges={workflow.edges}
               running={running}
@@ -1816,7 +2050,41 @@ export function WorkflowTab({
             />
           </div>
         )}
+        {titleRenaming && (
+          <div className="workflow-panel-shell">
+            <WorkflowRenamePanel
+              value={workflow.title}
+              onSubmit={(value) => {
+                const next = value.trim();
+                if (next) updateTitle(next);
+                setTitleRenaming(false);
+              }}
+              onClose={() => setTitleRenaming(false)}
+            />
+          </div>
+        )}
       </div>
+      {titleMenu && (
+        <ContextMenu
+          x={titleMenu.x}
+          y={titleMenu.y}
+          sections={[
+            {
+              items: [
+                {
+                  label: "重命名",
+                  onSelect: () => {
+                    setBlockPickerOpen(false);
+                    setSelectedId(null);
+                    setTitleRenaming(true);
+                  },
+                },
+              ],
+            },
+          ]}
+          onClose={() => setTitleMenu(null)}
+        />
+      )}
       {nodeMenu && menuNode && (
         <ContextMenu
           x={nodeMenu.x}
@@ -1854,6 +2122,365 @@ export function WorkflowTab({
         </div>
       )}
     </div>
+  );
+}
+
+function WorkflowMinimap({
+  nodes,
+  pan,
+  zoom,
+  wrapSize,
+  selectedId,
+  onNavigate,
+}: {
+  nodes: WorkflowNode[];
+  pan: PanOffset;
+  zoom: number;
+  wrapSize: ViewportSize;
+  selectedId: string | null;
+  onNavigate: (canvasX: number, canvasY: number) => void;
+}) {
+  const MM_W = 184;
+  const MM_H = 124;
+  const PAD = 60;
+
+  const bounds = useMemo(() => {
+    if (nodes.length === 0) {
+      return {
+        minX: -CANVAS_ORIGIN_X,
+        minY: -CANVAS_ORIGIN_Y,
+        maxX: CANVAS_ORIGIN_X,
+        maxY: CANVAS_ORIGIN_Y,
+      };
+    }
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const node of nodes) {
+      minX = Math.min(minX, node.x);
+      minY = Math.min(minY, node.y);
+      maxX = Math.max(maxX, node.x + NODE_W);
+      maxY = Math.max(maxY, node.y + NODE_H);
+    }
+    // include the current viewport so the indicator stays visible when panned away
+    if (wrapSize.width && wrapSize.height && zoom) {
+      const viewMinX = -pan.x / zoom - CANVAS_ORIGIN_X;
+      const viewMinY = -pan.y / zoom - CANVAS_ORIGIN_Y;
+      minX = Math.min(minX, viewMinX);
+      minY = Math.min(minY, viewMinY);
+      maxX = Math.max(maxX, viewMinX + wrapSize.width / zoom);
+      maxY = Math.max(maxY, viewMinY + wrapSize.height / zoom);
+    }
+    return {
+      minX: minX - PAD,
+      minY: minY - PAD,
+      maxX: maxX + PAD,
+      maxY: maxY + PAD,
+    };
+  }, [nodes, pan, zoom, wrapSize]);
+
+  const contentW = Math.max(1, bounds.maxX - bounds.minX);
+  const contentH = Math.max(1, bounds.maxY - bounds.minY);
+  const scale = Math.min(MM_W / contentW, MM_H / contentH);
+  const offsetX = (MM_W - contentW * scale) / 2;
+  const offsetY = (MM_H - contentH * scale) / 2;
+
+  const toMini = (cx: number, cy: number) => ({
+    x: offsetX + (cx - bounds.minX) * scale,
+    y: offsetY + (cy - bounds.minY) * scale,
+  });
+  const fromMini = (mx: number, my: number) => ({
+    x: (mx - offsetX) / scale + bounds.minX,
+    y: (my - offsetY) / scale + bounds.minY,
+  });
+
+  const viewRect =
+    wrapSize.width && wrapSize.height && zoom
+      ? (() => {
+          const tl = toMini(-pan.x / zoom - CANVAS_ORIGIN_X, -pan.y / zoom - CANVAS_ORIGIN_Y);
+          return {
+            x: tl.x,
+            y: tl.y,
+            w: (wrapSize.width / zoom) * scale,
+            h: (wrapSize.height / zoom) * scale,
+          };
+        })()
+      : null;
+
+  const handleNavigate = (e: ReactMouseEvent<SVGSVGElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = e.currentTarget.getBoundingClientRect();
+    const point = fromMini(e.clientX - rect.left, e.clientY - rect.top);
+    onNavigate(point.x, point.y);
+  };
+
+  return (
+    <div className="workflow-minimap" onPointerDown={(e) => e.stopPropagation()}>
+      <svg
+        width={MM_W}
+        height={MM_H}
+        onClick={handleNavigate}
+        role="presentation"
+      >
+        {nodes.map((node) => {
+          const p = toMini(node.x, node.y);
+          return (
+            <rect
+              key={node.id}
+              className={
+                "workflow-minimap__node" +
+                (node.id === selectedId ? " is-selected" : "")
+              }
+              x={p.x}
+              y={p.y}
+              width={Math.max(3, NODE_W * scale)}
+              height={Math.max(2, NODE_H * scale)}
+              rx={1.5}
+            />
+          );
+        })}
+        {viewRect && (
+          <rect
+            className="workflow-minimap__view"
+            x={viewRect.x}
+            y={viewRect.y}
+            width={viewRect.w}
+            height={viewRect.h}
+          />
+        )}
+      </svg>
+    </div>
+  );
+}
+
+function WorkflowRenamePanel({
+  value,
+  onSubmit,
+  onClose,
+}: {
+  value: string;
+  onSubmit: (value: string) => void;
+  onClose: () => void;
+}) {
+  const [draft, setDraft] = useState(value);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, []);
+
+  const submit = () => onSubmit(draft);
+
+  return (
+    <aside className="workflow-inspector workflow-rename-panel">
+      <div className="workflow-inspector__head">
+        <div>
+          <div className="workflow-inspector__eyebrow">重命名工作流</div>
+        </div>
+        <button
+          type="button"
+          className="workflow-inspector__close"
+          onClick={onClose}
+          aria-label="关闭"
+          title="关闭"
+        >
+          x
+        </button>
+      </div>
+      <label className="workflow-inspector__field">
+        <span>名称</span>
+        <input
+          ref={inputRef}
+          className="workflow-rename-panel__input"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              submit();
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              onClose();
+            }
+          }}
+          spellCheck={false}
+        />
+      </label>
+      <div className="workflow-rename-panel__actions">
+        <button type="button" onClick={onClose}>
+          取消
+        </button>
+        <button type="button" className="is-primary" onClick={submit}>
+          确定
+        </button>
+      </div>
+    </aside>
+  );
+}
+
+function IconAddBlock() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="18"
+      height="18"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <rect x="3.5" y="3.5" width="17" height="17" rx="3.5" />
+      <path d="M12 8.4v7.2M8.4 12h7.2" />
+    </svg>
+  );
+}
+
+function IconArrange() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="18"
+      height="18"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <rect x="2.5" y="4" width="6" height="5.5" rx="1.4" />
+      <rect x="2.5" y="14.5" width="6" height="5.5" rx="1.4" />
+      <rect x="15.5" y="9.2" width="6" height="5.5" rx="1.4" />
+      <path d="M8.5 6.75h3.5a2 2 0 0 1 2 2v3.2M8.5 17.25h3.5a2 2 0 0 0 2-2v-3.2" />
+    </svg>
+  );
+}
+
+function IconFit() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="18"
+      height="18"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M4 8.5V5.5A1.5 1.5 0 0 1 5.5 4h3M15.5 4h3A1.5 1.5 0 0 1 20 5.5v3M20 15.5v3a1.5 1.5 0 0 1-1.5 1.5h-3M8.5 20h-3A1.5 1.5 0 0 1 4 18.5v-3" />
+    </svg>
+  );
+}
+
+function IconUndo() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="18"
+      height="18"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M9 7 5 11l4 4" />
+      <path d="M6 11h7.5a5 5 0 1 1 0 10H11" />
+    </svg>
+  );
+}
+
+function IconRedo() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="18"
+      height="18"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="m15 7 4 4-4 4" />
+      <path d="M18 11h-7.5a5 5 0 1 0 0 10H13" />
+    </svg>
+  );
+}
+
+function IconZoomOut() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="18"
+      height="18"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M6.5 12h11" />
+    </svg>
+  );
+}
+
+function IconZoomIn() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="18"
+      height="18"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M6.5 12h11" />
+      <path d="M12 6.5v11" />
+    </svg>
+  );
+}
+
+function IconPlay({ solid = false }: { solid?: boolean }) {
+  return solid ? (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden>
+      <path d="m9 7.2 8 4.8-8 4.8V7.2z" />
+    </svg>
+  ) : (
+    <svg
+      viewBox="0 0 24 24"
+      width="18"
+      height="18"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="m9 7.2 8 4.8-8 4.8V7.2z" />
+    </svg>
+  );
+}
+
+function IconStop() {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden>
+      <rect x="7.5" y="7.5" width="9" height="9" rx="1.5" />
+    </svg>
   );
 }
 
@@ -1953,8 +2580,8 @@ function WorkflowNodeBlock({
   onFinishEdgeDrag: (e: ReactPointerEvent<HTMLButtonElement>) => void;
 }) {
   const nodeStyle: CSSProperties = {
-    left: node.x,
-    top: node.y,
+    left: worldToCanvasX(node.x),
+    top: worldToCanvasY(node.y),
     width: NODE_W,
     height: NODE_H,
   };
@@ -2118,7 +2745,7 @@ function WorkflowAgentTerminal({
     const term = new XTerm({
       convertEol: false,
       cursorBlink: true,
-      fontFamily: "Cascadia Mono, Consolas, Courier New, monospace",
+      fontFamily: "Geist Mono, SFMono-Regular, Cascadia Mono, Consolas, Courier New, monospace",
       fontSize: 12.5,
       scrollback: 8000,
       theme: {
@@ -2333,6 +2960,7 @@ function WorkflowMpePanel({
 
 function WorkflowNodeInspector({
   node,
+  autoFocusName,
   nodes,
   edges,
   running,
@@ -2346,6 +2974,7 @@ function WorkflowNodeInspector({
   onDeleteEdge,
 }: {
   node: WorkflowNode;
+  autoFocusName?: boolean;
   nodes: WorkflowNode[];
   edges: WorkflowEdge[];
   running: boolean;
@@ -2428,6 +3057,7 @@ function WorkflowNodeInspector({
           value={node.title}
           onChange={(value) => onUpdate({ title: value })}
           disabled={running}
+          autoFocus={autoFocusName}
         />
       </label>
 
@@ -2907,10 +3537,19 @@ interface TemplateControlProps {
   value: string;
   onChange: (value: string) => void;
   disabled?: boolean;
+  autoFocus?: boolean;
 }
 
-function TemplateInput({ value, onChange, disabled }: TemplateControlProps) {
+function TemplateInput({ value, onChange, disabled, autoFocus }: TemplateControlProps) {
   const mirrorRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (autoFocus && inputRef.current) {
+      inputRef.current.focus();
+      inputRef.current.select();
+    }
+  }, [autoFocus]);
 
   return (
     <span
@@ -2923,6 +3562,7 @@ function TemplateInput({ value, onChange, disabled }: TemplateControlProps) {
         {renderTemplateHighlight(value)}
       </span>
       <input
+        ref={inputRef}
         className="workflow-template-editor__control"
         value={value}
         onChange={(e) => onChange(normalizeTemplateSpacing(e.target.value))}
@@ -3068,6 +3708,76 @@ function finishRun(
         : run
     ),
   };
+}
+
+const LAYOUT_MARGIN_X = 80;
+const LAYOUT_MARGIN_Y = 80;
+const LAYOUT_GAP_X = 96;
+const LAYOUT_GAP_Y = 34;
+
+/**
+ * Layered left-to-right auto layout. Columns follow the longest-path depth from
+ * trigger / indegree-0 nodes; nodes in a column stack vertically in declared
+ * order. Falls back to the existing order when the graph has a cycle so we never
+ * throw or lose nodes.
+ */
+function autoLayout(record: WorkflowRecord): WorkflowRecord {
+  const nodes = record.nodes;
+  if (nodes.length === 0) return record;
+  const ids = new Set(nodes.map((node) => node.id));
+  const incoming = new Map<string, string[]>();
+  const indegree = new Map<string, number>();
+  for (const node of nodes) {
+    incoming.set(node.id, []);
+    indegree.set(node.id, 0);
+  }
+  for (const edge of record.edges) {
+    if (!ids.has(edge.from) || !ids.has(edge.to) || edge.from === edge.to) continue;
+    incoming.get(edge.to)?.push(edge.from);
+    indegree.set(edge.to, (indegree.get(edge.to) ?? 0) + 1);
+  }
+
+  const order = topoOrder(record);
+  const depth = new Map<string, number>();
+  if (order.error) {
+    // cycle: keep declared order, single column fallback
+    nodes.forEach((node, index) => depth.set(node.id, index === 0 ? 0 : 1));
+  } else {
+    for (const id of order.nodeIds) {
+      const preds = incoming.get(id) ?? [];
+      const d = preds.length
+        ? Math.max(...preds.map((p) => (depth.get(p) ?? 0) + 1))
+        : 0;
+      depth.set(id, d);
+    }
+  }
+
+  const columns = new Map<number, string[]>();
+  for (const node of nodes) {
+    const d = depth.get(node.id) ?? 0;
+    if (!columns.has(d)) columns.set(d, []);
+    columns.get(d)!.push(node.id);
+  }
+
+  const position = new Map<string, { x: number; y: number }>();
+  for (const [d, columnIds] of columns) {
+    columnIds.forEach((id, row) => {
+      position.set(id, {
+        x: LAYOUT_MARGIN_X + d * (NODE_W + LAYOUT_GAP_X),
+        y: LAYOUT_MARGIN_Y + row * (NODE_H + LAYOUT_GAP_Y),
+      });
+    });
+  }
+
+  let changed = false;
+  const nextNodes = nodes.map((node) => {
+    const pos = position.get(node.id);
+    if (!pos || (pos.x === node.x && pos.y === node.y)) return node;
+    changed = true;
+    return { ...node, x: pos.x, y: pos.y };
+  });
+  if (!changed) return record;
+  return { ...record, nodes: nextNodes };
 }
 
 function topoOrder(record: WorkflowRecord): { nodeIds: string[]; error?: string } {
@@ -4470,15 +5180,43 @@ function edgePath(from: WorkflowNode, to: WorkflowNode): string {
 }
 
 function edgePathToPoint(from: WorkflowNode, point: CanvasPoint): string {
-  return bezierPath(outputPoint(from), point);
+  return bezierPath(outputPoint(from), worldPointToCanvas(point));
 }
 
 function inputPoint(node: WorkflowNode): CanvasPoint {
-  return { x: node.x, y: node.y + NODE_H / 2 };
+  return {
+    x: worldToCanvasX(node.x),
+    y: worldToCanvasY(node.y + NODE_H / 2),
+  };
 }
 
 function outputPoint(node: WorkflowNode): CanvasPoint {
-  return { x: node.x + NODE_W, y: node.y + NODE_H / 2 };
+  return {
+    x: worldToCanvasX(node.x + NODE_W),
+    y: worldToCanvasY(node.y + NODE_H / 2),
+  };
+}
+
+function worldToCanvasX(value: number): number {
+  return value + CANVAS_ORIGIN_X;
+}
+
+function worldToCanvasY(value: number): number {
+  return value + CANVAS_ORIGIN_Y;
+}
+
+function worldPointToCanvas(point: CanvasPoint): CanvasPoint {
+  return {
+    x: worldToCanvasX(point.x),
+    y: worldToCanvasY(point.y),
+  };
+}
+
+function snapPan(pan: PanOffset): PanOffset {
+  return {
+    x: Math.round(pan.x),
+    y: Math.round(pan.y),
+  };
 }
 
 function bezierPath(start: CanvasPoint, end: CanvasPoint): string {
