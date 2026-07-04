@@ -19,6 +19,10 @@ import {
   uninstallCodexPlugin,
   type CodexPluginPaths,
 } from "./codex-plugins.js";
+import {
+  parseDeleteSourceFlag,
+  parseRequiredStringField,
+} from "./routes/codex-plugins.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -505,4 +509,14 @@ test("addCodexMarketplace rejects unsafe source strings before invoking Codex CL
   );
 
   assert.equal(calls, 0);
+});
+
+test("route helpers parse required strings and deleteSource flags", () => {
+  assert.equal(
+    parseRequiredStringField({ selector: " sample@debug " }, "selector"),
+    "sample@debug"
+  );
+  assert.equal(parseDeleteSourceFlag({ deleteSource: "true" }), true);
+  assert.equal(parseDeleteSourceFlag({ deleteSource: "false" }), false);
+  assert.throws(() => parseRequiredStringField({}, "selector"), /selector is required/);
 });
