@@ -54,4 +54,6 @@ export const errors = {
   rejected: (msg = "远端拒绝") => new ApiError(409, "REJECTED", msg),
   upstreamFailed: (msg: string) =>
     new ApiError(502, "UPSTREAM_FAILED", msg),
+  codexCliNotFound: () =>
+    new ApiError(500, "CODEX_CLI_NOT_FOUND", "Codex CLI was not found"),
 };
