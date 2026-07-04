@@ -3,6 +3,7 @@ import { ActivityBar, type ViewId } from "./ActivityBar";
 import { AiSettingsView } from "./AiSettingsView";
 import { AiPanel } from "./AiPanel";
 import { BottomPanel } from "./BottomPanel";
+import { CodexPluginsView } from "./CodexPluginsView";
 import { DiffPane } from "./DiffPane";
 import { EditorPane, type GotoTarget } from "./EditorPane";
 import { FileTree } from "./FileTree";
@@ -583,6 +584,7 @@ export function Workbench() {
               />
             )}
             {activeView === "ai-settings" && <AiSettingsView />}
+            {activeView === "codex-plugins" && <CodexPluginsView />}
           </div>
         )}
         <Resizer

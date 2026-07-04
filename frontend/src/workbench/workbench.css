@@ -8249,3 +8249,235 @@
   background: rgba(63, 185, 80, 0.12);
   border: 1px solid rgba(63, 185, 80, 0.28);
 }
+
+/* Codex Plugins */
+
+.codex-plugins {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.codex-plugins__header {
+  gap: 8px;
+  padding-right: 8px;
+}
+
+.codex-plugins__toolbar {
+  display: flex;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-faint);
+}
+
+.codex-plugins__toolbar .primary-btn,
+.codex-plugins__toolbar .tb-btn {
+  flex: 1;
+  height: 28px;
+  min-width: 0;
+  padding: 0 8px;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.codex-plugins__path,
+.codex-plugins__source,
+.codex-plugins__selector,
+.codex-plugins__desc {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.codex-plugins__path {
+  padding: 6px 10px;
+  color: var(--fg-faint);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 10.5px;
+  border-bottom: 1px solid var(--border-faint);
+}
+
+.codex-plugins__banner {
+  margin: 8px 10px 0;
+  padding: 7px 8px;
+  border-radius: 4px;
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+.codex-plugins__banner--error {
+  color: var(--fg-error);
+  background: rgba(244, 135, 113, 0.12);
+  border: 1px solid rgba(244, 135, 113, 0.35);
+}
+
+.codex-plugins__banner--success {
+  color: #8cc796;
+  background: rgba(63, 185, 80, 0.12);
+  border: 1px solid rgba(63, 185, 80, 0.28);
+}
+
+.codex-plugins__banner--warn {
+  color: #e2c08d;
+  background: rgba(226, 192, 141, 0.1);
+  border: 1px solid rgba(226, 192, 141, 0.28);
+}
+
+.codex-plugins__form {
+  display: grid;
+  gap: 8px;
+  margin: 10px;
+  padding: 10px;
+  border: 1px solid var(--border-faint);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.codex-plugins__input {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.codex-plugins__textarea {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 64px;
+  resize: vertical;
+  padding: 7px 8px;
+  color: var(--fg-default);
+  background: #313131;
+  border: 1px solid #3c3c3c;
+  border-radius: 3px;
+  font: inherit;
+  font-size: 12px;
+}
+
+.codex-plugins__textarea:focus {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+  border-color: var(--accent);
+}
+
+.codex-plugins__form-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.codex-plugins__form-actions .primary-btn,
+.codex-plugins__form-actions .tb-btn {
+  flex: 1;
+}
+
+.codex-plugins__list {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 10px;
+  overflow: auto;
+}
+
+.codex-plugins__group {
+  margin-bottom: 14px;
+}
+
+.codex-plugins__group-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 7px;
+  color: var(--fg-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+
+.codex-plugins__empty {
+  color: var(--fg-muted);
+  font-size: 12px;
+  padding: 8px 0;
+}
+
+.codex-plugins__card {
+  display: grid;
+  gap: 8px;
+  padding: 9px;
+  margin-bottom: 8px;
+  border: 1px solid var(--border-faint);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.codex-plugins__card-main {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.codex-plugins__avatar {
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  background: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.codex-plugins__meta {
+  min-width: 0;
+  flex: 1;
+}
+
+.codex-plugins__name {
+  color: var(--fg-strong);
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.codex-plugins__selector,
+.codex-plugins__source,
+.codex-plugins__desc {
+  margin-top: 3px;
+  color: var(--fg-muted);
+  font-size: 11px;
+}
+
+.codex-plugins__source {
+  font-family: "Cascadia Mono", Consolas, monospace;
+}
+
+.codex-plugins__badges {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-top: 7px;
+}
+
+.codex-plugins__badges span {
+  padding: 2px 5px;
+  border-radius: 3px;
+  color: var(--fg-default);
+  background: rgba(148, 163, 184, 0.12);
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  font-size: 10px;
+}
+
+.codex-plugins__actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.codex-plugins__actions .tb-btn {
+  height: 26px;
+  padding: 0 8px;
+  font-size: 11px;
+}
+
+.codex-plugins__danger {
+  color: #f48771;
+}

@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-export type ViewId = "explorer" | "search" | "git" | "ai-settings";
+export type ViewId = "explorer" | "search" | "git" | "ai-settings" | "codex-plugins";
 
 interface ActivityBarProps {
   activeView: ViewId;
@@ -20,6 +20,7 @@ const ITEMS: Item[] = [
   { id: "search", label: "搜索", icon: <SearchIcon /> },
   { id: "git", label: "源代码管理", icon: <GitIcon /> },
   { id: "ai-settings", label: "AI 设置", icon: <AiSettingsIcon /> },
+  { id: "codex-plugins", label: "Codex Plugins", icon: <CodexPluginsIcon /> },
 ];
 
 export function ActivityBar({ activeView, collapsed, onSelect, onOpenSettings }: ActivityBarProps) {
@@ -100,6 +101,19 @@ function AiSettingsIcon() {
       <path d="M12 3l1.4 4.1L17.5 8.5l-4.1 1.4L12 14l-1.4-4.1L6.5 8.5l4.1-1.4L12 3z" />
       <path d="M5 14l.8 2.2L8 17l-2.2.8L5 20l-.8-2.2L2 17l2.2-.8L5 14z" />
       <path d="M18 13l.9 2.6 2.6.9-2.6.9L18 21l-.9-2.6-2.6-.9 2.6-.9L18 13z" />
+    </svg>
+  );
+}
+
+function CodexPluginsIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M8 4h8l4 4v8l-4 4H8l-4-4V8l4-4z" />
+      <path d="M9 9h6v6H9z" />
+      <path d="M12 2v4" />
+      <path d="M12 18v4" />
+      <path d="M2 12h4" />
+      <path d="M18 12h4" />
     </svg>
   );
 }
