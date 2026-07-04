@@ -4,9 +4,15 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
+  addCodexMarketplace,
+  createLocalCodexPlugin,
   getCodexPluginSnapshot,
+  importLocalCodexPlugin,
+  installCodexPlugin,
   normalizePluginName,
   parseCliJson,
+  removeLocalCodexPlugin,
+  uninstallCodexPlugin,
   type CodexPluginPaths,
 } from "./codex-plugins.js";
 
@@ -201,4 +207,85 @@ test("malformed personal marketplace JSON adds a warning", async () => {
 
   assert.match(snapshot.warnings.join("\n"), /Personal marketplace parse failed:/);
   assert.match(snapshot.warnings.join("\n"), new RegExp(paths.personalMarketplace.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+});
+
+test("createLocalCodexPlugin writes manifest and initial personal marketplace", async () => {
+  const paths = await makeFixturePaths();
+  await createLocalCodexPlugin(
+    { name: "My Tools", displayName: "My Tools", description: "Useful local commands" },
+    { paths, runCli: async () => "{}" }
+  );
+  const manifest = JSON.parse(
+    await fs.readFile(
+      path.join(paths.personalPluginRoot, "my-tools", ".codex-plugin", "plugin.json"),
+      "utf8"
+    )
+  ) as { name: string; interface: { displayName: string } };
+  assert.equal(manifest.name, "my-tools");
+  assert.equal(manifest.interface.displayName, "My Tools");
+  const marketplace = JSON.parse(await fs.readFile(paths.personalMarketplace, "utf8")) as {
+    name: string;
+    plugins: Array<{ name: string; source: { path: string } }>;
+  };
+  assert.equal(marketplace.name, "personal");
+  assert.equal(marketplace.plugins[0]?.name, "my-tools");
+  assert.equal(marketplace.plugins[0]?.source.path, "./plugins/my-tools");
+});
+
+test("importLocalCodexPlugin adds existing manifest to personal marketplace", async () => {
+  const paths = await makeFixturePaths();
+  const pluginPath = path.join(paths.personalPluginRoot, "imported");
+  await writeJson(path.join(pluginPath, ".codex-plugin", "plugin.json"), {
+    name: "imported",
+    version: "1.2.3",
+    description: "Imported plugin",
+    interface: { displayName: "Imported" },
+  });
+  await importLocalCodexPlugin({ path: pluginPath }, { paths, runCli: async () => "{}" });
+  const snapshot = await getCodexPluginSnapshot({ paths, runCli: async () => '{"installed":[],"available":[]}' });
+  assert.equal(snapshot.plugins[0]?.selector, "imported@personal");
+  assert.equal(snapshot.plugins[0]?.displayName, "Imported");
+});
+
+test("removeLocalCodexPlugin refuses to delete source outside the personal plugin root", async () => {
+  const paths = await makeFixturePaths();
+  const outside = path.join(path.dirname(paths.personalPluginRoot), "outside-plugin");
+  await writeJson(path.join(outside, ".codex-plugin", "plugin.json"), { name: "outside-plugin" });
+  await fs.mkdir(path.dirname(paths.personalMarketplace), { recursive: true });
+  await fs.writeFile(
+    paths.personalMarketplace,
+    JSON.stringify({
+      name: "personal",
+      interface: { displayName: "Personal" },
+      plugins: [
+        {
+          name: "outside-plugin",
+          source: { source: "local", path: "../outside-plugin" },
+          policy: { installation: "AVAILABLE", authentication: "ON_INSTALL" },
+          category: "Productivity",
+        },
+      ],
+    }),
+    "utf8"
+  );
+  await assert.rejects(
+    () => removeLocalCodexPlugin("outside-plugin", true, { paths, runCli: async () => "{}" }),
+    /Refusing to delete source outside personal plugin root/
+  );
+});
+
+test("install, uninstall, and marketplace add call Codex CLI with JSON flags", async () => {
+  const calls: string[][] = [];
+  const runCli = async (args: string[]) => {
+    calls.push(args);
+    return '{"ok":true}';
+  };
+  await installCodexPlugin("sample@debug", { runCli });
+  await uninstallCodexPlugin("sample@debug", { runCli });
+  await addCodexMarketplace("C:/plugins/debug", { runCli });
+  assert.deepEqual(calls, [
+    ["plugin", "add", "sample@debug", "--json"],
+    ["plugin", "remove", "sample@debug", "--json"],
+    ["plugin", "marketplace", "add", "C:/plugins/debug", "--json"],
+  ]);
 });
