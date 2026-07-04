@@ -130,6 +130,9 @@ test("snapshot merges CLI, config, cache, and personal marketplace records", asy
   assert.equal(superpowers?.status.cached, true);
   assert.equal(superpowers?.status.installed, true);
   const localTools = snapshot.plugins.find((p) => p.selector === "local-tools@personal");
+  assert.equal(localTools?.displayName, "Local Tools");
+  assert.equal(localTools?.version, "0.1.0");
+  assert.equal(localTools?.description, "Local helper plugin");
   assert.equal(localTools?.status.local, true);
   assert.equal(localTools?.status.available, true);
   assert.equal(snapshot.marketplaces[0]?.name, "debug");

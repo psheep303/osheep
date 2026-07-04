@@ -383,13 +383,18 @@ async function discoverCachePlugins(cacheRoot: string): Promise<MergeRecord[]> {
   return records;
 }
 
-function resolveMarketplaceSourcePath(marketplacePath: string, sourcePath: string): string {
+function resolvePersonalMarketplaceSourcePath(paths: CodexPluginPaths, sourcePath: string): string {
   if (path.isAbsolute(sourcePath)) return path.resolve(sourcePath);
-  return path.resolve(path.dirname(marketplacePath), sourcePath);
+  const normalized = path.normalize(sourcePath);
+  const segments = normalized.split(path.sep).filter((segment) => segment && segment !== ".");
+  if (segments[0] === "plugins") {
+    return path.resolve(paths.personalPluginRoot, ...segments.slice(1));
+  }
+  return path.resolve(paths.personalPluginRoot, normalized);
 }
 
-async function discoverPersonalMarketplacePlugins(marketplacePath: string): Promise<MergeRecord[]> {
-  const parsed = objectValue(await readJsonFile(marketplacePath)) as PersonalMarketplaceFile | null;
+async function discoverPersonalMarketplacePlugins(paths: CodexPluginPaths): Promise<MergeRecord[]> {
+  const parsed = objectValue(await readJsonFile(paths.personalMarketplace)) as PersonalMarketplaceFile | null;
   if (!parsed || !Array.isArray(parsed.plugins)) return [];
   const marketName = stringValue(parsed.name) || "personal";
   const records: MergeRecord[] = [];
@@ -399,7 +404,7 @@ async function discoverPersonalMarketplacePlugins(marketplacePath: string): Prom
     const source = objectValue(obj?.source);
     const sourcePath = stringValue(source?.path);
     if (!name || !sourcePath) continue;
-    const absPath = resolveMarketplaceSourcePath(marketplacePath, sourcePath);
+    const absPath = resolvePersonalMarketplaceSourcePath(paths, sourcePath);
     const manifest = await readJsonFile(path.join(absPath, ".codex-plugin", "plugin.json"));
     records.push({
       name,
@@ -426,7 +431,7 @@ export async function getCodexPluginSnapshot(
   for (const record of cli.records) mergePlugin(map, record);
   for (const record of await discoverConfigPlugins(paths.codexConfig, warnings)) mergePlugin(map, record);
   for (const record of await discoverCachePlugins(paths.codexPluginCache)) mergePlugin(map, record);
-  for (const record of await discoverPersonalMarketplacePlugins(paths.personalMarketplace)) {
+  for (const record of await discoverPersonalMarketplacePlugins(paths)) {
     mergePlugin(map, record);
   }
 
