@@ -56,6 +56,7 @@ export interface CodexPluginManifest {
     shortDescription?: string;
     category?: string;
     developerName?: string;
+    capabilities?: string[];
   };
   [key: string]: unknown;
 }
@@ -440,6 +441,194 @@ async function discoverPersonalMarketplacePlugins(
     });
   }
   return records;
+}
+
+export interface CreateLocalCodexPluginInput {
+  name: string;
+  displayName?: string;
+  description?: string;
+}
+
+export interface ImportLocalCodexPluginInput {
+  path: string;
+}
+
+function marketplaceEntry(pluginName: string): Record<string, unknown> {
+  return {
+    name: pluginName,
+    source: {
+      source: "local",
+      path: `./plugins/${pluginName}`,
+    },
+    policy: {
+      installation: "AVAILABLE",
+      authentication: "ON_INSTALL",
+    },
+    category: "Productivity",
+  };
+}
+
+function defaultMarketplace(): Record<string, unknown> {
+  return {
+    name: "personal",
+    interface: {
+      displayName: "Personal",
+    },
+    plugins: [],
+  };
+}
+
+async function readMarketplaceFile(filePath: string): Promise<Record<string, unknown>> {
+  const existing = objectValue(await readJsonFile(filePath));
+  if (!existing) return defaultMarketplace();
+  if (!Array.isArray(existing.plugins)) existing.plugins = [];
+  if (!stringValue(existing.name)) existing.name = "personal";
+  if (!objectValue(existing.interface)) existing.interface = { displayName: "Personal" };
+  return existing;
+}
+
+async function writeJsonAtomic(filePath: string, value: unknown): Promise<void> {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  const temp = path.join(
+    path.dirname(filePath),
+    `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`
+  );
+  await fs.writeFile(temp, JSON.stringify(value, null, 2) + "\n", "utf8");
+  await fs.rename(temp, filePath);
+}
+
+async function upsertPersonalMarketplaceEntry(
+  paths: CodexPluginPaths,
+  pluginName: string,
+  sourcePath = `./plugins/${pluginName}`
+): Promise<void> {
+  const marketplace = await readMarketplaceFile(paths.personalMarketplace);
+  const plugins = Array.isArray(marketplace.plugins) ? marketplace.plugins : [];
+  const nextEntry = {
+    ...marketplaceEntry(pluginName),
+    source: {
+      source: "local",
+      path: sourcePath,
+    },
+  };
+  const index = plugins.findIndex((entry) => objectValue(entry)?.name === pluginName);
+  if (index >= 0) plugins[index] = nextEntry;
+  else plugins.push(nextEntry);
+  marketplace.plugins = plugins;
+  await writeJsonAtomic(paths.personalMarketplace, marketplace);
+}
+
+function defaultManifest(
+  input: CreateLocalCodexPluginInput,
+  pluginName: string
+): CodexPluginManifest {
+  const displayName = input.displayName?.trim() || input.name.trim() || pluginName;
+  const description = input.description?.trim() || `Personal Codex plugin ${displayName}`;
+  return {
+    name: pluginName,
+    version: "0.1.0",
+    description,
+    author: {
+      name: "Personal",
+    },
+    license: "UNLICENSED",
+    keywords: ["codex", "personal"],
+    interface: {
+      displayName,
+      shortDescription: description,
+      developerName: "Personal",
+      category: "Productivity",
+      capabilities: ["Interactive"],
+    },
+  };
+}
+
+export async function createLocalCodexPlugin(
+  input: CreateLocalCodexPluginInput,
+  options: CodexPluginServiceOptions = {}
+): Promise<CodexPluginSnapshot> {
+  const paths = resolveCodexPluginPaths(options.paths);
+  const pluginName = normalizePluginName(input.name);
+  const pluginRoot = path.join(paths.personalPluginRoot, pluginName);
+  const manifestPath = path.join(pluginRoot, ".codex-plugin", "plugin.json");
+  await writeJsonAtomic(manifestPath, defaultManifest(input, pluginName));
+  await upsertPersonalMarketplaceEntry(paths, pluginName);
+  return await getCodexPluginSnapshot(options);
+}
+
+export async function importLocalCodexPlugin(
+  input: ImportLocalCodexPluginInput,
+  options: CodexPluginServiceOptions = {}
+): Promise<CodexPluginSnapshot> {
+  const paths = resolveCodexPluginPaths(options.paths);
+  const pluginRoot = path.resolve(input.path);
+  const manifest = objectValue(
+    await readJsonFile(path.join(pluginRoot, ".codex-plugin", "plugin.json"))
+  );
+  if (!manifest || !stringValue(manifest.name)) {
+    throw errors.invalidQuery("Codex plugin manifest with a name is required");
+  }
+  const pluginName = normalizePluginName(stringValue(manifest.name));
+  const relative = path.relative(path.dirname(paths.personalMarketplace), pluginRoot).replace(/\\/g, "/");
+  const sourcePath = relative.startsWith(".") ? relative : `./${relative}`;
+  await upsertPersonalMarketplaceEntry(paths, pluginName, sourcePath);
+  return await getCodexPluginSnapshot(options);
+}
+
+export async function removeLocalCodexPlugin(
+  name: string,
+  deleteSource: boolean,
+  options: CodexPluginServiceOptions = {}
+): Promise<CodexPluginSnapshot> {
+  const paths = resolveCodexPluginPaths(options.paths);
+  const pluginName = normalizePluginName(name);
+  const marketplace = await readMarketplaceFile(paths.personalMarketplace);
+  const plugins = Array.isArray(marketplace.plugins) ? marketplace.plugins : [];
+  const entry = plugins.find((item) => objectValue(item)?.name === pluginName);
+  const entrySource = objectValue(objectValue(entry)?.source);
+  const sourcePath = stringValue(entrySource?.path);
+
+  if (deleteSource) {
+    const resolved = sourcePath
+      ? resolvePersonalMarketplaceSourcePath(paths, sourcePath)
+      : path.join(paths.personalPluginRoot, pluginName);
+    const root = path.resolve(paths.personalPluginRoot);
+    const finalPath = path.resolve(resolved);
+    const expected = path.join(root, pluginName);
+    if (finalPath !== expected) {
+      throw errors.invalidQuery("Refusing to delete source outside personal plugin root");
+    }
+    await fs.rm(finalPath, { recursive: true, force: true });
+  }
+
+  marketplace.plugins = plugins.filter((item) => objectValue(item)?.name !== pluginName);
+  await writeJsonAtomic(paths.personalMarketplace, marketplace);
+
+  return await getCodexPluginSnapshot(options);
+}
+
+export async function installCodexPlugin(
+  selector: string,
+  options: CodexPluginServiceOptions = {}
+): Promise<unknown> {
+  const runCli = options.runCli ?? runCodexPluginCli;
+  return parseCliJson(await runCli(["plugin", "add", selector, "--json"]));
+}
+
+export async function uninstallCodexPlugin(
+  selector: string,
+  options: CodexPluginServiceOptions = {}
+): Promise<unknown> {
+  const runCli = options.runCli ?? runCodexPluginCli;
+  return parseCliJson(await runCli(["plugin", "remove", selector, "--json"]));
+}
+
+export async function addCodexMarketplace(
+  source: string,
+  options: CodexPluginServiceOptions = {}
+): Promise<unknown> {
+  const runCli = options.runCli ?? runCodexPluginCli;
+  return parseCliJson(await runCli(["plugin", "marketplace", "add", source, "--json"]));
 }
 
 export async function getCodexPluginSnapshot(
