@@ -1,9 +1,7 @@
-import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { parse as parseToml } from "smol-toml";
 import { ApiError, errors } from "./errors.js";
 
 const execFileAsync = promisify(execFile);
@@ -137,8 +135,9 @@ export async function runCodexPluginCli(args: string[]): Promise<string> {
       encoding: "utf8",
       windowsHide: true,
       maxBuffer: 8 * 1024 * 1024,
+      shell: process.platform === "win32",
     });
-    return `${result.stdout ?? ""}${result.stderr ?? ""}`;
+    return result.stdout ?? "";
   } catch (error) {
     const err = error as NodeJS.ErrnoException & { stdout?: string; stderr?: string };
     if (err.code === "ENOENT") {
@@ -160,6 +159,3 @@ export async function getCodexPluginSnapshot(
     paths,
   };
 }
-
-void fs;
-void parseToml;
