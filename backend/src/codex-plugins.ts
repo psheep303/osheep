@@ -116,6 +116,19 @@ export function toWindowsCmdCommandLine(command: string, args: string[]): string
   return ["call", quoteWindowsCmdArg(command), ...args.map(quoteWindowsCmdArg)].join(" ");
 }
 
+export function toCodexCliError(
+  error: { code?: string | number; message: string; stdout?: string; stderr?: string }
+): ApiError {
+  if (error.code === "ENOENT") {
+    return errors.codexCliNotFound();
+  }
+  const output = `${error.stdout ?? ""}${error.stderr ?? ""}`.trim();
+  if (/codex(?:\.cmd)?['"]?\s+is not recognized/i.test(output)) {
+    return errors.codexCliNotFound();
+  }
+  return new ApiError(502, "CODEX_CLI_FAILED", output || error.message);
+}
+
 export function defaultCodexPluginPaths(): CodexPluginPaths {
   const home = os.homedir() || ".";
   const codexDir = path.resolve(
@@ -161,11 +174,7 @@ export async function runCodexPluginCli(args: string[]): Promise<string> {
     return result.stdout ?? "";
   } catch (error) {
     const err = error as NodeJS.ErrnoException & { stdout?: string; stderr?: string };
-    if (err.code === "ENOENT") {
-      throw errors.codexCliNotFound();
-    }
-    const output = `${err.stdout ?? ""}${err.stderr ?? ""}`.trim();
-    throw new ApiError(502, "CODEX_CLI_FAILED", output || err.message);
+    throw toCodexCliError(err);
   }
 }
 
@@ -486,6 +495,38 @@ async function discoverPersonalMarketplacePlugins(
   return records;
 }
 
+async function discoverPersonalPluginRoot(paths: CodexPluginPaths): Promise<MergeRecord[]> {
+  const records: MergeRecord[] = [];
+  let entries: string[];
+  try {
+    entries = await fs.readdir(paths.personalPluginRoot);
+  } catch {
+    return records;
+  }
+
+  for (const entry of entries) {
+    const pluginRoot = path.join(paths.personalPluginRoot, entry);
+    const manifest = await readJsonFile(
+      path.join(pluginRoot, ".codex-plugin", "plugin.json")
+    );
+    const manifestObj = objectValue(manifest);
+    const manifestName = stringValue(manifestObj?.name);
+    const pluginName = manifestName ? normalizePluginName(manifestName) : normalizePluginName(entry);
+    if (!manifestObj || !pluginName) continue;
+    records.push({
+      name: pluginName,
+      marketplace: "personal",
+      available: true,
+      local: true,
+      sourceKind: "personal",
+      sourcePath: pluginRoot,
+      ...manifestMetadata(manifest),
+    });
+  }
+
+  return records;
+}
+
 export interface CreateLocalCodexPluginInput {
   name: string;
   displayName?: string;
@@ -771,6 +812,9 @@ export async function getCodexPluginSnapshot(
   for (const record of await discoverConfigPlugins(paths.codexConfig, warnings)) mergePlugin(map, record);
   for (const record of await discoverCachePlugins(paths.codexPluginCache)) mergePlugin(map, record);
   for (const record of await discoverPersonalMarketplacePlugins(paths, warnings)) {
+    mergePlugin(map, record);
+  }
+  for (const record of await discoverPersonalPluginRoot(paths)) {
     mergePlugin(map, record);
   }
 

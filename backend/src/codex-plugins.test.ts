@@ -14,6 +14,7 @@ import {
   normalizePluginName,
   parseCliJson,
   removeLocalCodexPlugin,
+  toCodexCliError,
   toWindowsCmdCommandLine,
   toMarketplaceSourcePath,
   uninstallCodexPlugin,
@@ -89,6 +90,18 @@ test("toWindowsCmdCommandLine runs cmd files with arguments containing spaces", 
   );
 
   assert.match(result.stdout, /source=C:\/Users\/Jane Doe\/plugins\/debug/);
+});
+
+test("toCodexCliError maps Windows missing codex.cmd output to cli-not-found", () => {
+  const error = toCodexCliError({
+    code: "1",
+    message: "Command failed",
+    stdout: "",
+    stderr:
+      "'codex.cmd' is not recognized as an internal or external command,\r\noperable program or batch file.\r\n",
+  });
+
+  assert.equal(error.code, "CODEX_CLI_NOT_FOUND");
 });
 
 async function makeFixturePaths(): Promise<CodexPluginPaths> {
@@ -250,6 +263,29 @@ test("personal marketplace non-plugin relative paths resolve from the marketplac
 
   assert.equal(siblingTools?.displayName, "Sibling Tools");
   assert.equal(siblingTools?.source.path, pluginPath);
+});
+
+test("snapshot discovers unlisted personal plugin root directories", async () => {
+  const paths = await makeFixturePaths();
+  await writeJson(
+    path.join(paths.personalPluginRoot, "root-tools", ".codex-plugin", "plugin.json"),
+    {
+      name: "root-tools",
+      version: "0.2.0",
+      description: "Root plugin",
+      interface: { displayName: "Root Tools" },
+    }
+  );
+
+  const snapshot = await getCodexPluginSnapshot({ paths, runCli: noCli });
+  const rootTools = snapshot.plugins.find((p) => p.selector === "root-tools@personal");
+
+  assert.equal(rootTools?.displayName, "Root Tools");
+  assert.equal(rootTools?.version, "0.2.0");
+  assert.equal(rootTools?.description, "Root plugin");
+  assert.equal(rootTools?.status.local, true);
+  assert.equal(rootTools?.status.available, true);
+  assert.equal(rootTools?.source.path, path.join(paths.personalPluginRoot, "root-tools"));
 });
 
 test("malformed personal marketplace JSON adds a warning", async () => {

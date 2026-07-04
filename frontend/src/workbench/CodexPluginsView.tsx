@@ -228,6 +228,7 @@ export function CodexPluginsView() {
           title="Installed"
           plugins={groups.installed}
           busy={busy}
+          personalPluginRoot={snapshot?.paths.personalPluginRoot ?? ""}
           onInstall={install}
           onUninstall={uninstall}
           onRemoveLocal={removeLocal}
@@ -236,6 +237,7 @@ export function CodexPluginsView() {
           title="Available"
           plugins={groups.available}
           busy={busy}
+          personalPluginRoot={snapshot?.paths.personalPluginRoot ?? ""}
           onInstall={install}
           onUninstall={uninstall}
           onRemoveLocal={removeLocal}
@@ -244,6 +246,7 @@ export function CodexPluginsView() {
           title="Local"
           plugins={groups.local}
           busy={busy}
+          personalPluginRoot={snapshot?.paths.personalPluginRoot ?? ""}
           onInstall={install}
           onUninstall={uninstall}
           onRemoveLocal={removeLocal}
@@ -277,6 +280,7 @@ function PluginGroup({
   title,
   plugins,
   busy,
+  personalPluginRoot,
   onInstall,
   onUninstall,
   onRemoveLocal,
@@ -284,6 +288,7 @@ function PluginGroup({
   title: string;
   plugins: CodexPluginRecord[];
   busy: boolean;
+  personalPluginRoot: string;
   onInstall: (plugin: CodexPluginRecord) => void;
   onUninstall: (plugin: CodexPluginRecord) => void;
   onRemoveLocal: (plugin: CodexPluginRecord, deleteSource: boolean) => void;
@@ -302,6 +307,7 @@ function PluginGroup({
             key={`${title}:${plugin.selector}`}
             plugin={plugin}
             busy={busy}
+            canDeleteSource={canDeletePersonalSource(plugin, personalPluginRoot)}
             onInstall={() => onInstall(plugin)}
             onUninstall={() => onUninstall(plugin)}
             onRemoveEntry={() => onRemoveLocal(plugin, false)}
@@ -316,6 +322,7 @@ function PluginGroup({
 function PluginCard({
   plugin,
   busy,
+  canDeleteSource,
   onInstall,
   onUninstall,
   onRemoveEntry,
@@ -323,6 +330,7 @@ function PluginCard({
 }: {
   plugin: CodexPluginRecord;
   busy: boolean;
+  canDeleteSource: boolean;
   onInstall: () => void;
   onUninstall: () => void;
   onRemoveEntry: () => void;
@@ -373,7 +381,7 @@ function PluginCard({
             Remove
           </button>
         )}
-        {plugin.status.local && (
+        {canDeleteSource && (
           <button
             className="tb-btn codex-plugins__danger"
             onClick={onDeleteSource}
@@ -385,6 +393,22 @@ function PluginCard({
       </div>
     </div>
   );
+}
+
+function canDeletePersonalSource(
+  plugin: CodexPluginRecord,
+  personalPluginRoot: string
+): boolean {
+  if (!plugin.status.local || !plugin.source.path || !personalPluginRoot) {
+    return false;
+  }
+  const source = normalizeFilePath(plugin.source.path);
+  const expected = normalizeFilePath(`${personalPluginRoot}/${plugin.name}`);
+  return source.toLowerCase() === expected.toLowerCase();
+}
+
+function normalizeFilePath(value: string): string {
+  return value.replace(/\\/g, "/").replace(/\/+$/g, "");
 }
 
 function RefreshIcon() {
