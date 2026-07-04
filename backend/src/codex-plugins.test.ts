@@ -47,6 +47,10 @@ async function writeJson(filePath: string, value: unknown): Promise<void> {
   await fs.writeFile(filePath, JSON.stringify(value, null, 2), "utf8");
 }
 
+async function noCli(): Promise<string> {
+  return JSON.stringify({ installed: [], available: [], marketplaces: [] });
+}
+
 test("snapshot merges CLI, config, cache, and personal marketplace records", async () => {
   const paths = await makeFixturePaths();
   await fs.mkdir(path.dirname(paths.codexConfig), { recursive: true });
@@ -135,5 +139,66 @@ test("snapshot merges CLI, config, cache, and personal marketplace records", asy
   assert.equal(localTools?.description, "Local helper plugin");
   assert.equal(localTools?.status.local, true);
   assert.equal(localTools?.status.available, true);
+  assert.equal(localTools?.source.path, path.join(paths.personalPluginRoot, "local-tools"));
   assert.equal(snapshot.marketplaces[0]?.name, "debug");
+});
+
+test("personal marketplace ./plugins paths resolve under the personal plugin root", async () => {
+  const paths = await makeFixturePaths();
+  await writeJson(paths.personalMarketplace, {
+    name: "personal",
+    plugins: [
+      {
+        name: "local-tools",
+        source: { source: "local", path: "./plugins/local-tools" },
+      },
+    ],
+  });
+  await writeJson(
+    path.join(paths.personalPluginRoot, "local-tools", ".codex-plugin", "plugin.json"),
+    {
+      name: "local-tools",
+      interface: { displayName: "Local Tools" },
+    }
+  );
+
+  const snapshot = await getCodexPluginSnapshot({ paths, runCli: noCli });
+  const localTools = snapshot.plugins.find((p) => p.selector === "local-tools@personal");
+
+  assert.equal(localTools?.source.path, path.join(paths.personalPluginRoot, "local-tools"));
+});
+
+test("personal marketplace non-plugin relative paths resolve from the marketplace file", async () => {
+  const paths = await makeFixturePaths();
+  await writeJson(paths.personalMarketplace, {
+    name: "personal",
+    plugins: [
+      {
+        name: "sibling-tools",
+        source: { source: "local", path: "../shared/sibling-tools" },
+      },
+    ],
+  });
+  const pluginPath = path.resolve(path.dirname(paths.personalMarketplace), "../shared/sibling-tools");
+  await writeJson(path.join(pluginPath, ".codex-plugin", "plugin.json"), {
+    name: "sibling-tools",
+    interface: { displayName: "Sibling Tools" },
+  });
+
+  const snapshot = await getCodexPluginSnapshot({ paths, runCli: noCli });
+  const siblingTools = snapshot.plugins.find((p) => p.selector === "sibling-tools@personal");
+
+  assert.equal(siblingTools?.displayName, "Sibling Tools");
+  assert.equal(siblingTools?.source.path, pluginPath);
+});
+
+test("malformed personal marketplace JSON adds a warning", async () => {
+  const paths = await makeFixturePaths();
+  await fs.mkdir(path.dirname(paths.personalMarketplace), { recursive: true });
+  await fs.writeFile(paths.personalMarketplace, "{ not json", "utf8");
+
+  const snapshot = await getCodexPluginSnapshot({ paths, runCli: noCli });
+
+  assert.match(snapshot.warnings.join("\n"), /Personal marketplace parse failed:/);
+  assert.match(snapshot.warnings.join("\n"), new RegExp(paths.personalMarketplace.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 });

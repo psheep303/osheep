@@ -238,6 +238,24 @@ async function readJsonFile(filePath: string): Promise<unknown | null> {
   }
 }
 
+async function readPersonalMarketplaceFile(
+  filePath: string,
+  warnings: string[]
+): Promise<unknown | null> {
+  let text = "";
+  try {
+    text = await fs.readFile(filePath, "utf8");
+  } catch {
+    return null;
+  }
+  try {
+    return JSON.parse(text) as unknown;
+  } catch (e) {
+    warnings.push(`Personal marketplace parse failed: ${filePath}: ${(e as Error).message}`);
+    return null;
+  }
+}
+
 function manifestMetadata(manifest: unknown): Pick<
   MergeRecord,
   "displayName" | "version" | "description"
@@ -386,15 +404,20 @@ async function discoverCachePlugins(cacheRoot: string): Promise<MergeRecord[]> {
 function resolvePersonalMarketplaceSourcePath(paths: CodexPluginPaths, sourcePath: string): string {
   if (path.isAbsolute(sourcePath)) return path.resolve(sourcePath);
   const normalized = path.normalize(sourcePath);
-  const segments = normalized.split(path.sep).filter((segment) => segment && segment !== ".");
-  if (segments[0] === "plugins") {
+  const segments = normalized.split(/[\\/]+/).filter((segment) => segment && segment !== ".");
+  if (segments[0] === "plugins" && segments.length > 1) {
     return path.resolve(paths.personalPluginRoot, ...segments.slice(1));
   }
-  return path.resolve(paths.personalPluginRoot, normalized);
+  return path.resolve(path.dirname(paths.personalMarketplace), normalized);
 }
 
-async function discoverPersonalMarketplacePlugins(paths: CodexPluginPaths): Promise<MergeRecord[]> {
-  const parsed = objectValue(await readJsonFile(paths.personalMarketplace)) as PersonalMarketplaceFile | null;
+async function discoverPersonalMarketplacePlugins(
+  paths: CodexPluginPaths,
+  warnings: string[]
+): Promise<MergeRecord[]> {
+  const parsed = objectValue(
+    await readPersonalMarketplaceFile(paths.personalMarketplace, warnings)
+  ) as PersonalMarketplaceFile | null;
   if (!parsed || !Array.isArray(parsed.plugins)) return [];
   const marketName = stringValue(parsed.name) || "personal";
   const records: MergeRecord[] = [];
@@ -431,7 +454,7 @@ export async function getCodexPluginSnapshot(
   for (const record of cli.records) mergePlugin(map, record);
   for (const record of await discoverConfigPlugins(paths.codexConfig, warnings)) mergePlugin(map, record);
   for (const record of await discoverCachePlugins(paths.codexPluginCache)) mergePlugin(map, record);
-  for (const record of await discoverPersonalMarketplacePlugins(paths)) {
+  for (const record of await discoverPersonalMarketplacePlugins(paths, warnings)) {
     mergePlugin(map, record);
   }
 
