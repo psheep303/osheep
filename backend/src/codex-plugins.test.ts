@@ -244,6 +244,122 @@ test("snapshot merges CLI, config, cache, and personal marketplace records", asy
   assert.equal(snapshot.marketplaces[0]?.name, "debug");
 });
 
+test("snapshot enriches official marketplace plugins from Codex tmp manifests", async () => {
+  const paths = await makeFixturePaths();
+  const marketplaceRoot = path.join(paths.codexDir, ".tmp", "plugins");
+  await writeJson(
+    path.join(marketplaceRoot, ".agents", "plugins", "api_marketplace.json"),
+    {
+      name: "openai-api-curated",
+      interface: { displayName: "Codex official" },
+      plugins: [
+        {
+          name: "github",
+          source: { source: "local", path: "./plugins/github" },
+          policy: { installation: "AVAILABLE", authentication: "ON_INSTALL" },
+          category: "Developer Tools",
+        },
+      ],
+    }
+  );
+  await writeJson(
+    path.join(marketplaceRoot, "plugins", "github", ".codex-plugin", "plugin.json"),
+    {
+      name: "github",
+      version: "0.1.6",
+      description: "GitHub workflows",
+      interface: {
+        displayName: "GitHub",
+        shortDescription: "Triage PRs and issues",
+        composerIcon: "./assets/github-small.svg",
+        brandColor: "#24292F",
+      },
+    }
+  );
+  await fs.mkdir(path.join(marketplaceRoot, "plugins", "github", "assets"), {
+    recursive: true,
+  });
+  await fs.writeFile(
+    path.join(marketplaceRoot, "plugins", "github", "assets", "github-small.svg"),
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"></svg>',
+    "utf8"
+  );
+
+  const snapshot = await getCodexPluginSnapshot({
+    paths,
+    runCli: async (args) => {
+      if (args.join(" ") === "plugin list --available --json") {
+        return JSON.stringify({
+          installed: [],
+          available: [
+            {
+              name: "github",
+              marketplace: "openai-api-curated",
+              version: "0.1.6",
+            },
+          ],
+        });
+      }
+      if (args.join(" ") === "plugin marketplace list --json") {
+        return JSON.stringify({ marketplaces: [] });
+      }
+      throw new Error(`unexpected args: ${args.join(" ")}`);
+    },
+  });
+
+  const github = snapshot.plugins.find((p) => p.selector === "github@openai-api-curated");
+
+  assert.equal(github?.displayName, "GitHub");
+  assert.equal(github?.description, "Triage PRs and issues");
+  assert.equal(github?.iconColor, "#24292F");
+  assert.match(github?.icon ?? "", /^data:image\/svg\+xml;base64,/);
+  assert.equal(github?.status.available, true);
+});
+
+test("snapshot uses an OpenAI fallback icon for official manifests without icon fields", async () => {
+  const paths = await makeFixturePaths();
+  const marketplaceRoot = path.join(paths.codexDir, ".tmp", "plugins");
+  await writeJson(
+    path.join(marketplaceRoot, ".agents", "plugins", "api_marketplace.json"),
+    {
+      name: "openai-api-curated",
+      plugins: [
+        {
+          name: "openai-ads-conversions",
+          source: { source: "local", path: "./plugins/openai-ads-conversions" },
+          policy: { installation: "AVAILABLE", authentication: "ON_INSTALL" },
+          category: "Developer Tools",
+        },
+      ],
+    }
+  );
+  await writeJson(
+    path.join(
+      marketplaceRoot,
+      "plugins",
+      "openai-ads-conversions",
+      ".codex-plugin",
+      "plugin.json"
+    ),
+    {
+      name: "openai-ads-conversions",
+      version: "0.1.0",
+      author: { name: "OpenAI", url: "https://openai.com/" },
+      interface: {
+        displayName: "OpenAI Ads Conversions",
+        developerName: "OpenAI",
+      },
+    }
+  );
+
+  const snapshot = await getCodexPluginSnapshot({ paths, runCli: noCli });
+  const plugin = snapshot.plugins.find(
+    (p) => p.selector === "openai-ads-conversions@openai-api-curated"
+  );
+
+  assert.match(plugin?.icon ?? "", /^data:image\/svg\+xml,/);
+});
+
 test("personal marketplace ./plugins paths resolve under the personal plugin root", async () => {
   const paths = await makeFixturePaths();
   await writeJson(paths.personalMarketplace, {
