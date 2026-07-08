@@ -44,7 +44,7 @@ interface WorkflowRunState {
   abort: AbortController;
 }
 
-interface WorkflowRunDetailSnapshot {
+export interface WorkflowRunDetailSnapshot {
   kind: "agent" | "command";
   title: string;
   status: "running" | "success" | "error" | "stopped";
@@ -60,6 +60,36 @@ interface WorkflowRunDetailSnapshot {
   exitCode?: number | null;
   signal?: string | null;
   durationMs?: number;
+}
+
+interface LiveAgentRunDetailsOptions {
+  node: WorkflowNode;
+  startedAt: number;
+  autoContinue: boolean;
+  writeSnapshot: (snapshot: WorkflowRunDetailSnapshot) => Promise<void>;
+  logs?: Array<{ stream: "stdout" | "stderr"; content: string }>;
+  minUpdateIntervalMs?: number;
+}
+
+export interface LiveAgentRunDetails {
+  handleFrame: (frame: AgentTerminalFrame) => Promise<void>;
+  update: (
+    status: WorkflowRunDetailSnapshot["status"],
+    completedAt?: number,
+    force?: boolean
+  ) => Promise<void>;
+  snapshot: (
+    status: WorkflowRunDetailSnapshot["status"],
+    completedAt?: number
+  ) => WorkflowRunDetailSnapshot;
+  drain: () => Promise<void>;
+}
+
+export interface AgentTerminalFailure {
+  retryable: boolean;
+  hasModelOutput: boolean;
+  message: string;
+  modelOutput: string;
 }
 
 const activeRuns = new Map<string, WorkflowRunState>();
@@ -87,6 +117,100 @@ const DEFAULT_MCP_HEADERS_JSON = JSON.stringify(
   null,
   2
 );
+
+export function createLiveAgentRunDetails(
+  options: LiveAgentRunDetailsOptions
+): LiveAgentRunDetails {
+  const logs = options.logs ?? [];
+  const minUpdateIntervalMs = Math.max(0, options.minUpdateIntervalMs ?? 250);
+  let terminalSessionId = "";
+  let terminalStatus = "";
+  let lastUpdateAt = 0;
+  let queue = Promise.resolve();
+
+  const snapshot = (
+    status: WorkflowRunDetailSnapshot["status"],
+    completedAt?: number
+  ) =>
+    agentRunSnapshot(
+      options.node,
+      status,
+      options.startedAt,
+      completedAt,
+      logs,
+      terminalSessionId || undefined,
+      terminalStatus || undefined,
+      options.autoContinue
+    );
+
+  const enqueue = (next: WorkflowRunDetailSnapshot) => {
+    queue = queue.then(() => options.writeSnapshot(next));
+    return queue;
+  };
+
+  const update = (
+    status: WorkflowRunDetailSnapshot["status"],
+    completedAt?: number,
+    force = true
+  ) => {
+    const now = Date.now();
+    if (!force && minUpdateIntervalMs > 0 && now - lastUpdateAt < minUpdateIntervalMs) {
+      return queue;
+    }
+    lastUpdateAt = now;
+    return enqueue(snapshot(status, completedAt));
+  };
+
+  const handleFrame = (frame: AgentTerminalFrame) => {
+    if (frame.type === "session") {
+      terminalSessionId = frame.sessionId;
+      return update("running");
+    }
+    if (frame.type === "output") {
+      logs.push({ stream: "stdout", content: frame.data });
+      return update("running", undefined, false);
+    }
+    if (frame.type === "status") {
+      terminalStatus = frame.status;
+      return update("running");
+    }
+    return queue;
+  };
+
+  return {
+    handleFrame,
+    update,
+    snapshot,
+    drain: () => queue,
+  };
+}
+
+export function classifyAgentTerminalFailure(
+  raw: string,
+  prompt: string
+): AgentTerminalFailure {
+  const text = stripAnsi(raw).replace(/\r/g, "\n");
+  const match = text.match(
+    /\b(?:unexpected status\s+(?:408|429|5\d\d)\b[^\n]*|(?:service unavailable|auth_unavailable|rate limit|temporarily unavailable|overloaded|econnreset|etimedout)[^\n]*)/i
+  );
+  if (!match || match.index === undefined) {
+    return { retryable: false, hasModelOutput: false, message: "", modelOutput: "" };
+  }
+  const modelOutput = terminalModelOutputBeforeError(text.slice(0, match.index), prompt);
+  return {
+    retryable: true,
+    hasModelOutput: modelOutput.length > 0,
+    message: match[0].trim(),
+    modelOutput,
+  };
+}
+
+export function nextAgentRetryPrompt(
+  originalPrompt: string,
+  failure: AgentTerminalFailure
+): string {
+  return failure.hasModelOutput ? "继续" : originalPrompt;
+}
 
 export async function startWorkflowRun(
   workspaceId: string,
@@ -248,47 +372,102 @@ async function executeAgentNode(
 ): Promise<LocalNodeResult> {
   if (!node.prompt.trim()) throw new Error(`${node.title} has no prompt.`);
   const logs: Array<{ stream: "stdout" | "stderr"; content: string }> = [];
-  let terminalSessionId = "";
-  let terminalStatus = "";
   const autoContinue = agentAutoContinue(node);
-  const updateSnapshot = async (status: WorkflowRunDetailSnapshot["status"]) => {
-    await patchWorkflowNode(workspace.path, record.id, node.id, {
-      config: {
-        ...(node.config ?? {}),
-        runDetails: agentRunSnapshot(
-          node,
-          status,
-          startedAt,
-          undefined,
-          logs,
-          terminalSessionId || undefined,
-          terminalStatus || undefined,
-          autoContinue
-        ),
-      },
-    });
-  };
+  const details = createLiveAgentRunDetails({
+    node,
+    startedAt,
+    autoContinue,
+    logs,
+    writeSnapshot: async (snapshot) => {
+      await patchWorkflowNode(workspace.path, record.id, node.id, {
+        config: {
+          ...(node.config ?? {}),
+          runDetails: snapshot,
+        },
+      });
+    },
+  });
   const onFrame = (frame: AgentTerminalFrame) => {
-    if (frame.type === "session") terminalSessionId = frame.sessionId;
-    if (frame.type === "output") logs.push({ stream: "stdout", content: frame.data });
-    if (frame.type === "status") terminalStatus = frame.status;
+    void details.handleFrame(frame).catch(() => undefined);
   };
-  await updateSnapshot("running");
+  await details.update("running");
   const mcpTools = collectMcpToolsForAgent(record, node);
   const prompt = buildBlockPrompt(record, node, mcpTools);
   const terminalPrompt = resolveBlockTemplate(node.prompt, record).trim();
-  const result = await runAgentTerminal({
-    workspace,
-    kind: node.providerKind,
-    model: node.model || "default",
-    prompt: terminalPrompt || prompt,
-    autoContinue,
-    signal: abort.signal,
-    onFrame,
-  });
-  let raw =
-    result.content ||
-    `${node.providerKind === "codex-cli" ? "Codex CLI" : "Claude Code CLI"} completed without text output.`;
+  const originalTerminalPrompt = terminalPrompt || prompt;
+  let currentPrompt = originalTerminalPrompt;
+  let result = null as Awaited<ReturnType<typeof runAgentTerminal>> | null;
+  let raw = "";
+  let terminalFailure: AgentTerminalFailure | null = null;
+  let retainedOutput = "";
+  const retries = agentRetryCount(node);
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    if (attempt > 0) {
+      logs.push({
+        stream: "stderr",
+        content: `\n[osheep] retry ${attempt}/${retries}: ${currentPrompt === "继续" ? "continue" : "resubmit"}\n`,
+      });
+      await details.update("running");
+    }
+    result = await runAgentTerminal({
+      workspace,
+      kind: node.providerKind,
+      model: node.model || "default",
+      prompt: currentPrompt,
+      autoContinue,
+      signal: abort.signal,
+      onFrame,
+    });
+    await details.drain();
+    raw =
+      result.content ||
+      `${node.providerKind === "codex-cli" ? "Codex CLI" : "Claude Code CLI"} completed without text output.`;
+    terminalFailure = classifyAgentTerminalFailure(
+      result.content || result.transcript || raw,
+      currentPrompt
+    );
+    if (!terminalFailure.retryable) break;
+    if (terminalFailure.modelOutput) {
+      retainedOutput = [retainedOutput, terminalFailure.modelOutput].filter(Boolean).join("\n");
+    }
+    if (attempt >= retries) break;
+    currentPrompt = nextAgentRetryPrompt(originalTerminalPrompt, terminalFailure);
+  }
+  if (!result) throw new Error(`${node.title} did not start.`);
+  if (terminalFailure?.retryable) {
+    const errorMessage = `${node.providerKind === "codex-cli" ? "Codex CLI" : "Claude Code CLI"} failed after ${
+      retries + 1
+    } attempt${retries === 0 ? "" : "s"}: ${terminalFailure.message}`;
+    const errorDetails = details.snapshot("error", Date.now());
+    errorDetails.terminalSessionId = errorDetails.terminalSessionId ?? result.sessionId;
+    errorDetails.transcript = result.transcript;
+    errorDetails.stdout = result.content;
+    errorDetails.stderr = [errorDetails.stderr, errorMessage].filter(Boolean).join("\n");
+    errorDetails.exitCode = result.exitCode;
+    errorDetails.signal =
+      typeof result.signal === "string" || result.signal === null
+        ? result.signal
+        : String(result.signal);
+    return {
+      output: {
+        type: node.providerKind === "claude-cli" ? "claude" : "codex",
+        status: "failed",
+        text: raw.trim(),
+        error: errorMessage,
+        CHANGED_FILES: [],
+        VERIFICATION: [],
+      },
+      changedFiles: false,
+      error: errorMessage,
+      nodePatch: {
+        config: {
+          ...(node.config ?? {}),
+          runDetails: errorDetails,
+        },
+      },
+    };
+  }
+  if (retainedOutput) raw = [retainedOutput, raw].filter(Boolean).join("\n");
   const toolRun = await maybeRunAgentMcpToolCalls(
     record,
     node,
@@ -299,20 +478,12 @@ async function executeAgentNode(
   );
   if (toolRun) raw = toolRun.raw;
   const output = agentOutput(node, raw, record);
-  const details = agentRunSnapshot(
-    node,
-    "success",
-    startedAt,
-    Date.now(),
-    logs,
-    result.sessionId,
-    terminalStatus || undefined,
-    autoContinue
-  );
-  details.transcript = result.transcript;
-  details.stdout = result.content;
-  details.exitCode = result.exitCode;
-  details.signal =
+  const finalDetails = details.snapshot("success", Date.now());
+  finalDetails.terminalSessionId = finalDetails.terminalSessionId ?? result.sessionId;
+  finalDetails.transcript = result.transcript;
+  finalDetails.stdout = result.content;
+  finalDetails.exitCode = result.exitCode;
+  finalDetails.signal =
     typeof result.signal === "string" || result.signal === null
       ? result.signal
       : String(result.signal);
@@ -322,7 +493,7 @@ async function executeAgentNode(
     nodePatch: {
       config: {
         ...(node.config ?? {}),
-        runDetails: details,
+        runDetails: finalDetails,
       },
     },
   };
@@ -1442,6 +1613,51 @@ function mcpNodeConfig(node: WorkflowNode): McpNodeConfig {
 
 function agentAutoContinue(node: WorkflowNode): boolean {
   return node.config?.autoContinue !== false;
+}
+
+function agentRetryCount(node: WorkflowNode): number {
+  const value = node.config?.retries;
+  if (typeof value !== "number" || !Number.isInteger(value)) return 0;
+  return clamp(value, 0, 5);
+}
+
+function terminalModelOutputBeforeError(text: string, prompt: string): string {
+  const promptLines = new Set(
+    stripAnsi(prompt)
+      .replace(/\r/g, "\n")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+  );
+  return text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => keepTerminalModelLine(line, promptLines))
+    .join("\n")
+    .trim();
+}
+
+function keepTerminalModelLine(line: string, promptLines: Set<string>): boolean {
+  if (!line) return false;
+  const unprompted = line.replace(/^[›>]\s*/, "").trim();
+  if (!unprompted) return false;
+  if (promptLines.has(unprompted) || promptLines.has(line)) return false;
+  if (/^(?:OpenAI Codex|Claude Code)\b/i.test(unprompted)) return false;
+  if (/^(?:model|directory|cwd)\s*:/i.test(unprompted)) return false;
+  if (/^(?:Tip|Run npm|See full release notes|Update available)\b/i.test(unprompted)) {
+    return false;
+  }
+  if (/^\(?providers=/i.test(unprompted)) return false;
+  if (/^[\u2500-\u257f\s]+$/.test(unprompted)) return false;
+  return true;
+}
+
+function stripAnsi(text: string): string {
+  return text
+    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1b[P^_][\s\S]*?(?:\x1b\\|\x07)/g, "")
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\x1b[()][A-Za-z0-9]/g, "");
 }
 
 function agentRunSnapshot(
