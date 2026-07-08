@@ -342,9 +342,7 @@ function PluginCard({
   return (
     <div className="codex-plugins__card">
       <div className="codex-plugins__card-main">
-        <div className="codex-plugins__avatar">
-          {plugin.displayName.slice(0, 1).toUpperCase()}
-        </div>
+        <PluginIcon plugin={plugin} />
         <div className="codex-plugins__meta">
           <div className="codex-plugins__name">{plugin.displayName}</div>
           <div className="codex-plugins__selector">{plugin.selector}</div>
@@ -391,6 +389,39 @@ function PluginCard({
           </button>
         )}
       </div>
+    </div>
+  );
+}
+
+function PluginIcon({ plugin }: { plugin: CodexPluginRecord }) {
+  const [failed, setFailed] = useState(false);
+  const icon = plugin.icon && !failed ? plugin.icon : "";
+  const fallbackStyle =
+    !icon && plugin.iconColor ? { background: plugin.iconColor } : undefined;
+
+  useEffect(() => {
+    setFailed(false);
+  }, [plugin.icon]);
+
+  return (
+    <div
+      className={
+        "codex-plugins__avatar" +
+        (icon ? " codex-plugins__avatar--image" : "")
+      }
+      style={fallbackStyle}
+      title={plugin.displayName}
+    >
+      {icon ? (
+        <img
+          src={icon}
+          alt=""
+          aria-hidden="true"
+          onError={() => setFailed(true)}
+        />
+      ) : (
+        plugin.displayName.slice(0, 1).toUpperCase()
+      )}
     </div>
   );
 }

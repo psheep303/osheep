@@ -764,6 +764,8 @@ export interface CodexPluginRecord {
   displayName: string;
   version?: string;
   description?: string;
+  icon?: string;
+  iconColor?: string;
   status: {
     installed: boolean;
     available: boolean;

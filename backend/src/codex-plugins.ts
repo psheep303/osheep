@@ -16,6 +16,8 @@ export interface CodexPluginRecord {
   displayName: string;
   version?: string;
   description?: string;
+  icon?: string;
+  iconColor?: string;
   status: {
     installed: boolean;
     available: boolean;
@@ -58,6 +60,10 @@ export interface CodexPluginManifest {
     category?: string;
     developerName?: string;
     capabilities?: string[];
+    composerIcon?: string;
+    logo?: string;
+    icon?: string;
+    brandColor?: string;
   };
   [key: string]: unknown;
 }
@@ -185,6 +191,8 @@ interface MergeRecord {
   displayName?: string;
   version?: string;
   description?: string;
+  icon?: string;
+  iconColor?: string;
   installed?: boolean;
   available?: boolean;
   enabled?: boolean;
@@ -268,6 +276,8 @@ function mergePlugin(map: Map<string, CodexPluginRecord>, input: MergeRecord): v
     displayName: input.displayName || prev?.displayName || name,
     version: input.version || prev?.version,
     description: input.description || prev?.description,
+    icon: input.icon || prev?.icon,
+    iconColor: input.iconColor || prev?.iconColor,
     status,
     source: {
       kind: input.sourceKind || prev?.source.kind || "config",
@@ -302,10 +312,91 @@ async function readPersonalMarketplaceFile(
   }
 }
 
-function manifestMetadata(manifest: unknown): Pick<
+const MAX_PLUGIN_ICON_BYTES = 256 * 1024;
+
+function browserSafeIconUrl(value: string): string | undefined {
+  if (/^data:image\/(?:svg\+xml|png|jpe?g|gif|webp|x-icon);/i.test(value)) {
+    return value;
+  }
+  if (/^https?:\/\//i.test(value)) {
+    return value;
+  }
+  return undefined;
+}
+
+function iconMimeType(filePath: string): string | undefined {
+  switch (path.extname(filePath).toLowerCase()) {
+    case ".svg":
+      return "image/svg+xml";
+    case ".png":
+      return "image/png";
+    case ".jpg":
+    case ".jpeg":
+      return "image/jpeg";
+    case ".gif":
+      return "image/gif";
+    case ".webp":
+      return "image/webp";
+    case ".ico":
+      return "image/x-icon";
+    default:
+      return undefined;
+  }
+}
+
+function pathInside(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function manifestIconCandidate(manifest: unknown): string {
+  const obj = objectValue(manifest);
+  const ui = objectValue(obj?.interface);
+  return (
+    stringValue(ui?.composerIcon) ||
+    stringValue(ui?.logo) ||
+    stringValue(ui?.icon) ||
+    stringValue(obj?.composerIcon) ||
+    stringValue(obj?.logo) ||
+    stringValue(obj?.icon)
+  );
+}
+
+async function loadManifestIcon(
+  manifest: unknown,
+  pluginRoot?: string
+): Promise<string | undefined> {
+  const candidate = manifestIconCandidate(manifest);
+  if (!candidate) return undefined;
+
+  const browserUrl = browserSafeIconUrl(candidate);
+  if (browserUrl) return browserUrl;
+  if (!pluginRoot) return undefined;
+
+  const root = path.resolve(pluginRoot);
+  const iconPath = path.resolve(root, candidate);
+  if (!pathInside(root, iconPath)) return undefined;
+
+  const mimeType = iconMimeType(iconPath);
+  if (!mimeType) return undefined;
+
+  try {
+    const stat = await fs.stat(iconPath);
+    if (!stat.isFile() || stat.size > MAX_PLUGIN_ICON_BYTES) return undefined;
+    const data = await fs.readFile(iconPath);
+    return `data:${mimeType};base64,${data.toString("base64")}`;
+  } catch {
+    return undefined;
+  }
+}
+
+async function manifestMetadata(
+  manifest: unknown,
+  pluginRoot?: string
+): Promise<Pick<
   MergeRecord,
-  "displayName" | "version" | "description"
-> {
+  "displayName" | "version" | "description" | "icon" | "iconColor"
+>> {
   const obj = objectValue(manifest);
   const ui = objectValue(obj?.interface);
   return {
@@ -314,6 +405,11 @@ function manifestMetadata(manifest: unknown): Pick<
     description:
       stringValue(ui?.shortDescription) ||
       stringValue(obj?.description) ||
+      undefined,
+    icon: await loadManifestIcon(manifest, pluginRoot),
+    iconColor:
+      stringValue(ui?.brandColor) ||
+      stringValue(obj?.brandColor) ||
       undefined,
   };
 }
@@ -337,6 +433,15 @@ function normalizeCliPlugin(value: unknown, fallbackStatus: "installed" | "avail
     displayName: stringValue(obj.displayName) || stringValue(obj.title) || name,
     version: stringValue(obj.version) || undefined,
     description: stringValue(obj.description) || undefined,
+    icon:
+      stringValue(obj.icon) ||
+      stringValue(obj.composerIcon) ||
+      stringValue(obj.logo) ||
+      undefined,
+    iconColor:
+      stringValue(obj.iconColor) ||
+      stringValue(obj.brandColor) ||
+      undefined,
     installed: fallbackStatus === "installed" || obj.installed === true,
     available: fallbackStatus === "available" || obj.available === true,
     enabled: obj.enabled === true,
@@ -432,6 +537,7 @@ async function discoverCachePlugins(cacheRoot: string): Promise<MergeRecord[]> {
         const manifestPath = path.join(root, ".codex-plugin", "plugin.json");
         const manifest = await readJsonFile(manifestPath);
         if (!manifest) continue;
+        const metadata = await manifestMetadata(manifest, root);
         records.push({
           name: pluginName,
           marketplace,
@@ -439,7 +545,7 @@ async function discoverCachePlugins(cacheRoot: string): Promise<MergeRecord[]> {
           installed: true,
           sourceKind: "cache",
           sourcePath: root,
-          ...manifestMetadata(manifest),
+          ...metadata,
         });
       }
     }
@@ -482,6 +588,7 @@ async function discoverPersonalMarketplacePlugins(
     if (!name || !sourcePath) continue;
     const absPath = resolvePersonalMarketplaceSourcePath(paths, sourcePath);
     const manifest = await readJsonFile(path.join(absPath, ".codex-plugin", "plugin.json"));
+    const metadata = await manifestMetadata(manifest ?? { name }, absPath);
     records.push({
       name,
       marketplace: marketName,
@@ -489,7 +596,7 @@ async function discoverPersonalMarketplacePlugins(
       local: true,
       sourceKind: "personal",
       sourcePath: absPath,
-      ...manifestMetadata(manifest ?? { name }),
+      ...metadata,
     });
   }
   return records;
@@ -513,6 +620,7 @@ async function discoverPersonalPluginRoot(paths: CodexPluginPaths): Promise<Merg
     const manifestName = stringValue(manifestObj?.name);
     const pluginName = manifestName ? normalizePluginName(manifestName) : normalizePluginName(entry);
     if (!manifestObj || !pluginName) continue;
+    const metadata = await manifestMetadata(manifest, pluginRoot);
     records.push({
       name: pluginName,
       marketplace: "personal",
@@ -520,7 +628,7 @@ async function discoverPersonalPluginRoot(paths: CodexPluginPaths): Promise<Merg
       local: true,
       sourceKind: "personal",
       sourcePath: pluginRoot,
-      ...manifestMetadata(manifest),
+      ...metadata,
     });
   }
 

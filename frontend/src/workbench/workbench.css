@@ -8435,6 +8435,18 @@
   font-weight: 700;
 }
 
+.codex-plugins__avatar--image {
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.codex-plugins__avatar--image img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
 .codex-plugins__meta {
   min-width: 0;
   flex: 1;
