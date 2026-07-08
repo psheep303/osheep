@@ -286,6 +286,21 @@ function mergePlugin(map: Map<string, CodexPluginRecord>, input: MergeRecord): v
   });
 }
 
+function mergeMarketplaces(
+  records: CodexMarketplaceRecord[]
+): CodexMarketplaceRecord[] {
+  const map = new Map<string, CodexMarketplaceRecord>();
+  for (const record of records) {
+    const prev = map.get(record.name);
+    map.set(record.name, {
+      name: record.name,
+      source: record.source || prev?.source,
+      path: record.path || prev?.path,
+    });
+  }
+  return [...map.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
 async function readJsonFile(filePath: string): Promise<unknown | null> {
   try {
     return JSON.parse(await fs.readFile(filePath, "utf8")) as unknown;
@@ -313,6 +328,19 @@ async function readPersonalMarketplaceFile(
 }
 
 const MAX_PLUGIN_ICON_BYTES = 256 * 1024;
+const OPENAI_FALLBACK_ICON = svgDataUrl(
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">' +
+    '<rect width="64" height="64" rx="14" fill="#111827"/>' +
+    '<g fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">' +
+    '<path d="M32 12c5 0 9 3 11 7 5 1 9 6 9 11s-3 10-8 12c-1 5-6 10-12 10-5 0-9-3-11-7-5-1-9-6-9-11s3-10 8-12c1-5 6-10 12-10Z"/>' +
+    '<path d="M24 22l16 9v18"/><path d="M40 22 24 31v18"/>' +
+    '<path d="M18 33l14-8 14 8"/><path d="M18 33l14 8 14-8"/>' +
+    "</g></svg>"
+);
+
+function svgDataUrl(svg: string): string {
+  return `data:image/svg+xml,${encodeURIComponent(svg)}`;
+}
 
 function browserSafeIconUrl(value: string): string | undefined {
   if (/^data:image\/(?:svg\+xml|png|jpe?g|gif|webp|x-icon);/i.test(value)) {
@@ -362,31 +390,50 @@ function manifestIconCandidate(manifest: unknown): string {
   );
 }
 
+function isOpenAiManifest(manifest: unknown): boolean {
+  const obj = objectValue(manifest);
+  const ui = objectValue(obj?.interface);
+  const author = objectValue(obj?.author);
+  const developerName = stringValue(ui?.developerName);
+  const authorName = stringValue(author?.name);
+  return /^openai$/i.test(developerName) || /^openai$/i.test(authorName);
+}
+
 async function loadManifestIcon(
   manifest: unknown,
   pluginRoot?: string
 ): Promise<string | undefined> {
   const candidate = manifestIconCandidate(manifest);
-  if (!candidate) return undefined;
+  if (!candidate) {
+    return isOpenAiManifest(manifest) ? OPENAI_FALLBACK_ICON : undefined;
+  }
 
   const browserUrl = browserSafeIconUrl(candidate);
   if (browserUrl) return browserUrl;
-  if (!pluginRoot) return undefined;
+  if (!pluginRoot) {
+    return isOpenAiManifest(manifest) ? OPENAI_FALLBACK_ICON : undefined;
+  }
 
   const root = path.resolve(pluginRoot);
   const iconPath = path.resolve(root, candidate);
-  if (!pathInside(root, iconPath)) return undefined;
+  if (!pathInside(root, iconPath)) {
+    return isOpenAiManifest(manifest) ? OPENAI_FALLBACK_ICON : undefined;
+  }
 
   const mimeType = iconMimeType(iconPath);
-  if (!mimeType) return undefined;
+  if (!mimeType) {
+    return isOpenAiManifest(manifest) ? OPENAI_FALLBACK_ICON : undefined;
+  }
 
   try {
     const stat = await fs.stat(iconPath);
-    if (!stat.isFile() || stat.size > MAX_PLUGIN_ICON_BYTES) return undefined;
+    if (!stat.isFile() || stat.size > MAX_PLUGIN_ICON_BYTES) {
+      return isOpenAiManifest(manifest) ? OPENAI_FALLBACK_ICON : undefined;
+    }
     const data = await fs.readFile(iconPath);
     return `data:${mimeType};base64,${data.toString("base64")}`;
   } catch {
-    return undefined;
+    return isOpenAiManifest(manifest) ? OPENAI_FALLBACK_ICON : undefined;
   }
 }
 
@@ -484,6 +531,101 @@ async function discoverCliPlugins(
   } catch (e) {
     warnings.push(`Codex marketplace list failed: ${(e as Error).message}`);
   }
+  return { records, marketplaces };
+}
+
+async function readOfficialMarketplaceFile(
+  filePath: string,
+  warnings: string[]
+): Promise<unknown | null> {
+  let text = "";
+  try {
+    text = await fs.readFile(filePath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    warnings.push(`Official marketplace read failed: ${filePath}: ${(error as Error).message}`);
+    return null;
+  }
+  try {
+    return JSON.parse(text) as unknown;
+  } catch (error) {
+    warnings.push(`Official marketplace parse failed: ${filePath}: ${(error as Error).message}`);
+    return null;
+  }
+}
+
+function resolveOfficialMarketplaceSourcePath(
+  marketplaceRoot: string,
+  sourcePath: string
+): string {
+  if (path.isAbsolute(sourcePath)) return path.resolve(sourcePath);
+  return path.resolve(marketplaceRoot, path.normalize(sourcePath));
+}
+
+async function discoverOfficialMarketplacePlugins(
+  paths: CodexPluginPaths,
+  warnings: string[]
+): Promise<{ records: MergeRecord[]; marketplaces: CodexMarketplaceRecord[] }> {
+  const marketplaceRoot = path.join(paths.codexDir, ".tmp", "plugins");
+  const preferredMarketplace = path.join(
+    marketplaceRoot,
+    ".agents",
+    "plugins",
+    "api_marketplace.json"
+  );
+  const fallbackMarketplace = path.join(
+    marketplaceRoot,
+    ".agents",
+    "plugins",
+    "marketplace.json"
+  );
+  const files = (await pathExists(preferredMarketplace))
+    ? [preferredMarketplace]
+    : [fallbackMarketplace];
+  const records: MergeRecord[] = [];
+  const marketplaces: CodexMarketplaceRecord[] = [];
+
+  for (const filePath of files) {
+    const parsed = objectValue(await readOfficialMarketplaceFile(filePath, warnings));
+    if (!parsed || !Array.isArray(parsed.plugins)) continue;
+    const marketplace = stringValue(parsed.name) || "openai-api-curated";
+    marketplaces.push({
+      name: marketplace,
+      source: "local",
+      path: filePath,
+    });
+
+    for (const entry of parsed.plugins) {
+      const obj = objectValue(entry);
+      const name = stringValue(obj?.name);
+      const source = objectValue(obj?.source);
+      const sourcePath = stringValue(source?.path);
+      if (!name || !sourcePath) continue;
+
+      const pluginRoot = resolveOfficialMarketplaceSourcePath(
+        marketplaceRoot,
+        sourcePath
+      );
+      if (!pathInside(marketplaceRoot, pluginRoot)) {
+        warnings.push(`Official marketplace source escaped cache root: ${name}`);
+        continue;
+      }
+
+      const manifest = await readJsonFile(
+        path.join(pluginRoot, ".codex-plugin", "plugin.json")
+      );
+      const metadata = await manifestMetadata(manifest ?? { name }, pluginRoot);
+      records.push({
+        name,
+        marketplace,
+        available: true,
+        sourceKind: "marketplace",
+        sourcePath: pluginRoot,
+        ...metadata,
+      });
+    }
+  }
+
   return { records, marketplaces };
 }
 
@@ -916,7 +1058,9 @@ export async function getCodexPluginSnapshot(
   const map = new Map<string, CodexPluginRecord>();
 
   const cli = await discoverCliPlugins(runCli, warnings);
+  const official = await discoverOfficialMarketplacePlugins(paths, warnings);
   for (const record of cli.records) mergePlugin(map, record);
+  for (const record of official.records) mergePlugin(map, record);
   for (const record of await discoverConfigPlugins(paths.codexConfig, warnings)) mergePlugin(map, record);
   for (const record of await discoverCachePlugins(paths.codexPluginCache)) mergePlugin(map, record);
   for (const record of await discoverPersonalMarketplacePlugins(paths, warnings)) {
@@ -935,7 +1079,7 @@ export async function getCodexPluginSnapshot(
 
   return {
     plugins,
-    marketplaces: cli.marketplaces.sort((a, b) => a.name.localeCompare(b.name)),
+    marketplaces: mergeMarketplaces([...cli.marketplaces, ...official.marketplaces]),
     warnings,
     paths,
   };
