@@ -200,7 +200,7 @@ function sanitizeNode(raw: unknown, index: number): WorkflowNode | null {
           ? "Workflow run"
           : `Block ${index + 1}`,
     providerKind: asProviderKind(r.providerKind),
-    model: typeof r.model === "string" && r.model ? r.model : "default",
+    model: typeof r.model === "string" ? r.model : "default",
     prompt: typeof r.prompt === "string" ? r.prompt : "",
     x: asFiniteNumber(r.x, 80 + index * 340),
     y: asFiniteNumber(r.y, 90),
