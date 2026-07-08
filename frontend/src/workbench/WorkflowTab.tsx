@@ -3066,8 +3066,8 @@ function WorkflowNodeInspector({
           <label className="workflow-inspector__field">
             <span>Model</span>
             <TemplateInput
-              value={node.model}
-              onChange={(value) => onUpdate({ model: value || "default" })}
+              value={node.model ?? ""}
+              onChange={(value) => onUpdate({ model: value })}
               disabled={running}
             />
           </label>
