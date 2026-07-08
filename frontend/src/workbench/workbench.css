@@ -29,8 +29,24 @@
   color: var(--fg-faint);
 }
 
-.titlebar__project {
+.titlebar__project-btn {
+  min-width: 0;
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: transparent;
+  border: 1px solid transparent;
   color: var(--fg-muted);
+  font: inherit;
+  padding: 2px 6px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.titlebar__project-btn:hover {
+  background: var(--bg-hover);
+  color: var(--fg-strong);
 }
 
 .titlebar__actions {
@@ -38,10 +54,6 @@
   display: flex;
   align-items: center;
   gap: 4px;
-}
-
-.titlebar__spacer {
-  width: 8px;
 }
 
 .tb-btn {
