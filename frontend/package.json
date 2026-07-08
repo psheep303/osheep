@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "check:workflow-left-sidebar": "node scripts/check-workflow-left-sidebar.mjs",
     "check:workflow-css": "node scripts/check-workflow-node-css.mjs",
     "preview": "vite preview"
   },

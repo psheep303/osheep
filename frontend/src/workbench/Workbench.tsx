@@ -66,8 +66,6 @@ const WORKFLOW_PREFIX = "__workflow__:";
 const workflowPath = (workflowId: string) => WORKFLOW_PREFIX + workflowId;
 
 const DEFAULT_LEFT_WIDTH = 230;
-const DEFAULT_RIGHT_WIDTH = 280;
-const DEFAULT_BOTTOM_HEIGHT = 200;
 const SIDE_THRESHOLD = 80;
 const BOTTOM_THRESHOLD = 60;
 const SIDE_MAX = 600;
@@ -81,7 +79,7 @@ export function Workbench() {
   const [error, setError] = useState<string | null>(null);
   const [settings, setSettings] = useState<OsheepSettings>(DEFAULT_SETTINGS);
 
-  const [activeView, setActiveView] = useState<ViewId>("explorer");
+  const [activeView, setActiveView] = useState<ViewId>("workflow");
 
   const [gitStatus, setGitStatus] = useState<GitStatus | null>(null);
   const decorations = useMemo(() => buildDecorations(gitStatus), [gitStatus]);
@@ -118,7 +116,6 @@ export function Workbench() {
   }, [workspaceId, statusVersion]);
 
   const [leftWidth, setLeftWidth] = useState(DEFAULT_LEFT_WIDTH);
-  const [rightWidth, setRightWidth] = useState(DEFAULT_RIGHT_WIDTH);
   const [bottomHeight, setBottomHeight] = useState(0);
   // BottomPanel keeps mounting across collapse so terminals survive.
   // Toggling visibility or drag-collapse leaves this true; only an explicit
@@ -127,15 +124,10 @@ export function Workbench() {
   const [bottomActivated, setBottomActivated] = useState(false);
 
   const lastLeftWidthRef = useRef(DEFAULT_LEFT_WIDTH);
-  const lastRightWidthRef = useRef(DEFAULT_RIGHT_WIDTH);
-  const lastBottomHeightRef = useRef(DEFAULT_BOTTOM_HEIGHT);
-
   const leftProgressRef = useRef(0);
-  const rightProgressRef = useRef(0);
   const bottomProgressRef = useRef(0);
 
   const leftCollapsed = leftWidth === 0;
-  const rightCollapsed = rightWidth === 0;
   const bottomCollapsed = bottomHeight === 0;
 
   useEffect(() => {
@@ -418,21 +410,6 @@ export function Workbench() {
     }
   }, []);
 
-  const onRightStart = () => {
-    rightProgressRef.current = rightWidth;
-  };
-  const onRightResize = useCallback((delta: number) => {
-    rightProgressRef.current -= delta;
-    const p = rightProgressRef.current;
-    if (p < SIDE_THRESHOLD) {
-      setRightWidth(0);
-    } else {
-      const w = Math.min(p, SIDE_MAX);
-      setRightWidth(w);
-      lastRightWidthRef.current = w;
-    }
-  }, []);
-
   const onBottomStart = () => {
     bottomProgressRef.current = bottomHeight;
   };
@@ -444,30 +421,11 @@ export function Workbench() {
     } else {
       const h = Math.min(p, SIDE_MAX);
       setBottomHeight(h);
-      lastBottomHeightRef.current = h;
       // Drag-expanding from a hidden state re-activates the panel
       setBottomActivated(true);
     }
   }, []);
 
-  const toggleRight = () => {
-    if (rightCollapsed) setRightWidth(lastRightWidthRef.current);
-    else {
-      lastRightWidthRef.current = rightWidth;
-      setRightWidth(0);
-    }
-  };
-  // Soft toggle: only flips visibility. BottomPanel stays mounted so its
-  // terminal sessions and any state are preserved across collapse/restore.
-  const toggleBottom = () => {
-    if (bottomCollapsed) {
-      setBottomActivated(true);
-      setBottomHeight(lastBottomHeightRef.current);
-    } else {
-      lastBottomHeightRef.current = bottomHeight;
-      setBottomHeight(0);
-    }
-  };
   // Hard close: invoked by the × button inside the BottomPanel header.
   // Unmounts the panel, which tears down its terminal sessions.
   const hardCloseBottom = () => {
@@ -484,13 +442,14 @@ export function Workbench() {
       <div className="titlebar">
         <span className="titlebar__brand">osheep</span>
         <span className="titlebar__sep">·</span>
-        <span className="titlebar__project">
-          {workspaceId ?? "未选择工作区"}
-        </span>
+        <button
+          className="titlebar__project-btn"
+          onClick={() => setPicking(true)}
+          title={workspaceId ? "切换工作区" : "选择工作区"}
+        >
+          {workspaceId ?? "选择工作区"}
+        </button>
         <div className="titlebar__actions">
-          <button className="tb-btn" onClick={() => setPicking(true)}>
-            选择工作区…
-          </button>
           <button
             className="tb-btn"
             onClick={saveActive}
@@ -498,19 +457,6 @@ export function Workbench() {
           >
             保存
           </button>
-          <span className="titlebar__spacer" />
-          <LayoutToggle
-            active={!bottomCollapsed}
-            title="切换底部面板"
-            onClick={toggleBottom}
-            icon={<PanelBottomIcon />}
-          />
-          <LayoutToggle
-            active={!rightCollapsed}
-            title="切换右侧栏"
-            onClick={toggleRight}
-            icon={<PanelRightIcon />}
-          />
         </div>
       </div>
 
@@ -537,6 +483,16 @@ export function Workbench() {
 
         {!leftCollapsed && (
           <div className="side" style={{ width: leftWidth }}>
+            {activeView === "workflow" && (
+              <AiPanel
+                workspaceId={workspaceId}
+                onOpenWorkflow={openWorkflowTab}
+                activeWorkflowId={
+                  activeTab?.kind === "workflow" ? activeTab.workflowId : null
+                }
+                refreshSignal={aiRefreshSignal}
+              />
+            )}
             {activeView === "explorer" &&
               (workspaceId ? (
                 <FileTree
@@ -557,13 +513,7 @@ export function Workbench() {
                     <span className="side-view__title">资源管理器</span>
                   </div>
                   <div className="side-view__body side-view__body--padded">
-                    <button
-                      className="primary-btn"
-                      onClick={() => setPicking(true)}
-                    >
-                      选择工作区
-                    </button>
-                    <div className="muted" style={{ marginTop: 12 }}>
+                    <div className="muted">
                       所有文件由后端 osheep-backend 提供
                     </div>
                   </div>
@@ -730,23 +680,6 @@ export function Workbench() {
           )}
         </div>
 
-        <Resizer
-          axis="x"
-          onResizeStart={onRightStart}
-          onResize={onRightResize}
-        />
-        {!rightCollapsed && (
-          <div className="side side--right" style={{ width: rightWidth }}>
-            <AiPanel
-              workspaceId={workspaceId}
-              onOpenWorkflow={openWorkflowTab}
-              activeWorkflowId={
-                activeTab?.kind === "workflow" ? activeTab.workflowId : null
-              }
-              refreshSignal={aiRefreshSignal}
-            />
-          </div>
-        )}
       </div>
 
       {picking && (
@@ -757,62 +690,6 @@ export function Workbench() {
         />
       )}
     </div>
-  );
-}
-
-function LayoutToggle({
-  active,
-  title,
-  icon,
-  onClick,
-}: {
-  active: boolean;
-  title: string;
-  icon: React.ReactNode;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      className={"icon-btn icon-btn--lg" + (active ? " is-active" : "")}
-      title={title}
-      onClick={onClick}
-    >
-      {icon}
-    </button>
-  );
-}
-
-function PanelBottomIcon() {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      width="16"
-      height="16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.4"
-      strokeLinejoin="round"
-    >
-      <rect x="3" y="4" width="18" height="16" rx="1" />
-      <path d="M3 15h18" />
-    </svg>
-  );
-}
-
-function PanelRightIcon() {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      width="16"
-      height="16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.4"
-      strokeLinejoin="round"
-    >
-      <rect x="3" y="4" width="18" height="16" rx="1" />
-      <path d="M15 4v16" />
-    </svg>
   );
 }
 
