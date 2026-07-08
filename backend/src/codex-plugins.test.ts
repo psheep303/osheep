@@ -145,8 +145,34 @@ test("snapshot merges CLI, config, cache, and personal marketplace records", asy
       name: "superpowers",
       version: "5.1.3",
       description: "Planning workflows",
-      interface: { displayName: "Superpowers" },
+      interface: {
+        displayName: "Superpowers",
+        composerIcon: "./assets/superpowers-small.svg",
+        brandColor: "#F59E0B",
+      },
     }
+  );
+  await fs.mkdir(
+    path.join(
+      paths.codexPluginCache,
+      "openai-api-curated",
+      "superpowers",
+      "3fdeeb49",
+      "assets"
+    ),
+    { recursive: true }
+  );
+  await fs.writeFile(
+    path.join(
+      paths.codexPluginCache,
+      "openai-api-curated",
+      "superpowers",
+      "3fdeeb49",
+      "assets",
+      "superpowers-small.svg"
+    ),
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"></svg>',
+    "utf8"
   );
   await writeJson(paths.personalMarketplace, {
     name: "personal",
@@ -203,6 +229,8 @@ test("snapshot merges CLI, config, cache, and personal marketplace records", asy
   ]);
   const superpowers = snapshot.plugins.find((p) => p.selector === "superpowers@openai-api-curated");
   assert.equal(superpowers?.displayName, "Superpowers");
+  assert.match(superpowers?.icon ?? "", /^data:image\/svg\+xml;base64,/);
+  assert.equal(superpowers?.iconColor, "#F59E0B");
   assert.equal(superpowers?.status.enabled, true);
   assert.equal(superpowers?.status.cached, true);
   assert.equal(superpowers?.status.installed, true);
