@@ -1,6 +1,12 @@
 import type { ReactNode } from "react";
 
-export type ViewId = "explorer" | "search" | "git" | "ai-settings" | "codex-plugins";
+export type ViewId =
+  | "workflow"
+  | "explorer"
+  | "search"
+  | "git"
+  | "ai-settings"
+  | "codex-plugins";
 
 interface ActivityBarProps {
   activeView: ViewId;
@@ -16,6 +22,7 @@ interface Item {
 }
 
 const ITEMS: Item[] = [
+  { id: "workflow", label: "Workflow", icon: <WorkflowIcon /> },
   { id: "explorer", label: "资源管理器", icon: <FilesIcon /> },
   { id: "search", label: "搜索", icon: <SearchIcon /> },
   { id: "git", label: "源代码管理", icon: <GitIcon /> },
@@ -53,6 +60,28 @@ export function ActivityBar({ activeView, collapsed, onSelect, onOpenSettings }:
         </button>
       </div>
     </div>
+  );
+}
+
+function WorkflowIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="22"
+      height="22"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <circle cx="6" cy="7" r="2.2" />
+      <circle cx="18" cy="7" r="2.2" />
+      <circle cx="12" cy="17" r="2.2" />
+      <path d="M8.1 8.2 10.7 15" />
+      <path d="M15.9 8.2 13.3 15" />
+      <path d="M8.4 7h7.2" />
+    </svg>
   );
 }
 
