@@ -6,6 +6,7 @@ import {
   createAgentTerminalControlForTest,
   finishAgentTerminalSuccess,
   shouldAutoEnterChoice,
+  type AgentEffort,
 } from "./ai-terminal.js";
 
 test("Claude Code terminal command uses acceptEdits by default", () => {
@@ -24,12 +25,21 @@ test("Claude Code terminal command can bypass permissions explicitly", () => {
   );
 });
 
+test("Claude Code terminal command maps auto permission mode literally", () => {
+  assert.equal(
+    buildAgentTerminalCommand("claude-cli", "default", {
+      claudePermissionMode: "auto",
+    }).command,
+    "claude --permission-mode auto"
+  );
+});
+
 test("Codex terminal command does not receive Claude permission flags", () => {
   assert.equal(
     buildAgentTerminalCommand("codex-cli", "gpt-5.1-codex", {
       claudePermissionMode: "bypassPermissions",
     }).command,
-    "codex --model gpt-5.1-codex"
+    "codex --ask-for-approval on-failure --sandbox workspace-write --model gpt-5.1-codex"
   );
 });
 
@@ -51,16 +61,18 @@ test("Codex approval modes map to the official startup flags", () => {
   );
   assert.equal(
     buildAgentTerminalCommand("codex-cli", "default", {
-      codexApproval: "auto",
+      codexApproval: "untrusted",
+      codexSandbox: "read-only",
     }).command,
-    "codex --full-auto"
+    "codex --ask-for-approval untrusted --sandbox read-only"
   );
   assert.equal(
     buildAgentTerminalCommand("codex-cli", "gpt-5.1-codex", {
-      codexApproval: "full-access",
+      codexApproval: "never",
+      codexSandbox: "danger-full-access",
       effort: "high",
     }).command,
-    "codex --dangerously-bypass-approvals-and-sandbox -c 'model_reasoning_effort=\"high\"' --model gpt-5.1-codex"
+    "codex --ask-for-approval never --sandbox danger-full-access -c 'model_reasoning_effort=\"high\"' --model gpt-5.1-codex"
   );
 });
 
@@ -74,12 +86,30 @@ test("Claude terminal command can start in plan mode with effort", () => {
   );
 });
 
+test("Claude terminal command passes ultracode effort through", () => {
+  assert.equal(
+    buildAgentTerminalCommand("claude-cli", "default", {
+      effort: "ultracode" as AgentEffort,
+    }).command,
+    "claude --permission-mode acceptEdits --effort ultracode"
+  );
+});
+
 test("Codex terminal command applies reasoning effort without an approval preset", () => {
   assert.equal(
     buildAgentTerminalCommand("codex-cli", "gpt-5.1-codex", {
       effort: "high",
     }).command,
-    "codex -c 'model_reasoning_effort=\"high\"' --model gpt-5.1-codex"
+    "codex --ask-for-approval on-failure --sandbox workspace-write -c 'model_reasoning_effort=\"high\"' --model gpt-5.1-codex"
+  );
+});
+
+test("Codex terminal command preserves xhigh reasoning effort", () => {
+  assert.equal(
+    buildAgentTerminalCommand("codex-cli", "gpt-5.1-codex", {
+      effort: "xhigh",
+    }).command,
+    "codex --ask-for-approval on-failure --sandbox workspace-write -c 'model_reasoning_effort=\"xhigh\"' --model gpt-5.1-codex"
   );
 });
 

@@ -7,6 +7,7 @@ import {
   type AgentTerminalFrame,
   type ClaudePermissionMode,
   type CodexApproval,
+  type CodexSandbox,
 } from "./ai-terminal.js";
 import { callRemoteMcp, discoverRemoteMcp, type RemoteMcpTool } from "./remote-mcp.js";
 import { readFileText, writeFileText } from "./fs-ops.js";
@@ -231,9 +232,11 @@ export async function startWorkflowRun(
   if (activeRuns.has(key)) throw new Error("Workflow is already running.");
   const workspace = await resolveWorkspace(workspaceId);
   let record = await getWorkflow(workspace.path, workflowId);
-  const ordered = requestedNodeIds?.length
-    ? requestedNodeIds
-    : topoOrder(record).nodeIds;
+  const plan = requestedNodeIds?.length
+    ? { nodeIds: requestedNodeIds }
+    : planWorkflowRunNodeIds(record);
+  if (plan.error) throw new Error(plan.error);
+  const ordered = plan.nodeIds;
   if (ordered.length === 0) throw new Error("Workflow has no runnable blocks.");
 
   const run: WorkflowRun = {
@@ -242,7 +245,9 @@ export async function startWorkflowRun(
     startedAt: Date.now(),
     nodeIds: ordered,
   };
-  const resetIds = new Set(ordered);
+  const resetIds = new Set(
+    requestedNodeIds?.length ? ordered : record.nodes.map((node) => node.id)
+  );
   record = await updateWorkflow(workspace.path, workflowId, (current) => ({
     ...current,
     nodes: current.nodes.map((node) =>
@@ -253,6 +258,7 @@ export async function startWorkflowRun(
             summary: "",
             rawOutput: "",
             error: "",
+            config: clearRunDetails(node.config),
             startedAt: undefined,
             completedAt: undefined,
           }
@@ -432,6 +438,7 @@ async function executeAgentNode(
       claudePermissionMode: agentClaudePermissionMode(node),
       mode: agentMode(node),
       codexApproval: agentCodexApproval(node),
+      codexSandbox: agentCodexSandbox(node),
       effort: agentEffort(node),
       alwaysEnter: agentAlwaysEnter(node),
       signal: abort.signal,
@@ -923,11 +930,45 @@ async function executeLocalNode(
   throw new Error(`${node.title} cannot run as a local block.`);
 }
 
-function topoOrder(record: WorkflowRecord): { nodeIds: string[]; error?: string } {
-  const nodeIds = new Set(record.nodes.map((node) => node.id));
+export function planWorkflowRunNodeIds(
+  record: WorkflowRecord
+): { nodeIds: string[]; error?: string } {
+  const allNodeIds = new Set(record.nodes.map((node) => node.id));
+  const outgoing = new Map<string, string[]>();
+  for (const node of record.nodes) outgoing.set(node.id, []);
+  for (const edge of record.edges) {
+    if (!allNodeIds.has(edge.from) || !allNodeIds.has(edge.to)) continue;
+    outgoing.get(edge.from)?.push(edge.to);
+  }
+
+  const roots = record.nodes
+    .filter((node) => isTriggerKind(nodeKind(node)))
+    .map((node) => node.id);
+  const reachable = new Set<string>();
+  const queue = [...roots];
+  while (queue.length) {
+    const id = queue.shift()!;
+    if (reachable.has(id)) continue;
+    reachable.add(id);
+    for (const to of outgoing.get(id) ?? []) queue.push(to);
+  }
+
+  return topoOrder(record, reachable);
+}
+
+function topoOrder(
+  record: WorkflowRecord,
+  onlyNodeIds?: Set<string>
+): { nodeIds: string[]; error?: string } {
+  const nodeIds = new Set(
+    record.nodes
+      .filter((node) => !onlyNodeIds || onlyNodeIds.has(node.id))
+      .map((node) => node.id)
+  );
   const indegree = new Map<string, number>();
   const outgoing = new Map<string, string[]>();
   for (const node of record.nodes) {
+    if (!nodeIds.has(node.id)) continue;
     indegree.set(node.id, 0);
     outgoing.set(node.id, []);
   }
@@ -937,7 +978,7 @@ function topoOrder(record: WorkflowRecord): { nodeIds: string[]; error?: string 
     outgoing.get(edge.from)?.push(edge.to);
   }
   const queue = record.nodes
-    .filter((node) => (indegree.get(node.id) ?? 0) === 0)
+    .filter((node) => nodeIds.has(node.id) && (indegree.get(node.id) ?? 0) === 0)
     .map((node) => node.id);
   const ordered: string[] = [];
   while (queue.length) {
@@ -949,7 +990,7 @@ function topoOrder(record: WorkflowRecord): { nodeIds: string[]; error?: string 
       if (next === 0) queue.push(to);
     }
   }
-  if (ordered.length !== record.nodes.length) {
+  if (ordered.length !== nodeIds.size) {
     return { nodeIds: [], error: "Workflow has a cycle." };
   }
   return { nodeIds: ordered };
@@ -1638,7 +1679,14 @@ function agentAutoSuccess(node: WorkflowNode): boolean {
 
 function agentClaudeMode(node: WorkflowNode): string {
   const value = node.config?.claudeMode;
-  if (value === "manual" || value === "acceptEdits" || value === "plan" || value === "auto") {
+  if (
+    value === "manual" ||
+    value === "acceptEdits" ||
+    value === "plan" ||
+    value === "auto" ||
+    value === "dontAsk" ||
+    value === "bypassPermissions"
+  ) {
     return value;
   }
   // Migrate legacy configs that split mode + claudePermissionMode.
@@ -1652,6 +1700,10 @@ function agentClaudePermissionMode(node: WorkflowNode): ClaudePermissionMode {
     case "manual":
       return "default";
     case "auto":
+      return "auto";
+    case "dontAsk":
+      return "dontAsk";
+    case "bypassPermissions":
       return "bypassPermissions";
     default:
       return "acceptEdits";
@@ -1660,8 +1712,21 @@ function agentClaudePermissionMode(node: WorkflowNode): ClaudePermissionMode {
 
 function agentCodexApproval(node: WorkflowNode): CodexApproval {
   const value = node.config?.codexApproval;
-  if (value === "auto" || value === "full-access") return value;
-  return "on-request";
+  if (value === "untrusted" || value === "on-failure" || value === "on-request" || value === "never") {
+    return value;
+  }
+  if (value === "auto") return "on-failure";
+  if (value === "full-access") return "never";
+  return "on-failure";
+}
+
+function agentCodexSandbox(node: WorkflowNode): CodexSandbox {
+  const value = node.config?.codexSandbox;
+  if (value === "read-only" || value === "workspace-write" || value === "danger-full-access") {
+    return value;
+  }
+  if (node.config?.codexApproval === "full-access") return "danger-full-access";
+  return "workspace-write";
 }
 
 function agentRetryCount(node: WorkflowNode): number {
@@ -1692,7 +1757,8 @@ function agentEffort(node: WorkflowNode): AgentEffort | undefined {
     value === "medium" ||
     value === "high" ||
     value === "xhigh" ||
-    value === "max"
+    value === "max" ||
+    value === "ultracode"
   ) {
     return value;
   }
@@ -1758,6 +1824,7 @@ function agentRunSnapshot(
       claudePermissionMode: agentClaudePermissionMode(node),
       mode: agentMode(node),
       codexApproval: agentCodexApproval(node),
+      codexSandbox: agentCodexSandbox(node),
       effort: agentEffort(node),
     }).command,
     stdout: logs.filter((log) => log.stream === "stdout").map((log) => log.content).join(""),
@@ -1809,6 +1876,15 @@ function finalizeRunDetailsOnError(node: WorkflowNode, message: string): Record<
       stderr: `${typeof raw.stderr === "string" ? raw.stderr : ""}\n${message}`,
     },
   };
+}
+
+function clearRunDetails(
+  config: WorkflowNode["config"]
+): WorkflowNode["config"] | undefined {
+  if (!config || !Object.prototype.hasOwnProperty.call(config, "runDetails")) return config;
+  const { runDetails: _runDetails, ...rest } = config;
+  void _runDetails;
+  return rest;
 }
 
 function shouldReplaceMcpArguments(value: string): boolean {
