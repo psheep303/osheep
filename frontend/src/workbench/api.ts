@@ -1314,7 +1314,10 @@ export interface AiTerminalFrame {
       | "prompt-injected"
       | "prompt-sent"
       | "prompt-timeout"
+      | "waiting-for-choice"
+      | "ready-for-success"
       | "auto-finished"
+      | "manual-success"
       | "exited";
   code?: number | null;
   signal?: number | string | null;
@@ -1328,6 +1331,16 @@ export interface AiTerminalResult {
   signal: number | string | null;
 }
 
+export type AiTerminalMode = "default" | "goal" | "plan";
+export type AiTerminalEffort =
+  | "off"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max";
+
 export async function aiChatTerminalStream(
   workspaceId: string,
   input: {
@@ -1335,7 +1348,11 @@ export async function aiChatTerminalStream(
     messages: AiChatMessage[];
     kind?: "claude-cli" | "codex-cli";
     terminalPrompt?: string;
-    autoContinue?: boolean;
+    autoSuccess?: boolean;
+    claudePermissionMode?: "acceptEdits" | "bypassPermissions";
+    mode?: AiTerminalMode;
+    effort?: AiTerminalEffort;
+    alwaysEnter?: boolean;
   },
   onFrame: (frame: AiTerminalFrame) => void,
   signal?: AbortSignal
@@ -1476,6 +1493,19 @@ export async function setAiTerminalAutoContinue(
   );
 }
 
+export async function setAiTerminalAutoSuccess(
+  workspaceId: string,
+  sessionId: string,
+  autoSuccess: boolean
+): Promise<void> {
+  await http.post(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/ai/chat/terminal/${encodeURIComponent(
+      sessionId
+    )}/auto-success`,
+    { autoSuccess }
+  );
+}
+
 export async function pauseAiTerminal(
   workspaceId: string,
   sessionId: string
@@ -1484,6 +1514,17 @@ export async function pauseAiTerminal(
     `/api/workspaces/${encodeURIComponent(workspaceId)}/ai/chat/terminal/${encodeURIComponent(
       sessionId
     )}/pause`
+  );
+}
+
+export async function finishAiTerminalSuccess(
+  workspaceId: string,
+  sessionId: string
+): Promise<void> {
+  await http.post(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/ai/chat/terminal/${encodeURIComponent(
+      sessionId
+    )}/success`
   );
 }
 

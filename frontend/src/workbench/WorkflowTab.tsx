@@ -17,21 +17,22 @@ import {
   aiChatStream,
   aiChatTerminalStream,
   callRemoteMcp,
-  continueAiTerminal,
   discoverRemoteMcp,
   execRun,
   execRunStream,
+  finishAiTerminalSuccess,
   getWorkflow as apiGetWorkflow,
-  injectAiTerminalPrompt,
   openTerminalSocket,
   pauseAiTerminal,
   readFile,
   runWorkflow as apiRunWorkflow,
   saveWorkflow as apiSaveWorkflow,
-  setAiTerminalAutoContinue,
+  setAiTerminalAutoSuccess,
   stopWorkflow as apiStopWorkflow,
   writeFile,
   type AiTerminalFrame,
+  type AiTerminalEffort,
+  type AiTerminalMode,
   type AiTerminalResult,
   type RunResult,
   type RemoteMcpTool,
@@ -235,7 +236,7 @@ interface WorkflowRunDetailSnapshot {
   transcript: string;
   terminalSessionId?: string;
   terminalStatus?: string;
-  autoContinue?: boolean;
+  autoSuccess?: boolean;
   paused?: boolean;
   exitCode?: number | null;
   signal?: string | null;
@@ -273,6 +274,10 @@ const CONFIGURED_LOCAL_KINDS = new Set<WorkflowNodeKind>([
 ]);
 const HTTP_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
 const HTTP_RESPONSE_TYPES = ["auto", "json", "text"] as const;
+const CODEX_AGENT_MODES = ["default", "goal"] as const;
+const CLAUDE_AGENT_MODES = ["default", "plan"] as const;
+const CODEX_AGENT_EFFORTS = ["off", "minimal", "low", "medium", "high"] as const;
+const CLAUDE_AGENT_EFFORTS = ["off", "low", "medium", "high", "max"] as const;
 const IF_OPERATORS = [
   "equals",
   "notEquals",
@@ -345,6 +350,15 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
     providerKind: "claude-cli",
     model: "default",
     icon: "claude",
+    config: {
+      effort: "high",
+      mode: "default",
+      retries: 0,
+      retryForever: false,
+      alwaysEnter: false,
+      autoSuccess: true,
+      claudePermissionMode: "acceptEdits",
+    },
   },
   {
     category: "ai",
@@ -354,6 +368,14 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
     providerKind: "codex-cli",
     model: "default",
     icon: "codex",
+    config: {
+      effort: "high",
+      mode: "default",
+      retries: 0,
+      retryForever: false,
+      alwaysEnter: false,
+      autoSuccess: true,
+    },
   },
   {
     category: "network",
@@ -1487,7 +1509,7 @@ export function WorkflowTab({
         const runLogs: Array<{ stream: "stdout" | "stderr"; content: string }> = [];
         let terminalSessionId = "";
         let terminalStatus = "";
-        const autoContinue = agentAutoContinue(node);
+        const autoSuccess = agentAutoSuccess(node);
         const updateAgentDetails = (
           status: WorkflowRunDetailSnapshot["status"],
           completedAt?: number,
@@ -1504,7 +1526,7 @@ export function WorkflowTab({
                 runLogs,
                 terminalSessionId || undefined,
                 terminalStatus || undefined,
-                autoContinue,
+                autoSuccess,
                 paused
               ),
             },
@@ -1529,7 +1551,11 @@ export function WorkflowTab({
             kind: node.providerKind,
             messages: [{ role: "user", content: prompt }],
             terminalPrompt,
-            autoContinue,
+            autoSuccess,
+            claudePermissionMode: agentClaudePermissionMode(node),
+            mode: agentMode(node),
+            effort: agentEffort(node),
+            alwaysEnter: agentAlwaysEnter(node),
           },
           (frame) => {
             if (frame.type === "session" && frame.sessionId) {
@@ -1544,6 +1570,7 @@ export function WorkflowTab({
           },
           ac.signal,
           agentRetryCount(node),
+          agentRetryForever(node),
           appendLog
         );
         abortRef.current = null;
@@ -1576,7 +1603,7 @@ export function WorkflowTab({
             runLogs,
             terminalSessionId || result.result?.sessionId,
             terminalStatus || undefined,
-            autoContinue
+            autoSuccess
           );
           if (result.result?.transcript) stoppedDetails.transcript = result.result.transcript;
           if (result.result?.content) stoppedDetails.stdout = result.result.content;
@@ -1609,7 +1636,7 @@ export function WorkflowTab({
           runLogs,
           terminalSessionId || result.result?.sessionId,
           terminalStatus || undefined,
-          autoContinue
+          autoSuccess
         );
         if (result.result?.transcript) successDetails.transcript = result.result.transcript;
         if (result.result?.content) successDetails.stdout = result.result.content;
@@ -2702,7 +2729,7 @@ function WorkflowDetailsPanel({
             workspaceId={workspaceId}
             sessionId={snapshot.terminalSessionId}
             terminalStatus={snapshot.terminalStatus}
-            initialAutoContinue={snapshot.autoContinue ?? true}
+            initialAutoSuccess={snapshot.autoSuccess ?? true}
           />
         ) : (
           <pre>
@@ -2721,24 +2748,24 @@ function WorkflowAgentTerminal({
   workspaceId,
   sessionId,
   terminalStatus,
-  initialAutoContinue,
+  initialAutoSuccess,
 }: {
   workspaceId: string;
   sessionId: string;
   terminalStatus?: string;
-  initialAutoContinue: boolean;
+  initialAutoSuccess: boolean;
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<XTerm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const [paused, setPaused] = useState(false);
-  const [injecting, setInjecting] = useState(false);
-  const [autoContinue, setAutoContinue] = useState(initialAutoContinue);
+  const [autoSuccess, setAutoSuccess] = useState(initialAutoSuccess);
+  const canMarkSuccess = canManuallyMarkAgentSuccess(terminalStatus);
 
   useEffect(() => {
-    setAutoContinue(initialAutoContinue);
-  }, [initialAutoContinue, sessionId]);
+    setAutoSuccess(initialAutoSuccess);
+  }, [initialAutoSuccess, sessionId]);
 
   useEffect(() => {
     if (!hostRef.current) return;
@@ -2826,29 +2853,15 @@ function WorkflowAgentTerminal({
     };
   }, [sessionId]);
 
-  const injectPrompt = async () => {
-    setInjecting(true);
+  const updateAutoSuccess = async (enabled: boolean) => {
+    setAutoSuccess(enabled);
     try {
-      await injectAiTerminalPrompt(workspaceId, sessionId, {
-        submit: autoContinue,
-      });
+      await setAiTerminalAutoSuccess(workspaceId, sessionId, enabled);
       termRef.current?.focus();
     } catch (e) {
-      termRef.current?.writeln(`\r\n\x1b[31m[osheep] inject failed: ${(e as Error).message}\x1b[0m`);
-    } finally {
-      setInjecting(false);
-    }
-  };
-
-  const updateAutoContinue = async (enabled: boolean) => {
-    setAutoContinue(enabled);
-    try {
-      await setAiTerminalAutoContinue(workspaceId, sessionId, enabled);
-      termRef.current?.focus();
-    } catch (e) {
-      setAutoContinue(!enabled);
+      setAutoSuccess(!enabled);
       termRef.current?.writeln(
-        `\r\n\x1b[31m[osheep] auto continue update failed: ${
+        `\r\n\x1b[31m[osheep] auto success update failed: ${
           (e as Error).message
         }\x1b[0m`
       );
@@ -2866,15 +2879,13 @@ function WorkflowAgentTerminal({
     }
   };
 
-  const continueSession = async () => {
-    setPaused(false);
+  const markSuccess = async () => {
     try {
-      await continueAiTerminal(workspaceId, sessionId);
+      await finishAiTerminalSuccess(workspaceId, sessionId);
       termRef.current?.focus();
     } catch (e) {
-      setPaused(true);
       termRef.current?.writeln(
-        `\r\n\x1b[31m[osheep] continue failed: ${(e as Error).message}\x1b[0m`
+        `\r\n\x1b[31m[osheep] success failed: ${(e as Error).message}\x1b[0m`
       );
     }
   };
@@ -2891,24 +2902,26 @@ function WorkflowAgentTerminal({
         </button>
         <button
           type="button"
-          onClick={() => void continueSession()}
+          onClick={() => void markSuccess()}
+          disabled={!canMarkSuccess}
         >
-          continue
-        </button>
-        <button type="button" onClick={injectPrompt} disabled={injecting}>
-          {injecting ? "injecting" : "inject prompt"}
+          success
         </button>
         <label className="workflow-run-details__toggle">
           <input
             type="checkbox"
-            checked={autoContinue}
-            onChange={(e) => void updateAutoContinue(e.target.checked)}
+            checked={autoSuccess}
+            onChange={(e) => void updateAutoSuccess(e.target.checked)}
           />
-          <span>auto continue</span>
+          <span>auto success</span>
         </label>
         <span>
           {paused
             ? "manual input enabled"
+            : terminalStatus === "waiting-for-choice"
+              ? "waiting for user selection"
+              : terminalStatus === "ready-for-success"
+                ? "ready to mark success"
             : terminalStatus === "waiting-for-input"
               ? "waiting for CLI input"
               : terminalStatus === "prompt-injected"
@@ -3019,6 +3032,9 @@ function WorkflowNodeInspector({
   const jsonConfig = jsonNodeConfig(node);
   const showOutput = kind !== "markdown";
   const runDetails = runDetailsSnapshot(node);
+  const waitingForChoice =
+    isAgent && node.status === "running" && runDetails?.terminalStatus === "waiting-for-choice";
+  const waitingAgentLabel = node.providerKind === "claude-cli" ? "Claude Code" : "Codex";
   const updateConfig = (patch: Record<string, unknown>) =>
     onUpdate({ config: { ...(node.config ?? {}), ...patch } });
 
@@ -3051,6 +3067,15 @@ function WorkflowNodeInspector({
         </button>
       </div>
 
+      {waitingForChoice && (
+        <div className="workflow-inspector__notice">
+          <span>{waitingAgentLabel} 正在等待用户选择</span>
+          <button type="button" onClick={onShowDetails}>
+            see details
+          </button>
+        </div>
+      )}
+
       <label className="workflow-inspector__field">
         <span>Name</span>
         <TemplateInput
@@ -3072,6 +3097,24 @@ function WorkflowNodeInspector({
             />
           </label>
           <label className="workflow-inspector__field">
+            <span>Effort ({formatAgentOption(agentEffort(node))})</span>
+            <EffortControl
+              value={agentEffort(node)}
+              options={agentEffortOptions(node)}
+              onChange={(value) => updateConfig({ effort: value })}
+              disabled={running}
+            />
+          </label>
+          <label className="workflow-inspector__field">
+            <span>Mode</span>
+            <SegmentedControl
+              value={agentMode(node)}
+              options={agentModeOptions(node)}
+              onChange={(value) => updateConfig({ mode: value })}
+              disabled={running}
+            />
+          </label>
+          <label className="workflow-inspector__field">
             <span>Retries</span>
             <input
               type="number"
@@ -3086,24 +3129,68 @@ function WorkflowNodeInspector({
                   },
                 })
               }
-              disabled={running}
+              disabled={running || agentRetryForever(node)}
             />
           </label>
+          <label className="workflow-inspector__check workflow-inspector__check--danger">
+            <input
+              type="checkbox"
+              checked={agentRetryForever(node)}
+              onChange={(e) => updateConfig({ retryForever: e.target.checked })}
+              disabled={running}
+            />
+            <span>Infinite retry</span>
+            <small>Warning</small>
+          </label>
+          {node.providerKind === "claude-cli" && (
+            <label className="workflow-inspector__field">
+              <span>Claude permissions</span>
+              <select
+                value={agentClaudePermissionMode(node)}
+                onChange={(e) =>
+                  updateConfig({
+                    claudePermissionMode:
+                      e.target.value === "bypassPermissions"
+                        ? "bypassPermissions"
+                        : "acceptEdits",
+                  })
+                }
+                disabled={running || agentMode(node) === "plan"}
+              >
+                <option value="acceptEdits">
+                  日常开发：自动接受文件修改（推荐）
+                </option>
+                <option value="bypassPermissions">
+                  完全不询问（危险）
+                </option>
+              </select>
+            </label>
+          )}
           <label className="workflow-inspector__check">
             <input
               type="checkbox"
-              checked={agentAutoContinue(node)}
+              checked={agentAutoSuccess(node)}
               onChange={(e) =>
                 onUpdate({
                   config: {
                     ...(node.config ?? {}),
-                    autoContinue: e.target.checked,
+                    autoSuccess: e.target.checked,
                   },
                 })
               }
               disabled={running}
             />
-            <span>Auto continue</span>
+            <span>Auto success</span>
+          </label>
+          <label className="workflow-inspector__check workflow-inspector__check--danger">
+            <input
+              type="checkbox"
+              checked={agentAlwaysEnter(node)}
+              onChange={(e) => updateConfig({ alwaysEnter: e.target.checked })}
+              disabled={running}
+            />
+            <span>Always enter</span>
+            <small>Warning</small>
           </label>
         </>
       )}
@@ -3631,6 +3718,51 @@ function SegmentedControl<T extends string>({
       ))}
     </div>
   );
+}
+
+function EffortControl({
+  value,
+  options,
+  onChange,
+  disabled,
+}: {
+  value: AiTerminalEffort;
+  options: readonly AiTerminalEffort[];
+  onChange: (value: AiTerminalEffort) => void;
+  disabled?: boolean;
+}) {
+  const index = Math.max(0, options.indexOf(value));
+  const pct = options.length > 1 ? index / (options.length - 1) : 0;
+  return (
+    <div
+      className={"workflow-effort-control" + (disabled ? " is-disabled" : "")}
+      style={{ "--effort-fill": `${pct * 100}%` } as CSSProperties}
+      role="group"
+      aria-label="Effort"
+    >
+      <span className="workflow-effort-control__track" aria-hidden />
+      {options.map((option, optionIndex) => (
+        <button
+          key={option}
+          type="button"
+          className={
+            "workflow-effort-control__dot" +
+            (optionIndex <= index && value !== "off" ? " is-filled" : "") +
+            (option === value ? " is-active" : "")
+          }
+          aria-label={`Effort ${formatAgentOption(option)}`}
+          title={formatAgentOption(option)}
+          onClick={() => onChange(option)}
+          disabled={disabled}
+        />
+      ))}
+    </div>
+  );
+}
+
+function formatAgentOption(value: string): string {
+  if (value === "xhigh") return "XHigh";
+  return value ? value[0]!.toUpperCase() + value.slice(1) : value;
 }
 
 function renderTemplateHighlight(value: string): ReactNode {
@@ -4475,31 +4607,60 @@ async function runAiTerminalWithRetries(
     messages: Array<{ role: "user"; content: string }>;
     kind?: "claude-cli" | "codex-cli";
     terminalPrompt?: string;
-    autoContinue?: boolean;
+    autoSuccess?: boolean;
+    claudePermissionMode?: "acceptEdits" | "bypassPermissions";
+    mode?: AiTerminalMode;
+    effort?: AiTerminalEffort;
+    alwaysEnter?: boolean;
   },
   onFrame: (frame: AiTerminalFrame) => void,
   signal: AbortSignal,
   retries: number,
+  retryForever: boolean,
   onLog: (entry: { stream: "stdout" | "stderr"; content: string }) => void
 ): Promise<{ result: AiTerminalResult | null; aborted: boolean }> {
   let lastError: unknown = null;
   const attempts = Math.max(1, retries + 1);
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+  let attempt = 1;
+  while (true) {
     try {
       if (attempt > 1) {
-        onLog({ stream: "stderr", content: `\n[osheep] retry ${attempt - 1}/${retries}\n` });
+        onLog({
+          stream: "stderr",
+          content: `\n[osheep] retry ${attempt - 1}/${
+            retryForever ? "infinity" : retries
+          }\n`,
+        });
       }
-      return await aiChatTerminalStream(workspaceId, input, onFrame, signal);
+      return await aiChatTerminalStream(
+        workspaceId,
+        attempt > 1 ? continueOnlyTerminalInput(input) : input,
+        onFrame,
+        signal
+      );
     } catch (e) {
       lastError = e;
-      if (signal.aborted || attempt >= attempts) throw e;
+      if (signal.aborted || (!retryForever && attempt >= attempts)) throw e;
       onLog({
         stream: "stderr",
         content: `\n[osheep] attempt ${attempt} failed: ${(e as Error).message}\n`,
       });
+      attempt += 1;
+      await waitMs(1_000);
     }
   }
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+function continueOnlyTerminalInput<T extends {
+  messages: Array<{ role: "user"; content: string }>;
+  terminalPrompt?: string;
+}>(input: T): T {
+  return {
+    ...input,
+    messages: [{ role: "user", content: "继续" }],
+    terminalPrompt: "继续",
+  };
 }
 
 function agentRetryCount(node: WorkflowNode): number {
@@ -4508,8 +4669,64 @@ function agentRetryCount(node: WorkflowNode): number {
   return clamp(value, 0, 5);
 }
 
-function agentAutoContinue(node: WorkflowNode): boolean {
-  return node.config?.autoContinue !== false;
+function agentRetryForever(node: WorkflowNode): boolean {
+  return node.config?.retryForever === true;
+}
+
+function agentAlwaysEnter(node: WorkflowNode): boolean {
+  return node.config?.alwaysEnter === true;
+}
+
+function agentMode(node: WorkflowNode): AiTerminalMode {
+  const value = node.config?.mode;
+  if (node.providerKind === "codex-cli" && value === "goal") return "goal";
+  if (node.providerKind === "claude-cli" && value === "plan") return "plan";
+  return "default";
+}
+
+function agentModeOptions(node: WorkflowNode): readonly AiTerminalMode[] {
+  return node.providerKind === "claude-cli" ? CLAUDE_AGENT_MODES : CODEX_AGENT_MODES;
+}
+
+function agentEffort(node: WorkflowNode): AiTerminalEffort {
+  const value = node.config?.effort;
+  if (value === "off" || value === "low" || value === "medium" || value === "high") {
+    return value;
+  }
+  if (node.providerKind === "claude-cli") {
+    if (value === "xhigh" || value === "max") return value;
+    if (value === "minimal") return "low";
+  } else {
+    if (value === "minimal") return "minimal";
+    if (value === "xhigh" || value === "max") return "high";
+  }
+  return "off";
+}
+
+function agentEffortOptions(node: WorkflowNode): readonly AiTerminalEffort[] {
+  return node.providerKind === "claude-cli"
+    ? CLAUDE_AGENT_EFFORTS
+    : CODEX_AGENT_EFFORTS;
+}
+
+function canManuallyMarkAgentSuccess(status: string | undefined): boolean {
+  return (
+    status === "prompt-sent" ||
+    status === "waiting-for-choice" ||
+    status === "ready-for-success" ||
+    status === "auto-finished" ||
+    status === "manual-success"
+  );
+}
+
+function agentAutoSuccess(node: WorkflowNode): boolean {
+  return node.config?.autoSuccess !== false;
+}
+
+function agentClaudePermissionMode(node: WorkflowNode): "acceptEdits" | "bypassPermissions" {
+  return node.config?.claudePermissionMode === "bypassPermissions"
+    ? "bypassPermissions"
+    : "acceptEdits";
 }
 
 function agentRunSnapshot(
@@ -4520,7 +4737,7 @@ function agentRunSnapshot(
   logs: Array<{ stream: "stdout" | "stderr"; content: string }>,
   terminalSessionId?: string,
   terminalStatus?: string,
-  autoContinue?: boolean,
+  autoSuccess?: boolean,
   paused?: boolean
 ): WorkflowRunDetailSnapshot {
   const snapshot: WorkflowRunDetailSnapshot = {
@@ -4528,7 +4745,7 @@ function agentRunSnapshot(
     title: node.title,
     status,
     startedAt,
-    commandLine: `${node.providerKind === "codex-cli" ? "codex" : "claude"} ${node.model || "default"}`,
+    commandLine: agentTerminalCommandLine(node),
     stdout: logs.filter((log) => log.stream === "stdout").map((log) => log.content).join(""),
     stderr: logs.filter((log) => log.stream === "stderr").map((log) => log.content).join(""),
     transcript: formatTerminalTranscript(logs),
@@ -4536,9 +4753,56 @@ function agentRunSnapshot(
   if (completedAt !== undefined) snapshot.completedAt = completedAt;
   if (terminalSessionId) snapshot.terminalSessionId = terminalSessionId;
   if (terminalStatus) snapshot.terminalStatus = terminalStatus;
-  if (autoContinue !== undefined) snapshot.autoContinue = autoContinue;
+  if (autoSuccess !== undefined) snapshot.autoSuccess = autoSuccess;
   if (paused !== undefined) snapshot.paused = paused;
   return snapshot;
+}
+
+function agentTerminalCommandLine(node: WorkflowNode): string {
+  const base = node.providerKind === "codex-cli" ? "codex" : "claude";
+  const parts = [base];
+  const mode = agentMode(node);
+  const effort = agentEffortCliValue(node.providerKind, agentEffort(node));
+  if (node.providerKind === "claude-cli") {
+    parts.push(
+      "--permission-mode",
+      mode === "plan" ? "plan" : agentClaudePermissionMode(node)
+    );
+    if (effort) parts.push("--effort", effort);
+  } else {
+    if (mode === "goal") parts.push("--enable", "goals");
+    if (effort) parts.push("-c", `model_reasoning_effort="${effort}"`);
+  }
+  if (node.model && node.model !== "default") parts.push("--model", node.model);
+  return parts.join(" ");
+}
+
+function agentEffortCliValue(
+  providerKind: WorkflowProviderKind,
+  effort: AiTerminalEffort
+): string | null {
+  if (effort === "off") return null;
+  if (providerKind === "claude-cli") {
+    if (
+      effort === "low" ||
+      effort === "medium" ||
+      effort === "high" ||
+      effort === "xhigh" ||
+      effort === "max"
+    ) {
+      return effort;
+    }
+    return effort === "minimal" ? "low" : null;
+  }
+  if (
+    effort === "minimal" ||
+    effort === "low" ||
+    effort === "medium" ||
+    effort === "high"
+  ) {
+    return effort;
+  }
+  return effort === "xhigh" || effort === "max" ? "high" : null;
 }
 
 function commandRunSnapshot(
@@ -5718,6 +5982,7 @@ function runDetailsSnapshot(node: WorkflowNode): WorkflowRunDetailSnapshot | nul
   const value = node.config?.runDetails;
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const raw = value as Partial<WorkflowRunDetailSnapshot>;
+  const legacyAutoContinue = (raw as { autoContinue?: unknown }).autoContinue;
   if (raw.kind !== "agent" && raw.kind !== "command") return null;
   return {
     kind: raw.kind,
@@ -5743,8 +6008,12 @@ function runDetailsSnapshot(node: WorkflowNode): WorkflowRunDetailSnapshot | nul
       typeof raw.terminalSessionId === "string" ? raw.terminalSessionId : undefined,
     terminalStatus:
       typeof raw.terminalStatus === "string" ? raw.terminalStatus : undefined,
-    autoContinue:
-      typeof raw.autoContinue === "boolean" ? raw.autoContinue : undefined,
+    autoSuccess:
+      typeof raw.autoSuccess === "boolean"
+        ? raw.autoSuccess
+        : typeof legacyAutoContinue === "boolean"
+          ? legacyAutoContinue
+          : undefined,
     paused: typeof raw.paused === "boolean" ? raw.paused : undefined,
     exitCode:
       typeof raw.exitCode === "number" || raw.exitCode === null ? raw.exitCode : undefined,

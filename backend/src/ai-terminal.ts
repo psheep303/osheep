@@ -10,12 +10,43 @@ import {
 import type { WorkspaceInfo } from "./workspace.js";
 import type { CliProviderKind } from "./ai-cli.js";
 
+export type ClaudePermissionMode = "acceptEdits" | "bypassPermissions";
+export type AgentMode = "default" | "goal" | "plan";
+export type AgentEffort =
+  | "off"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max";
+export type AgentTerminalContentState =
+  | "empty"
+  | "waiting-for-choice"
+  | "ready-for-success";
+export type AgentTerminalStatus =
+  | "starting"
+  | "waiting-for-input"
+  | "ready"
+  | "prompt-injected"
+  | "prompt-sent"
+  | "prompt-timeout"
+  | "waiting-for-choice"
+  | "ready-for-success"
+  | "auto-finished"
+  | "manual-success"
+  | "exited";
+
 export interface AgentTerminalOptions {
   workspace: WorkspaceInfo;
   kind: CliProviderKind;
   model: string;
   prompt: string;
-  autoContinue?: boolean;
+  autoSuccess?: boolean;
+  claudePermissionMode?: ClaudePermissionMode;
+  mode?: AgentMode;
+  effort?: AgentEffort;
+  alwaysEnter?: boolean;
   signal?: AbortSignal;
   onFrame?: (frame: AgentTerminalFrame) => void;
 }
@@ -25,15 +56,7 @@ export type AgentTerminalFrame =
   | { type: "output"; data: string }
   | {
       type: "status";
-      status:
-        | "starting"
-        | "waiting-for-input"
-        | "ready"
-        | "prompt-injected"
-        | "prompt-sent"
-        | "prompt-timeout"
-        | "auto-finished"
-        | "exited";
+      status: AgentTerminalStatus;
     }
   | { type: "exit"; code: number | null; signal: number | string | null };
 
@@ -49,20 +72,24 @@ const DEFAULT_COLS = 120;
 const DEFAULT_ROWS = 34;
 const READY_TIMEOUT_MS = 8_000;
 const QUIET_READY_MS = 700;
-const AUTO_CONTINUE_GRACE_MS = 1_200;
 const RESPONSE_MIN_MS = 2_400;
 const RESPONSE_IDLE_MS = 6_000;
 const RESPONSE_MAX_MS = 20 * 60_000;
 const PASTE_CHUNK_SIZE = 2048;
+const ALWAYS_ENTER_COOLDOWN_MS = 1_500;
 
 interface AgentTerminalControl {
   prompt: string;
   createdAt: number;
-  autoContinue: boolean;
+  autoSuccess: boolean;
+  alwaysEnter: boolean;
   autoFinishPaused: boolean;
   promptInjected: boolean;
   promptSubmitted: boolean;
   promptSubmittedAt?: number;
+  manualSuccessRequested: boolean;
+  lastCompletionState?: AgentTerminalContentState;
+  lastAlwaysEnterAt?: number;
 }
 
 const controls = new Map<string, AgentTerminalControl>();
@@ -80,10 +107,12 @@ export async function runAgentTerminal(
   controls.set(session.id, {
     prompt: opts.prompt,
     createdAt: Date.now(),
-    autoContinue: opts.autoContinue !== false,
+    autoSuccess: opts.autoSuccess !== false,
+    alwaysEnter: opts.alwaysEnter === true,
     autoFinishPaused: false,
     promptInjected: false,
     promptSubmitted: false,
+    manualSuccessRequested: false,
   });
   opts.onFrame?.({ type: "session", sessionId: session.id });
 
@@ -123,7 +152,14 @@ export async function runAgentTerminal(
 
   try {
     opts.onFrame?.({ type: "status", status: "starting" });
-    writeRawInput(session, `${commandFor(opts.kind, opts.model)}\r`);
+    writeRawInput(
+      session,
+      `${buildAgentTerminalCommand(opts.kind, opts.model, {
+        claudePermissionMode: opts.claudePermissionMode,
+        mode: opts.mode,
+        effort: opts.effort,
+      }).command}\r`
+    );
     opts.onFrame?.({ type: "status", status: "waiting-for-input" });
     const ready = await waitForInputReady(
       opts.kind,
@@ -136,29 +172,25 @@ export async function runAgentTerminal(
     );
     if (!opts.signal?.aborted) {
       opts.onFrame?.({ type: "status", status: ready ? "ready" : "prompt-timeout" });
-      await injectAgentTerminalPrompt(session.id, { submit: false });
+      await injectAgentTerminalPrompt(session.id, { submit: true });
       opts.onFrame?.({ type: "status", status: "prompt-injected" });
-      if (isAgentTerminalAutoContinueEnabled(session.id)) {
-        await sleep(AUTO_CONTINUE_GRACE_MS, opts.signal);
-      }
-      if (!opts.signal?.aborted && isAgentTerminalAutoContinueEnabled(session.id)) {
-        await submitAgentTerminalPrompt(session.id);
-        opts.onFrame?.({ type: "status", status: "prompt-sent" });
-      } else if (!opts.signal?.aborted) {
-        opts.onFrame?.({ type: "status", status: "waiting-for-input" });
-      }
+      opts.onFrame?.({ type: "status", status: "prompt-sent" });
     }
     const completion = await waitForAgentCompletion(
       session.id,
       () => exited,
       () => lastOutputAt,
       () => extractTerminalContent(transcript, opts.prompt),
+      (status) => opts.onFrame?.({ type: "status", status }),
       opts.signal
     );
-    if (completion === "idle" || completion === "timeout") {
+    if (completion === "idle" || completion === "timeout" || completion === "manual-success") {
       const content = extractTerminalContent(transcript, opts.prompt);
       const cleanTranscript = cleanTerminalTranscript(transcript, opts.prompt);
-      opts.onFrame?.({ type: "status", status: "auto-finished" });
+      opts.onFrame?.({
+        type: "status",
+        status: completion === "manual-success" ? "manual-success" : "auto-finished",
+      });
       try {
         session.pty.kill();
       } catch {
@@ -170,7 +202,12 @@ export async function runAgentTerminal(
         content,
         transcript: cleanTranscript,
         exitCode: 0,
-        signal: completion === "timeout" ? "auto-timeout" : "auto-finished",
+        signal:
+          completion === "timeout"
+            ? "auto-timeout"
+            : completion === "manual-success"
+              ? "manual-success"
+              : "auto-finished",
       };
     }
     opts.onFrame?.({ type: "status", status: "exited" });
@@ -194,8 +231,43 @@ export function setAgentTerminalAutoContinue(
 ): { autoContinue: boolean } {
   const control = controls.get(sessionId);
   if (!control) throw new Error("No pending prompt for this terminal session.");
-  control.autoContinue = enabled;
-  return { autoContinue: control.autoContinue };
+  control.autoSuccess = enabled;
+  return { autoContinue: control.autoSuccess };
+}
+
+export function setAgentTerminalAutoSuccess(
+  sessionId: string,
+  enabled: boolean
+): { autoSuccess: boolean } {
+  const control = controls.get(sessionId);
+  if (!control) throw new Error("No pending prompt for this terminal session.");
+  control.autoSuccess = enabled;
+  return { autoSuccess: control.autoSuccess };
+}
+
+export function finishAgentTerminalSuccess(sessionId: string): void {
+  const control = controls.get(sessionId);
+  if (!control) throw new Error("No pending prompt for this terminal session.");
+  control.lastCompletionState = "ready-for-success";
+  control.manualSuccessRequested = true;
+}
+
+export function createAgentTerminalControlForTest(
+  sessionId: string,
+  patch: Partial<AgentTerminalControl> = {}
+): void {
+  controls.set(sessionId, {
+    prompt: "",
+    createdAt: Date.now(),
+    autoSuccess: true,
+    alwaysEnter: false,
+    autoFinishPaused: false,
+    promptInjected: true,
+    promptSubmitted: true,
+    promptSubmittedAt: Date.now(),
+    manualSuccessRequested: false,
+    ...patch,
+  });
 }
 
 export async function injectAgentTerminalPrompt(
@@ -209,7 +281,7 @@ export async function injectAgentTerminalPrompt(
     await writePrompt(session, control.prompt, false);
     control.promptInjected = true;
   }
-  const submit = options.submit ?? control.autoContinue;
+  const submit = options.submit ?? true;
   if (submit) {
     await submitAgentTerminalPrompt(sessionId);
   }
@@ -252,14 +324,79 @@ function markPromptSubmitted(control: AgentTerminalControl): void {
   control.autoFinishPaused = false;
 }
 
-function commandFor(kind: CliProviderKind, model: string): string {
+export function buildAgentTerminalCommand(
+  kind: CliProviderKind,
+  model: string,
+  options: {
+    claudePermissionMode?: ClaudePermissionMode;
+    mode?: AgentMode;
+    effort?: AgentEffort;
+  } = {}
+): { command: string } {
   const base = kind === "codex-cli" ? "codex" : "claude";
-  if (!model || model === "default") return base;
-  return `${base} --model ${quoteShell(model)}`;
+  const args: string[] = [];
+  if (kind === "claude-cli") {
+    args.push(
+      "--permission-mode",
+      options.mode === "plan" ? "plan" : options.claudePermissionMode ?? "acceptEdits"
+    );
+    const effort = agentEffortCliValue(kind, options.effort);
+    if (effort) args.push("--effort", effort);
+  } else {
+    if (options.mode === "goal") args.push("--enable", "goals");
+    const effort = agentEffortCliValue(kind, options.effort);
+    if (effort) {
+      args.push("-c", quoteCodexConfig(`model_reasoning_effort="${effort}"`));
+    }
+  }
+  if (model && model !== "default") args.push("--model", quoteShell(model));
+  return { command: [base, ...args].join(" ") };
 }
 
-function isAgentTerminalAutoContinueEnabled(sessionId: string): boolean {
-  return controls.get(sessionId)?.autoContinue ?? true;
+function agentEffortCliValue(
+  kind: CliProviderKind,
+  effort: AgentEffort | undefined
+): string | null {
+  if (!effort || effort === "off") return null;
+  if (kind === "claude-cli") {
+    if (
+      effort === "low" ||
+      effort === "medium" ||
+      effort === "high" ||
+      effort === "xhigh" ||
+      effort === "max"
+    ) {
+      return effort;
+    }
+    return effort === "minimal" ? "low" : null;
+  }
+  if (
+    effort === "minimal" ||
+    effort === "low" ||
+    effort === "medium" ||
+    effort === "high"
+  ) {
+    return effort;
+  }
+  return effort === "xhigh" || effort === "max" ? "high" : null;
+}
+
+function quoteCodexConfig(value: string): string {
+  return `'${value.replace(/'/g, platform === "windows" ? "''" : "'\\''")}'`;
+}
+
+export function shouldAutoEnterChoice(input: {
+  alwaysEnter: boolean;
+  state: AgentTerminalContentState;
+  now: number;
+  lastEnterAt?: number;
+}): boolean {
+  return (
+    input.alwaysEnter &&
+    input.state === "waiting-for-choice" &&
+    (input.lastEnterAt === undefined ||
+      input.now - input.lastEnterAt >= ALWAYS_ENTER_COOLDOWN_MS)
+  );
 }
 
 async function writePrompt(
@@ -556,8 +693,9 @@ function waitForAgentCompletion(
   done: () => boolean,
   lastOutputAt: () => number,
   content: () => string,
+  onStatus: (status: AgentTerminalStatus) => void,
   signal?: AbortSignal
-): Promise<"exited" | "idle" | "timeout" | "aborted"> {
+): Promise<"exited" | "idle" | "timeout" | "aborted" | "manual-success"> {
   if (done()) return Promise.resolve("exited");
   if (signal?.aborted) return Promise.resolve("aborted");
   return new Promise((resolve) => {
@@ -574,9 +712,46 @@ function waitForAgentCompletion(
       }
       const control = controls.get(sessionId);
       if (!control?.promptSubmittedAt || control.autoFinishPaused) return;
+      if (control.manualSuccessRequested) {
+        clearInterval(timer);
+        resolve("manual-success");
+        return;
+      }
       const now = Date.now();
       const sinceSubmit = now - control.promptSubmittedAt;
-      if (sinceSubmit >= RESPONSE_MAX_MS) {
+      const state = classifyAgentTerminalContent(content());
+      if (state === "waiting-for-choice") {
+        if (
+          shouldAutoEnterChoice({
+            alwaysEnter: control.alwaysEnter,
+            state,
+            now,
+            lastEnterAt: control.lastAlwaysEnterAt,
+          })
+        ) {
+          try {
+            writeRawInput(getSession(sessionId), "\r");
+            control.lastAlwaysEnterAt = now;
+            control.lastCompletionState = "empty";
+            onStatus("prompt-sent");
+          } catch {
+            /* session may have exited between classification and input */
+          }
+          return;
+        }
+        if (state !== control.lastCompletionState) {
+          control.lastCompletionState = state;
+          onStatus("waiting-for-choice");
+        }
+        return;
+      }
+      if (control.lastCompletionState === "waiting-for-choice") {
+        control.lastCompletionState = "empty";
+        onStatus("prompt-sent");
+      } else if (state !== control.lastCompletionState && state !== "ready-for-success") {
+        control.lastCompletionState = state;
+      }
+      if (sinceSubmit >= RESPONSE_MAX_MS && control.autoSuccess) {
         clearInterval(timer);
         resolve("timeout");
         return;
@@ -584,13 +759,88 @@ function waitForAgentCompletion(
       if (
         sinceSubmit >= RESPONSE_MIN_MS &&
         now - lastOutputAt() >= RESPONSE_IDLE_MS &&
-        content().trim()
+        state === "ready-for-success"
       ) {
-        clearInterval(timer);
-        resolve("idle");
+        if (control.lastCompletionState !== "ready-for-success") {
+          control.lastCompletionState = "ready-for-success";
+          onStatus("ready-for-success");
+        }
+        if (control.autoSuccess) {
+          clearInterval(timer);
+          resolve("idle");
+        } else {
+          onStatus("ready-for-success");
+        }
       }
     }, 500);
   });
+}
+
+export function classifyAgentTerminalContent(content: string): AgentTerminalContentState {
+  const text = normalizeTerminalPlainText(content);
+  const compact = text.replace(/\s+/g, " ").trim();
+  if (!compact) return "empty";
+  if (isTerminalChoicePrompt(text)) return "waiting-for-choice";
+  return "ready-for-success";
+}
+
+function isTerminalChoicePrompt(text: string): boolean {
+  const promptAt = lastTerminalChoicePromptIndex(text);
+  if (promptAt < 0) return false;
+  return promptAt > lastTerminalChoiceReleaseIndex(text);
+}
+
+function lastTerminalChoicePromptIndex(text: string): number {
+  let index = maxLastRegexIndex(text, [
+    /\bEnter to select\b/i,
+    /\bTab\/Arrow keys to navigate\b/i,
+    /\bEsc to cancel\b/i,
+    /\bReady to code\?/i,
+    /\bapprove with this feedback\b/i,
+    /\bYes,\s*(?:and bypass permissions|manually approve edits)\b/i,
+  ]);
+  const arrowIndex = Math.max(text.lastIndexOf("\u276f"), text.lastIndexOf("\u203a"));
+  if (
+    arrowIndex >= 0 &&
+    /\b(?:select|navigate|cancel|submit|approve|type something)\b/i.test(
+      text.slice(arrowIndex, arrowIndex + 800)
+    )
+  ) {
+    index = Math.max(index, arrowIndex);
+  }
+  return index;
+}
+
+function lastTerminalChoiceReleaseIndex(text: string): number {
+  return maxLastRegexIndex(text, [
+    /\bDone\b/i,
+    /\bcompleted\b/i,
+    /\bsuccessfully\b/i,
+    /\bauto-finished\b/i,
+    /\bmanual-success\b/i,
+    /\bSaut(?:e|é)ed for\b/i,
+    /(?:已完成|完成|整理完成|执行完成|通过)/,
+  ]);
+}
+
+function maxLastRegexIndex(text: string, patterns: RegExp[]): number {
+  let max = -1;
+  for (const pattern of patterns) {
+    max = Math.max(max, lastRegexIndex(text, pattern));
+  }
+  return max;
+}
+
+function lastRegexIndex(text: string, pattern: RegExp): number {
+  const flags = pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`;
+  const re = new RegExp(pattern.source, flags);
+  let last = -1;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(text)) !== null) {
+    last = match.index;
+    if (!match[0]) re.lastIndex += 1;
+  }
+  return last;
 }
 
 function quoteShell(value: string): string {
