@@ -24,7 +24,7 @@ test("live agent run details capture terminal session and output frames", async 
   const details = createLiveAgentRunDetails({
     node,
     startedAt: 1_000,
-    autoContinue: true,
+    autoSuccess: true,
     minUpdateIntervalMs: 0,
     writeSnapshot: async (snapshot) => {
       writes.push(snapshot);
@@ -44,7 +44,7 @@ test("live agent run details capture terminal session and output frames", async 
   assert.equal(writes[3]?.status, "running");
 });
 
-test("codex transient service errors without model output retry the original prompt", () => {
+test("codex transient service errors without model output retry with continue prompt", () => {
   const prompt = "Implement {feature}";
   const failure = classifyAgentTerminalFailure(
     [
@@ -60,7 +60,7 @@ test("codex transient service errors without model output retry the original pro
 
   assert.equal(failure.retryable, true);
   assert.equal(failure.hasModelOutput, false);
-  assert.equal(nextAgentRetryPrompt(prompt, failure), prompt);
+  assert.equal(nextAgentRetryPrompt(prompt, failure), "继续");
 });
 
 test("codex transient service errors after model output retry with continue prompt", () => {

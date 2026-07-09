@@ -721,9 +721,12 @@ function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-export function AiSettingsView() {
+interface AiSettingsViewProps {
+  app: AiSettingsApp;
+}
+
+export function AiSettingsView({ app }: AiSettingsViewProps) {
   const [snapshot, setSnapshot] = useState<AiSettingsSnapshot | null>(null);
-  const [app, setApp] = useState<AiSettingsApp>("claude");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -846,24 +849,12 @@ export function AiSettingsView() {
   }
 
   return (
-    <div className="ai-settings side-view">
+    <div className="ai-settings">
       <div className="side-view__header ai-settings__header">
-        <span className="side-view__title">AI 设置</span>
+        <span className="side-view__title">API & Model</span>
         <button className="icon-btn" title="刷新" onClick={() => void refresh()}>
           <RefreshIcon />
         </button>
-      </div>
-
-      <div className="ai-settings__tabs">
-        {(["claude", "codex"] as const).map((id) => (
-          <button
-            key={id}
-            className={"ai-settings__tab" + (app === id ? " is-active" : "")}
-            onClick={() => setApp(id)}
-          >
-            {id === "claude" ? "Claude" : "Codex"}
-          </button>
-        ))}
       </div>
 
       <div className="ai-settings__path">

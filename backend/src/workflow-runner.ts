@@ -1,5 +1,12 @@
 import { execRun } from "./ai-exec.js";
-import { runAgentTerminal, type AgentTerminalFrame } from "./ai-terminal.js";
+import {
+  buildAgentTerminalCommand,
+  runAgentTerminal,
+  type AgentEffort,
+  type AgentMode,
+  type AgentTerminalFrame,
+  type ClaudePermissionMode,
+} from "./ai-terminal.js";
 import { callRemoteMcp, discoverRemoteMcp, type RemoteMcpTool } from "./remote-mcp.js";
 import { readFileText, writeFileText } from "./fs-ops.js";
 import { resolveWorkspace, type WorkspaceInfo } from "./workspace.js";
@@ -56,7 +63,7 @@ export interface WorkflowRunDetailSnapshot {
   transcript: string;
   terminalSessionId?: string;
   terminalStatus?: string;
-  autoContinue?: boolean;
+  autoSuccess?: boolean;
   exitCode?: number | null;
   signal?: string | null;
   durationMs?: number;
@@ -65,7 +72,7 @@ export interface WorkflowRunDetailSnapshot {
 interface LiveAgentRunDetailsOptions {
   node: WorkflowNode;
   startedAt: number;
-  autoContinue: boolean;
+  autoSuccess: boolean;
   writeSnapshot: (snapshot: WorkflowRunDetailSnapshot) => Promise<void>;
   logs?: Array<{ stream: "stdout" | "stderr"; content: string }>;
   minUpdateIntervalMs?: number;
@@ -140,7 +147,7 @@ export function createLiveAgentRunDetails(
       logs,
       terminalSessionId || undefined,
       terminalStatus || undefined,
-      options.autoContinue
+      options.autoSuccess
     );
 
   const enqueue = (next: WorkflowRunDetailSnapshot) => {
@@ -209,7 +216,9 @@ export function nextAgentRetryPrompt(
   originalPrompt: string,
   failure: AgentTerminalFailure
 ): string {
-  return failure.hasModelOutput ? "继续" : originalPrompt;
+  void originalPrompt;
+  void failure;
+  return "继续";
 }
 
 export async function startWorkflowRun(
@@ -372,11 +381,11 @@ async function executeAgentNode(
 ): Promise<LocalNodeResult> {
   if (!node.prompt.trim()) throw new Error(`${node.title} has no prompt.`);
   const logs: Array<{ stream: "stdout" | "stderr"; content: string }> = [];
-  const autoContinue = agentAutoContinue(node);
+  const autoSuccess = agentAutoSuccess(node);
   const details = createLiveAgentRunDetails({
     node,
     startedAt,
-    autoContinue,
+    autoSuccess,
     logs,
     writeSnapshot: async (snapshot) => {
       await patchWorkflowNode(workspace.path, record.id, node.id, {
@@ -401,11 +410,15 @@ async function executeAgentNode(
   let terminalFailure: AgentTerminalFailure | null = null;
   let retainedOutput = "";
   const retries = agentRetryCount(node);
-  for (let attempt = 0; attempt <= retries; attempt += 1) {
+  const retryForever = agentRetryForever(node);
+  let attempt = 0;
+  while (true) {
     if (attempt > 0) {
       logs.push({
         stream: "stderr",
-        content: `\n[osheep] retry ${attempt}/${retries}: ${currentPrompt === "继续" ? "continue" : "resubmit"}\n`,
+        content: `\n[osheep] retry ${attempt}/${
+          retryForever ? "infinity" : retries
+        }: ${currentPrompt === "继续" ? "continue" : "resubmit"}\n`,
       });
       await details.update("running");
     }
@@ -414,7 +427,11 @@ async function executeAgentNode(
       kind: node.providerKind,
       model: node.model || "default",
       prompt: currentPrompt,
-      autoContinue,
+      autoSuccess,
+      claudePermissionMode: agentClaudePermissionMode(node),
+      mode: agentMode(node),
+      effort: agentEffort(node),
+      alwaysEnter: agentAlwaysEnter(node),
       signal: abort.signal,
       onFrame,
     });
@@ -430,14 +447,16 @@ async function executeAgentNode(
     if (terminalFailure.modelOutput) {
       retainedOutput = [retainedOutput, terminalFailure.modelOutput].filter(Boolean).join("\n");
     }
-    if (attempt >= retries) break;
+    if (!retryForever && attempt >= retries) break;
+    attempt += 1;
     currentPrompt = nextAgentRetryPrompt(originalTerminalPrompt, terminalFailure);
+    await sleep(1_000, abort.signal);
   }
   if (!result) throw new Error(`${node.title} did not start.`);
   if (terminalFailure?.retryable) {
     const errorMessage = `${node.providerKind === "codex-cli" ? "Codex CLI" : "Claude Code CLI"} failed after ${
-      retries + 1
-    } attempt${retries === 0 ? "" : "s"}: ${terminalFailure.message}`;
+      attempt + 1
+    } attempt${attempt === 0 ? "" : "s"}: ${terminalFailure.message}`;
     const errorDetails = details.snapshot("error", Date.now());
     errorDetails.terminalSessionId = errorDetails.terminalSessionId ?? result.sessionId;
     errorDetails.transcript = result.transcript;
@@ -1611,14 +1630,50 @@ function mcpNodeConfig(node: WorkflowNode): McpNodeConfig {
   };
 }
 
-function agentAutoContinue(node: WorkflowNode): boolean {
-  return node.config?.autoContinue !== false;
+function agentAutoSuccess(node: WorkflowNode): boolean {
+  return node.config?.autoSuccess !== false;
+}
+
+function agentClaudePermissionMode(node: WorkflowNode): ClaudePermissionMode {
+  const value = node.config?.claudePermissionMode;
+  return value === "bypassPermissions" ? "bypassPermissions" : "acceptEdits";
 }
 
 function agentRetryCount(node: WorkflowNode): number {
   const value = node.config?.retries;
   if (typeof value !== "number" || !Number.isInteger(value)) return 0;
   return clamp(value, 0, 5);
+}
+
+function agentRetryForever(node: WorkflowNode): boolean {
+  return node.config?.retryForever === true;
+}
+
+function agentAlwaysEnter(node: WorkflowNode): boolean {
+  return node.config?.alwaysEnter === true;
+}
+
+function agentMode(node: WorkflowNode): AgentMode {
+  const value = node.config?.mode;
+  if (node.providerKind === "codex-cli" && value === "goal") return "goal";
+  if (node.providerKind === "claude-cli" && value === "plan") return "plan";
+  return "default";
+}
+
+function agentEffort(node: WorkflowNode): AgentEffort | undefined {
+  const value = node.config?.effort;
+  if (
+    value === "off" ||
+    value === "minimal" ||
+    value === "low" ||
+    value === "medium" ||
+    value === "high" ||
+    value === "xhigh" ||
+    value === "max"
+  ) {
+    return value;
+  }
+  return undefined;
 }
 
 function terminalModelOutputBeforeError(text: string, prompt: string): string {
@@ -1668,7 +1723,7 @@ function agentRunSnapshot(
   logs: Array<{ stream: "stdout" | "stderr"; content: string }>,
   terminalSessionId?: string,
   terminalStatus?: string,
-  autoContinue?: boolean
+  autoSuccess?: boolean
 ): WorkflowRunDetailSnapshot {
   const snapshot: WorkflowRunDetailSnapshot = {
     kind: "agent",
@@ -1676,7 +1731,11 @@ function agentRunSnapshot(
     status,
     startedAt,
     completedAt,
-    commandLine: node.providerKind === "codex-cli" ? "codex" : "claude",
+    commandLine: buildAgentTerminalCommand(node.providerKind, node.model || "default", {
+      claudePermissionMode: agentClaudePermissionMode(node),
+      mode: agentMode(node),
+      effort: agentEffort(node),
+    }).command,
     stdout: logs.filter((log) => log.stream === "stdout").map((log) => log.content).join(""),
     stderr: logs.filter((log) => log.stream === "stderr").map((log) => log.content).join(""),
     transcript: logs.map((log) => `[${log.stream}] ${log.content}`).join(""),
@@ -1684,7 +1743,7 @@ function agentRunSnapshot(
   if (completedAt !== undefined) snapshot.durationMs = Math.max(0, completedAt - startedAt);
   if (terminalSessionId) snapshot.terminalSessionId = terminalSessionId;
   if (terminalStatus) snapshot.terminalStatus = terminalStatus;
-  if (autoContinue !== undefined) snapshot.autoContinue = autoContinue;
+  if (autoSuccess !== undefined) snapshot.autoSuccess = autoSuccess;
   return snapshot;
 }
 
