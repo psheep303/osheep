@@ -33,6 +33,37 @@ test("Codex terminal command does not receive Claude permission flags", () => {
   );
 });
 
+test("Claude terminal command can start with the default (manual) permission mode", () => {
+  assert.equal(
+    buildAgentTerminalCommand("claude-cli", "default", {
+      claudePermissionMode: "default",
+    }).command,
+    "claude --permission-mode default"
+  );
+});
+
+test("Codex approval modes map to the official startup flags", () => {
+  assert.equal(
+    buildAgentTerminalCommand("codex-cli", "default", {
+      codexApproval: "on-request",
+    }).command,
+    "codex --ask-for-approval on-request --sandbox workspace-write"
+  );
+  assert.equal(
+    buildAgentTerminalCommand("codex-cli", "default", {
+      codexApproval: "auto",
+    }).command,
+    "codex --full-auto"
+  );
+  assert.equal(
+    buildAgentTerminalCommand("codex-cli", "gpt-5.1-codex", {
+      codexApproval: "full-access",
+      effort: "high",
+    }).command,
+    "codex --dangerously-bypass-approvals-and-sandbox -c 'model_reasoning_effort=\"high\"' --model gpt-5.1-codex"
+  );
+});
+
 test("Claude terminal command can start in plan mode with effort", () => {
   assert.equal(
     buildAgentTerminalCommand("claude-cli", "default", {
@@ -43,13 +74,12 @@ test("Claude terminal command can start in plan mode with effort", () => {
   );
 });
 
-test("Codex terminal command can enable goal mode with reasoning effort", () => {
+test("Codex terminal command applies reasoning effort without an approval preset", () => {
   assert.equal(
     buildAgentTerminalCommand("codex-cli", "gpt-5.1-codex", {
-      mode: "goal",
       effort: "high",
     }).command,
-    "codex --enable goals -c 'model_reasoning_effort=\"high\"' --model gpt-5.1-codex"
+    "codex -c 'model_reasoning_effort=\"high\"' --model gpt-5.1-codex"
   );
 });
 

@@ -10,8 +10,9 @@ import {
 import type { WorkspaceInfo } from "./workspace.js";
 import type { CliProviderKind } from "./ai-cli.js";
 
-export type ClaudePermissionMode = "acceptEdits" | "bypassPermissions";
+export type ClaudePermissionMode = "default" | "acceptEdits" | "bypassPermissions";
 export type AgentMode = "default" | "goal" | "plan";
+export type CodexApproval = "on-request" | "auto" | "full-access";
 export type AgentEffort =
   | "off"
   | "minimal"
@@ -45,6 +46,7 @@ export interface AgentTerminalOptions {
   autoSuccess?: boolean;
   claudePermissionMode?: ClaudePermissionMode;
   mode?: AgentMode;
+  codexApproval?: CodexApproval;
   effort?: AgentEffort;
   alwaysEnter?: boolean;
   signal?: AbortSignal;
@@ -157,6 +159,7 @@ export async function runAgentTerminal(
       `${buildAgentTerminalCommand(opts.kind, opts.model, {
         claudePermissionMode: opts.claudePermissionMode,
         mode: opts.mode,
+        codexApproval: opts.codexApproval,
         effort: opts.effort,
       }).command}\r`
     );
@@ -330,6 +333,7 @@ export function buildAgentTerminalCommand(
   options: {
     claudePermissionMode?: ClaudePermissionMode;
     mode?: AgentMode;
+    codexApproval?: CodexApproval;
     effort?: AgentEffort;
   } = {}
 ): { command: string } {
@@ -343,7 +347,7 @@ export function buildAgentTerminalCommand(
     const effort = agentEffortCliValue(kind, options.effort);
     if (effort) args.push("--effort", effort);
   } else {
-    if (options.mode === "goal") args.push("--enable", "goals");
+    args.push(...codexApprovalArgs(options.codexApproval));
     const effort = agentEffortCliValue(kind, options.effort);
     if (effort) {
       args.push("-c", quoteCodexConfig(`model_reasoning_effort="${effort}"`));
@@ -351,6 +355,19 @@ export function buildAgentTerminalCommand(
   }
   if (model && model !== "default") args.push("--model", quoteShell(model));
   return { command: [base, ...args].join(" ") };
+}
+
+function codexApprovalArgs(approval: CodexApproval | undefined): string[] {
+  switch (approval) {
+    case "auto":
+      return ["--full-auto"];
+    case "full-access":
+      return ["--dangerously-bypass-approvals-and-sandbox"];
+    case "on-request":
+      return ["--ask-for-approval", "on-request", "--sandbox", "workspace-write"];
+    default:
+      return [];
+  }
 }
 
 function agentEffortCliValue(

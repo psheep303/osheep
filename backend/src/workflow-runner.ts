@@ -6,6 +6,7 @@ import {
   type AgentMode,
   type AgentTerminalFrame,
   type ClaudePermissionMode,
+  type CodexApproval,
 } from "./ai-terminal.js";
 import { callRemoteMcp, discoverRemoteMcp, type RemoteMcpTool } from "./remote-mcp.js";
 import { readFileText, writeFileText } from "./fs-ops.js";
@@ -430,6 +431,7 @@ async function executeAgentNode(
       autoSuccess,
       claudePermissionMode: agentClaudePermissionMode(node),
       mode: agentMode(node),
+      codexApproval: agentCodexApproval(node),
       effort: agentEffort(node),
       alwaysEnter: agentAlwaysEnter(node),
       signal: abort.signal,
@@ -1634,9 +1636,32 @@ function agentAutoSuccess(node: WorkflowNode): boolean {
   return node.config?.autoSuccess !== false;
 }
 
+function agentClaudeMode(node: WorkflowNode): string {
+  const value = node.config?.claudeMode;
+  if (value === "manual" || value === "acceptEdits" || value === "plan" || value === "auto") {
+    return value;
+  }
+  // Migrate legacy configs that split mode + claudePermissionMode.
+  if (node.config?.mode === "plan") return "plan";
+  if (node.config?.claudePermissionMode === "bypassPermissions") return "auto";
+  return "acceptEdits";
+}
+
 function agentClaudePermissionMode(node: WorkflowNode): ClaudePermissionMode {
-  const value = node.config?.claudePermissionMode;
-  return value === "bypassPermissions" ? "bypassPermissions" : "acceptEdits";
+  switch (agentClaudeMode(node)) {
+    case "manual":
+      return "default";
+    case "auto":
+      return "bypassPermissions";
+    default:
+      return "acceptEdits";
+  }
+}
+
+function agentCodexApproval(node: WorkflowNode): CodexApproval {
+  const value = node.config?.codexApproval;
+  if (value === "auto" || value === "full-access") return value;
+  return "on-request";
 }
 
 function agentRetryCount(node: WorkflowNode): number {
@@ -1654,9 +1679,7 @@ function agentAlwaysEnter(node: WorkflowNode): boolean {
 }
 
 function agentMode(node: WorkflowNode): AgentMode {
-  const value = node.config?.mode;
-  if (node.providerKind === "codex-cli" && value === "goal") return "goal";
-  if (node.providerKind === "claude-cli" && value === "plan") return "plan";
+  if (node.providerKind === "claude-cli" && agentClaudeMode(node) === "plan") return "plan";
   return "default";
 }
 
@@ -1734,6 +1757,7 @@ function agentRunSnapshot(
     commandLine: buildAgentTerminalCommand(node.providerKind, node.model || "default", {
       claudePermissionMode: agentClaudePermissionMode(node),
       mode: agentMode(node),
+      codexApproval: agentCodexApproval(node),
       effort: agentEffort(node),
     }).command,
     stdout: logs.filter((log) => log.stream === "stdout").map((log) => log.content).join(""),

@@ -1332,6 +1332,8 @@ export interface AiTerminalResult {
 }
 
 export type AiTerminalMode = "default" | "goal" | "plan";
+export type AiTerminalClaudePermissionMode = "default" | "acceptEdits" | "bypassPermissions";
+export type AiTerminalCodexApproval = "on-request" | "auto" | "full-access";
 export type AiTerminalEffort =
   | "off"
   | "minimal"
@@ -1349,8 +1351,9 @@ export async function aiChatTerminalStream(
     kind?: "claude-cli" | "codex-cli";
     terminalPrompt?: string;
     autoSuccess?: boolean;
-    claudePermissionMode?: "acceptEdits" | "bypassPermissions";
+    claudePermissionMode?: AiTerminalClaudePermissionMode;
     mode?: AiTerminalMode;
+    codexApproval?: AiTerminalCodexApproval;
     effort?: AiTerminalEffort;
     alwaysEnter?: boolean;
   },

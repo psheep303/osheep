@@ -29,6 +29,7 @@ import {
   type AgentEffort,
   type AgentMode,
   type ClaudePermissionMode,
+  type CodexApproval,
 } from "../ai-terminal.js";
 
 type ProviderKind = CliProviderKind | "unsupported";
@@ -254,7 +255,7 @@ function parseKind(v: unknown): ProviderKind {
 }
 
 function parseClaudePermissionMode(v: unknown): ClaudePermissionMode | undefined {
-  if (v === "acceptEdits" || v === "bypassPermissions") return v;
+  if (v === "default" || v === "acceptEdits" || v === "bypassPermissions") return v;
   return undefined;
 }
 
@@ -262,6 +263,11 @@ function parseAgentMode(kind: CliProviderKind, v: unknown): AgentMode {
   if (kind === "codex-cli" && v === "goal") return "goal";
   if (kind === "claude-cli" && v === "plan") return "plan";
   return "default";
+}
+
+function parseCodexApproval(v: unknown): CodexApproval | undefined {
+  if (v === "on-request" || v === "auto" || v === "full-access") return v;
+  return undefined;
 }
 
 function parseAgentEffort(v: unknown): AgentEffort | undefined {
@@ -335,6 +341,7 @@ export async function registerAiRoutes(app: FastifyInstance) {
       autoSuccess?: boolean;
       claudePermissionMode?: ClaudePermissionMode;
       mode?: AgentMode;
+      codexApproval?: CodexApproval;
       effort?: AgentEffort;
       alwaysEnter?: boolean;
     };
@@ -386,6 +393,7 @@ export async function registerAiRoutes(app: FastifyInstance) {
         autoSuccess: req.body?.autoSuccess !== false,
         claudePermissionMode: parseClaudePermissionMode(req.body?.claudePermissionMode),
         mode: parseAgentMode(kind, req.body?.mode),
+        codexApproval: parseCodexApproval(req.body?.codexApproval),
         effort: parseAgentEffort(req.body?.effort),
         alwaysEnter: req.body?.alwaysEnter === true,
         signal: abort.signal,
