@@ -30,6 +30,7 @@ import {
   type AgentMode,
   type ClaudePermissionMode,
   type CodexApproval,
+  type CodexSandbox,
 } from "../ai-terminal.js";
 
 type ProviderKind = CliProviderKind | "unsupported";
@@ -255,7 +256,15 @@ function parseKind(v: unknown): ProviderKind {
 }
 
 function parseClaudePermissionMode(v: unknown): ClaudePermissionMode | undefined {
-  if (v === "default" || v === "acceptEdits" || v === "bypassPermissions") return v;
+  if (
+    v === "default" ||
+    v === "acceptEdits" ||
+    v === "auto" ||
+    v === "dontAsk" ||
+    v === "bypassPermissions"
+  ) {
+    return v;
+  }
   return undefined;
 }
 
@@ -266,7 +275,18 @@ function parseAgentMode(kind: CliProviderKind, v: unknown): AgentMode {
 }
 
 function parseCodexApproval(v: unknown): CodexApproval | undefined {
-  if (v === "on-request" || v === "auto" || v === "full-access") return v;
+  if (v === "untrusted" || v === "on-failure" || v === "on-request" || v === "never") {
+    return v;
+  }
+  if (v === "auto") return "on-failure";
+  if (v === "full-access") return "never";
+  return undefined;
+}
+
+function parseCodexSandbox(v: unknown): CodexSandbox | undefined {
+  if (v === "read-only" || v === "workspace-write" || v === "danger-full-access") {
+    return v;
+  }
   return undefined;
 }
 
@@ -278,7 +298,8 @@ function parseAgentEffort(v: unknown): AgentEffort | undefined {
     v === "medium" ||
     v === "high" ||
     v === "xhigh" ||
-    v === "max"
+    v === "max" ||
+    v === "ultracode"
   ) {
     return v;
   }
@@ -342,6 +363,7 @@ export async function registerAiRoutes(app: FastifyInstance) {
       claudePermissionMode?: ClaudePermissionMode;
       mode?: AgentMode;
       codexApproval?: CodexApproval;
+      codexSandbox?: CodexSandbox;
       effort?: AgentEffort;
       alwaysEnter?: boolean;
     };
@@ -394,6 +416,7 @@ export async function registerAiRoutes(app: FastifyInstance) {
         claudePermissionMode: parseClaudePermissionMode(req.body?.claudePermissionMode),
         mode: parseAgentMode(kind, req.body?.mode),
         codexApproval: parseCodexApproval(req.body?.codexApproval),
+        codexSandbox: parseCodexSandbox(req.body?.codexSandbox),
         effort: parseAgentEffort(req.body?.effort),
         alwaysEnter: req.body?.alwaysEnter === true,
         signal: abort.signal,

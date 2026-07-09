@@ -4,9 +4,57 @@ import {
   classifyAgentTerminalFailure,
   createLiveAgentRunDetails,
   nextAgentRetryPrompt,
+  planWorkflowRunNodeIds,
   type WorkflowRunDetailSnapshot,
 } from "./workflow-runner.js";
-import type { WorkflowNode } from "./workflows.js";
+import type { WorkflowNode, WorkflowRecord } from "./workflows.js";
+
+test("workflow run planning excludes nodes that are not reachable from a trigger", () => {
+  const record: WorkflowRecord = {
+    id: "wf_testplan",
+    title: "Planning",
+    createdAt: 1,
+    updatedAt: 1,
+    runs: [],
+    nodes: [
+      workflowNode("node_trigger", "trigger", "Workflow run"),
+      workflowNode("node_codex", "agent", "Codex"),
+      workflowNode("node_claude", "agent", "Claude Code", "claude-cli"),
+    ],
+    edges: [
+      {
+        id: "edge_trigger_codex",
+        from: "node_trigger",
+        to: "node_codex",
+        passSummary: true,
+      },
+    ],
+  };
+
+  assert.deepEqual(planWorkflowRunNodeIds(record).nodeIds, [
+    "node_trigger",
+    "node_codex",
+  ]);
+});
+
+function workflowNode(
+  id: string,
+  kind: WorkflowNode["kind"],
+  title: string,
+  providerKind: WorkflowNode["providerKind"] = "codex-cli"
+): WorkflowNode {
+  return {
+    id,
+    kind,
+    title,
+    providerKind,
+    model: "default",
+    prompt: "",
+    x: 0,
+    y: 0,
+    status: "idle",
+  };
+}
 
 test("live agent run details capture terminal session and output frames", async () => {
   const node: WorkflowNode = {

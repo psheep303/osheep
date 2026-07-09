@@ -10,9 +10,15 @@ import {
 import type { WorkspaceInfo } from "./workspace.js";
 import type { CliProviderKind } from "./ai-cli.js";
 
-export type ClaudePermissionMode = "default" | "acceptEdits" | "bypassPermissions";
+export type ClaudePermissionMode =
+  | "default"
+  | "acceptEdits"
+  | "auto"
+  | "dontAsk"
+  | "bypassPermissions";
 export type AgentMode = "default" | "goal" | "plan";
-export type CodexApproval = "on-request" | "auto" | "full-access";
+export type CodexApproval = "untrusted" | "on-failure" | "on-request" | "never";
+export type CodexSandbox = "read-only" | "workspace-write" | "danger-full-access";
 export type AgentEffort =
   | "off"
   | "minimal"
@@ -20,7 +26,8 @@ export type AgentEffort =
   | "medium"
   | "high"
   | "xhigh"
-  | "max";
+  | "max"
+  | "ultracode";
 export type AgentTerminalContentState =
   | "empty"
   | "waiting-for-choice"
@@ -47,6 +54,7 @@ export interface AgentTerminalOptions {
   claudePermissionMode?: ClaudePermissionMode;
   mode?: AgentMode;
   codexApproval?: CodexApproval;
+  codexSandbox?: CodexSandbox;
   effort?: AgentEffort;
   alwaysEnter?: boolean;
   signal?: AbortSignal;
@@ -160,6 +168,7 @@ export async function runAgentTerminal(
         claudePermissionMode: opts.claudePermissionMode,
         mode: opts.mode,
         codexApproval: opts.codexApproval,
+        codexSandbox: opts.codexSandbox,
         effort: opts.effort,
       }).command}\r`
     );
@@ -183,12 +192,12 @@ export async function runAgentTerminal(
       session.id,
       () => exited,
       () => lastOutputAt,
-      () => extractTerminalContent(transcript, opts.prompt),
+      () => extractTerminalContent(transcript, opts.prompt, opts.kind),
       (status) => opts.onFrame?.({ type: "status", status }),
       opts.signal
     );
     if (completion === "idle" || completion === "timeout" || completion === "manual-success") {
-      const content = extractTerminalContent(transcript, opts.prompt);
+      const content = extractTerminalContent(transcript, opts.prompt, opts.kind);
       const cleanTranscript = cleanTerminalTranscript(transcript, opts.prompt);
       opts.onFrame?.({
         type: "status",
@@ -216,7 +225,7 @@ export async function runAgentTerminal(
     opts.onFrame?.({ type: "status", status: "exited" });
     return {
       sessionId: session.id,
-      content: extractTerminalContent(transcript, opts.prompt),
+      content: extractTerminalContent(transcript, opts.prompt, opts.kind),
       transcript: cleanTerminalTranscript(transcript, opts.prompt),
       exitCode,
       signal: exitSignal,
@@ -334,6 +343,7 @@ export function buildAgentTerminalCommand(
     claudePermissionMode?: ClaudePermissionMode;
     mode?: AgentMode;
     codexApproval?: CodexApproval;
+    codexSandbox?: CodexSandbox;
     effort?: AgentEffort;
   } = {}
 ): { command: string } {
@@ -347,7 +357,7 @@ export function buildAgentTerminalCommand(
     const effort = agentEffortCliValue(kind, options.effort);
     if (effort) args.push("--effort", effort);
   } else {
-    args.push(...codexApprovalArgs(options.codexApproval));
+    args.push(...codexPermissionArgs(options.codexApproval, options.codexSandbox));
     const effort = agentEffortCliValue(kind, options.effort);
     if (effort) {
       args.push("-c", quoteCodexConfig(`model_reasoning_effort="${effort}"`));
@@ -357,17 +367,16 @@ export function buildAgentTerminalCommand(
   return { command: [base, ...args].join(" ") };
 }
 
-function codexApprovalArgs(approval: CodexApproval | undefined): string[] {
-  switch (approval) {
-    case "auto":
-      return ["--full-auto"];
-    case "full-access":
-      return ["--dangerously-bypass-approvals-and-sandbox"];
-    case "on-request":
-      return ["--ask-for-approval", "on-request", "--sandbox", "workspace-write"];
-    default:
-      return [];
-  }
+function codexPermissionArgs(
+  approval: CodexApproval | undefined,
+  sandbox: CodexSandbox | undefined
+): string[] {
+  return [
+    "--ask-for-approval",
+    approval ?? "on-failure",
+    "--sandbox",
+    sandbox ?? "workspace-write",
+  ];
 }
 
 function agentEffortCliValue(
@@ -381,7 +390,8 @@ function agentEffortCliValue(
       effort === "medium" ||
       effort === "high" ||
       effort === "xhigh" ||
-      effort === "max"
+      effort === "max" ||
+      effort === "ultracode"
     ) {
       return effort;
     }
@@ -391,11 +401,12 @@ function agentEffortCliValue(
     effort === "minimal" ||
     effort === "low" ||
     effort === "medium" ||
-    effort === "high"
+    effort === "high" ||
+    effort === "xhigh"
   ) {
     return effort;
   }
-  return effort === "xhigh" || effort === "max" ? "high" : null;
+  return effort === "max" ? "high" : null;
 }
 
 function quoteCodexConfig(value: string): string {
@@ -470,7 +481,17 @@ function parsePtyFrame(
   return null;
 }
 
-function extractTerminalContent(transcript: string, prompt = ""): string {
+function extractTerminalContent(
+  transcript: string,
+  prompt = "",
+  kind?: CliProviderKind
+): string {
+  if (kind === "codex-cli") {
+    const rendered = renderTerminalScreen(transcript);
+    const plain = normalizeTerminalPlainText(rendered || transcript);
+    const codexAnswer = extractCodexFinalAnswer(plain);
+    if (codexAnswer) return codexAnswer;
+  }
   const clean = cleanTerminalTranscript(transcript, prompt);
   return clean
     .split("\n")
@@ -482,6 +503,49 @@ function extractTerminalContent(transcript: string, prompt = ""): string {
     })
     .join("\n")
     .trim();
+}
+
+function extractCodexFinalAnswer(clean: string): string {
+  const lines = clean.split("\n").map((line) => line.trimEnd());
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const trimmed = lines[i]!.trim();
+    if (!isCodexAssistantLine(trimmed)) continue;
+    const out = [trimmed.replace(/^[•●]\s*/, "")];
+    for (let j = i + 1; j < lines.length; j += 1) {
+      const next = lines[j]!;
+      const nextTrimmed = next.trim();
+      if (!nextTrimmed) continue;
+      if (isTerminalPromptLine(nextTrimmed) || isTerminalChromeLine(nextTrimmed)) break;
+      if (isCodexAssistantLine(nextTrimmed)) break;
+      out.push(next.replace(/^\s{2,}/, ""));
+    }
+    return out.join("\n").trim();
+  }
+
+  const lastPrompt = findLastIndex(lines, (line) => isTerminalPromptLine(line.trim()));
+  if (lastPrompt >= 0) {
+    return lines
+      .slice(lastPrompt + 1)
+      .map((line) => line.trimEnd())
+      .filter((line) => {
+        const trimmed = line.trim();
+        return !!trimmed && !isTerminalChromeLine(trimmed);
+      })
+      .join("\n")
+      .trim();
+  }
+  return "";
+}
+
+function findLastIndex<T>(items: T[], predicate: (item: T) => boolean): number {
+  for (let i = items.length - 1; i >= 0; i -= 1) {
+    if (predicate(items[i]!)) return i;
+  }
+  return -1;
+}
+
+function isCodexAssistantLine(trimmed: string): boolean {
+  return /^[•●]\s+\S/.test(trimmed);
 }
 
 function stripAnsi(text: string): string {
@@ -513,6 +577,8 @@ function keepTerminalLine(line: string, promptLines: Set<string>): boolean {
   const trimmed = line.trim();
   if (!trimmed) return false;
   if (promptLines.has(trimmed)) return false;
+  if (isTerminalPromptLine(trimmed)) return false;
+  if (isTerminalChromeLine(trimmed)) return false;
   if (/^(?:PS [^>]+>|[$>])\s*/.test(trimmed)) return false;
   if (/^(?:codex|claude)(?:\.exe)?(?:\s|$)/i.test(trimmed)) return false;
   if (/^(?:OpenAI Codex|Claude Code)\b/i.test(trimmed)) return false;
@@ -521,6 +587,19 @@ function keepTerminalLine(line: string, promptLines: Set<string>): boolean {
   if (/^(?:working|thinking|interrupting|esc to interrupt)\b/i.test(trimmed)) return false;
   if (/^[\u2500-\u257f\s]+$/.test(trimmed)) return false;
   return true;
+}
+
+function isTerminalPromptLine(trimmed: string): boolean {
+  return /^[›>]\s+\S/.test(trimmed);
+}
+
+function isTerminalChromeLine(trimmed: string): boolean {
+  if (/^Tip:\s+/i.test(trimmed)) return true;
+  if (/^\/(?:model|init|help)\b/i.test(trimmed)) return true;
+  if (/^(?:gpt|codex|claude)[\w.-]*\s+(?:minimal|low|medium|high|xhigh|max|ultracode)\s+·\s+/i.test(trimmed)) {
+    return true;
+  }
+  return false;
 }
 
 function normalizeTerminalPlainText(text: string): string {
