@@ -3647,61 +3647,218 @@
 
 .workflow-effort-control {
   position: relative;
-  display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  display: flex;
   align-items: center;
-  width: min(132px, 100%);
-  height: 28px;
-  padding: 0 9px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 999px;
-  background: linear-gradient(180deg, rgba(47, 47, 51, 0.94), rgba(26, 26, 28, 0.96));
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.05),
-    inset 0 -8px 18px rgba(0, 0, 0, 0.16);
-  overflow: hidden;
+  width: min(180px, 100%);
+  height: 22px;
+  padding: 0 7px;
+  cursor: pointer;
+  touch-action: none;
+  outline: none;
 }
 
-.workflow-effort-control__track {
+.workflow-effort-control__rail {
+  position: absolute;
+  left: 7px;
+  right: 7px;
+  top: 50%;
+  height: 4px;
+  transform: translateY(-50%);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.09);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+  pointer-events: none;
+}
+
+.workflow-effort-control__fill {
   position: absolute;
   inset: 0 auto 0 0;
   width: var(--effort-fill);
   border-radius: inherit;
-  background: linear-gradient(90deg, #1477ba, #3aa0ff);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  background: linear-gradient(90deg, var(--wf-blue-strong), var(--wf-blue));
+}
+
+.workflow-effort-control__ticks {
+  position: absolute;
+  left: 7px;
+  right: 7px;
+  top: 50%;
+  display: flex;
+  justify-content: space-between;
+  transform: translateY(-50%);
   pointer-events: none;
 }
 
-.workflow-effort-control__dot {
-  position: relative;
-  z-index: 1;
-  justify-self: center;
-  width: 6px;
-  height: 6px;
-  padding: 0;
-  border: 0;
+.workflow-effort-control__tick {
+  width: 4px;
+  height: 4px;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.workflow-effort-control__tick.is-filled {
+  background: rgba(219, 234, 254, 0.55);
+}
+
+.workflow-effort-control__thumb {
+  position: absolute;
+  top: 50%;
+  width: 13px;
+  height: 13px;
+  margin-left: -6.5px;
+  transform: translateY(-50%);
+  border-radius: 50%;
+  background: radial-gradient(circle at 32% 28%, #eaf2ff, var(--wf-blue) 78%);
+  box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.5),
+    0 0 0 1px rgba(96, 165, 250, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.55);
+  pointer-events: none;
+  transition: left 0.08s ease-out;
+}
+
+.workflow-effort-control:focus-visible .workflow-effort-control__thumb {
+  box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.5),
+    0 0 0 3px rgba(96, 165, 250, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.55);
+}
+
+.workflow-effort-control.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.workflow-mode-menu {
+  position: relative;
+}
+
+.workflow-mode-menu__trigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--wf-border);
+  border-radius: 7px;
+  background: rgba(9, 9, 11, 0.72);
+  color: var(--wf-text-soft);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.workflow-mode-menu__trigger:hover:not(:disabled),
+.workflow-mode-menu__trigger.is-open {
+  border-color: var(--wf-border-strong);
+  background: var(--wf-muted-surface-strong);
+}
+
+.workflow-mode-menu__trigger:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.workflow-mode-menu__trigger-icon {
+  display: inline-flex;
+  color: var(--wf-blue);
+}
+
+.workflow-mode-menu__trigger-label {
+  flex: 1;
+  color: var(--wf-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workflow-mode-menu__chevron {
+  display: inline-flex;
+  color: var(--wf-muted);
+}
+
+.workflow-mode-menu__list {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 5px;
+  border: 1px solid var(--wf-border-strong);
+  border-radius: 9px;
+  background: var(--wf-panel-strong);
+  box-shadow:
+    0 12px 34px rgba(0, 0, 0, 0.55),
+    0 0 0 1px rgba(0, 0, 0, 0.3);
+}
+
+.workflow-mode-menu__item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--wf-text-soft);
+  font: inherit;
+  text-align: left;
   cursor: pointer;
 }
 
-.workflow-effort-control__dot.is-filled {
-  background: rgba(219, 234, 254, 0.52);
+.workflow-mode-menu__item:hover {
+  background: var(--wf-muted-surface-strong);
 }
 
-.workflow-effort-control__dot.is-active {
-  width: 20px;
-  height: 20px;
-  background: linear-gradient(180deg, #d8d8d8, #bcbcbc);
-  box-shadow:
-    0 1px 4px rgba(0, 0, 0, 0.45),
-    inset 0 1px 0 rgba(255, 255, 255, 0.68);
+.workflow-mode-menu__item.is-active {
+  background: rgba(96, 165, 250, 0.13);
 }
 
-.workflow-effort-control__dot:disabled,
-.workflow-effort-control.is-disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
+.workflow-mode-menu__item-icon {
+  display: inline-flex;
+  margin-top: 1px;
+  color: var(--wf-muted);
+}
+
+.workflow-mode-menu__item.is-active .workflow-mode-menu__item-icon {
+  color: var(--wf-blue);
+}
+
+.workflow-mode-menu__item.is-danger .workflow-mode-menu__item-icon {
+  color: #fbbf24;
+}
+
+.workflow-mode-menu__item-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+}
+
+.workflow-mode-menu__item-title {
+  color: var(--wf-text);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.workflow-mode-menu__item.is-danger .workflow-mode-menu__item-title {
+  color: #fcd34d;
+}
+
+.workflow-mode-menu__item-desc {
+  color: var(--wf-muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.workflow-mode-menu__check {
+  display: inline-flex;
+  align-self: center;
+  color: var(--wf-blue);
 }
 
 .workflow-inspector__segmented {

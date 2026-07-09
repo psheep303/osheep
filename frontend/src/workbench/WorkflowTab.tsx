@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
@@ -31,6 +32,8 @@ import {
   stopWorkflow as apiStopWorkflow,
   writeFile,
   type AiTerminalFrame,
+  type AiTerminalClaudePermissionMode,
+  type AiTerminalCodexApproval,
   type AiTerminalEffort,
   type AiTerminalMode,
   type AiTerminalResult,
@@ -274,10 +277,70 @@ const CONFIGURED_LOCAL_KINDS = new Set<WorkflowNodeKind>([
 ]);
 const HTTP_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
 const HTTP_RESPONSE_TYPES = ["auto", "json", "text"] as const;
-const CODEX_AGENT_MODES = ["default", "goal"] as const;
-const CLAUDE_AGENT_MODES = ["default", "plan"] as const;
 const CODEX_AGENT_EFFORTS = ["off", "minimal", "low", "medium", "high"] as const;
 const CLAUDE_AGENT_EFFORTS = ["off", "low", "medium", "high", "max"] as const;
+
+type AgentModeIcon = "manual" | "edit" | "plan" | "auto";
+
+interface AgentModeOption {
+  value: string;
+  title: string;
+  description: string;
+  icon: AgentModeIcon;
+  danger?: boolean;
+}
+
+// Claude Code: one menu that unifies mode + permission into the four editor modes.
+const CLAUDE_MODE_OPTIONS: AgentModeOption[] = [
+  {
+    value: "manual",
+    title: "Manual",
+    description: "每次修改前都会先征求同意",
+    icon: "manual",
+  },
+  {
+    value: "acceptEdits",
+    title: "Edit automatically",
+    description: "自动接受对文件的编辑（推荐）",
+    icon: "edit",
+  },
+  {
+    value: "plan",
+    title: "Plan mode",
+    description: "先探索代码并给出方案，暂不修改",
+    icon: "plan",
+  },
+  {
+    value: "auto",
+    title: "Auto mode",
+    description: "完全不询问，任何操作都自动放行（危险）",
+    icon: "auto",
+    danger: true,
+  },
+];
+
+// Codex: the three official approval presets.
+const CODEX_MODE_OPTIONS: AgentModeOption[] = [
+  {
+    value: "on-request",
+    title: "请求批准",
+    description: "编辑外部文件和使用互联网时始终询问",
+    icon: "manual",
+  },
+  {
+    value: "auto",
+    title: "替我审批",
+    description: "仅对检测到的风险操作请求批准",
+    icon: "edit",
+  },
+  {
+    value: "full-access",
+    title: "完全访问权限",
+    description: "可不受限制地访问互联网和您电脑上的任何文件（危险）",
+    icon: "auto",
+    danger: true,
+  },
+];
 const IF_OPERATORS = [
   "equals",
   "notEquals",
@@ -358,6 +421,7 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
       alwaysEnter: false,
       autoSuccess: true,
       claudePermissionMode: "acceptEdits",
+      claudeMode: "acceptEdits",
     },
   },
   {
@@ -370,11 +434,11 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
     icon: "codex",
     config: {
       effort: "high",
-      mode: "default",
       retries: 0,
       retryForever: false,
       alwaysEnter: false,
       autoSuccess: true,
+      codexApproval: "on-request",
     },
   },
   {
@@ -1554,6 +1618,7 @@ export function WorkflowTab({
             autoSuccess,
             claudePermissionMode: agentClaudePermissionMode(node),
             mode: agentMode(node),
+            codexApproval: agentCodexApproval(node),
             effort: agentEffort(node),
             alwaysEnter: agentAlwaysEnter(node),
           },
@@ -3105,15 +3170,21 @@ function WorkflowNodeInspector({
               disabled={running}
             />
           </label>
-          <label className="workflow-inspector__field">
+          <div className="workflow-inspector__field">
             <span>Mode</span>
-            <SegmentedControl
-              value={agentMode(node)}
+            <ModeMenu
+              value={agentModeChoice(node)}
               options={agentModeOptions(node)}
-              onChange={(value) => updateConfig({ mode: value })}
+              onChange={(value) =>
+                updateConfig(
+                  node.providerKind === "claude-cli"
+                    ? { claudeMode: value }
+                    : { codexApproval: value }
+                )
+              }
               disabled={running}
             />
-          </label>
+          </div>
           <label className="workflow-inspector__field">
             <span>Retries</span>
             <input
@@ -3142,30 +3213,6 @@ function WorkflowNodeInspector({
             <span>Infinite retry</span>
             <small>Warning</small>
           </label>
-          {node.providerKind === "claude-cli" && (
-            <label className="workflow-inspector__field">
-              <span>Claude permissions</span>
-              <select
-                value={agentClaudePermissionMode(node)}
-                onChange={(e) =>
-                  updateConfig({
-                    claudePermissionMode:
-                      e.target.value === "bypassPermissions"
-                        ? "bypassPermissions"
-                        : "acceptEdits",
-                  })
-                }
-                disabled={running || agentMode(node) === "plan"}
-              >
-                <option value="acceptEdits">
-                  日常开发：自动接受文件修改（推荐）
-                </option>
-                <option value="bypassPermissions">
-                  完全不询问（危险）
-                </option>
-              </select>
-            </label>
-          )}
           <label className="workflow-inspector__check">
             <input
               type="checkbox"
@@ -3731,33 +3778,239 @@ function EffortControl({
   onChange: (value: AiTerminalEffort) => void;
   disabled?: boolean;
 }) {
+  const trackRef = useRef<HTMLDivElement | null>(null);
+  const draggingRef = useRef(false);
   const index = Math.max(0, options.indexOf(value));
-  const pct = options.length > 1 ? index / (options.length - 1) : 0;
+  const count = options.length;
+  const pct = count > 1 ? index / (count - 1) : 0;
+
+  const pickFromClientX = (clientX: number) => {
+    const rail = trackRef.current;
+    if (!rail || count <= 1) return;
+    const rect = rail.getBoundingClientRect();
+    const ratio = clamp((clientX - rect.left) / rect.width, 0, 1);
+    const nextIndex = Math.round(ratio * (count - 1));
+    const next = options[nextIndex];
+    if (next && next !== value) onChange(next);
+  };
+
+  const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (disabled) return;
+    e.preventDefault();
+    e.stopPropagation();
+    draggingRef.current = true;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    pickFromClientX(e.clientX);
+  };
+
+  const onPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (!draggingRef.current) return;
+    e.preventDefault();
+    e.stopPropagation();
+    pickFromClientX(e.clientX);
+  };
+
+  const endDrag = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (!draggingRef.current) return;
+    draggingRef.current = false;
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+  };
+
+  const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (disabled) return;
+    if (e.key === "ArrowLeft" || e.key === "ArrowDown") {
+      e.preventDefault();
+      const next = options[Math.max(0, index - 1)];
+      if (next && next !== value) onChange(next);
+    } else if (e.key === "ArrowRight" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const next = options[Math.min(count - 1, index + 1)];
+      if (next && next !== value) onChange(next);
+    }
+  };
+
   return (
     <div
+      ref={trackRef}
       className={"workflow-effort-control" + (disabled ? " is-disabled" : "")}
       style={{ "--effort-fill": `${pct * 100}%` } as CSSProperties}
-      role="group"
+      role="slider"
+      tabIndex={disabled ? -1 : 0}
       aria-label="Effort"
+      aria-valuemin={0}
+      aria-valuemax={count - 1}
+      aria-valuenow={index}
+      aria-valuetext={formatAgentOption(value)}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={endDrag}
+      onPointerCancel={endDrag}
+      onKeyDown={onKeyDown}
     >
-      <span className="workflow-effort-control__track" aria-hidden />
-      {options.map((option, optionIndex) => (
-        <button
-          key={option}
-          type="button"
-          className={
-            "workflow-effort-control__dot" +
-            (optionIndex <= index && value !== "off" ? " is-filled" : "") +
-            (option === value ? " is-active" : "")
-          }
-          aria-label={`Effort ${formatAgentOption(option)}`}
-          title={formatAgentOption(option)}
-          onClick={() => onChange(option)}
-          disabled={disabled}
-        />
-      ))}
+      <span className="workflow-effort-control__rail" aria-hidden>
+        <span className="workflow-effort-control__fill" />
+      </span>
+      <span className="workflow-effort-control__ticks" aria-hidden>
+        {options.map((option, optionIndex) => (
+          <span
+            key={option}
+            className={
+              "workflow-effort-control__tick" +
+              (optionIndex <= index && value !== "off" ? " is-filled" : "")
+            }
+          />
+        ))}
+      </span>
+      <span
+        className="workflow-effort-control__thumb"
+        aria-hidden
+        style={{ left: `${pct * 100}%` }}
+      />
     </div>
   );
+}
+
+function ModeMenu({
+  value,
+  options,
+  onChange,
+  disabled,
+}: {
+  value: string;
+  options: AgentModeOption[];
+  onChange: (value: string) => void;
+  disabled?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const current = options.find((option) => option.value === value) ?? options[0];
+
+  useEffect(() => {
+    if (!open) return;
+    const onDocPointerDown = (e: PointerEvent) => {
+      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("pointerdown", onDocPointerDown, true);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("pointerdown", onDocPointerDown, true);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <div className="workflow-mode-menu" ref={rootRef}>
+      <button
+        type="button"
+        className={"workflow-mode-menu__trigger" + (open ? " is-open" : "")}
+        onClick={() => setOpen((prev) => !prev)}
+        disabled={disabled}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+      >
+        <span className="workflow-mode-menu__trigger-icon">
+          <ModeIcon name={current?.icon ?? "edit"} />
+        </span>
+        <span className="workflow-mode-menu__trigger-label">
+          {current?.title ?? "Mode"}
+        </span>
+        <span className="workflow-mode-menu__chevron" aria-hidden>
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <path d="m6 9 6 6 6-6" />
+          </svg>
+        </span>
+      </button>
+      {open && (
+        <div className="workflow-mode-menu__list" role="listbox">
+          {options.map((option) => {
+            const active = option.value === value;
+            return (
+              <button
+                key={option.value}
+                type="button"
+                role="option"
+                aria-selected={active}
+                className={
+                  "workflow-mode-menu__item" +
+                  (active ? " is-active" : "") +
+                  (option.danger ? " is-danger" : "")
+                }
+                onClick={() => {
+                  onChange(option.value);
+                  setOpen(false);
+                }}
+              >
+                <span className="workflow-mode-menu__item-icon">
+                  <ModeIcon name={option.icon} />
+                </span>
+                <span className="workflow-mode-menu__item-text">
+                  <span className="workflow-mode-menu__item-title">{option.title}</span>
+                  <span className="workflow-mode-menu__item-desc">{option.description}</span>
+                </span>
+                {active && (
+                  <span className="workflow-mode-menu__check" aria-hidden>
+                    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="m5 12.5 4.5 4.5L19 7" />
+                    </svg>
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ModeIcon({ name }: { name: AgentModeIcon }) {
+  const common = {
+    viewBox: "0 0 24 24",
+    width: 17,
+    height: 17,
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: 1.6,
+    strokeLinecap: "round" as const,
+    strokeLinejoin: "round" as const,
+    "aria-hidden": true,
+  };
+  switch (name) {
+    case "manual":
+      return (
+        <svg {...common}>
+          <path d="M8 11V5.5a1.5 1.5 0 0 1 3 0V11" />
+          <path d="M11 10.5V4.5a1.5 1.5 0 0 1 3 0V11" />
+          <path d="M14 11V6a1.5 1.5 0 0 1 3 0v7.5a6 6 0 0 1-6 6h-1.2a4 4 0 0 1-2.9-1.25L4.5 15" />
+          <path d="M8 11V9a1.5 1.5 0 0 0-3 0v3" />
+        </svg>
+      );
+    case "plan":
+      return (
+        <svg {...common}>
+          <rect x="5" y="3.5" width="14" height="17" rx="2" />
+          <path d="M8.5 8h7M8.5 12h7M8.5 16h4" />
+        </svg>
+      );
+    case "auto":
+      return (
+        <svg {...common}>
+          <path d="M13 2.5 4.5 13.5H11l-1 8L19.5 10H13z" />
+        </svg>
+      );
+    case "edit":
+    default:
+      return (
+        <svg {...common}>
+          <path d="m8 7-4 5 4 5M16 7l4 5-4 5" />
+        </svg>
+      );
+  }
 }
 
 function formatAgentOption(value: string): string {
@@ -4608,8 +4861,9 @@ async function runAiTerminalWithRetries(
     kind?: "claude-cli" | "codex-cli";
     terminalPrompt?: string;
     autoSuccess?: boolean;
-    claudePermissionMode?: "acceptEdits" | "bypassPermissions";
+    claudePermissionMode?: AiTerminalClaudePermissionMode;
     mode?: AiTerminalMode;
+    codexApproval?: AiTerminalCodexApproval;
     effort?: AiTerminalEffort;
     alwaysEnter?: boolean;
   },
@@ -4677,15 +4931,31 @@ function agentAlwaysEnter(node: WorkflowNode): boolean {
   return node.config?.alwaysEnter === true;
 }
 
-function agentMode(node: WorkflowNode): AiTerminalMode {
-  const value = node.config?.mode;
-  if (node.providerKind === "codex-cli" && value === "goal") return "goal";
-  if (node.providerKind === "claude-cli" && value === "plan") return "plan";
-  return "default";
+/** The UI mode value currently selected in the rich Mode menu. */
+function agentModeChoice(node: WorkflowNode): string {
+  if (node.providerKind === "claude-cli") return agentClaudeMode(node);
+  return agentCodexApproval(node);
 }
 
-function agentModeOptions(node: WorkflowNode): readonly AiTerminalMode[] {
-  return node.providerKind === "claude-cli" ? CLAUDE_AGENT_MODES : CODEX_AGENT_MODES;
+function agentModeOptions(node: WorkflowNode): AgentModeOption[] {
+  return node.providerKind === "claude-cli" ? CLAUDE_MODE_OPTIONS : CODEX_MODE_OPTIONS;
+}
+
+/** Claude's unified mode choice: manual | acceptEdits | plan | auto. */
+function agentClaudeMode(node: WorkflowNode): string {
+  const value = node.config?.claudeMode;
+  if (value === "manual" || value === "acceptEdits" || value === "plan" || value === "auto") {
+    return value;
+  }
+  // Migrate legacy configs that split mode + claudePermissionMode.
+  if (node.config?.mode === "plan") return "plan";
+  if (node.config?.claudePermissionMode === "bypassPermissions") return "auto";
+  return "acceptEdits";
+}
+
+function agentMode(node: WorkflowNode): AiTerminalMode {
+  if (node.providerKind === "claude-cli" && agentClaudeMode(node) === "plan") return "plan";
+  return "default";
 }
 
 function agentEffort(node: WorkflowNode): AiTerminalEffort {
@@ -4723,10 +4993,22 @@ function agentAutoSuccess(node: WorkflowNode): boolean {
   return node.config?.autoSuccess !== false;
 }
 
-function agentClaudePermissionMode(node: WorkflowNode): "acceptEdits" | "bypassPermissions" {
-  return node.config?.claudePermissionMode === "bypassPermissions"
-    ? "bypassPermissions"
-    : "acceptEdits";
+function agentClaudePermissionMode(node: WorkflowNode): AiTerminalClaudePermissionMode {
+  switch (agentClaudeMode(node)) {
+    case "manual":
+      return "default";
+    case "auto":
+      return "bypassPermissions";
+    default:
+      // "acceptEdits" and "plan" both submit acceptEdits; plan is carried by mode.
+      return "acceptEdits";
+  }
+}
+
+function agentCodexApproval(node: WorkflowNode): AiTerminalCodexApproval {
+  const value = node.config?.codexApproval;
+  if (value === "auto" || value === "full-access") return value;
+  return "on-request";
 }
 
 function agentRunSnapshot(
