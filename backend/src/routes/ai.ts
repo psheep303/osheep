@@ -20,10 +20,15 @@ import {
 } from "../ai-cli.js";
 import {
   continueAgentTerminal,
+  finishAgentTerminalSuccess,
   injectAgentTerminalPrompt,
   pauseAgentTerminal,
   runAgentTerminal,
   setAgentTerminalAutoContinue,
+  setAgentTerminalAutoSuccess,
+  type AgentEffort,
+  type AgentMode,
+  type ClaudePermissionMode,
 } from "../ai-terminal.js";
 
 type ProviderKind = CliProviderKind | "unsupported";
@@ -248,6 +253,32 @@ function parseKind(v: unknown): ProviderKind {
   return "unsupported";
 }
 
+function parseClaudePermissionMode(v: unknown): ClaudePermissionMode | undefined {
+  if (v === "acceptEdits" || v === "bypassPermissions") return v;
+  return undefined;
+}
+
+function parseAgentMode(kind: CliProviderKind, v: unknown): AgentMode {
+  if (kind === "codex-cli" && v === "goal") return "goal";
+  if (kind === "claude-cli" && v === "plan") return "plan";
+  return "default";
+}
+
+function parseAgentEffort(v: unknown): AgentEffort | undefined {
+  if (
+    v === "off" ||
+    v === "minimal" ||
+    v === "low" ||
+    v === "medium" ||
+    v === "high" ||
+    v === "xhigh" ||
+    v === "max"
+  ) {
+    return v;
+  }
+  return undefined;
+}
+
 function sanitizeMessages(messages: unknown): ChatMessageIn[] {
   if (!Array.isArray(messages) || messages.length === 0) {
     throw errors.invalidQuery("messages 必须为非空数组");
@@ -301,7 +332,11 @@ export async function registerAiRoutes(app: FastifyInstance) {
       messages?: ChatMessageIn[];
       kind?: ProviderKind;
       terminalPrompt?: string;
-      autoContinue?: boolean;
+      autoSuccess?: boolean;
+      claudePermissionMode?: ClaudePermissionMode;
+      mode?: AgentMode;
+      effort?: AgentEffort;
+      alwaysEnter?: boolean;
     };
   }>("/api/workspaces/:id/ai/chat/terminal", async (req, reply) => {
     const { model, messages } = req.body ?? {};
@@ -348,7 +383,11 @@ export async function registerAiRoutes(app: FastifyInstance) {
         kind,
         model: typeof model === "string" && model ? model : "default",
         prompt,
-        autoContinue: req.body?.autoContinue !== false,
+        autoSuccess: req.body?.autoSuccess !== false,
+        claudePermissionMode: parseClaudePermissionMode(req.body?.claudePermissionMode),
+        mode: parseAgentMode(kind, req.body?.mode),
+        effort: parseAgentEffort(req.body?.effort),
+        alwaysEnter: req.body?.alwaysEnter === true,
         signal: abort.signal,
         onFrame: (frame) => {
           send(frame.type, frame);
@@ -392,6 +431,18 @@ export async function registerAiRoutes(app: FastifyInstance) {
 
   app.post<{
     Params: { id: string; sessionId: string };
+    Body: { autoSuccess?: boolean };
+  }>("/api/workspaces/:id/ai/chat/terminal/:sessionId/auto-success", async (req) => {
+    await resolveWorkspace(req.params.id);
+    const result = setAgentTerminalAutoSuccess(
+      req.params.sessionId,
+      req.body?.autoSuccess !== false
+    );
+    return { ok: true, ...result };
+  });
+
+  app.post<{
+    Params: { id: string; sessionId: string };
   }>("/api/workspaces/:id/ai/chat/terminal/:sessionId/pause", async (req) => {
     await resolveWorkspace(req.params.id);
     pauseAgentTerminal(req.params.sessionId);
@@ -403,6 +454,14 @@ export async function registerAiRoutes(app: FastifyInstance) {
   }>("/api/workspaces/:id/ai/chat/terminal/:sessionId/continue", async (req) => {
     await resolveWorkspace(req.params.id);
     continueAgentTerminal(req.params.sessionId);
+    return { ok: true };
+  });
+
+  app.post<{
+    Params: { id: string; sessionId: string };
+  }>("/api/workspaces/:id/ai/chat/terminal/:sessionId/success", async (req) => {
+    await resolveWorkspace(req.params.id);
+    finishAgentTerminalSuccess(req.params.sessionId);
     return { ok: true };
   });
 

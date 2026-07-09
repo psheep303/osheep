@@ -124,7 +124,7 @@ Fields:
 
 - `model`
 - `retries`
-- `auto continue`
+- `auto success`
 - prompt
 
 Use it when you want Codex CLI to inspect, edit, or reason inside the project.
@@ -136,6 +136,10 @@ The block writes one JSON object. If the model returns plain text, osheep wraps 
 Kind: `agent` with provider `claude-cli`
 
 Same usage pattern as Codex, but routed to Claude Code CLI.
+
+Additional field:
+
+- `Claude permissions`: `acceptEdits` adds `--permission-mode acceptEdits`; `bypassPermissions` adds `--permission-mode bypassPermissions`.
 
 ## Network
 

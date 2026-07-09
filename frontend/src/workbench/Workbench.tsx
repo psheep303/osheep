@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityBar, type ViewId } from "./ActivityBar";
-import { AiSettingsView } from "./AiSettingsView";
+import { ClaudeCodeAgentView, CodexAgentView } from "./AgentSettingsView";
 import { AiPanel } from "./AiPanel";
 import { BottomPanel } from "./BottomPanel";
-import { CodexPluginsView } from "./CodexPluginsView";
 import { DiffPane } from "./DiffPane";
 import { EditorPane, type GotoTarget } from "./EditorPane";
 import { FileTree } from "./FileTree";
@@ -533,8 +532,8 @@ export function Workbench() {
                 onOpenDiff={(p, base, head) => void openDiffTab(p, base, head)}
               />
             )}
-            {activeView === "ai-settings" && <AiSettingsView />}
-            {activeView === "codex-plugins" && <CodexPluginsView />}
+            {activeView === "claude-code" && <ClaudeCodeAgentView />}
+            {activeView === "codex" && <CodexAgentView />}
           </div>
         )}
         <Resizer
