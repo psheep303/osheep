@@ -1332,8 +1332,14 @@ export interface AiTerminalResult {
 }
 
 export type AiTerminalMode = "default" | "goal" | "plan";
-export type AiTerminalClaudePermissionMode = "default" | "acceptEdits" | "bypassPermissions";
-export type AiTerminalCodexApproval = "on-request" | "auto" | "full-access";
+export type AiTerminalClaudePermissionMode =
+  | "default"
+  | "acceptEdits"
+  | "auto"
+  | "dontAsk"
+  | "bypassPermissions";
+export type AiTerminalCodexApproval = "untrusted" | "on-failure" | "on-request" | "never";
+export type AiTerminalCodexSandbox = "read-only" | "workspace-write" | "danger-full-access";
 export type AiTerminalEffort =
   | "off"
   | "minimal"
@@ -1341,7 +1347,8 @@ export type AiTerminalEffort =
   | "medium"
   | "high"
   | "xhigh"
-  | "max";
+  | "max"
+  | "ultracode";
 
 export async function aiChatTerminalStream(
   workspaceId: string,
@@ -1354,6 +1361,7 @@ export async function aiChatTerminalStream(
     claudePermissionMode?: AiTerminalClaudePermissionMode;
     mode?: AiTerminalMode;
     codexApproval?: AiTerminalCodexApproval;
+    codexSandbox?: AiTerminalCodexSandbox;
     effort?: AiTerminalEffort;
     alwaysEnter?: boolean;
   },

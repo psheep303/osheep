@@ -1,11 +1,10 @@
-import {
+﻿import {
   useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
   type CSSProperties,
-  type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
@@ -34,6 +33,7 @@ import {
   type AiTerminalFrame,
   type AiTerminalClaudePermissionMode,
   type AiTerminalCodexApproval,
+  type AiTerminalCodexSandbox,
   type AiTerminalEffort,
   type AiTerminalMode,
   type AiTerminalResult,
@@ -277,9 +277,6 @@ const CONFIGURED_LOCAL_KINDS = new Set<WorkflowNodeKind>([
 ]);
 const HTTP_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
 const HTTP_RESPONSE_TYPES = ["auto", "json", "text"] as const;
-const CODEX_AGENT_EFFORTS = ["off", "minimal", "low", "medium", "high"] as const;
-const CLAUDE_AGENT_EFFORTS = ["off", "low", "medium", "high", "max"] as const;
-
 type AgentModeIcon = "manual" | "edit" | "plan" | "auto";
 
 interface AgentModeOption {
@@ -290,56 +287,118 @@ interface AgentModeOption {
   danger?: boolean;
 }
 
-// Claude Code: one menu that unifies mode + permission into the four editor modes.
+interface AgentEffortOption {
+  value: AiTerminalEffort;
+  title: string;
+  description?: string;
+}
+
+// Claude Code: one menu that maps directly to --permission-mode values.
 const CLAUDE_MODE_OPTIONS: AgentModeOption[] = [
   {
     value: "manual",
     title: "Manual",
-    description: "每次修改前都会先征求同意",
+    description: "--permission-mode default",
     icon: "manual",
   },
   {
     value: "acceptEdits",
     title: "Edit automatically",
-    description: "自动接受对文件的编辑（推荐）",
+    description: "--permission-mode acceptEdits",
     icon: "edit",
   },
   {
     value: "plan",
     title: "Plan mode",
-    description: "先探索代码并给出方案，暂不修改",
+    description: "--permission-mode plan",
     icon: "plan",
   },
   {
     value: "auto",
     title: "Auto mode",
-    description: "完全不询问，任何操作都自动放行（危险）",
+    description: "--permission-mode auto",
+    icon: "auto",
+  },
+  {
+    value: "dontAsk",
+    title: "Dont ask",
+    description: "--permission-mode dontAsk",
+    icon: "auto",
+    danger: true,
+  },
+  {
+    value: "bypassPermissions",
+    title: "Bypass permissions",
+    description: "--permission-mode bypassPermissions",
     icon: "auto",
     danger: true,
   },
 ];
 
-// Codex: the three official approval presets.
+// Codex: approval and sandbox are separate official CLI flags.
 const CODEX_MODE_OPTIONS: AgentModeOption[] = [
   {
-    value: "on-request",
-    title: "请求批准",
-    description: "编辑外部文件和使用互联网时始终询问",
+    value: "on-failure",
+    title: "On failure",
+    description: "--ask-for-approval on-failure",
     icon: "manual",
   },
   {
-    value: "auto",
-    title: "替我审批",
-    description: "仅对检测到的风险操作请求批准",
+    value: "on-request",
+    title: "On request",
+    description: "--ask-for-approval on-request",
     icon: "edit",
   },
   {
-    value: "full-access",
-    title: "完全访问权限",
-    description: "可不受限制地访问互联网和您电脑上的任何文件（危险）",
+    value: "untrusted",
+    title: "Untrusted",
+    description: "--ask-for-approval untrusted",
+    icon: "manual",
+  },
+  {
+    value: "never",
+    title: "Never",
+    description: "--ask-for-approval never",
     icon: "auto",
     danger: true,
   },
+];
+
+const CODEX_SANDBOX_OPTIONS: AgentModeOption[] = [
+  {
+    value: "workspace-write",
+    title: "Workspace write",
+    description: "--sandbox workspace-write",
+    icon: "edit",
+  },
+  {
+    value: "read-only",
+    title: "Read only",
+    description: "--sandbox read-only",
+    icon: "manual",
+  },
+  {
+    value: "danger-full-access",
+    title: "Danger full access",
+    description: "--sandbox danger-full-access",
+    icon: "auto",
+    danger: true,
+  },
+];
+
+const CODEX_EFFORT_OPTIONS: AgentEffortOption[] = [
+  { value: "low", title: "Low" },
+  { value: "medium", title: "Medium" },
+  { value: "high", title: "High" },
+  { value: "xhigh", title: "XHigh" },
+];
+const CLAUDE_EFFORT_OPTIONS: AgentEffortOption[] = [
+  { value: "low", title: "Low" },
+  { value: "medium", title: "Medium" },
+  { value: "high", title: "High" },
+  { value: "xhigh", title: "XHigh" },
+  { value: "max", title: "Max" },
+  { value: "ultracode", title: "Ultracode" },
 ];
 const IF_OPERATORS = [
   "equals",
@@ -438,7 +497,8 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
       retryForever: false,
       alwaysEnter: false,
       autoSuccess: true,
-      codexApproval: "on-request",
+      codexApproval: "on-failure",
+      codexSandbox: "workspace-write",
     },
   },
   {
@@ -1382,15 +1442,10 @@ export function WorkflowTab({
 
   const runWorkflow = async () => {
     if (!workflow) return;
-    const ordered = topoOrder(workflow);
-    if (ordered.error) {
-      setError(ordered.error);
-      return;
-    }
-    await startBackendRun(ordered.nodeIds);
+    await startBackendRun();
   };
 
-  const startBackendRun = async (nodeIds: string[]) => {
+  const startBackendRun = async (nodeIds?: string[]) => {
     let current = workflowRef.current;
     if (!current || running) return;
     await flushPendingSave();
@@ -1440,6 +1495,7 @@ export function WorkflowTab({
               summary: "",
               rawOutput: "",
               error: "",
+              config: clearRunDetails(node.config),
               startedAt: undefined,
               completedAt: undefined,
             }
@@ -1619,6 +1675,7 @@ export function WorkflowTab({
             claudePermissionMode: agentClaudePermissionMode(node),
             mode: agentMode(node),
             codexApproval: agentCodexApproval(node),
+            codexSandbox: agentCodexSandbox(node),
             effort: agentEffort(node),
             alwaysEnter: agentAlwaysEnter(node),
           },
@@ -1797,7 +1854,7 @@ export function WorkflowTab({
         {
           items: [
             {
-              label: "重命名",
+              label: "Rename",
               onSelect: () => {
                 setBlockPickerOpen(false);
                 setSelectedId(menuNode.id);
@@ -1855,14 +1912,14 @@ export function WorkflowTab({
         <div className="workflow-toolbar__cluster workflow-toolbar__cluster--identity">
           <div
             className="workflow-toolbar__title-label"
-            title="右键重命名"
+            title="Right-click to rename"
             onContextMenu={(e) => {
               e.preventDefault();
               e.stopPropagation();
               setTitleMenu({ x: e.clientX, y: e.clientY });
             }}
           >
-            {workflow.title || "未命名工作流"}
+            {workflow.title || "Untitled workflow"}
           </div>
           <div className={`workflow-toolbar__status is-${toolbarStatus}`}>
             {toolbarStatus === "saving"
@@ -1881,7 +1938,7 @@ export function WorkflowTab({
               setNodeMenu(null);
               setBlockPickerOpen(true);
             }}
-            title="添加块"
+            title="Add block"
             aria-label="Add block"
           >
             <IconAddBlock />
@@ -1890,7 +1947,7 @@ export function WorkflowTab({
             className="workflow-toolbar__btn workflow-toolbar__btn--icon"
             onClick={autoArrange}
             disabled={running}
-            title="自动整理"
+            title="鑷姩鏁寸悊"
             aria-label="Auto arrange"
           >
             <IconArrange />
@@ -1898,7 +1955,7 @@ export function WorkflowTab({
           <button
             className="workflow-toolbar__btn workflow-toolbar__btn--icon"
             onClick={() => void fitView()}
-            title="适应视图"
+            title="閫傚簲瑙嗗浘"
             aria-label="Fit view"
           >
             <IconFit />
@@ -1909,7 +1966,7 @@ export function WorkflowTab({
             className="workflow-toolbar__btn workflow-toolbar__btn--icon"
             onClick={undo}
             disabled={running || !canUndo}
-            title="撤销 (Ctrl+Z)"
+            title="鎾ら攢 (Ctrl+Z)"
             aria-label="Undo"
           >
             <IconUndo />
@@ -1930,7 +1987,7 @@ export function WorkflowTab({
               className="workflow-toolbar__btn workflow-toolbar__btn--icon"
               onClick={() => setZoomValue(zoom - ZOOM_STEP)}
               disabled={zoom <= MIN_ZOOM}
-              title="缩小"
+              title="缂╁皬"
               aria-label="Zoom out"
             >
               <IconZoomOut />
@@ -1940,7 +1997,7 @@ export function WorkflowTab({
               className="workflow-toolbar__btn workflow-toolbar__btn--icon"
               onClick={() => setZoomValue(zoom + ZOOM_STEP)}
               disabled={zoom >= MAX_ZOOM}
-              title="放大"
+              title="鏀惧ぇ"
               aria-label="Zoom in"
             >
               <IconZoomIn />
@@ -1952,7 +2009,7 @@ export function WorkflowTab({
             className="workflow-toolbar__btn workflow-toolbar__btn--icon"
             onClick={() => void runSelected()}
             disabled={running || !selectedNode}
-            title="运行选中块"
+            title="Run selected block"
             aria-label="Run block"
           >
             <IconPlay />
@@ -1961,7 +2018,7 @@ export function WorkflowTab({
             <button
               className="workflow-toolbar__btn workflow-toolbar__btn--icon is-danger"
               onClick={stopRun}
-              title="停止"
+              title="鍋滄"
               aria-label="Stop"
             >
               <IconStop />
@@ -1970,7 +2027,7 @@ export function WorkflowTab({
             <button
               className="workflow-toolbar__btn workflow-toolbar__btn--icon is-primary"
               onClick={() => void runWorkflow()}
-              title="运行工作流"
+              title="Run workflow"
               aria-label="Run workflow"
             >
               <IconPlay solid />
@@ -2164,7 +2221,7 @@ export function WorkflowTab({
             {
               items: [
                 {
-                  label: "重命名",
+                  label: "Rename",
                   onSelect: () => {
                     setBlockPickerOpen(false);
                     setSelectedId(null);
@@ -2376,14 +2433,14 @@ function WorkflowRenamePanel({
           type="button"
           className="workflow-inspector__close"
           onClick={onClose}
-          aria-label="关闭"
-          title="关闭"
+          aria-label="鍏抽棴"
+          title="鍏抽棴"
         >
           x
         </button>
       </div>
       <label className="workflow-inspector__field">
-        <span>名称</span>
+        <span>鍚嶇О</span>
         <input
           ref={inputRef}
           className="workflow-rename-panel__input"
@@ -2403,10 +2460,10 @@ function WorkflowRenamePanel({
       </label>
       <div className="workflow-rename-panel__actions">
         <button type="button" onClick={onClose}>
-          取消
+          鍙栨秷
         </button>
         <button type="button" className="is-primary" onClick={submit}>
-          确定
+          纭畾
         </button>
       </div>
     </aside>
@@ -3163,28 +3220,45 @@ function WorkflowNodeInspector({
           </label>
           <label className="workflow-inspector__field">
             <span>Effort ({formatAgentOption(agentEffort(node))})</span>
-            <EffortControl
+            <EffortMenu
               value={agentEffort(node)}
-              options={agentEffortOptions(node)}
+              options={agentEffortMenuOptions(node)}
               onChange={(value) => updateConfig({ effort: value })}
               disabled={running}
             />
           </label>
-          <div className="workflow-inspector__field">
-            <span>Mode</span>
-            <ModeMenu
-              value={agentModeChoice(node)}
-              options={agentModeOptions(node)}
-              onChange={(value) =>
-                updateConfig(
-                  node.providerKind === "claude-cli"
-                    ? { claudeMode: value }
-                    : { codexApproval: value }
-                )
-              }
-              disabled={running}
-            />
-          </div>
+          {node.providerKind === "claude-cli" ? (
+            <div className="workflow-inspector__field">
+              <span>Mode</span>
+              <ModeMenu
+                value={agentClaudeMode(node)}
+                options={CLAUDE_MODE_OPTIONS}
+                onChange={(value) => updateConfig({ claudeMode: value })}
+                disabled={running}
+              />
+            </div>
+          ) : (
+            <>
+              <div className="workflow-inspector__field">
+                <span>Approval</span>
+                <ModeMenu
+                  value={agentCodexApproval(node)}
+                  options={CODEX_MODE_OPTIONS}
+                  onChange={(value) => updateConfig({ codexApproval: value })}
+                  disabled={running}
+                />
+              </div>
+              <div className="workflow-inspector__field">
+                <span>Sandbox</span>
+                <ModeMenu
+                  value={agentCodexSandbox(node)}
+                  options={CODEX_SANDBOX_OPTIONS}
+                  onChange={(value) => updateConfig({ codexSandbox: value })}
+                  disabled={running}
+                />
+              </div>
+            </>
+          )}
           <label className="workflow-inspector__field">
             <span>Retries</span>
             <input
@@ -3767,107 +3841,80 @@ function SegmentedControl<T extends string>({
   );
 }
 
-function EffortControl({
+function EffortMenu({
   value,
   options,
   onChange,
   disabled,
 }: {
   value: AiTerminalEffort;
-  options: readonly AiTerminalEffort[];
+  options: readonly AgentEffortOption[];
   onChange: (value: AiTerminalEffort) => void;
   disabled?: boolean;
 }) {
-  const trackRef = useRef<HTMLDivElement | null>(null);
-  const draggingRef = useRef(false);
-  const index = Math.max(0, options.indexOf(value));
-  const count = options.length;
-  const pct = count > 1 ? index / (count - 1) : 0;
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const current = options.find((option) => option.value === value) ?? options[0];
 
-  const pickFromClientX = (clientX: number) => {
-    const rail = trackRef.current;
-    if (!rail || count <= 1) return;
-    const rect = rail.getBoundingClientRect();
-    const ratio = clamp((clientX - rect.left) / rect.width, 0, 1);
-    const nextIndex = Math.round(ratio * (count - 1));
-    const next = options[nextIndex];
-    if (next && next !== value) onChange(next);
-  };
-
-  const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if (disabled) return;
-    e.preventDefault();
-    e.stopPropagation();
-    draggingRef.current = true;
-    e.currentTarget.setPointerCapture(e.pointerId);
-    pickFromClientX(e.clientX);
-  };
-
-  const onPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if (!draggingRef.current) return;
-    e.preventDefault();
-    e.stopPropagation();
-    pickFromClientX(e.clientX);
-  };
-
-  const endDrag = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if (!draggingRef.current) return;
-    draggingRef.current = false;
-    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
-      e.currentTarget.releasePointerCapture(e.pointerId);
-    }
-  };
-
-  const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (disabled) return;
-    if (e.key === "ArrowLeft" || e.key === "ArrowDown") {
-      e.preventDefault();
-      const next = options[Math.max(0, index - 1)];
-      if (next && next !== value) onChange(next);
-    } else if (e.key === "ArrowRight" || e.key === "ArrowUp") {
-      e.preventDefault();
-      const next = options[Math.min(count - 1, index + 1)];
-      if (next && next !== value) onChange(next);
-    }
-  };
+  useEffect(() => {
+    if (!open) return;
+    const onDocPointerDown = (e: PointerEvent) => {
+      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("pointerdown", onDocPointerDown, true);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("pointerdown", onDocPointerDown, true);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
 
   return (
-    <div
-      ref={trackRef}
-      className={"workflow-effort-control" + (disabled ? " is-disabled" : "")}
-      style={{ "--effort-fill": `${pct * 100}%` } as CSSProperties}
-      role="slider"
-      tabIndex={disabled ? -1 : 0}
-      aria-label="Effort"
-      aria-valuemin={0}
-      aria-valuemax={count - 1}
-      aria-valuenow={index}
-      aria-valuetext={formatAgentOption(value)}
-      onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={endDrag}
-      onPointerCancel={endDrag}
-      onKeyDown={onKeyDown}
-    >
-      <span className="workflow-effort-control__rail" aria-hidden>
-        <span className="workflow-effort-control__fill" />
-      </span>
-      <span className="workflow-effort-control__ticks" aria-hidden>
-        {options.map((option, optionIndex) => (
-          <span
-            key={option}
-            className={
-              "workflow-effort-control__tick" +
-              (optionIndex <= index && value !== "off" ? " is-filled" : "")
-            }
-          />
-        ))}
-      </span>
-      <span
-        className="workflow-effort-control__thumb"
-        aria-hidden
-        style={{ left: `${pct * 100}%` }}
-      />
+    <div className="workflow-mode-menu workflow-effort-menu" ref={rootRef}>
+      <button
+        type="button"
+        className={"workflow-mode-menu__trigger" + (open ? " is-open" : "")}
+        onClick={() => !disabled && setOpen((v) => !v)}
+        disabled={disabled}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+      >
+        <span className="workflow-mode-menu__trigger-label">{current?.title ?? "Effort"}</span>
+        <span className="workflow-mode-menu__chevron" aria-hidden>
+          v
+        </span>
+      </button>
+      {open && (
+        <div className="workflow-mode-menu__list" role="listbox">
+          {options.map((option) => {
+            const active = option.value === value;
+            return (
+              <button
+                key={option.value}
+                type="button"
+                role="option"
+                aria-selected={active}
+                className={"workflow-mode-menu__item" + (active ? " is-active" : "")}
+                onClick={() => {
+                  onChange(option.value);
+                  setOpen(false);
+                }}
+              >
+                <span className="workflow-mode-menu__item-text">
+                  <span className="workflow-mode-menu__item-title">{option.title}</span>
+                  {option.description ? (
+                    <span className="workflow-mode-menu__item-desc">{option.description}</span>
+                  ) : null}
+                </span>
+                <span className="workflow-effort-menu__check" aria-hidden />
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -3952,13 +3999,7 @@ function ModeMenu({
                   <span className="workflow-mode-menu__item-title">{option.title}</span>
                   <span className="workflow-mode-menu__item-desc">{option.description}</span>
                 </span>
-                {active && (
-                  <span className="workflow-mode-menu__check" aria-hidden>
-                    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="m5 12.5 4.5 4.5L19 7" />
-                    </svg>
-                  </span>
-                )}
+                <span className="workflow-mode-menu__check" aria-hidden />
               </button>
             );
           })}
@@ -4015,6 +4056,7 @@ function ModeIcon({ name }: { name: AgentModeIcon }) {
 
 function formatAgentOption(value: string): string {
   if (value === "xhigh") return "XHigh";
+  if (value === "ultracode") return "Ultracode";
   return value ? value[0]!.toUpperCase() + value.slice(1) : value;
 }
 
@@ -4864,6 +4906,7 @@ async function runAiTerminalWithRetries(
     claudePermissionMode?: AiTerminalClaudePermissionMode;
     mode?: AiTerminalMode;
     codexApproval?: AiTerminalCodexApproval;
+    codexSandbox?: AiTerminalCodexSandbox;
     effort?: AiTerminalEffort;
     alwaysEnter?: boolean;
   },
@@ -4912,8 +4955,8 @@ function continueOnlyTerminalInput<T extends {
 }>(input: T): T {
   return {
     ...input,
-    messages: [{ role: "user", content: "继续" }],
-    terminalPrompt: "继续",
+    messages: [{ role: "user", content: "缁х画" }],
+    terminalPrompt: "缁х画",
   };
 }
 
@@ -4931,20 +4974,17 @@ function agentAlwaysEnter(node: WorkflowNode): boolean {
   return node.config?.alwaysEnter === true;
 }
 
-/** The UI mode value currently selected in the rich Mode menu. */
-function agentModeChoice(node: WorkflowNode): string {
-  if (node.providerKind === "claude-cli") return agentClaudeMode(node);
-  return agentCodexApproval(node);
-}
-
-function agentModeOptions(node: WorkflowNode): AgentModeOption[] {
-  return node.providerKind === "claude-cli" ? CLAUDE_MODE_OPTIONS : CODEX_MODE_OPTIONS;
-}
-
 /** Claude's unified mode choice: manual | acceptEdits | plan | auto. */
 function agentClaudeMode(node: WorkflowNode): string {
   const value = node.config?.claudeMode;
-  if (value === "manual" || value === "acceptEdits" || value === "plan" || value === "auto") {
+  if (
+    value === "manual" ||
+    value === "acceptEdits" ||
+    value === "plan" ||
+    value === "auto" ||
+    value === "dontAsk" ||
+    value === "bypassPermissions"
+  ) {
     return value;
   }
   // Migrate legacy configs that split mode + claudePermissionMode.
@@ -4960,33 +5000,45 @@ function agentMode(node: WorkflowNode): AiTerminalMode {
 
 function agentEffort(node: WorkflowNode): AiTerminalEffort {
   const value = node.config?.effort;
-  if (value === "off" || value === "low" || value === "medium" || value === "high") {
-    return value;
-  }
   if (node.providerKind === "claude-cli") {
-    if (value === "xhigh" || value === "max") return value;
-    if (value === "minimal") return "low";
+    if (
+      value === "low" ||
+      value === "medium" ||
+      value === "high" ||
+      value === "xhigh" ||
+      value === "max" ||
+      value === "ultracode"
+    ) {
+      return value;
+    }
+    if (value === "off" || value === "minimal") return "low";
   } else {
-    if (value === "minimal") return "minimal";
-    if (value === "xhigh" || value === "max") return "high";
+    if (
+      value === "low" ||
+      value === "medium" ||
+      value === "high" ||
+      value === "xhigh"
+    ) {
+      return value;
+    }
+    if (
+      value === "off" ||
+      value === "minimal" ||
+      value === "max" ||
+      value === "ultracode"
+    ) {
+      return "high";
+    }
   }
-  return "off";
+  return node.providerKind === "claude-cli" ? "high" : "medium";
 }
 
-function agentEffortOptions(node: WorkflowNode): readonly AiTerminalEffort[] {
-  return node.providerKind === "claude-cli"
-    ? CLAUDE_AGENT_EFFORTS
-    : CODEX_AGENT_EFFORTS;
+function agentEffortMenuOptions(node: WorkflowNode): readonly AgentEffortOption[] {
+  return node.providerKind === "claude-cli" ? CLAUDE_EFFORT_OPTIONS : CODEX_EFFORT_OPTIONS;
 }
 
 function canManuallyMarkAgentSuccess(status: string | undefined): boolean {
-  return (
-    status === "prompt-sent" ||
-    status === "waiting-for-choice" ||
-    status === "ready-for-success" ||
-    status === "auto-finished" ||
-    status === "manual-success"
-  );
+  return status === "ready-for-success";
 }
 
 function agentAutoSuccess(node: WorkflowNode): boolean {
@@ -4998,6 +5050,10 @@ function agentClaudePermissionMode(node: WorkflowNode): AiTerminalClaudePermissi
     case "manual":
       return "default";
     case "auto":
+      return "auto";
+    case "dontAsk":
+      return "dontAsk";
+    case "bypassPermissions":
       return "bypassPermissions";
     default:
       // "acceptEdits" and "plan" both submit acceptEdits; plan is carried by mode.
@@ -5007,8 +5063,21 @@ function agentClaudePermissionMode(node: WorkflowNode): AiTerminalClaudePermissi
 
 function agentCodexApproval(node: WorkflowNode): AiTerminalCodexApproval {
   const value = node.config?.codexApproval;
-  if (value === "auto" || value === "full-access") return value;
-  return "on-request";
+  if (value === "untrusted" || value === "on-failure" || value === "on-request" || value === "never") {
+    return value;
+  }
+  if (value === "auto") return "on-failure";
+  if (value === "full-access") return "never";
+  return "on-failure";
+}
+
+function agentCodexSandbox(node: WorkflowNode): AiTerminalCodexSandbox {
+  const value = node.config?.codexSandbox;
+  if (value === "read-only" || value === "workspace-write" || value === "danger-full-access") {
+    return value;
+  }
+  if (node.config?.codexApproval === "full-access") return "danger-full-access";
+  return "workspace-write";
 }
 
 function agentRunSnapshot(
@@ -5052,6 +5121,8 @@ function agentTerminalCommandLine(node: WorkflowNode): string {
     );
     if (effort) parts.push("--effort", effort);
   } else {
+    parts.push("--ask-for-approval", agentCodexApproval(node));
+    parts.push("--sandbox", agentCodexSandbox(node));
     if (mode === "goal") parts.push("--enable", "goals");
     if (effort) parts.push("-c", `model_reasoning_effort="${effort}"`);
   }
@@ -5063,28 +5134,28 @@ function agentEffortCliValue(
   providerKind: WorkflowProviderKind,
   effort: AiTerminalEffort
 ): string | null {
-  if (effort === "off") return null;
   if (providerKind === "claude-cli") {
     if (
       effort === "low" ||
       effort === "medium" ||
       effort === "high" ||
       effort === "xhigh" ||
-      effort === "max"
+      effort === "max" ||
+      effort === "ultracode"
     ) {
       return effort;
     }
     return effort === "minimal" ? "low" : null;
   }
   if (
-    effort === "minimal" ||
     effort === "low" ||
     effort === "medium" ||
-    effort === "high"
+    effort === "high" ||
+    effort === "xhigh"
   ) {
     return effort;
   }
-  return effort === "xhigh" || effort === "max" ? "high" : null;
+  return effort === "off" || effort === "minimal" ? null : "high";
 }
 
 function commandRunSnapshot(
@@ -5920,12 +5991,12 @@ function toWorkflowIconName(value: unknown): WorkflowIconName | null {
   ]);
   if (current.has(icon as WorkflowIconName)) return icon as WorkflowIconName;
   const legacy: Record<string, WorkflowIconName> = {
-    "◇": "trigger",
-    "⌁": "command",
-    "✦": "ai",
-    "↗": "web",
-    "▣": "file",
-    "◫": "output",
+    "legacy-trigger": "trigger",
+    "legacy-command": "command",
+    "legacy-ai": "ai",
+    "legacy-web": "web",
+    "legacy-file": "file",
+    "legacy-output": "output",
     C: "claude",
     X: "codex",
     R: "read",
@@ -6391,6 +6462,13 @@ function cloneWorkflow(record: WorkflowRecord): WorkflowRecord {
   return JSON.parse(JSON.stringify(record)) as WorkflowRecord;
 }
 
+function clearRunDetails(config: WorkflowNode["config"]): WorkflowNode["config"] | undefined {
+  if (!config || !Object.prototype.hasOwnProperty.call(config, "runDetails")) return config;
+  const { runDetails: _runDetails, ...rest } = config;
+  void _runDetails;
+  return rest;
+}
+
 function restoreTopologyOnly(
   historyRecord: WorkflowRecord,
   currentRecord: WorkflowRecord
@@ -6435,3 +6513,4 @@ function clamp(value: number, min: number, max: number): number {
 function makeId(prefix: string): string {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
 }
+
