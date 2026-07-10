@@ -225,6 +225,9 @@ assert(
 assert(
   templateNativeControlMetrics.appearance === "none" &&
     templateNativeControlMetrics["-webkit-appearance"] === "none" &&
+    templateNativeControlMetrics["font-family"] === "var(--wf-font-mono)" &&
+    templateNativeControlMetrics["font-size"] === "12px" &&
+    templateNativeControlMetrics["line-height"] === "1.45" &&
     templateNativeControlMetrics.color === "var(--wf-text-soft)" &&
     templateNativeControlMetrics["-webkit-text-fill-color"] === "currentColor" &&
     !/transparent/.test(templateNativeControlMetrics.color) &&
@@ -239,7 +242,8 @@ assert(
     Boolean(templateEditorFocusMetrics["box-shadow"]) &&
     templateNativeControlMetrics.background === "transparent" &&
     templateTokenMetrics.color === "transparent" &&
-    templateTokenMetrics.background === "rgba(82, 82, 91, 0.72)",
+    templateTokenMetrics.background === "rgba(37, 99, 235, 0.22)" &&
+    templateTokenMetrics["box-shadow"] === "inset 0 0 0 1px rgba(96, 165, 250, 0.32)",
   "workflow template host and mirror must render token backgrounds without replacing native text"
 );
 
