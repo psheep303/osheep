@@ -3669,14 +3669,17 @@
   border-color: transparent;
   box-shadow: none;
   color: var(--wf-text-soft);
+  font-family: var(--wf-font-mono);
+  font-size: 12px;
+  line-height: 1.45;
   -webkit-text-fill-color: currentColor;
 }
 
 .workflow-template-token {
   color: transparent;
-  background: rgba(82, 82, 91, 0.72);
+  background: rgba(37, 99, 235, 0.22);
   border-radius: 4px;
-  box-shadow: inset 0 0 0 1px rgba(161, 161, 170, 0.24);
+  box-shadow: inset 0 0 0 1px rgba(96, 165, 250, 0.32);
   text-shadow: none;
 }
 
