@@ -48,6 +48,7 @@ import {
   type WorkflowRunStatus,
 } from "./api";
 import { MarkdownPreview } from "./MarkdownPreview";
+import { ClaudeLogo, OpenAILogo } from "./BrandIcons";
 import {
   blockOutputText,
   canApplyWorkflowRefresh,
@@ -6031,7 +6032,36 @@ function toWorkflowIconName(value: unknown): WorkflowIconName | null {
   return legacy[icon] ?? null;
 }
 
+const WORKFLOW_CODICONS: Partial<Record<WorkflowIconName, string>> = {
+  trigger: "debug-start",
+  cron: "clock",
+  webhook: "radio-tower",
+  command: "terminal",
+  ai: "sparkle",
+  network: "globe",
+  web: "globe",
+  http: "cloud",
+  set: "symbol-key",
+  if: "git-branch",
+  merge: "git-merge",
+  code: "code",
+  wait: "clock",
+  json: "json",
+  loop: "sync",
+  file: "file",
+  read: "file",
+  write: "edit",
+  output: "output",
+  markdown: "markdown",
+  mcp: "plug",
+};
+
 function WorkflowIcon({ name }: { name: WorkflowIconName }) {
+  if (name === "claude") return <ClaudeLogo />;
+  if (name === "codex") return <OpenAILogo />;
+  const codicon = WORKFLOW_CODICONS[name];
+  if (codicon) return <i className={`codicon codicon-${codicon}`} aria-hidden />;
+
   const common = {
     viewBox: "0 0 24 24",
     width: "22",
@@ -6199,22 +6229,6 @@ function WorkflowIcon({ name }: { name: WorkflowIconName }) {
           <path d="M9.2 8.7 11 12" />
           <path d="m14.8 8.7-1.8 3.3" />
           <path d="M9.3 7h5.4" />
-        </svg>
-      );
-    case "claude":
-      return (
-        <svg {...common}>
-          <path d="M12 4.2 14.2 9l5 .8-3.6 3.5.9 5-4.5-2.4-4.5 2.4.9-5-3.6-3.5 5-.8L12 4.2z" />
-          <path d="M12 8.5v6.8" />
-          <path d="M8.7 12h6.6" />
-        </svg>
-      );
-    case "codex":
-      return (
-        <svg {...common}>
-          <path d="m8.3 8.2-3.2 3.8 3.2 3.8" />
-          <path d="m15.7 8.2 3.2 3.8-3.2 3.8" />
-          <path d="M13.2 6.8 10.8 17.2" />
         </svg>
       );
     default:
