@@ -1,11 +1,16 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const cssPath = resolve("src/workbench/workbench.css");
 const css = readFileSync(cssPath, "utf8");
 const cssLookup = css.replace(/\/\*[\s\S]*?\*\//g, "");
 const main = readFileSync(resolve("src/main.tsx"), "utf8");
+const styles = readFileSync(resolve("src/styles.css"), "utf8");
 const workflowTab = readFileSync(resolve("src/workbench/WorkflowTab.tsx"), "utf8");
+const activityBar = readFileSync(resolve("src/workbench/ActivityBar.tsx"), "utf8");
+const packageJson = JSON.parse(readFileSync(resolve("package.json"), "utf8"));
+const brandIconsPath = resolve("src/workbench/BrandIcons.tsx");
+const brandIcons = existsSync(brandIconsPath) ? readFileSync(brandIconsPath, "utf8") : "";
 
 function lastRule(selector) {
   const pattern = /([^{}]+)\{([^{}]*)\}/g;
@@ -75,10 +80,46 @@ const templateMirrorMetrics = finalDeclarations(".workflow-template-editor__mirr
 const templateControlMetrics = finalDeclarations(".workflow-template-editor__control");
 const templateControl = lastRule(".workflow-template-editor .workflow-template-editor__control");
 const templateControlFocus = lastRule(".workflow-template-editor .workflow-template-editor__control:focus");
+const toolbarMetrics = finalDeclarations(".workflow-toolbar");
 
 assert(
   css.includes("/* Workflow Shadcn Graph Surface */"),
   "workflow CSS must use the single shadcn graph surface block"
+);
+
+assert(
+  styles.includes("color-scheme: dark") &&
+    /scrollbar-color:\s*#[0-9a-f]{6}\s+#[0-9a-f]{6}/i.test(styles) &&
+    styles.includes("::-webkit-scrollbar-thumb"),
+  "global scrollbars must use a dark cross-browser color scheme"
+);
+
+assert(
+  toolbarMetrics["overflow-x"] === "auto" &&
+    toolbarMetrics["overflow-y"] === "hidden" &&
+    toolbarMetrics["scrollbar-width"] === "none" &&
+    css.includes(".workflow-toolbar::-webkit-scrollbar"),
+  "workflow toolbar must keep horizontal overflow without a visible scrollbar"
+);
+
+assert(
+  Boolean(packageJson.dependencies?.["@vscode/codicons"]) &&
+    main.includes('@vscode/codicons/dist/codicon.css') &&
+    workflowTab.includes("codicon codicon-") &&
+    workflowTab.includes("WORKFLOW_CODICONS"),
+  "ordinary workflow icons must use official VS Code Codicons"
+);
+
+assert(
+  activityBar.includes('from "./BrandIcons"') &&
+    workflowTab.includes('from "./BrandIcons"') &&
+    brandIcons.includes("function ClaudeLogo") &&
+    brandIcons.includes("function OpenAILogo") &&
+    workflowTab.includes('name === "claude"') &&
+    workflowTab.includes('name === "codex"') &&
+    !workflowTab.includes("M12 4.2 14.2 9l5 .8") &&
+    !workflowTab.includes('case "codex"'),
+  "workflow Claude and Codex blocks must use shared official brand marks"
 );
 
 assert(

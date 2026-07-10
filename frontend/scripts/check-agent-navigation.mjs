@@ -4,8 +4,12 @@ const activityBar = readFileSync("src/workbench/ActivityBar.tsx", "utf8");
 const workbench = readFileSync("src/workbench/Workbench.tsx", "utf8");
 const aiSettings = readFileSync("src/workbench/AiSettingsView.tsx", "utf8");
 const agentViewPath = "src/workbench/AgentSettingsView.tsx";
+const brandIconsPath = "src/workbench/BrandIcons.tsx";
 const agentView = existsSync(agentViewPath)
   ? readFileSync(agentViewPath, "utf8")
+  : "";
+const brandIcons = existsSync(brandIconsPath)
+  ? readFileSync(brandIconsPath, "utf8")
   : "";
 
 function functionBlock(source, name) {
@@ -26,8 +30,8 @@ function functionBlock(source, name) {
 }
 
 const claudeAgentBlock = functionBlock(agentView, "ClaudeCodeAgentView");
-const claudeIconBlock = functionBlock(activityBar, "ClaudeCodeIcon");
-const codexIconBlock = functionBlock(activityBar, "CodexIcon");
+const claudeIconBlock = functionBlock(brandIcons, "ClaudeLogo");
+const codexIconBlock = functionBlock(brandIcons, "OpenAILogo");
 
 const checks = [
   {
@@ -54,8 +58,11 @@ const checks = [
   {
     name: "ActivityBar uses official native Claude and OpenAI SVG paths",
     pass:
-      /function ClaudeCodeIcon\(\)/.test(activityBar) &&
-      /function CodexIcon\(\)/.test(activityBar) &&
+      /import \{ ClaudeLogo, OpenAILogo \} from "\.\/BrandIcons"/.test(activityBar) &&
+      /icon: <ClaudeLogo \/>/.test(activityBar) &&
+      /icon: <OpenAILogo \/>/.test(activityBar) &&
+      /function ClaudeLogo\(\)/.test(brandIcons) &&
+      /function OpenAILogo\(\)/.test(brandIcons) &&
       /<title>Claude<\/title>/.test(claudeIconBlock) &&
       /M4\.709 15\.955l4\.72-2\.647/.test(claudeIconBlock) &&
       /<title>OpenAI<\/title>/.test(codexIconBlock) &&

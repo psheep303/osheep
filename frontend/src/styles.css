@@ -1,4 +1,8 @@
 :root {
+  color-scheme: dark;
+  scrollbar-color: #3f3f46 #111113;
+  scrollbar-width: thin;
+
   /* VS Code Default Dark Modern palette */
   --bg-shell: #181818;
   --bg-editor: #1f1f1f;
@@ -62,15 +66,15 @@ body.is-resizing-y * {
   height: 10px;
 }
 ::-webkit-scrollbar-track {
-  background: transparent;
+  background: #111113;
 }
 ::-webkit-scrollbar-thumb {
-  background: #424242;
+  background: #3f3f46;
   border: 2px solid transparent;
   background-clip: padding-box;
   border-radius: 5px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #4f4f4f;
+  background: #52525b;
   background-clip: padding-box;
 }
