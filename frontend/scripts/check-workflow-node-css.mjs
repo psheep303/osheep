@@ -251,6 +251,13 @@ assert(
 );
 
 assert(
+  !workflowTab.includes("normalizeTemplateSpacing") &&
+    (workflowTab.match(/onChange=\{\(e\) => onChange\(e\.target\.value\)\}/g)?.length ?? 0) === 2 &&
+    workflowTab.includes("{match[0]}"),
+  "workflow template mirror and native controls must preserve the exact input string"
+);
+
+assert(
   !workflowTab.includes('onUpdate({ model: value || "default" })') &&
     workflowTab.includes("onUpdate({ model: value })"),
   "workflow model editor must allow the model field to be cleared without immediately restoring default"

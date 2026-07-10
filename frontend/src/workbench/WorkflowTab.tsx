@@ -3798,7 +3798,7 @@ function TemplateInput({ value, onChange, disabled, autoFocus }: TemplateControl
         ref={inputRef}
         className="workflow-template-editor__control"
         value={value}
-        onChange={(e) => onChange(normalizeTemplateSpacing(e.target.value))}
+        onChange={(e) => onChange(e.target.value)}
         onScroll={(e) => {
           if (mirrorRef.current) mirrorRef.current.scrollLeft = e.currentTarget.scrollLeft;
         }}
@@ -3825,7 +3825,7 @@ function TemplateTextarea({ value, onChange, disabled }: TemplateControlProps) {
       <textarea
         className="workflow-template-editor__control"
         value={value}
-        onChange={(e) => onChange(normalizeTemplateSpacing(e.target.value))}
+        onChange={(e) => onChange(e.target.value)}
         onScroll={(e) => {
           if (!mirrorRef.current) return;
           mirrorRef.current.scrollTop = e.currentTarget.scrollTop;
@@ -4097,7 +4097,7 @@ function renderTemplateHighlight(value: string): ReactNode {
     }
     parts.push(
       <span key={`${match.index}:${match[0]}`} className="workflow-template-token">
-        {formatTemplateToken(match[0])}
+        {match[0]}
       </span>
     );
     index = match.index + match[0].length;
@@ -4105,27 +4105,6 @@ function renderTemplateHighlight(value: string): ReactNode {
   if (index < value.length) parts.push(value.slice(index));
   if (value.endsWith("\n")) parts.push("\u00a0");
   return parts;
-}
-
-function normalizeTemplateSpacing(value: string): string {
-  const re = /\{\{[\s\S]*?\}\}/g;
-  let output = "";
-  let index = 0;
-  let match: RegExpExecArray | null;
-  while ((match = re.exec(value)) !== null) {
-    output += value.slice(index, match.index);
-    if (output && !/\s$/.test(output)) output += " ";
-    output += formatTemplateToken(match[0]);
-    index = match.index + match[0].length;
-    if (value[index] && !/\s/.test(value[index])) output += " ";
-  }
-  output += value.slice(index);
-  return output;
-}
-
-function formatTemplateToken(token: string): string {
-  const inner = token.slice(2, -2).trim();
-  return `{{ ${inner} }}`;
 }
 
 function patchNode(
