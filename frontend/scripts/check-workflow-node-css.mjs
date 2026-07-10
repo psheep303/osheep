@@ -76,10 +76,17 @@ const pickerItemIcon = lastRule(".workflow-block-picker__item-icon");
 const tab = lastRule(".workflow-tab");
 const output = lastRule(".workflow-inspector__output");
 const templateEditor = lastRule(".workflow-template-editor");
+const templateEditorMetrics = finalDeclarations(".workflow-template-editor");
+const templateEditorFocusMetrics = finalDeclarations(".workflow-template-editor:focus-within");
 const templateMirrorMetrics = finalDeclarations(".workflow-template-editor__mirror");
 const templateControlMetrics = finalDeclarations(".workflow-template-editor__control");
-const templateControl = lastRule(".workflow-template-editor .workflow-template-editor__control");
-const templateControlFocus = lastRule(".workflow-template-editor .workflow-template-editor__control:focus");
+const templateNativeControlMetrics = finalDeclarations(
+  ".workflow-template-editor .workflow-template-editor__control"
+);
+const templateTokenMetrics = finalDeclarations(".workflow-template-token");
+const templateControlFocusMetrics = finalDeclarations(
+  ".workflow-template-editor .workflow-template-editor__control:focus"
+);
 const toolbarMetrics = finalDeclarations(".workflow-toolbar");
 
 assert(
@@ -161,8 +168,11 @@ assert(
 );
 
 assert(
-  templateMirrorMetrics.display === "none",
-  "workflow template mirror must not render visible text while editing because it can drift from the native caret"
+  templateMirrorMetrics.display === "block" &&
+    templateMirrorMetrics.color === "transparent" &&
+    templateMirrorMetrics.background === "transparent" &&
+    templateMirrorMetrics["border-color"] === "transparent",
+  "workflow template mirror must paint only transparent glyph geometry behind the native control"
 );
 
 assert(
@@ -213,19 +223,31 @@ assert(
 );
 
 assert(
-  hasDeclaration(templateControl, "appearance", "none") &&
-    hasDeclaration(templateControl, "-webkit-appearance", "none") &&
-    hasDeclaration(templateControl, "color", "var(--wf-text-soft)") &&
-    hasDeclaration(templateControl, "-webkit-text-fill-color", "currentColor") &&
-    !/transparent/.test(declaration(templateControl, "color")) &&
-    !/transparent/.test(declaration(templateControl, "-webkit-text-fill-color")),
+  templateNativeControlMetrics.appearance === "none" &&
+    templateNativeControlMetrics["-webkit-appearance"] === "none" &&
+    templateNativeControlMetrics.color === "var(--wf-text-soft)" &&
+    templateNativeControlMetrics["-webkit-text-fill-color"] === "currentColor" &&
+    !/transparent/.test(templateNativeControlMetrics.color) &&
+    !/transparent/.test(templateNativeControlMetrics["-webkit-text-fill-color"]),
   "workflow template input must render its own text so the native caret aligns"
 );
 
 assert(
-  hasDeclaration(templateControlFocus, "outline", "none") &&
-    Boolean(declaration(templateControlFocus, "box-shadow")),
-  "workflow template native input should own the focus ring"
+  templateEditorMetrics.background === "rgba(9, 9, 11, 0.72)" &&
+    templateEditorMetrics.border === "1px solid var(--wf-border)" &&
+    templateEditorFocusMetrics["border-color"] === "rgba(96, 165, 250, 0.7)" &&
+    Boolean(templateEditorFocusMetrics["box-shadow"]) &&
+    templateNativeControlMetrics.background === "transparent" &&
+    templateTokenMetrics.color === "transparent" &&
+    templateTokenMetrics.background === "rgba(82, 82, 91, 0.72)",
+  "workflow template host and mirror must render token backgrounds without replacing native text"
+);
+
+assert(
+  templateControlFocusMetrics.outline === "none" &&
+    templateControlFocusMetrics["box-shadow"] === "none" &&
+    Boolean(templateEditorFocusMetrics["box-shadow"]),
+  "workflow template host should own the focus ring without duplicating it on the native input"
 );
 
 assert(
