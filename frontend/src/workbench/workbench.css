@@ -3637,6 +3637,49 @@
   text-shadow: none;
 }
 
+.workflow-template-editor {
+  background: rgba(9, 9, 11, 0.72);
+  border: 1px solid var(--wf-border);
+  border-radius: 6px;
+  font-family: var(--wf-font-mono);
+  font-size: 12px;
+  line-height: 1.45;
+  transition: border-color 0.14s ease, box-shadow 0.14s ease;
+}
+
+.workflow-template-editor--input {
+  height: 32px;
+}
+
+.workflow-template-editor:focus-within {
+  border-color: rgba(96, 165, 250, 0.7);
+  box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.22), 0 0 0 4px rgba(96, 165, 250, 0.08);
+}
+
+.workflow-template-editor__mirror {
+  display: block;
+  background: transparent;
+  border-color: transparent;
+  color: transparent;
+}
+
+.workflow-template-editor .workflow-template-editor__control,
+.workflow-template-editor .workflow-template-editor__control:focus {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  color: var(--wf-text-soft);
+  -webkit-text-fill-color: currentColor;
+}
+
+.workflow-template-token {
+  color: transparent;
+  background: rgba(82, 82, 91, 0.72);
+  border-radius: 4px;
+  box-shadow: inset 0 0 0 1px rgba(161, 161, 170, 0.24);
+  text-shadow: none;
+}
+
 .workflow-inspector__check input[type="checkbox"] {
   appearance: none;
   -webkit-appearance: none;
