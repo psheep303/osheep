@@ -198,3 +198,18 @@ export function blockOutputText(node: WorkflowNode): string {
     JSON.stringify(emptyBlockOutput(node), null, 2)
   );
 }
+
+interface WorkflowRefreshState {
+  requestedRevision: number;
+  currentRevision: number;
+  dragging: boolean;
+  pendingSave: boolean;
+}
+
+export function canApplyWorkflowRefresh(state: WorkflowRefreshState): boolean {
+  return (
+    state.requestedRevision === state.currentRevision &&
+    !state.dragging &&
+    !state.pendingSave
+  );
+}
