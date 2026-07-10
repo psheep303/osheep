@@ -48,6 +48,10 @@ import {
   type WorkflowRunStatus,
 } from "./api";
 import { MarkdownPreview } from "./MarkdownPreview";
+import {
+  blockOutputText,
+  type WorkflowBlockOutput,
+} from "./workflow-behavior";
 
 interface WorkflowTabProps {
   workspaceId: string;
@@ -156,8 +160,6 @@ interface LocalNodeResult {
   error?: string;
   nodePatch?: Partial<WorkflowNode>;
 }
-
-type WorkflowBlockOutput = Record<string, unknown>;
 
 const DEFAULT_MCP_HEADERS_JSON = JSON.stringify(
   {
@@ -3124,7 +3126,7 @@ function WorkflowNodeInspector({
 }) {
   const outgoing = edges.filter((edge) => edge.from === node.id);
   const incoming = edges.filter((edge) => edge.to === node.id);
-  const bodyText = node.rawOutput || node.summary || node.error || "";
+  const bodyText = blockOutputText(node);
   const kind = nodeKind(node);
   const isTrigger = kind === "trigger";
   const isManualTrigger = kind === "manual-trigger";
@@ -3726,9 +3728,7 @@ function WorkflowNodeInspector({
       {showOutput && (
         <div className="workflow-inspector__section workflow-inspector__section--grow">
           <div className="workflow-inspector__section-title">Output</div>
-          <pre className="workflow-inspector__output">
-            {bodyText || "No summary yet."}
-          </pre>
+          <pre className="workflow-inspector__output">{bodyText}</pre>
         </div>
       )}
 
