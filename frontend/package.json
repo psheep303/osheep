@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "test:workflow-behavior": "node --test src/workbench/workflow-behavior.test.ts",
     "check:agent-navigation": "node scripts/check-agent-navigation.mjs",
     "check:workflow-left-sidebar": "node scripts/check-workflow-left-sidebar.mjs",
     "check:workflow-css": "node scripts/check-workflow-node-css.mjs",
