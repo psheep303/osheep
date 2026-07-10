@@ -95,3 +95,53 @@ test("inspector output prefers real node state before the empty schema", async (
     JSON.stringify(behavior.emptyBlockOutput(base as never), null, 2)
   );
 });
+
+test("workflow refresh applies only when its local revision is still current", async () => {
+  const behavior = await loadBehavior();
+  assert.ok(behavior, "workflow behavior module should exist");
+  assert.equal(typeof behavior.canApplyWorkflowRefresh, "function");
+
+  assert.equal(
+    behavior.canApplyWorkflowRefresh({
+      requestedRevision: 4,
+      currentRevision: 4,
+      dragging: false,
+      pendingSave: false,
+    }),
+    true
+  );
+  assert.equal(
+    behavior.canApplyWorkflowRefresh({
+      requestedRevision: 4,
+      currentRevision: 5,
+      dragging: false,
+      pendingSave: false,
+    }),
+    false
+  );
+});
+
+test("workflow refresh is rejected during a drag or pending save", async () => {
+  const behavior = await loadBehavior();
+  assert.ok(behavior, "workflow behavior module should exist");
+  assert.equal(typeof behavior.canApplyWorkflowRefresh, "function");
+
+  assert.equal(
+    behavior.canApplyWorkflowRefresh({
+      requestedRevision: 4,
+      currentRevision: 4,
+      dragging: true,
+      pendingSave: false,
+    }),
+    false
+  );
+  assert.equal(
+    behavior.canApplyWorkflowRefresh({
+      requestedRevision: 4,
+      currentRevision: 4,
+      dragging: false,
+      pendingSave: true,
+    }),
+    false
+  );
+});

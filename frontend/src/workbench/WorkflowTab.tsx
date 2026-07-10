@@ -50,6 +50,7 @@ import {
 import { MarkdownPreview } from "./MarkdownPreview";
 import {
   blockOutputText,
+  canApplyWorkflowRefresh,
   type WorkflowBlockOutput,
 } from "./workflow-behavior";
 
@@ -674,6 +675,7 @@ export function WorkflowTab({
   const [titleRenaming, setTitleRenaming] = useState(false);
   const [renameSeq, setRenameSeq] = useState(0);
   const [renameTarget, setRenameTarget] = useState<string | null>(null);
+  const localRevisionRef = useRef(0);
   const nodeDragRef = useRef<NodeDragState | null>(null);
   const suppressNodeClickRef = useRef<string | null>(null);
   const canvasPanRef = useRef<CanvasPanState | null>(null);
@@ -682,6 +684,7 @@ export function WorkflowTab({
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const saveTimerRef = useRef<number | null>(null);
   const pendingSaveRef = useRef<WorkflowRecord | null>(null);
+  const saveInFlightRef = useRef(0);
   const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const abortRef = useRef<AbortController | null>(null);
   const undoStackRef = useRef<WorkflowRecord[]>([]);
@@ -699,6 +702,7 @@ export function WorkflowTab({
         undoStackRef.current = [];
         redoStackRef.current = [];
         setHistoryTick((tick) => tick + 1);
+        localRevisionRef.current = 0;
         workflowRef.current = record;
         setWorkflow(record);
         setRunning(workflowIsRunning(record));
@@ -726,10 +730,21 @@ export function WorkflowTab({
     if (!workflowId || !workspaceId) return;
     let cancelled = false;
     const refresh = async () => {
-      if (pendingSaveRef.current) return;
+      if (nodeDragRef.current || pendingSaveRef.current || saveInFlightRef.current > 0) return;
+      const requestedRevision = localRevisionRef.current;
       try {
         const record = await apiGetWorkflow(workspaceId, workflowId);
-        if (cancelled) return;
+        if (
+          cancelled ||
+          !canApplyWorkflowRefresh({
+            requestedRevision,
+            currentRevision: localRevisionRef.current,
+            dragging: nodeDragRef.current !== null,
+            pendingSave: pendingSaveRef.current !== null || saveInFlightRef.current > 0,
+          })
+        ) {
+          return;
+        }
         const isRunning = workflowIsRunning(record);
         workflowRef.current = record;
         setWorkflow(record);
@@ -791,6 +806,7 @@ export function WorkflowTab({
   }, [workflow]);
 
   const persist = async (record: WorkflowRecord) => {
+    saveInFlightRef.current += 1;
     const request = saveQueueRef.current
       .catch(() => undefined)
       .then(async () => {
@@ -805,7 +821,11 @@ export function WorkflowTab({
         }
       });
     saveQueueRef.current = request;
-    await request;
+    try {
+      await request;
+    } finally {
+      saveInFlightRef.current -= 1;
+    }
   };
 
   const scheduleSave = (record: WorkflowRecord) => {
@@ -839,6 +859,7 @@ export function WorkflowTab({
     const next = updater(current);
     if (next === current) return;
     if (recordHistory) pushHistory(current);
+    localRevisionRef.current += 1;
     workflowRef.current = next;
     setWorkflow(next);
     if (save) scheduleSave(next);
@@ -853,6 +874,7 @@ export function WorkflowTab({
   const restoreHistory = (record: WorkflowRecord) => {
     const current = workflowRef.current;
     const next = current ? restoreTopologyOnly(record, current) : record;
+    localRevisionRef.current += 1;
     workflowRef.current = next;
     setWorkflow(next);
     if (selectedId && !next.nodes.some((node) => node.id === selectedId)) {
@@ -899,6 +921,7 @@ export function WorkflowTab({
   }, [redo, undo]);
 
   const commitNow = async (record: WorkflowRecord) => {
+    localRevisionRef.current += 1;
     workflowRef.current = record;
     setWorkflow(record);
     await persist(record);
@@ -908,6 +931,7 @@ export function WorkflowTab({
     const current = workflowRef.current;
     if (!current) return;
     const next = patchNode(current, nodeId, patch);
+    localRevisionRef.current += 1;
     workflowRef.current = next;
     setWorkflow(next);
   };
