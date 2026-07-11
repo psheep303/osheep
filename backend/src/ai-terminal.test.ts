@@ -1,10 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  agentTerminalPromptEnterCount,
+  agentTerminalPromptSubmitDelayMs,
   buildAgentTerminalCommand,
+  buildAgentTerminalPromptWrites,
   classifyAgentTerminalContent,
   createAgentTerminalControlForTest,
+  extractAgentTerminalContentForTest,
   finishAgentTerminalSuccess,
+  shouldFollowUpPastedPromptSubmit,
   shouldAutoEnterChoice,
   type AgentEffort,
 } from "./ai-terminal.js";
@@ -39,7 +44,7 @@ test("Codex terminal command does not receive Claude permission flags", () => {
     buildAgentTerminalCommand("codex-cli", "gpt-5.1-codex", {
       claudePermissionMode: "bypassPermissions",
     }).command,
-    "codex --ask-for-approval on-failure --sandbox workspace-write --model gpt-5.1-codex"
+    "codex --ask-for-approval on-request --sandbox workspace-write --model gpt-5.1-codex"
   );
 });
 
@@ -100,7 +105,7 @@ test("Codex terminal command applies reasoning effort without an approval preset
     buildAgentTerminalCommand("codex-cli", "gpt-5.1-codex", {
       effort: "high",
     }).command,
-    "codex --ask-for-approval on-failure --sandbox workspace-write -c 'model_reasoning_effort=\"high\"' --model gpt-5.1-codex"
+    "codex --ask-for-approval on-request --sandbox workspace-write -c 'model_reasoning_effort=\"high\"' --model gpt-5.1-codex"
   );
 });
 
@@ -109,7 +114,16 @@ test("Codex terminal command preserves xhigh reasoning effort", () => {
     buildAgentTerminalCommand("codex-cli", "gpt-5.1-codex", {
       effort: "xhigh",
     }).command,
-    "codex --ask-for-approval on-failure --sandbox workspace-write -c 'model_reasoning_effort=\"xhigh\"' --model gpt-5.1-codex"
+    "codex --ask-for-approval on-request --sandbox workspace-write -c 'model_reasoning_effort=\"xhigh\"' --model gpt-5.1-codex"
+  );
+});
+
+test("Codex legacy on-failure approval is migrated to on-request", () => {
+  assert.equal(
+    buildAgentTerminalCommand("codex-cli", "default", {
+      codexApproval: "on-failure" as never,
+    }).command,
+    "codex --ask-for-approval on-request --sandbox workspace-write"
   );
 });
 
@@ -167,6 +181,112 @@ test("Claude plan mode approval prompts are classified as waiting for user input
   assert.equal(classifyAgentTerminalContent(content), "waiting-for-choice");
 });
 
+test("terminal prompt-only content is classified as empty", () => {
+  const content = [
+    "› write a one-line summary",
+    "auto mode on (shift+tab to cycle) · ← for agents",
+  ].join("\n");
+
+  assert.equal(classifyAgentTerminalContent(content), "empty");
+});
+
+test("long single-line prompt uses bracketed paste and two enters", () => {
+  const prompt = "context=" + "x".repeat(1138);
+  const writes = buildAgentTerminalPromptWrites(prompt, true);
+
+  assert.equal(writes[0], "\x1b[200~");
+  assert.equal(writes.at(-2), "\x1b[201~");
+  assert.equal(writes.join("").endsWith("\r"), true);
+  assert.equal(agentTerminalPromptEnterCount(prompt), 2);
+  assert.ok(agentTerminalPromptSubmitDelayMs(prompt) > 80);
+});
+
+test("7170-character single-line paste follows the Codex paste submit path", () => {
+  const prompt = `请按照以下要求编写程序：${"x".repeat(7_170)}`;
+
+  assert.equal(agentTerminalPromptEnterCount(prompt), 2);
+  assert.ok(agentTerminalPromptSubmitDelayMs(prompt) >= 800);
+  assert.equal(buildAgentTerminalPromptWrites(prompt, true)[0], "\x1b[200~");
+});
+
+test("large multiline Codex paste waits for the TUI before pressing enter", () => {
+  const prompt = `instructions\n${"x".repeat(6_601)}`;
+  const writes = buildAgentTerminalPromptWrites(prompt, true);
+
+  assert.equal(writes[0], "\x1b[200~");
+  assert.equal(writes.at(-2), "\x1b[201~");
+  assert.equal(writes.at(-1), "\r");
+  assert.ok(agentTerminalPromptSubmitDelayMs(prompt) >= 800);
+  assert.ok(
+    agentTerminalPromptSubmitDelayMs(prompt) >
+      agentTerminalPromptSubmitDelayMs("short single-line prompt")
+  );
+  assert.equal(agentTerminalPromptEnterCount(prompt), 2);
+  assert.equal(agentTerminalPromptEnterCount("short single-line prompt"), 1);
+});
+
+test("pasted prompt follow-up enter only fires while paste is still waiting", () => {
+  const prompt = "context=" + "x".repeat(1_200);
+  const rawTranscript = "› [Pasted Content 1208 chars]\n";
+
+  assert.equal(
+    shouldFollowUpPastedPromptSubmit({
+      prompt,
+      rawTranscript,
+      state: "empty",
+      now: 2_500,
+      promptSubmittedAt: 1_000,
+      enterCount: 0,
+    }),
+    true
+  );
+  assert.equal(
+    shouldFollowUpPastedPromptSubmit({
+      prompt,
+      rawTranscript: rawTranscript + "Working",
+      state: "empty",
+      now: 2_500,
+      promptSubmittedAt: 1_000,
+      enterCount: 0,
+    }),
+    false
+  );
+  assert.equal(
+    shouldFollowUpPastedPromptSubmit({
+      prompt: "short prompt",
+      rawTranscript,
+      state: "empty",
+      now: 2_500,
+      promptSubmittedAt: 1_000,
+      enterCount: 0,
+    }),
+    false
+  );
+  assert.equal(
+    shouldFollowUpPastedPromptSubmit({
+      prompt,
+      rawTranscript,
+      state: "ready-for-success",
+      now: 2_500,
+      promptSubmittedAt: 1_000,
+      enterCount: 0,
+    }),
+    false
+  );
+});
+
+test("Codex wrapped prompt echo is not extracted as model output", () => {
+  const prompt = "context=" + "x".repeat(180);
+  const transcript = [
+    "› " + prompt.slice(0, 80),
+    prompt.slice(80, 140),
+    prompt.slice(140),
+    "auto mode on (shift+tab to cycle) · ← for agents",
+  ].join("\n");
+
+  assert.equal(extractAgentTerminalContentForTest(transcript, prompt, "codex-cli"), "");
+});
+
 test("Claude plan mode stops waiting after later completion output", () => {
   const content = [
     "Ready to code?",
@@ -198,6 +318,44 @@ test("Claude idle prompt after Chinese validation summary is ready for success",
     "* Sautéed for 15m 26s",
     "› organize-project-structure",
     "bypass permissions on (shift+tab to cycle) · ← for agents",
+  ].join("\n");
+
+  assert.equal(classifyAgentTerminalContent(content), "ready-for-success");
+});
+
+test("Claude idle prompt after a completed plan releases a stale choice prompt", () => {
+  const content = [
+    "Ready to code?",
+    "Here is Claude's plan:",
+    "❯ 1. Yes, and bypass permissions",
+    "  2. Yes, manually approve edits",
+    "shift+tab to approve with this feedback",
+    "8. 验证方式",
+    "后续实现后，从项目根目录验证：",
+    "python -m py_compile scripts/spiders/nba_spider.py",
+    "注意：当前日期是 2026-07-10，可能处于 NBA 休赛期。",
+    "* Baked for 9m 50s",
+    "❯",
+    "auto mode on (shift+tab to cycle) · ← for agents",
+  ].join("\n");
+
+  assert.equal(classifyAgentTerminalContent(content), "ready-for-success");
+});
+
+test("Claude cooked footer after a completed plan releases a stale choice prompt", () => {
+  const content = [
+    "Ready to code?",
+    "Here is Claude's plan:",
+    "❯ 1. Yes, and bypass permissions",
+    "  2. Yes, manually approve edits",
+    "shift+tab to approve with this feedback",
+    "推荐先做“稳定今日比赛 + 排名 + 明确错误信息”的小步增强。",
+    "• NBA 爬虫方案撰写，未编辑项目代码。",
+    "方案已保存到:",
+    "C:\\Users\\tzx sheep\\.claude\\plans\\nba-wild-ripple.md",
+    "* Cooked for 6m 32s",
+    "❯  nba-spider-plan",
+    "auto mode on (shift+tab to cycle) · ← for agents",
   ].join("\n");
 
   assert.equal(classifyAgentTerminalContent(content), "ready-for-success");

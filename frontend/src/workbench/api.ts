@@ -1338,7 +1338,7 @@ export type AiTerminalClaudePermissionMode =
   | "auto"
   | "dontAsk"
   | "bypassPermissions";
-export type AiTerminalCodexApproval = "untrusted" | "on-failure" | "on-request" | "never";
+export type AiTerminalCodexApproval = "untrusted" | "on-request" | "never";
 export type AiTerminalCodexSandbox = "read-only" | "workspace-write" | "danger-full-access";
 export type AiTerminalEffort =
   | "off"
