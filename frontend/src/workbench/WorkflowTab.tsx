@@ -342,12 +342,6 @@ const CLAUDE_MODE_OPTIONS: AgentModeOption[] = [
 // Codex: approval and sandbox are separate official CLI flags.
 const CODEX_MODE_OPTIONS: AgentModeOption[] = [
   {
-    value: "on-failure",
-    title: "On failure",
-    description: "--ask-for-approval on-failure",
-    icon: "manual",
-  },
-  {
     value: "on-request",
     title: "On request",
     description: "--ask-for-approval on-request",
@@ -501,7 +495,7 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
       retryForever: false,
       alwaysEnter: false,
       autoSuccess: true,
-      codexApproval: "on-failure",
+      codexApproval: "on-request",
       codexSandbox: "workspace-write",
     },
   },
@@ -5067,12 +5061,12 @@ function agentClaudePermissionMode(node: WorkflowNode): AiTerminalClaudePermissi
 
 function agentCodexApproval(node: WorkflowNode): AiTerminalCodexApproval {
   const value = node.config?.codexApproval;
-  if (value === "untrusted" || value === "on-failure" || value === "on-request" || value === "never") {
+  if (value === "untrusted" || value === "on-request" || value === "never") {
     return value;
   }
-  if (value === "auto") return "on-failure";
+  if (value === "auto" || value === "on-failure") return "on-request";
   if (value === "full-access") return "never";
-  return "on-failure";
+  return "on-request";
 }
 
 function agentCodexSandbox(node: WorkflowNode): AiTerminalCodexSandbox {
