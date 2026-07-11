@@ -1712,12 +1712,12 @@ function agentClaudePermissionMode(node: WorkflowNode): ClaudePermissionMode {
 
 function agentCodexApproval(node: WorkflowNode): CodexApproval {
   const value = node.config?.codexApproval;
-  if (value === "untrusted" || value === "on-failure" || value === "on-request" || value === "never") {
+  if (value === "untrusted" || value === "on-request" || value === "never") {
     return value;
   }
-  if (value === "auto") return "on-failure";
+  if (value === "auto" || value === "on-failure") return "on-request";
   if (value === "full-access") return "never";
-  return "on-failure";
+  return "on-request";
 }
 
 function agentCodexSandbox(node: WorkflowNode): CodexSandbox {

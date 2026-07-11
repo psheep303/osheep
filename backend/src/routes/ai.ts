@@ -275,10 +275,10 @@ function parseAgentMode(kind: CliProviderKind, v: unknown): AgentMode {
 }
 
 function parseCodexApproval(v: unknown): CodexApproval | undefined {
-  if (v === "untrusted" || v === "on-failure" || v === "on-request" || v === "never") {
+  if (v === "untrusted" || v === "on-request" || v === "never") {
     return v;
   }
-  if (v === "auto") return "on-failure";
+  if (v === "auto" || v === "on-failure") return "on-request";
   if (v === "full-access") return "never";
   return undefined;
 }

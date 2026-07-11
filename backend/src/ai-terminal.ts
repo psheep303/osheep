@@ -17,7 +17,7 @@ export type ClaudePermissionMode =
   | "dontAsk"
   | "bypassPermissions";
 export type AgentMode = "default" | "goal" | "plan";
-export type CodexApproval = "untrusted" | "on-failure" | "on-request" | "never";
+export type CodexApproval = "untrusted" | "on-request" | "never";
 export type CodexSandbox = "read-only" | "workspace-write" | "danger-full-access";
 export type AgentEffort =
   | "off"
@@ -85,7 +85,18 @@ const QUIET_READY_MS = 700;
 const RESPONSE_MIN_MS = 2_400;
 const RESPONSE_IDLE_MS = 6_000;
 const RESPONSE_MAX_MS = 20 * 60_000;
+const BRACKETED_PASTE_MIN_LENGTH = 512;
 const PASTE_CHUNK_SIZE = 2048;
+const PROMPT_SUBMIT_DELAY_MS = 80;
+const PASTED_PROMPT_SUBMIT_BASE_DELAY_MS = 300;
+const PASTED_PROMPT_CHARS_PER_DELAY_MS = 12;
+const PASTED_PROMPT_SUBMIT_MAX_DELAY_MS = 1_500;
+const PASTED_PROMPT_SECOND_ENTER_DELAY_MS = 180;
+const PASTED_PROMPT_FOLLOW_UP_ENTER_DELAY_MS = 1_200;
+const PASTED_PROMPT_FOLLOW_UP_ENTER_MAX = 2;
+const PROMPT_INPUT_RENDER_QUIET_MS = 350;
+const PROMPT_INPUT_RENDER_NO_ECHO_MS = 900;
+const PROMPT_INPUT_RENDER_TIMEOUT_MS = 8_000;
 const ALWAYS_ENTER_COOLDOWN_MS = 1_500;
 
 interface AgentTerminalControl {
@@ -97,6 +108,8 @@ interface AgentTerminalControl {
   promptInjected: boolean;
   promptSubmitted: boolean;
   promptSubmittedAt?: number;
+  pastedPromptFollowUpEnterCount?: number;
+  lastPastedPromptFollowUpEnterAt?: number;
   manualSuccessRequested: boolean;
   lastCompletionState?: AgentTerminalContentState;
   lastAlwaysEnterAt?: number;
@@ -184,14 +197,22 @@ export async function runAgentTerminal(
     );
     if (!opts.signal?.aborted) {
       opts.onFrame?.({ type: "status", status: ready ? "ready" : "prompt-timeout" });
-      await injectAgentTerminalPrompt(session.id, { submit: true });
+      await injectAgentTerminalPrompt(session.id, { submit: false });
       opts.onFrame?.({ type: "status", status: "prompt-injected" });
+      await waitForPromptInputRendered(
+        opts.prompt,
+        () => transcript,
+        () => lastOutputAt,
+        opts.signal
+      );
+      await submitAgentTerminalPrompt(session.id);
       opts.onFrame?.({ type: "status", status: "prompt-sent" });
     }
     const completion = await waitForAgentCompletion(
       session.id,
       () => exited,
       () => lastOutputAt,
+      () => transcript,
       () => extractTerminalContent(transcript, opts.prompt, opts.kind),
       (status) => opts.onFrame?.({ type: "status", status }),
       opts.signal
@@ -308,8 +329,7 @@ export async function submitAgentTerminalPrompt(sessionId: string): Promise<void
     control.promptInjected = true;
   }
   if (control.promptSubmitted) return;
-  await sleep(80);
-  writeRawInput(session, "\r");
+  await submitPromptInput(session, control.prompt);
   markPromptSubmitted(control);
 }
 
@@ -373,10 +393,17 @@ function codexPermissionArgs(
 ): string[] {
   return [
     "--ask-for-approval",
-    approval ?? "on-failure",
+    normalizeCodexApproval(approval),
     "--sandbox",
     sandbox ?? "workspace-write",
   ];
+}
+
+function normalizeCodexApproval(approval: unknown): CodexApproval {
+  if (approval === "untrusted" || approval === "on-request" || approval === "never") {
+    return approval;
+  }
+  return "on-request";
 }
 
 function agentEffortCliValue(
@@ -432,24 +459,137 @@ async function writePrompt(
   prompt: string,
   submit: boolean
 ): Promise<void> {
-  if (prompt.length <= 512 && !/[\r\n]/.test(prompt)) {
-    writeRawInput(session, prompt);
-    if (submit) {
-      await sleep(80);
-      writeRawInput(session, "\r");
+  for (const chunk of buildAgentTerminalPromptWrites(prompt, submit)) {
+    if (chunk === "\r") {
+      await submitPromptInput(session, prompt);
+      continue;
     }
-    return;
-  }
-  writeRawInput(session, "\x1b[200~");
-  for (let i = 0; i < prompt.length; i += PASTE_CHUNK_SIZE) {
-    writeRawInput(session, prompt.slice(i, i + PASTE_CHUNK_SIZE));
+    writeRawInput(session, chunk);
     await sleep(8);
   }
-  writeRawInput(session, "\x1b[201~");
-  if (submit) {
-    await sleep(80);
+}
+
+async function submitPromptInput(
+  session: TerminalSession,
+  prompt: string
+): Promise<void> {
+  await sleep(agentTerminalPromptSubmitDelayMs(prompt));
+  const enterCount = agentTerminalPromptEnterCount(prompt);
+  for (let index = 0; index < enterCount; index += 1) {
+    if (index > 0) await sleep(PASTED_PROMPT_SECOND_ENTER_DELAY_MS);
     writeRawInput(session, "\r");
   }
+}
+
+export function agentTerminalPromptEnterCount(prompt: string): number {
+  return isPastedAgentTerminalPrompt(prompt) ? 2 : 1;
+}
+
+export function agentTerminalPromptSubmitDelayMs(prompt: string): number {
+  if (!isPastedAgentTerminalPrompt(prompt)) return PROMPT_SUBMIT_DELAY_MS;
+  return Math.min(
+    PASTED_PROMPT_SUBMIT_MAX_DELAY_MS,
+    PASTED_PROMPT_SUBMIT_BASE_DELAY_MS +
+      Math.ceil(prompt.length / PASTED_PROMPT_CHARS_PER_DELAY_MS)
+  );
+}
+
+export function buildAgentTerminalPromptWrites(
+  prompt: string,
+  submit: boolean
+): string[] {
+  const writes: string[] = [];
+  if (isPastedAgentTerminalPrompt(prompt)) {
+    writes.push("\x1b[200~");
+    for (let i = 0; i < prompt.length; i += PASTE_CHUNK_SIZE) {
+      writes.push(prompt.slice(i, i + PASTE_CHUNK_SIZE));
+    }
+    writes.push("\x1b[201~");
+  } else {
+    for (let i = 0; i < prompt.length; i += PASTE_CHUNK_SIZE) {
+      writes.push(prompt.slice(i, i + PASTE_CHUNK_SIZE));
+    }
+  }
+  if (submit) writes.push("\r");
+  return writes;
+}
+
+function isPastedAgentTerminalPrompt(prompt: string): boolean {
+  return prompt.length > BRACKETED_PASTE_MIN_LENGTH || /[\r\n]/.test(prompt);
+}
+
+async function waitForPromptInputRendered(
+  prompt: string,
+  transcript: () => string,
+  lastOutputAt: () => number,
+  signal?: AbortSignal
+): Promise<void> {
+  if (!isPastedAgentTerminalPrompt(prompt)) return;
+  const startedAt = Date.now();
+  const baselineOutputAt = lastOutputAt();
+  await new Promise<void>((resolve) => {
+    let timer: NodeJS.Timeout | null = null;
+    const cleanup = () => {
+      if (timer) clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+    };
+    const finish = () => {
+      cleanup();
+      resolve();
+    };
+    const onAbort = () => finish();
+    const check = () => {
+      if (signal?.aborted) return finish();
+      const now = Date.now();
+      const outputAt = lastOutputAt();
+      if (isPastedPromptVisible(transcript())) return finish();
+      if (outputAt > baselineOutputAt && now - outputAt >= PROMPT_INPUT_RENDER_QUIET_MS) {
+        return finish();
+      }
+      if (outputAt <= baselineOutputAt && now - startedAt >= PROMPT_INPUT_RENDER_NO_ECHO_MS) {
+        return finish();
+      }
+      if (now - startedAt >= PROMPT_INPUT_RENDER_TIMEOUT_MS) return finish();
+      timer = setTimeout(check, 80);
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    check();
+  });
+}
+
+function isPastedPromptVisible(rawTranscript: string): boolean {
+  const rendered = renderTerminalScreen(rawTranscript);
+  const plain = normalizeTerminalPlainText(rendered || rawTranscript);
+  return /\[Pasted Content\s+\d+\s+chars\]/i.test(plain);
+}
+
+export function shouldFollowUpPastedPromptSubmit(input: {
+  prompt: string;
+  rawTranscript: string;
+  state: AgentTerminalContentState;
+  now: number;
+  promptSubmittedAt: number;
+  lastEnterAt?: number;
+  enterCount: number;
+}): boolean {
+  if (!isPastedAgentTerminalPrompt(input.prompt)) return false;
+  if (input.state !== "empty") return false;
+  if (input.enterCount >= PASTED_PROMPT_FOLLOW_UP_ENTER_MAX) return false;
+  const lastEnterAt = input.lastEnterAt ?? input.promptSubmittedAt;
+  if (input.now - lastEnterAt < PASTED_PROMPT_FOLLOW_UP_ENTER_DELAY_MS) {
+    return false;
+  }
+  if (!isPastedPromptVisible(input.rawTranscript)) return false;
+  if (isAgentTerminalRunning(input.rawTranscript)) return false;
+  return true;
+}
+
+function isAgentTerminalRunning(rawTranscript: string): boolean {
+  const rendered = renderTerminalScreen(rawTranscript);
+  const plain = normalizeTerminalPlainText(rendered || rawTranscript);
+  return /\b(?:Working|Thinking|Esc to interrupt|Interrupting|tokens used|Running)\b/i.test(
+    plain
+  );
 }
 
 function parsePtyFrame(
@@ -489,11 +629,12 @@ function extractTerminalContent(
   if (kind === "codex-cli") {
     const rendered = renderTerminalScreen(transcript);
     const plain = normalizeTerminalPlainText(rendered || transcript);
-    const codexAnswer = extractCodexFinalAnswer(plain);
+    const codexAnswer = stripAgentTerminalChrome(extractCodexFinalAnswer(plain));
+    if (isPromptEchoOnly(codexAnswer, prompt)) return "";
     if (codexAnswer) return codexAnswer;
   }
-  const clean = cleanTerminalTranscript(transcript, prompt);
-  return clean
+  const clean = stripAgentTerminalChrome(cleanTerminalTranscript(transcript, prompt));
+  const output = clean
     .split("\n")
     .map((line) => line.trimEnd())
     .filter((line) => {
@@ -503,6 +644,39 @@ function extractTerminalContent(
     })
     .join("\n")
     .trim();
+  return isPromptEchoOnly(output, prompt) ? "" : output;
+}
+
+export function extractAgentTerminalContentForTest(
+  transcript: string,
+  prompt = "",
+  kind?: CliProviderKind
+): string {
+  return extractTerminalContent(transcript, prompt, kind);
+}
+
+function stripAgentTerminalChrome(text: string): string {
+  return text
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .filter((line) => {
+      const trimmed = line.trim();
+      return !!trimmed && !isAgentTerminalChromeLine(trimmed) && !isAgentTerminalPromptLine(trimmed);
+    })
+    .join("\n")
+    .trim();
+}
+
+function isPromptEchoOnly(content: string, prompt: string): boolean {
+  const compactContent = compactPromptEchoText(content);
+  if (!compactContent) return true;
+  const compactPrompt = compactPromptEchoText(prompt);
+  if (compactPrompt.length < 120 || compactContent.length < 40) return false;
+  return compactPrompt.includes(compactContent);
+}
+
+function compactPromptEchoText(text: string): string {
+  return normalizeTerminalPlainText(text).replace(/\s+/g, "");
 }
 
 function extractCodexFinalAnswer(clean: string): string {
@@ -546,6 +720,27 @@ function findLastIndex<T>(items: T[], predicate: (item: T) => boolean): number {
 
 function isCodexAssistantLine(trimmed: string): boolean {
   return /^[•●]\s+\S/.test(trimmed);
+}
+
+function isTerminalChromeOnly(text: string): boolean {
+  const lines = text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  return (
+    lines.length > 0 &&
+    lines.every((line) => isAgentTerminalChromeLine(line) || isAgentTerminalPromptLine(line))
+  );
+}
+
+function isAgentTerminalPromptLine(trimmed: string): boolean {
+  return /^[\u276f\u203a]\s*(?:\S.*)?$/.test(trimmed);
+}
+
+function isAgentTerminalChromeLine(trimmed: string): boolean {
+  if (isTerminalChromeLine(trimmed)) return true;
+  if (/\(shift\+tab to cycle\)/i.test(trimmed)) return true;
+  return false;
 }
 
 function stripAnsi(text: string): string {
@@ -788,6 +983,7 @@ function waitForAgentCompletion(
   sessionId: string,
   done: () => boolean,
   lastOutputAt: () => number,
+  rawTranscript: () => string,
   content: () => string,
   onStatus: (status: AgentTerminalStatus) => void,
   signal?: AbortSignal
@@ -816,6 +1012,28 @@ function waitForAgentCompletion(
       const now = Date.now();
       const sinceSubmit = now - control.promptSubmittedAt;
       const state = classifyAgentTerminalContent(content());
+      if (
+        shouldFollowUpPastedPromptSubmit({
+          prompt: control.prompt,
+          rawTranscript: rawTranscript(),
+          state,
+          now,
+          promptSubmittedAt: control.promptSubmittedAt,
+          lastEnterAt: control.lastPastedPromptFollowUpEnterAt,
+          enterCount: control.pastedPromptFollowUpEnterCount ?? 0,
+        })
+      ) {
+        try {
+          writeRawInput(getSession(sessionId), "\r");
+          control.pastedPromptFollowUpEnterCount =
+            (control.pastedPromptFollowUpEnterCount ?? 0) + 1;
+          control.lastPastedPromptFollowUpEnterAt = now;
+          onStatus("prompt-sent");
+        } catch {
+          /* session may have exited between classification and input */
+        }
+        return;
+      }
       if (state === "waiting-for-choice") {
         if (
           shouldAutoEnterChoice({
@@ -876,6 +1094,7 @@ export function classifyAgentTerminalContent(content: string): AgentTerminalCont
   const text = normalizeTerminalPlainText(content);
   const compact = text.replace(/\s+/g, " ").trim();
   if (!compact) return "empty";
+  if (isTerminalChromeOnly(text)) return "empty";
   if (isTerminalChoicePrompt(text)) return "waiting-for-choice";
   return "ready-for-success";
 }
@@ -883,7 +1102,23 @@ export function classifyAgentTerminalContent(content: string): AgentTerminalCont
 function isTerminalChoicePrompt(text: string): boolean {
   const promptAt = lastTerminalChoicePromptIndex(text);
   if (promptAt < 0) return false;
+  if (hasLaterTerminalChoiceContent(text, promptAt)) return false;
   return promptAt > lastTerminalChoiceReleaseIndex(text);
+}
+
+function hasLaterTerminalChoiceContent(text: string, promptAt: number): boolean {
+  return text
+    .slice(promptAt)
+    .split("\n")
+    .slice(1)
+    .some((line) => {
+      const trimmed = line.trim();
+      return (
+        !!trimmed &&
+        !isAgentTerminalChromeLine(trimmed) &&
+        !isAgentTerminalPromptLine(trimmed)
+      );
+    });
 }
 
 function lastTerminalChoicePromptIndex(text: string): number {
