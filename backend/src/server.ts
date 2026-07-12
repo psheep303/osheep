@@ -14,6 +14,7 @@ import { registerWorkflowRoutes } from "./routes/workflows.js";
 import { registerAiRoutes } from "./routes/ai.js";
 import { registerAiSettingsRoutes } from "./routes/ai-settings.js";
 import { registerMcpRoutes } from "./routes/mcp.js";
+import { registerClaudePluginRoutes } from "./routes/claude-plugins.js";
 import { registerCodexPluginRoutes } from "./routes/codex-plugins.js";
 
 export async function buildServer() {
@@ -64,6 +65,7 @@ export async function buildServer() {
   await registerAiRoutes(app);
   await registerAiSettingsRoutes(app);
   await registerMcpRoutes(app);
+  await registerClaudePluginRoutes(app);
   await registerCodexPluginRoutes(app);
 
   await ensureWorkspacesRoot();

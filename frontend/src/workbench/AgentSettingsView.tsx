@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { AiSettingsView } from "./AiSettingsView";
+import { ClaudePluginsView } from "./ClaudePluginsView";
 import { CodexPluginsView } from "./CodexPluginsView";
 
 interface AgentSection<T extends string> {
@@ -38,8 +39,10 @@ export function ClaudeCodeAgentView() {
     >
       {section === "api-model" ? (
         <AiSettingsView app="claude" />
+      ) : section === "plugins" ? (
+        <ClaudePluginsView />
       ) : (
-        <AgentPlaceholder title="Plugins" />
+        <AgentPlaceholder title={sectionLabel(CLAUDE_CODE_SECTIONS, section)} />
       )}
     </AgentShell>
   );
