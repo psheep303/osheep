@@ -858,6 +858,108 @@ export async function addCodexMarketplaceApi(
   return result.snapshot;
 }
 
+// Claude Plugins
+
+export interface ClaudePluginRecord {
+  name: string;
+  marketplace?: string;
+  selector: string;
+  displayName: string;
+  version?: string;
+  description?: string;
+  icon?: string;
+  iconColor?: string;
+  scope?: string;
+  installCount?: number;
+  status: {
+    installed: boolean;
+    available: boolean;
+    enabled: boolean;
+    cached: boolean;
+    local: boolean;
+  };
+  source: {
+    kind: "marketplace" | "cache" | "settings";
+    path?: string;
+  };
+}
+
+export interface ClaudeMarketplaceRecord {
+  name: string;
+  source?: string;
+  repo?: string;
+  url?: string;
+  path?: string;
+}
+
+export interface ClaudePluginSnapshot {
+  plugins: ClaudePluginRecord[];
+  marketplaces: ClaudeMarketplaceRecord[];
+  warnings: string[];
+  paths: {
+    claudeDir: string;
+    settings: string;
+    localSettings: string;
+    pluginCache: string;
+    marketplaces: string;
+    skills: string;
+  };
+}
+
+export async function getClaudePlugins(): Promise<ClaudePluginSnapshot> {
+  return await http.get("/api/claude-plugins");
+}
+
+export async function installClaudePluginApi(
+  selector: string
+): Promise<ClaudePluginSnapshot> {
+  const result = await http.post<{ snapshot: ClaudePluginSnapshot }>(
+    "/api/claude-plugins/install",
+    { selector }
+  );
+  return result.snapshot;
+}
+
+export async function uninstallClaudePluginApi(
+  selector: string
+): Promise<ClaudePluginSnapshot> {
+  const result = await http.post<{ snapshot: ClaudePluginSnapshot }>(
+    "/api/claude-plugins/uninstall",
+    { selector }
+  );
+  return result.snapshot;
+}
+
+export async function enableClaudePluginApi(
+  selector: string
+): Promise<ClaudePluginSnapshot> {
+  const result = await http.post<{ snapshot: ClaudePluginSnapshot }>(
+    "/api/claude-plugins/enable",
+    { selector }
+  );
+  return result.snapshot;
+}
+
+export async function disableClaudePluginApi(
+  selector: string
+): Promise<ClaudePluginSnapshot> {
+  const result = await http.post<{ snapshot: ClaudePluginSnapshot }>(
+    "/api/claude-plugins/disable",
+    { selector }
+  );
+  return result.snapshot;
+}
+
+export async function addClaudeMarketplaceApi(
+  source: string
+): Promise<ClaudePluginSnapshot> {
+  const result = await http.post<{ snapshot: ClaudePluginSnapshot }>(
+    "/api/claude-plugins/marketplaces",
+    { source }
+  );
+  return result.snapshot;
+}
+
 // Workflows
 
 export type WorkflowProviderKind = "codex-cli" | "claude-cli";
