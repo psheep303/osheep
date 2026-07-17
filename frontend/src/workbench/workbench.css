@@ -2596,6 +2596,39 @@
   background: #181818;
 }
 
+.workflow-run-details__session {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--fg-muted);
+  font-size: 11px;
+}
+
+.workflow-run-details__session code,
+.workflow-run-details__session button {
+  min-width: 0;
+  padding: 0;
+  overflow: hidden;
+  color: #9fc7ff;
+  font: inherit;
+  font-family: var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workflow-run-details__session button {
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.workflow-run-details__session button:hover {
+  color: #d8eaff;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
 .workflow-run-details__terminal {
   flex: 1 1 auto;
   min-height: 0;

@@ -10,6 +10,12 @@ import {
 import type { WorkspaceInfo } from "./workspace.js";
 import type { CliProviderKind } from "./ai-cli.js";
 import {
+  isAgentSessionInProject,
+  listAgentSessions,
+  type AgentSessionApp,
+  type AgentSessionSummary,
+} from "./agent-sessions.js";
+import {
   captureWorkspaceChanges,
   changedWorkspaceFiles,
   type WorkspaceChangeBaseline,
@@ -79,6 +85,7 @@ export interface AgentTerminalOptions {
 
 export type AgentTerminalFrame =
   | { type: "session"; sessionId: string }
+  | { type: "conversation"; sessionId: string }
   | { type: "output"; data: string }
   | {
       type: "status";
@@ -88,6 +95,7 @@ export type AgentTerminalFrame =
 
 export interface AgentTerminalResult {
   sessionId: string;
+  conversationSessionId?: string;
   content: string;
   transcript: string;
   changedFiles: string[];
@@ -139,6 +147,7 @@ const controls = new Map<string, AgentTerminalControl>();
 export async function runAgentTerminal(
   opts: AgentTerminalOptions
 ): Promise<AgentTerminalResult> {
+  const conversationBaseline = await captureConversationSessionBaseline(opts);
   const workspaceBaseline = await captureWorkspaceChanges(opts.workspace.path).catch(
     () => null as WorkspaceChangeBaseline | null
   );
@@ -273,9 +282,17 @@ export async function runAgentTerminal(
       } catch {
         /* already closed */
       }
+      const conversationSessionId = await resolveConversationSessionId(
+        opts,
+        conversationBaseline
+      );
+      if (conversationSessionId) {
+        opts.onFrame?.({ type: "conversation", sessionId: conversationSessionId });
+      }
       opts.onFrame?.({ type: "status", status: "exited" });
       return {
         sessionId: session.id,
+        conversationSessionId,
         content,
         transcript: cleanTranscript,
         changedFiles: metadata.changedFiles,
@@ -298,8 +315,16 @@ export async function runAgentTerminal(
       conversation.value() ||
       cleanTerminalTranscript(transcript, opts.prompt);
     const metadata = await agentRunMetadata(cleanTranscript, opts, workspaceBaseline);
+    const conversationSessionId = await resolveConversationSessionId(
+      opts,
+      conversationBaseline
+    );
+    if (conversationSessionId) {
+      opts.onFrame?.({ type: "conversation", sessionId: conversationSessionId });
+    }
     return {
       sessionId: session.id,
+      conversationSessionId,
       content:
         extractLastStructuredClaudeAnswer(structuredConversation) ||
         extractTerminalContent(transcript, opts.prompt, opts.kind),
@@ -314,6 +339,86 @@ export async function runAgentTerminal(
     controls.delete(session.id);
     detach();
   }
+}
+
+interface ConversationSessionBaseline {
+  app: AgentSessionApp;
+  startedAt: number;
+  ids: Set<string>;
+}
+
+async function captureConversationSessionBaseline(
+  opts: AgentTerminalOptions
+): Promise<ConversationSessionBaseline> {
+  const app = opts.kind === "claude-cli" ? "claude" : "codex";
+  const sessions = await listAgentSessions(app).catch(() => []);
+  return {
+    app,
+    startedAt: Date.now(),
+    ids: new Set(
+      sessions
+        .filter((session) => isAgentSessionInProject(session, opts.workspace.path))
+        .map((session) => session.id)
+    ),
+  };
+}
+
+async function resolveConversationSessionId(
+  opts: AgentTerminalOptions,
+  baseline: ConversationSessionBaseline
+): Promise<string | undefined> {
+  const expectedId = opts.conversationSessionId?.trim() || "";
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const sessions = await listAgentSessions(baseline.app).catch(() => []);
+    const selected = selectConversationSessionId(
+      sessions,
+      opts.workspace.path,
+      baseline.ids,
+      baseline.startedAt,
+      expectedId
+    );
+    if (selected) return selected;
+    if (attempt < 5) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    }
+  }
+  return undefined;
+}
+
+function selectConversationSessionId(
+  sessions: AgentSessionSummary[],
+  projectPath: string,
+  existingIds: Set<string>,
+  startedAt: number,
+  expectedId = ""
+): string | undefined {
+  const projectSessions = sessions.filter((session) =>
+    isAgentSessionInProject(session, projectPath)
+  );
+  if (expectedId && projectSessions.some((session) => session.id === expectedId)) {
+    return expectedId;
+  }
+  return projectSessions
+    .filter(
+      (session) => !existingIds.has(session.id) && session.updatedAt >= startedAt - 2_000
+    )
+    .sort((a, b) => b.updatedAt - a.updatedAt)[0]?.id;
+}
+
+export function selectConversationSessionIdForTest(
+  sessions: AgentSessionSummary[],
+  projectPath: string,
+  existingIds: string[],
+  startedAt: number,
+  expectedId = ""
+): string | undefined {
+  return selectConversationSessionId(
+    sessions,
+    projectPath,
+    new Set(existingIds),
+    startedAt,
+    expectedId
+  );
 }
 
 async function agentRunMetadata(

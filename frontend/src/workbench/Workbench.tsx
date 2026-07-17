@@ -441,7 +441,7 @@ export function Workbench() {
     setTerminalLaunchRequest(null);
   };
 
-  const resumeAgentSession = useCallback((session: AgentSessionSummary) => {
+  const resumeAgentSession = useCallback((session: Pick<AgentSessionSummary, "app" | "id" | "title">) => {
     if (!workspaceId) return;
     setTerminalLaunchRequest({
       key: Date.now() + Math.random(),
@@ -687,6 +687,7 @@ export function Workbench() {
                     workflowId={activeTab.workflowId}
                     onWorkflowChanged={bumpAiRefresh}
                     onFilesChanged={bumpFileTree}
+                    onResumeSession={resumeAgentSession}
                   />
                 ) : (
                   <div className="empty-hint">请先打开工作区</div>

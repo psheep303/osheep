@@ -22,6 +22,7 @@ import {
   execRunStream,
   finishAiTerminalSuccess,
   getWorkflow as apiGetWorkflow,
+  listAgentSessions,
   openTerminalSocket,
   pauseAiTerminal,
   readFile,
@@ -37,6 +38,7 @@ import {
   type AiTerminalEffort,
   type AiTerminalMode,
   type AiTerminalResult,
+  type AgentSessionApp,
   type RunResult,
   type RemoteMcpTool,
   type WorkflowEdge,
@@ -61,6 +63,7 @@ interface WorkflowTabProps {
   workflowId: string;
   onWorkflowChanged: () => void;
   onFilesChanged: () => void;
+  onResumeSession: (session: { app: AgentSessionApp; id: string; title: string }) => void;
 }
 
 interface CanvasPoint {
@@ -244,6 +247,7 @@ interface WorkflowRunDetailSnapshot {
   stderr: string;
   transcript: string;
   terminalSessionId?: string;
+  conversationSessionId?: string;
   terminalStatus?: string;
   autoSuccess?: boolean;
   paused?: boolean;
@@ -685,6 +689,7 @@ export function WorkflowTab({
   workflowId,
   onWorkflowChanged,
   onFilesChanged,
+  onResumeSession,
 }: WorkflowTabProps) {
   const [workflow, setWorkflow] = useState<WorkflowRecord | null>(null);
   const workflowRef = useRef<WorkflowRecord | null>(null);
@@ -1078,7 +1083,6 @@ export function WorkflowTab({
           postUrl: redactUrl(discovery.postUrl),
           tools: discovery.tools.map((tool) => tool.name),
           text: `Connected. Discovered ${discovery.tools.length} tool${discovery.tools.length === 1 ? "" : "s"}.`,
-          CHANGED_FILES: [],
         }),
         summary: stringifyBlockOutput({
           type: "mcp",
@@ -1087,7 +1091,6 @@ export function WorkflowTab({
           postUrl: redactUrl(discovery.postUrl),
           tools: discovery.tools.map((tool) => tool.name),
           text: `Connected. Discovered ${discovery.tools.length} tool${discovery.tools.length === 1 ? "" : "s"}: ${discovery.tools.map((tool) => tool.name).join(", ") || "none"}.`,
-          CHANGED_FILES: [],
         }),
       });
     } catch (e) {
@@ -1737,7 +1740,16 @@ export function WorkflowTab({
         let lastDetailsAt = 0;
         const runLogs: Array<{ stream: "stdout" | "stderr"; content: string }> = [];
         let terminalSessionId = "";
+        let conversationSessionId = "";
         let terminalStatus = "";
+        const agentSessionApp: AgentSessionApp =
+          node.providerKind === "claude-cli" ? "claude" : "codex";
+        const requestedConversationSessionId =
+          node.providerKind === "claude-cli" ? crypto.randomUUID() : undefined;
+        const existingAgentSessionIds = await loadAgentSessionIds(
+          workspaceId,
+          agentSessionApp
+        );
         const autoSuccess = agentAutoSuccess(node);
         const updateAgentDetails = (
           status: WorkflowRunDetailSnapshot["status"],
@@ -1754,6 +1766,7 @@ export function WorkflowTab({
                 completedAt,
                 runLogs,
                 terminalSessionId || undefined,
+                conversationSessionId || undefined,
                 terminalStatus || undefined,
                 autoSuccess,
                 paused
@@ -1773,38 +1786,65 @@ export function WorkflowTab({
         const mcpTools = collectMcpToolsForAgent(current, node);
         const prompt = buildBlockPrompt(current, node, mcpTools);
         const terminalPrompt = buildTerminalPrompt(current, node);
-        const result = await runAiTerminalWithRetries(
-          workspaceId,
-          {
-            model: node.model || "default",
-            kind: node.providerKind,
-            messages: [{ role: "user", content: prompt }],
-            terminalPrompt,
-            autoSuccess,
-            claudePermissionMode: agentClaudePermissionMode(node),
-            mode: agentMode(node),
-            codexApproval: agentCodexApproval(node),
-            codexSandbox: agentCodexSandbox(node),
-            effort: agentEffort(node),
-            alwaysEnter: agentAlwaysEnter(node),
-          },
-          (frame) => {
-            if (frame.type === "session" && frame.sessionId) {
-              terminalSessionId = frame.sessionId;
-              updateAgentDetails("running");
-            } else if (frame.type === "output" && typeof frame.data === "string") {
-              appendLog({ stream: "stdout", content: frame.data });
-            } else if (frame.type === "status" && frame.status) {
-              terminalStatus = frame.status;
-              updateAgentDetails("running");
-            }
-          },
-          ac.signal,
-          agentRetryCount(node),
-          agentRetryForever(node),
-          appendLog
-        );
+        let result: Awaited<ReturnType<typeof runAiTerminalWithRetries>>;
+        try {
+          result = await runAiTerminalWithRetries(
+            workspaceId,
+            {
+              model: node.model || "default",
+              kind: node.providerKind,
+              messages: [{ role: "user", content: prompt }],
+              terminalPrompt,
+              autoSuccess,
+              claudePermissionMode: agentClaudePermissionMode(node),
+              mode: agentMode(node),
+              codexApproval: agentCodexApproval(node),
+              codexSandbox: agentCodexSandbox(node),
+              effort: agentEffort(node),
+              alwaysEnter: agentAlwaysEnter(node),
+              conversationSessionId: requestedConversationSessionId,
+            },
+            (frame) => {
+              if (frame.type === "session" && frame.sessionId) {
+                terminalSessionId = frame.sessionId;
+                updateAgentDetails("running");
+              } else if (frame.type === "conversation" && frame.sessionId) {
+                conversationSessionId = frame.sessionId;
+                updateAgentDetails("running");
+              } else if (frame.type === "output" && typeof frame.data === "string") {
+                appendLog({ stream: "stdout", content: frame.data });
+              } else if (frame.type === "status" && frame.status) {
+                terminalStatus = frame.status;
+                updateAgentDetails("running");
+              }
+            },
+            ac.signal,
+            agentRetryCount(node),
+            agentRetryForever(node),
+            appendLog
+          );
+        } catch (e) {
+          conversationSessionId = await discoverAgentSessionId({
+            workspaceId,
+            app: agentSessionApp,
+            existingIds: existingAgentSessionIds,
+            startedAt,
+            expectedId: requestedConversationSessionId,
+          });
+          updateAgentDetails("error", Date.now());
+          throw e;
+        }
         abortRef.current = null;
+        conversationSessionId =
+          result.result?.conversationSessionId ||
+          conversationSessionId ||
+          (await discoverAgentSessionId({
+            workspaceId,
+            app: agentSessionApp,
+            existingIds: existingAgentSessionIds,
+            startedAt,
+            expectedId: requestedConversationSessionId,
+          }));
         let raw =
           result.result?.content ||
           `${node.providerKind === "codex-cli" ? "Codex CLI" : "Claude Code CLI"} completed without text output.`;
@@ -1822,13 +1862,7 @@ export function WorkflowTab({
         if (toolRun) {
           raw = toolRun.raw;
         }
-        const output = agentOutput(
-          node,
-          raw,
-          current,
-          result.result?.changedFiles ?? [],
-          result.result?.verification ?? []
-        );
+        const output = agentOutput(node, raw);
         const outputText = stringifyBlockOutput(output);
         current = workflowRef.current ?? current;
         if (result.aborted) {
@@ -1839,6 +1873,7 @@ export function WorkflowTab({
             Date.now(),
             runLogs,
             terminalSessionId || result.result?.sessionId,
+            conversationSessionId || undefined,
             terminalStatus || undefined,
             autoSuccess
           );
@@ -1872,6 +1907,7 @@ export function WorkflowTab({
           Date.now(),
           runLogs,
           terminalSessionId || result.result?.sessionId,
+          conversationSessionId || undefined,
           terminalStatus || undefined,
           autoSuccess
         );
@@ -1914,7 +1950,6 @@ export function WorkflowTab({
             status: "failed",
             text: message,
             error: message,
-            CHANGED_FILES: [],
           });
           current = patchNode(current, activeNode.id, {
             status: "error",
@@ -2392,6 +2427,7 @@ export function WorkflowTab({
             workspaceId={workspaceId}
             node={workflow.nodes.find((node) => node.id === detailNodeId)!}
             onClose={() => setDetailNodeId(null)}
+            onResumeSession={onResumeSession}
           />
         </div>
       )}
@@ -2942,10 +2978,12 @@ function WorkflowDetailsPanel({
   workspaceId,
   node,
   onClose,
+  onResumeSession,
 }: {
   workspaceId: string;
   node: WorkflowNode;
   onClose: () => void;
+  onResumeSession: (session: { app: AgentSessionApp; id: string; title: string }) => void;
 }) {
   const snapshot = runDetailsSnapshot(node);
   const title = snapshot?.title || node.title;
@@ -2973,6 +3011,28 @@ function WorkflowDetailsPanel({
         {snapshot?.durationMs !== undefined && <span>{snapshot.durationMs}ms</span>}
         {snapshot?.exitCode !== undefined && <span>exit {snapshot.exitCode ?? "signal"}</span>}
       </div>
+      {snapshot?.kind === "agent" && snapshot.conversationSessionId && (
+        <div className="workflow-run-details__session">
+          <span>Session</span>
+          {snapshot.status === "running" ? (
+            <code>{snapshot.conversationSessionId}</code>
+          ) : (
+            <button
+              type="button"
+              title="Resume this conversation in the terminal"
+              onClick={() =>
+                onResumeSession({
+                  app: node.providerKind === "claude-cli" ? "claude" : "codex",
+                  id: snapshot.conversationSessionId!,
+                  title,
+                })
+              }
+            >
+              {snapshot.conversationSessionId}
+            </button>
+          )}
+        </div>
+      )}
       <div className="workflow-run-details__terminal">
         <div className="workflow-run-details__bar">
           <span />
@@ -4416,7 +4476,6 @@ async function executeLocalNode(
         value,
         data: value,
         text: value,
-        CHANGED_FILES: [],
       },
     };
   }
@@ -4440,7 +4499,6 @@ async function executeLocalNode(
         stderr: result.stderr,
         exitCode: result.exitCode,
         truncated: result.truncated,
-        CHANGED_FILES: [],
       },
       error: failed ? `Failed to fetch ${input}.` : undefined,
     };
@@ -4487,7 +4545,6 @@ async function executeLocalNode(
           exitCode: result.exitCode,
           truncated: result.truncated,
           text: result.stderr || result.stdout,
-          CHANGED_FILES: [],
         },
         error: `${node.title} request failed.`,
       };
@@ -4506,7 +4563,6 @@ async function executeLocalNode(
             : parsed.body !== undefined
               ? stringifyTemplateValue(parsed.body)
               : result.stdout,
-        CHANGED_FILES: [],
       },
     };
   }
@@ -4521,7 +4577,6 @@ async function executeLocalNode(
         content: file.content,
         size: file.size,
         mtime: file.mtime,
-        CHANGED_FILES: [],
       },
     };
   }
@@ -4541,7 +4596,6 @@ async function executeLocalNode(
         path: parsed.path,
         bytes: new Blob([parsed.content]).size,
         content: parsed.content,
-        CHANGED_FILES: [parsed.path],
       },
       changedFiles: true,
     };
@@ -4559,7 +4613,6 @@ async function executeLocalNode(
         status: "success",
         data: parsed.value,
         text: textFromAny(parsed.value),
-        CHANGED_FILES: [],
       },
     };
   }
@@ -4578,7 +4631,6 @@ async function executeLocalNode(
         left,
         right,
         text: result ? "true" : "false",
-        CHANGED_FILES: [],
       },
     };
   }
@@ -4602,7 +4654,6 @@ async function executeLocalNode(
         data,
         items,
         text: jsonPreview(data),
-        CHANGED_FILES: [],
       },
     };
   }
@@ -4636,7 +4687,6 @@ async function executeLocalNode(
         data,
         count: items.length,
         text: jsonPreview(data),
-        CHANGED_FILES: [],
       },
     };
   }
@@ -4654,7 +4704,6 @@ async function executeLocalNode(
         seconds,
         durationMs,
         text: `Waited ${(durationMs / 1000).toFixed(1)}s.`,
-        CHANGED_FILES: [],
       },
     };
   }
@@ -4678,7 +4727,6 @@ async function executeLocalNode(
         value,
         data: value,
         text: textFromAny(value),
-        CHANGED_FILES: [],
       },
     };
   }
@@ -4691,7 +4739,6 @@ async function executeLocalNode(
         status: "success",
         markdown,
         text: markdown,
-        CHANGED_FILES: [],
       },
     };
   }
@@ -4717,7 +4764,6 @@ async function executeLocalNode(
               inputSchema: tool.inputSchema,
             })),
             text: `Ready. Discovered ${config.tools.length} tool${config.tools.length === 1 ? "" : "s"}: ${config.tools.map((tool) => tool.name).join(", ")}.`,
-            CHANGED_FILES: [],
           },
         };
       }
@@ -4743,7 +4789,6 @@ async function executeLocalNode(
             inputSchema: tool.inputSchema,
           })),
           text: `Ready. Discovered ${discovery.tools.length} tool${discovery.tools.length === 1 ? "" : "s"}: ${discovery.tools.map((tool) => tool.name).join(", ") || "none"}.`,
-          CHANGED_FILES: [],
         },
         nodePatch: {
           config: {
@@ -4783,7 +4828,6 @@ async function executeLocalNode(
       error: result.error,
       response: result.response,
       text: mcpResultText(result.result, result.error),
-      CHANGED_FILES: [],
     };
     return {
       output,
@@ -4879,7 +4923,6 @@ async function executeCommandNodeStream(
         command: commandLine,
         stdout: snapshot.stdout,
         stderr: snapshot.stderr,
-        CHANGED_FILES: [],
       },
       nodePatch: {
         config: {
@@ -4915,7 +4958,6 @@ async function executeCommandNodeStream(
       stdout: result.stdout,
       stderr: result.stderr,
       truncated: result.truncated,
-      CHANGED_FILES: [],
     },
     nodePatch: {
       config: {
@@ -4968,10 +5010,10 @@ function buildBlockPrompt(
   return [
     `You are executing osheep workflow block "${node.title}".`,
     "Return exactly one JSON object and no markdown fences.",
-    "The JSON object must include: text, status, CHANGED_FILES, VERIFICATION, NEXT.",
-    "Put the user-facing answer in text. CHANGED_FILES and VERIFICATION must be arrays.",
+    "The JSON object must include: text, status, NEXT.",
+    "Put the user-facing answer in text.",
     "If the prompt asks for project work, use your native CLI capabilities to inspect, edit, and verify files in the current project root.",
-    "If the prompt is conversational, answer naturally inside text and keep CHANGED_FILES empty.",
+    "If the prompt is conversational, answer naturally inside text.",
     ...mcpInstructions,
     "",
     "Incoming summaries:",
@@ -5093,7 +5135,9 @@ async function runAiTerminalWithRetries(
 ): Promise<{ result: AiTerminalResult | null; aborted: boolean }> {
   let lastError: unknown = null;
   const attempts = Math.max(1, retries + 1);
-  const conversationSessionId = input.kind === "claude-cli" ? crypto.randomUUID() : undefined;
+  const conversationSessionId =
+    input.conversationSessionId ||
+    (input.kind === "claude-cli" ? crypto.randomUUID() : undefined);
   let attempt = 1;
   while (true) {
     try {
@@ -5127,6 +5171,38 @@ async function runAiTerminalWithRetries(
     }
   }
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+async function loadAgentSessionIds(
+  workspaceId: string,
+  app: AgentSessionApp
+): Promise<Set<string>> {
+  const sessions = await listAgentSessions(app, workspaceId).catch(() => []);
+  return new Set(sessions.map((session) => session.id));
+}
+
+async function discoverAgentSessionId(input: {
+  workspaceId: string;
+  app: AgentSessionApp;
+  existingIds: Set<string>;
+  startedAt: number;
+  expectedId?: string;
+}): Promise<string> {
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const sessions = await listAgentSessions(input.app, input.workspaceId).catch(() => []);
+    if (input.expectedId && sessions.some((session) => session.id === input.expectedId)) {
+      return input.expectedId;
+    }
+    const created = sessions
+      .filter(
+        (session) =>
+          !input.existingIds.has(session.id) && session.updatedAt >= input.startedAt - 2_000
+      )
+      .sort((a, b) => b.updatedAt - a.updatedAt);
+    if (created[0]) return created[0].id;
+    if (attempt < 5) await waitMs(100);
+  }
+  return "";
 }
 
 function continueOnlyTerminalInput<T extends {
@@ -5267,6 +5343,7 @@ function agentRunSnapshot(
   completedAt: number | undefined,
   logs: Array<{ stream: "stdout" | "stderr"; content: string }>,
   terminalSessionId?: string,
+  conversationSessionId?: string,
   terminalStatus?: string,
   autoSuccess?: boolean,
   paused?: boolean
@@ -5283,6 +5360,7 @@ function agentRunSnapshot(
   };
   if (completedAt !== undefined) snapshot.completedAt = completedAt;
   if (terminalSessionId) snapshot.terminalSessionId = terminalSessionId;
+  if (conversationSessionId) snapshot.conversationSessionId = conversationSessionId;
   if (terminalStatus) snapshot.terminalStatus = terminalStatus;
   if (autoSuccess !== undefined) snapshot.autoSuccess = autoSuccess;
   if (paused !== undefined) snapshot.paused = paused;
@@ -5408,7 +5486,7 @@ function buildMcpFollowupPrompt(
     `You are continuing osheep workflow block "${node.title}".`,
     "You asked to call Remote MCP tools. The tool results are below.",
     "Now return exactly one final JSON object and no markdown fences.",
-    "The JSON object must include: text, status, CHANGED_FILES, VERIFICATION, NEXT.",
+    "The JSON object must include: text, status, NEXT.",
     "Do not include tool_calls in the final JSON unless another tool call is strictly required.",
     "",
     "Original block prompt:",
@@ -5503,30 +5581,19 @@ function triggerOutput(node: WorkflowNode): WorkflowBlockOutput {
         : kind === "webhook-trigger"
           ? "Webhook trigger evaluated for manual run."
           : "Workflow run trigger fired.",
-    CHANGED_FILES: [],
   };
 }
 
 function agentOutput(
   node: WorkflowNode,
-  raw: string,
-  record: WorkflowRecord,
-  discoveredChangedFiles: string[] = [],
-  discoveredVerification: string[] = []
+  raw: string
 ): WorkflowBlockOutput {
-  const changedFiles = reportableChangedFiles([
-    ...discoveredChangedFiles,
-    ...inferChangedFiles(record),
-  ]);
-  const verification = uniqueStrings(discoveredVerification);
   const parsed = parseJsonObject(raw);
   if (parsed) {
     return normalizeOutputObject(parsed, {
       type: node.providerKind === "claude-cli" ? "claude" : "codex",
       status: "success",
       text: textFromOutput(parsed) || raw.trim(),
-      CHANGED_FILES: changedFiles,
-      VERIFICATION: verification,
     });
   }
 
@@ -5534,8 +5601,6 @@ function agentOutput(
     type: node.providerKind === "claude-cli" ? "claude" : "codex",
     status: "success",
     text: raw.trim(),
-    CHANGED_FILES: changedFiles,
-    VERIFICATION: verification,
   };
 }
 
@@ -5543,44 +5608,26 @@ function normalizeOutputObject(
   value: WorkflowBlockOutput,
   defaults: WorkflowBlockOutput
 ): WorkflowBlockOutput {
-  const suppliedChangedFiles = Array.isArray(value.CHANGED_FILES)
-    ? reportableChangedFiles(value.CHANGED_FILES)
-    : [];
   return {
-    ...defaults,
-    ...value,
-    CHANGED_FILES: suppliedChangedFiles.length > 0
-      ? suppliedChangedFiles
-      : reportableChangedFiles(
-          Array.isArray(defaults.CHANGED_FILES) ? defaults.CHANGED_FILES : []
-        ),
-    VERIFICATION: Array.isArray(value.VERIFICATION)
-      && value.VERIFICATION.length > 0
-      ? value.VERIFICATION
-      : defaults.VERIFICATION,
+    ...sanitizeBlockOutput(defaults),
+    ...sanitizeBlockOutput(value),
   };
 }
 
-function uniqueStrings(values: unknown[]): string[] {
-  return [...new Set(
-    values
-      .filter((value): value is string => typeof value === "string" && !!value.trim())
-      .map((value) => value.trim())
-  )];
-}
-
-function reportableChangedFiles(values: unknown[]): string[] {
-  return uniqueStrings(values).filter(
-    (value) => !/^\.osheep\/workflows(?:\/|$)/i.test(value.replace(/\\/g, "/"))
-  );
+function sanitizeBlockOutput(output: WorkflowBlockOutput): WorkflowBlockOutput {
+  const sanitized = { ...output };
+  delete sanitized.CHANGED_FILES;
+  delete sanitized.VERIFICATION;
+  return sanitized;
 }
 
 function stringifyBlockOutput(output: WorkflowBlockOutput): string {
-  return JSON.stringify(output, null, 2);
+  return JSON.stringify(sanitizeBlockOutput(output), null, 2);
 }
 
 function parseBlockOutput(node: WorkflowNode): WorkflowBlockOutput | null {
-  return parseJsonObject(node.rawOutput || node.summary || "");
+  const output = parseJsonObject(node.rawOutput || node.summary || "");
+  return output ? sanitizeBlockOutput(output) : null;
 }
 
 function parseJsonObject(text: string): WorkflowBlockOutput | null {
@@ -5636,19 +5683,6 @@ function textFromAny(value: unknown): string {
   if (typeof value === "string") return value;
   if (typeof value === "number" || typeof value === "boolean") return String(value);
   return jsonPreview(value);
-}
-
-function inferChangedFiles(record: WorkflowRecord): string[] {
-  const changed = new Set<string>();
-  for (const node of record.nodes) {
-    const output = parseBlockOutput(node);
-    const files = output?.CHANGED_FILES;
-    if (!Array.isArray(files)) continue;
-    for (const file of files) {
-      if (typeof file === "string" && file.trim()) changed.add(file.trim());
-    }
-  }
-  return [...changed];
 }
 
 function resolveBlockTemplate(input: string, record: WorkflowRecord): string {
@@ -5899,7 +5933,6 @@ function outputFromValue(type: string, value: unknown): WorkflowBlockOutput {
       status: "success",
       data: value,
       text: textFromAny(obj.text ?? obj.data ?? value),
-      CHANGED_FILES: [],
     });
   }
   return {
@@ -5907,7 +5940,6 @@ function outputFromValue(type: string, value: unknown): WorkflowBlockOutput {
     status: "success",
     data: value,
     text: textFromAny(value),
-    CHANGED_FILES: [],
   };
 }
 
@@ -6659,6 +6691,10 @@ function runDetailsSnapshot(node: WorkflowNode): WorkflowRunDetailSnapshot | nul
     transcript: typeof raw.transcript === "string" ? raw.transcript : "",
     terminalSessionId:
       typeof raw.terminalSessionId === "string" ? raw.terminalSessionId : undefined,
+    conversationSessionId:
+      typeof raw.conversationSessionId === "string"
+        ? raw.conversationSessionId
+        : undefined,
     terminalStatus:
       typeof raw.terminalStatus === "string" ? raw.terminalStatus : undefined,
     autoSuccess:

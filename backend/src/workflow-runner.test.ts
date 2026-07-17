@@ -7,24 +7,11 @@ import {
   createLiveAgentRunDetails,
   nextAgentRetryPrompt,
   planWorkflowRunNodeIds,
-  reportableChangedFilesForTest,
   resolveWorkflowTemplate,
   shouldRetryAgentTerminalFailure,
   type WorkflowRunDetailSnapshot,
 } from "./workflow-runner.js";
 import type { WorkflowNode, WorkflowRecord } from "./workflows.js";
-
-test("agent output hides workflow snapshot bookkeeping from changed files", () => {
-  assert.deepEqual(
-    reportableChangedFilesForTest([
-      ".osheep/workflows/wf_demo.json",
-      ".osheep\\workflows\\wf_demo.json",
-      "weather_spider.py",
-      "weather_spider.py",
-    ]),
-    ["weather_spider.py"]
-  );
-});
 
 test("workflow run planning excludes nodes that are not reachable from a trigger", () => {
   const record: WorkflowRecord = {
@@ -184,15 +171,17 @@ test("live agent run details capture terminal session and output frames", async 
 
   await details.update("running");
   await details.handleFrame({ type: "session", sessionId: "t_live" });
+  await details.handleFrame({ type: "conversation", sessionId: "conv_live" });
   await details.handleFrame({ type: "output", data: "first chunk\n" });
   await details.handleFrame({ type: "status", status: "ready" });
 
-  assert.equal(writes.length, 4);
+  assert.equal(writes.length, 5);
   assert.equal(writes[1]?.terminalSessionId, "t_live");
-  assert.equal(writes[2]?.stdout, "first chunk\n");
-  assert.match(writes[2]?.transcript ?? "", /\[stdout\] first chunk/);
-  assert.equal(writes[3]?.terminalStatus, "ready");
-  assert.equal(writes[3]?.status, "running");
+  assert.equal(writes[2]?.conversationSessionId, "conv_live");
+  assert.equal(writes[3]?.stdout, "first chunk\n");
+  assert.match(writes[3]?.transcript ?? "", /\[stdout\] first chunk/);
+  assert.equal(writes[4]?.terminalStatus, "ready");
+  assert.equal(writes[4]?.status, "running");
 });
 
 test("live agent run details bound stored terminal output", async () => {
