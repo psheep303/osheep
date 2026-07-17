@@ -1,17 +1,27 @@
 const CURSOR_OR_CLEAR_SEQUENCE = /\x1b\[[0-?]*[ -/]*[HfJ]/g;
 const ANSI_SEQUENCE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 
-export function cleanAgentTerminalConversation(raw: string): string {
+export type AgentTerminalConversationKind = "claude-cli" | "codex-cli";
+
+export function cleanAgentTerminalConversation(
+  raw: string,
+  kind?: AgentTerminalConversationKind
+): string {
   if (!raw.trim()) return "";
   const seen = new Set<string>();
   const output: string[] = [];
+  const lines = plainText(raw).split("\n");
+  const codexStart = kind === "codex-cli"
+    ? lines.findIndex((line) => isCodexConversationStart(normalizeLine(line).trim()))
+    : -1;
+  const conversationLines = codexStart >= 0 ? lines.slice(codexStart) : lines;
 
-  for (const sourceLine of plainText(raw).split("\n")) {
+  for (const sourceLine of conversationLines) {
     const line = normalizeLine(sourceLine);
     const trimmed = line.trim();
     if (!trimmed) continue;
     const key = lineKey(trimmed);
-    if (!key || isTerminalChrome(trimmed) || isCursorFragment(trimmed) || seen.has(key)) {
+    if (!key || isTerminalChrome(trimmed, kind) || isCursorFragment(trimmed) || seen.has(key)) {
       continue;
     }
     seen.add(key);
@@ -42,7 +52,18 @@ function lineKey(value: string): string {
   return value.trim().replace(/\s+/g, " ");
 }
 
-function isTerminalChrome(line: string): boolean {
+function isCodexConversationStart(line: string): boolean {
+  return /^•\s*\S/.test(line) && !isCodexProgressFragment(line);
+}
+
+function isCodexProgressFragment(line: string): boolean {
+  const content = line.replace(/^•\s*/, "").trim().toLowerCase();
+  if (!content) return true;
+  if (content.length <= 8 && "working".includes(content)) return true;
+  return /esc to interr?upt|esc to interupt|^worked for\b/.test(content);
+}
+
+function isTerminalChrome(line: string, kind?: AgentTerminalConversationKind): boolean {
   if (/^[─━═_\-\s]{8,}$/.test(line)) return true;
   if (/^[❯›]\s*(?:\S.*)?$/.test(line)) return true;
   if (/\b(?:auto|plan) mode on\b/i.test(line)) return true;
@@ -67,6 +88,18 @@ function isTerminalChrome(line: string): boolean {
   if (/^[✻✶✽✢·*]\s*/.test(line)) return true;
   if (/\b(?:Flambéing|Cooked)\b.*(?:tokens|\d+[ms])/i.test(line)) return true;
   if (/^\(?thinking with (?:low|medium|high) effort\)?$/i.test(line)) return true;
+  if (kind === "codex-cli") {
+    if (isCodexProgressFragment(line)) return true;
+    if (/^[╭╮╰╯│┌┐└┘]/.test(line)) return true;
+    if (/^(?:You are in\s+|Do you trust the contents|Working with untrusted contents|Trusting the directory|prompt injection\b|\d+\.\s+No, quit|Press enter to continue)/i.test(line)) {
+      return true;
+    }
+    if (/^(?:gpt-[\w.-]+(?:\s+\w+)?|minimal|low|medium|high|xhigh)\s*·\s*/i.test(line)) {
+      return true;
+    }
+    if (/^(?:model|directory)\s*:\s*/i.test(line)) return true;
+    if (/^\d+s\s*•?\s*esc to interr?upt/i.test(line)) return true;
+  }
   return false;
 }
 

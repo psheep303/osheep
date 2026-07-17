@@ -8,15 +8,20 @@ const CONVERSATION_WINDOW_CHARS = 96 * 1024;
 const CONVERSATION_OVERLAP_CHARS = 16 * 1024;
 const CONVERSATION_MAX_CHARS = 512 * 1024;
 
+export type AgentTerminalConversationKind = "claude-cli" | "codex-cli";
+
 export class AgentTerminalConversationCollector {
   private readonly prompt: string;
+  private readonly kind?: AgentTerminalConversationKind;
   private readonly seen = new Set<string>();
   private readonly lines: string[] = [];
   private rawWindow = "";
   private lastFlushAt = 0;
+  private codexConversationStarted = false;
 
-  constructor(prompt = "") {
+  constructor(prompt = "", kind?: AgentTerminalConversationKind) {
     this.prompt = prompt;
+    this.kind = kind;
   }
 
   push(raw: string): void {
@@ -41,7 +46,18 @@ export class AgentTerminalConversationCollector {
 
   private flush(final = false): void {
     if (!this.rawWindow) return;
-    for (const line of cleanAgentTerminalConversation(this.rawWindow, this.prompt).split("\n")) {
+    if (this.kind === "codex-cli" && !this.codexConversationStarted) {
+      if (!hasCodexConversationStart(this.rawWindow)) {
+        this.lastFlushAt = Date.now();
+        return;
+      }
+      this.codexConversationStarted = true;
+    }
+    for (const line of cleanAgentTerminalConversation(
+      this.rawWindow,
+      this.prompt,
+      this.kind
+    ).split("\n")) {
       const key = lineKey(line);
       if (!key || this.seen.has(key)) continue;
       this.seen.add(key);
@@ -52,7 +68,11 @@ export class AgentTerminalConversationCollector {
   }
 }
 
-export function cleanAgentTerminalConversation(raw: string, prompt = ""): string {
+export function cleanAgentTerminalConversation(
+  raw: string,
+  prompt = "",
+  kind?: AgentTerminalConversationKind
+): string {
   if (!raw.trim()) return "";
   const promptLines = new Set(
     plainText(prompt)
@@ -63,12 +83,18 @@ export function cleanAgentTerminalConversation(raw: string, prompt = ""): string
   const seen = new Set<string>();
   const output: string[] = [];
 
-  for (const sourceLine of plainText(raw).split("\n")) {
+  const lines = plainText(raw).split("\n");
+  const codexStart = kind === "codex-cli"
+    ? lines.findIndex((line) => isCodexConversationStart(normalizeLine(line).trim()))
+    : -1;
+  const conversationLines = codexStart >= 0 ? lines.slice(codexStart) : lines;
+
+  for (const sourceLine of conversationLines) {
     const line = normalizeLine(sourceLine);
     const trimmed = line.trim();
     if (!trimmed) continue;
     const key = lineKey(trimmed);
-    if (!key || promptLines.has(key) || isTerminalChrome(trimmed)) continue;
+    if (!key || promptLines.has(key) || isTerminalChrome(trimmed, kind)) continue;
     if (isCursorFragment(trimmed) || seen.has(key)) continue;
     seen.add(key);
     output.push(line);
@@ -354,7 +380,24 @@ function isClaudeToolHeading(value: string): boolean {
   );
 }
 
-function isTerminalChrome(line: string): boolean {
+function hasCodexConversationStart(raw: string): boolean {
+  return plainText(raw)
+    .split("\n")
+    .some((line) => isCodexConversationStart(normalizeLine(line).trim()));
+}
+
+function isCodexConversationStart(line: string): boolean {
+  return /^•\s*\S/.test(line) && !isCodexProgressFragment(line);
+}
+
+function isCodexProgressFragment(line: string): boolean {
+  const content = line.replace(/^•\s*/, "").trim().toLowerCase();
+  if (!content) return true;
+  if (content.length <= 8 && "working".includes(content)) return true;
+  return /esc to interr?upt|esc to interupt|^worked for\b/.test(content);
+}
+
+function isTerminalChrome(line: string, kind?: AgentTerminalConversationKind): boolean {
   if (/^[─━═_\-\s]{8,}$/.test(line)) return true;
   if (/^[❯›]\s*(?:\S.*)?$/.test(line)) return true;
   if (/\b(?:auto|plan) mode on\b/i.test(line)) return true;
@@ -379,6 +422,18 @@ function isTerminalChrome(line: string): boolean {
   if (/^[✻✶✽✢·*]\s*/.test(line)) return true;
   if (/\b(?:Flambéing|Cooked)\b.*(?:tokens|\d+[ms])/i.test(line)) return true;
   if (/^\(?thinking with (?:low|medium|high) effort\)?$/i.test(line)) return true;
+  if (kind === "codex-cli") {
+    if (isCodexProgressFragment(line)) return true;
+    if (/^[╭╮╰╯│┌┐└┘]/.test(line)) return true;
+    if (/^(?:You are in\s+|Do you trust the contents|Working with untrusted contents|Trusting the directory|prompt injection\b|\d+\.\s+No, quit|Press enter to continue)/i.test(line)) {
+      return true;
+    }
+    if (/^(?:gpt-[\w.-]+(?:\s+\w+)?|minimal|low|medium|high|xhigh)\s*·\s*/i.test(line)) {
+      return true;
+    }
+    if (/^(?:model|directory)\s*:\s*/i.test(line)) return true;
+    if (/^\d+s\s*•?\s*esc to interr?upt/i.test(line)) return true;
+  }
   return false;
 }
 

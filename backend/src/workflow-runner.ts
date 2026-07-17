@@ -1498,7 +1498,7 @@ function agentOutput(
   discoveredChangedFiles: string[] = [],
   discoveredVerification: string[] = []
 ): WorkflowBlockOutput {
-  const changedFiles = uniqueStrings([
+  const changedFiles = reportableChangedFiles([
     ...discoveredChangedFiles,
     ...inferChangedFiles(record),
   ]);
@@ -1526,13 +1526,17 @@ function normalizeOutputObject(
   value: WorkflowBlockOutput,
   defaults: WorkflowBlockOutput
 ): WorkflowBlockOutput {
+  const suppliedChangedFiles = Array.isArray(value.CHANGED_FILES)
+    ? reportableChangedFiles(value.CHANGED_FILES)
+    : [];
   return {
     ...defaults,
     ...value,
-    CHANGED_FILES: Array.isArray(value.CHANGED_FILES)
-      && value.CHANGED_FILES.length > 0
-      ? value.CHANGED_FILES
-      : defaults.CHANGED_FILES,
+    CHANGED_FILES: suppliedChangedFiles.length > 0
+      ? suppliedChangedFiles
+      : reportableChangedFiles(
+          Array.isArray(defaults.CHANGED_FILES) ? defaults.CHANGED_FILES : []
+        ),
     VERIFICATION: Array.isArray(value.VERIFICATION)
       && value.VERIFICATION.length > 0
       ? value.VERIFICATION
@@ -1542,6 +1546,16 @@ function normalizeOutputObject(
 
 function uniqueStrings(values: unknown[]): string[] {
   return [...new Set(values.filter((value): value is string => typeof value === "string" && !!value.trim()).map((value) => value.trim()))];
+}
+
+function reportableChangedFiles(values: unknown[]): string[] {
+  return uniqueStrings(values).filter(
+    (value) => !/^\.osheep\/workflows(?:\/|$)/i.test(value.replace(/\\/g, "/"))
+  );
+}
+
+export function reportableChangedFilesForTest(values: unknown[]): string[] {
+  return reportableChangedFiles(values);
 }
 
 function stringifyBlockOutput(output: WorkflowBlockOutput): string {

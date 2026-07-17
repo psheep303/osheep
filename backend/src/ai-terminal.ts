@@ -162,7 +162,7 @@ export async function runAgentTerminal(
   opts.onFrame?.({ type: "session", sessionId: session.id });
 
   let transcript = "";
-  const conversation = new AgentTerminalConversationCollector(opts.prompt);
+  const conversation = new AgentTerminalConversationCollector(opts.prompt, opts.kind);
   let exitCode: number | null = null;
   let exitSignal: number | string | null = null;
   let exited = false;
@@ -848,6 +848,7 @@ function isAgentTerminalPromptLine(trimmed: string): boolean {
 function isAgentTerminalChromeLine(trimmed: string): boolean {
   if (isTerminalChromeLine(trimmed)) return true;
   if (/\(shift\+tab to cycle\)/i.test(trimmed)) return true;
+  if (/^[\u2500-\u257f\s]+$/.test(trimmed)) return true;
   return false;
 }
 
