@@ -147,6 +147,7 @@ export interface CreateSessionInput {
   cols: number;
   rows: number;
   killOnDetach?: boolean;
+  guardRoot?: string;
 }
 
 export function createSession(input: CreateSessionInput): TerminalSession {
@@ -161,7 +162,7 @@ export function createSession(input: CreateSessionInput): TerminalSession {
 
   // Build shell-level guard if supported. The guard returns args to spawn with
   // and a cleanup to call when the session ends.
-  const workspacesRootAbs = path.resolve(config.workspacesRoot);
+  const workspacesRootAbs = path.resolve(input.guardRoot ?? config.workspacesRoot);
   const initialCwd = path.resolve(input.workspace.path);
   let spawnArgs = profile.args;
   let guardCleanup: (() => void) | null = null;

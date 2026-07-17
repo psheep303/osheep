@@ -1,10 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { TerminalSession } from "./TerminalSession";
-import { getProfiles, type ShellProfile } from "./api";
-
-interface TerminalProps {
-  workspaceId: string | null;
-}
+import { getProfiles, type AgentSessionApp, type ShellProfile } from "./api";
 
 interface ProfilesState {
   os: "windows" | "macos" | "linux";
@@ -15,12 +11,35 @@ interface SessionEntry {
   localId: string;
   profile: ShellProfile;
   title: string;
+  workspaceId: string | null;
+  agentSession?: {
+    app: AgentSessionApp;
+    sessionId: string;
+    workspaceId: string;
+  };
+}
+
+export interface AgentTerminalLaunchRequest {
+  key: number;
+  app: AgentSessionApp;
+  sessionId: string;
+  title: string;
   workspaceId: string;
+}
+
+interface TerminalProps {
+  workspaceId: string | null;
+  launchRequest?: AgentTerminalLaunchRequest | null;
+  onLaunchHandled?: (key: number) => void;
 }
 
 let SESSION_COUNTER = 0;
 
-export function Terminal({ workspaceId }: TerminalProps) {
+export function Terminal({
+  workspaceId,
+  launchRequest = null,
+  onLaunchHandled,
+}: TerminalProps) {
   const [profilesState, setProfilesState] = useState<ProfilesState | null>(null);
   const [profilesError, setProfilesError] = useState<string | null>(null);
   const [sessions, setSessions] = useState<SessionEntry[]>([]);
@@ -28,6 +47,8 @@ export function Terminal({ workspaceId }: TerminalProps) {
   const [defaultProfileId, setDefaultProfileId] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+  const handledLaunchRef = useRef<number | null>(null);
+  const previousWorkspaceRef = useRef(workspaceId);
 
   // Load profile list once
   useEffect(() => {
@@ -56,11 +77,23 @@ export function Terminal({ workspaceId }: TerminalProps) {
   useEffect(() => {
     if (!workspaceId || !profilesState || !defaultProfileId) return;
     if (sessions.length > 0) return;
+    if (launchRequest && handledLaunchRef.current !== launchRequest.key) return;
     const profile = profilesState.profiles.find((p) => p.id === defaultProfileId);
     if (!profile) return;
     spawnSession(profile);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspaceId, profilesState, defaultProfileId]);
+  }, [workspaceId, profilesState, defaultProfileId, launchRequest]);
+
+  useEffect(() => {
+    if (!launchRequest || handledLaunchRef.current === launchRequest.key) return;
+    if (!profilesState || !defaultProfileId) return;
+    const profile = profilesState.profiles.find((p) => p.id === defaultProfileId);
+    if (!profile) return;
+    handledLaunchRef.current = launchRequest.key;
+    spawnSession(profile, launchRequest);
+    onLaunchHandled?.(launchRequest.key);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [launchRequest, profilesState, defaultProfileId, onLaunchHandled]);
 
   // Close menu on outside click
   useEffect(() => {
@@ -74,19 +107,33 @@ export function Terminal({ workspaceId }: TerminalProps) {
 
   // When workspace changes, drop all sessions (their effects will tear down)
   useEffect(() => {
+    if (previousWorkspaceRef.current === workspaceId) return;
+    previousWorkspaceRef.current = workspaceId;
     setSessions([]);
     setActiveId(null);
   }, [workspaceId]);
 
-  const spawnSession = (profile: ShellProfile) => {
-    if (!workspaceId) return;
+  const spawnSession = (
+    profile: ShellProfile,
+    agentLaunch?: AgentTerminalLaunchRequest
+  ) => {
+    if (!workspaceId && !agentLaunch) return;
     SESSION_COUNTER += 1;
     const localId = "s_" + SESSION_COUNTER;
     const entry: SessionEntry = {
       localId,
       profile,
-      title: `${profile.label} ${SESSION_COUNTER}`,
-      workspaceId,
+      title: agentLaunch
+        ? `${agentLaunch.app === "codex" ? "Codex" : "Claude"}: ${agentLaunch.title}`
+        : `${profile.label} ${SESSION_COUNTER}`,
+      workspaceId: agentLaunch ? null : workspaceId,
+      agentSession: agentLaunch
+        ? {
+            app: agentLaunch.app,
+            sessionId: agentLaunch.sessionId,
+            workspaceId: agentLaunch.workspaceId,
+          }
+        : undefined,
     };
     setSessions((prev) => [...prev, entry]);
     setActiveId(localId);
@@ -119,7 +166,7 @@ export function Terminal({ workspaceId }: TerminalProps) {
       ? "Linux"
       : "?";
 
-  if (!workspaceId) {
+  if (!workspaceId && sessions.length === 0 && !launchRequest) {
     return (
       <div className="terminal terminal--empty muted">
         请先选择工作区，终端会在该工作区根目录启动
@@ -146,6 +193,7 @@ export function Terminal({ workspaceId }: TerminalProps) {
               key={s.localId}
               workspaceId={s.workspaceId}
               profile={s.profile}
+              agentSession={s.agentSession}
               active={s.localId === activeId}
               onClose={() => closeSession(s.localId)}
             />

@@ -75,8 +75,8 @@ const checks = [
   {
     name: "Workbench renders agent-specific side views",
     pass:
-      /<ClaudeCodeAgentView \/>/.test(workbench) &&
-      /<CodexAgentView \/>/.test(workbench) &&
+      /<ClaudeCodeAgentView\b/.test(workbench) &&
+      /<CodexAgentView\b/.test(workbench) &&
       !/<AiSettingsView \/>/.test(workbench) &&
       !/<CodexPluginsView \/>/.test(workbench),
   },
@@ -95,6 +95,7 @@ const checks = [
       /ClaudeCodeAgentView/.test(agentView) &&
       /CodexAgentView/.test(agentView) &&
       /API & Model/.test(agentView) &&
+      /Sessions/.test(agentView) &&
       /Plugins/.test(agentView) &&
       /Hooks/.test(agentView) &&
       /MCP/.test(agentView) &&

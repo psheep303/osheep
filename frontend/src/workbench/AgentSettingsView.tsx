@@ -3,6 +3,8 @@ import { AgentAdvancedSettingsView } from "./AgentAdvancedSettingsView";
 import { AiSettingsView } from "./AiSettingsView";
 import { ClaudePluginsView } from "./ClaudePluginsView";
 import { CodexPluginsView } from "./CodexPluginsView";
+import { AgentSessionsView } from "./AgentSessionsView";
+import type { AgentSessionSummary } from "./api";
 
 interface AgentSection<T extends string> {
   id: T;
@@ -10,11 +12,12 @@ interface AgentSection<T extends string> {
   hidden?: boolean;
 }
 
-type ClaudeCodeSection = "api-model" | "plugins" | "hooks" | "mcp" | "environment";
-type CodexSection = "api-model" | "plugins" | "permissions" | "environment";
+type ClaudeCodeSection = "api-model" | "sessions" | "plugins" | "hooks" | "mcp" | "environment";
+type CodexSection = "api-model" | "sessions" | "plugins" | "permissions" | "environment";
 
 const CLAUDE_CODE_SECTIONS: AgentSection<ClaudeCodeSection>[] = [
   { id: "api-model", label: "API & Model" },
+  { id: "sessions", label: "Sessions" },
   { id: "plugins", label: "Plugins" },
   { id: "hooks", label: "Hooks", hidden: true },
   { id: "mcp", label: "MCP", hidden: true },
@@ -23,12 +26,19 @@ const CLAUDE_CODE_SECTIONS: AgentSection<ClaudeCodeSection>[] = [
 
 const CODEX_SECTIONS: AgentSection<CodexSection>[] = [
   { id: "api-model", label: "API & Model" },
+  { id: "sessions", label: "Sessions" },
   { id: "plugins", label: "Plugins" },
   { id: "permissions", label: "Permissions", hidden: true },
   { id: "environment", label: "Environment", hidden: true },
 ];
 
-export function ClaudeCodeAgentView() {
+interface AgentViewProps {
+  workspaceId: string | null;
+  onResumeSession: (session: AgentSessionSummary) => void;
+}
+
+export function ClaudeCodeAgentView(props: AgentViewProps) {
+  const { workspaceId, onResumeSession } = props;
   const [section, setSection] = useState<ClaudeCodeSection>("api-model");
 
   return (
@@ -40,6 +50,13 @@ export function ClaudeCodeAgentView() {
     >
       {section === "api-model" ? (
         <AiSettingsView app="claude" />
+      ) : section === "sessions" ? (
+        <AgentSessionsView
+          key={workspaceId ?? "no-workspace"}
+          app="claude"
+          workspaceId={workspaceId}
+          onResume={onResumeSession}
+        />
       ) : section === "plugins" ? (
         <ClaudePluginsView />
       ) : section === "hooks" ? (
@@ -53,7 +70,8 @@ export function ClaudeCodeAgentView() {
   );
 }
 
-export function CodexAgentView() {
+export function CodexAgentView(props: AgentViewProps) {
+  const { workspaceId, onResumeSession } = props;
   const [section, setSection] = useState<CodexSection>("api-model");
 
   return (
@@ -65,6 +83,13 @@ export function CodexAgentView() {
     >
       {section === "api-model" ? (
         <AiSettingsView app="codex" />
+      ) : section === "sessions" ? (
+        <AgentSessionsView
+          key={workspaceId ?? "no-workspace"}
+          app="codex"
+          workspaceId={workspaceId}
+          onResume={onResumeSession}
+        />
       ) : section === "plugins" ? (
         <CodexPluginsView />
       ) : section === "permissions" ? (
