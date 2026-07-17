@@ -1,16 +1,27 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { PlanView } from "./PlanView";
-import { Terminal } from "./Terminal";
+import { Terminal, type AgentTerminalLaunchRequest } from "./Terminal";
 
 type BottomTab = "terminal" | "log" | "plan";
 
 interface BottomPanelProps {
   workspaceId: string | null;
   onClose: () => void;
+  terminalLaunchRequest?: AgentTerminalLaunchRequest | null;
+  onTerminalLaunchHandled?: (key: number) => void;
 }
 
-export function BottomPanel({ workspaceId, onClose }: BottomPanelProps) {
+export function BottomPanel({
+  workspaceId,
+  onClose,
+  terminalLaunchRequest = null,
+  onTerminalLaunchHandled,
+}: BottomPanelProps) {
   const [tab, setTab] = useState<BottomTab>("terminal");
+
+  useEffect(() => {
+    if (terminalLaunchRequest) setTab("terminal");
+  }, [terminalLaunchRequest]);
 
   return (
     <div className="bottom-panel">
@@ -54,7 +65,13 @@ export function BottomPanel({ workspaceId, onClose }: BottomPanelProps) {
         </button>
       </div>
       <div className="bottom-panel__body">
-        {tab === "terminal" && <Terminal workspaceId={workspaceId} />}
+        {tab === "terminal" && (
+          <Terminal
+            workspaceId={workspaceId}
+            launchRequest={terminalLaunchRequest}
+            onLaunchHandled={onTerminalLaunchHandled}
+          />
+        )}
         {tab === "log" && (
           <div className="muted" style={{ padding: "10px 16px" }}>
             任务执行日志将在后续阶段接入。

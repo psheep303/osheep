@@ -12,12 +12,32 @@ import {
   createAgentTerminalControlForTest,
   extractAgentTerminalContentForTest,
   finishAgentTerminalSuccess,
+  hasAgentTerminalFailureForTest,
   resolveAgentTerminalContentStateForTest,
   shouldFollowUpPastedPromptSubmit,
   shouldAutoEnterChoice,
   shouldExposeWaitingForChoice,
   type AgentEffort,
 } from "./ai-terminal.js";
+
+test("terminal failures are detected independently of auto success", () => {
+  assert.equal(
+    hasAgentTerminalFailureForTest(
+      "● Please run /login · API Error: 403 Image generation is not enabled for this group\n❯"
+    ),
+    true
+  );
+  assert.equal(
+    hasAgentTerminalFailureForTest("● 已完成实现。\n验证结果：4 passed\n❯"),
+    false
+  );
+  assert.equal(
+    hasAgentTerminalFailureForTest(
+      "● API Error: 529 Overloaded\n● Retrying… (3s)\n● 已恢复并继续执行"
+    ),
+    false
+  );
+});
 
 test("Claude Code terminal command uses acceptEdits by default", () => {
   assert.equal(
@@ -273,13 +293,32 @@ test("Claude raw screen restores a plan choice removed from extracted content", 
   );
 
   assert.doesNotMatch(content, /\u276f 1\. Yes/);
-  assert.equal(classifyAgentTerminalContent(content), "ready-for-success");
+  assert.equal(classifyAgentTerminalContent(content), "empty");
   assert.equal(state, "waiting-for-choice");
   assert.equal(
     shouldAutoEnterChoice({ alwaysEnter: true, state, now: 2_000 }),
     true
   );
   assert.equal(shouldExposeWaitingForChoice(true, state), false);
+});
+
+test("Claude workflow output contains only the last formal answer", () => {
+  const transcript = [
+    "Thought for 7s (ctrl+o to expand)",
+    "● Bash(pytest tests/test_weather_spider.py)",
+    "  ⎿ 4 passed",
+    "Tip: Use /btw to ask a quick side question without interrupting Claude's current work",
+    "● 已完成极简天气爬虫。",
+    "  - 新增 weather_spider.py",
+    "  - 验证结果：4 passed",
+    "✻ Cooked for 16m 11s",
+    "⏵⏵ auto mode on (shift+tab to cycle) · ← for agents",
+  ].join("\r\n");
+
+  assert.equal(
+    extractAgentTerminalContentForTest(transcript, "", "claude-cli"),
+    "已完成极简天气爬虫。\n  - 新增 weather_spider.py\n  - 验证结果：4 passed"
+  );
 });
 
 test("Claude auto finish waits until current work is idle", () => {

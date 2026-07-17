@@ -54,6 +54,7 @@ import {
   canApplyWorkflowRefresh,
   type WorkflowBlockOutput,
 } from "./workflow-behavior";
+import { cleanAgentTerminalConversation } from "./terminal-conversation";
 
 interface WorkflowTabProps {
   workspaceId: string;
@@ -264,6 +265,38 @@ const SAVE_DELAY_MS = 450;
 const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 1.8;
 const ZOOM_STEP = 0.1;
+let workflowAlertAudioContext: AudioContext | null = null;
+
+function prepareWorkflowAlertSound(): void {
+  try {
+    workflowAlertAudioContext ??= new AudioContext();
+    if (workflowAlertAudioContext.state === "suspended") {
+      void workflowAlertAudioContext.resume();
+    }
+  } catch {
+    /* Web Audio may be unavailable or blocked by browser policy. */
+  }
+}
+
+function playWorkflowWaitingSound(): void {
+  prepareWorkflowAlertSound();
+  const audio = workflowAlertAudioContext;
+  if (!audio || audio.state !== "running") return;
+  const now = audio.currentTime;
+  for (const [offset, frequency] of [[0, 660], [0.16, 880]] as const) {
+    const oscillator = audio.createOscillator();
+    const gain = audio.createGain();
+    oscillator.type = "sine";
+    oscillator.frequency.setValueAtTime(frequency, now + offset);
+    gain.gain.setValueAtTime(0.0001, now + offset);
+    gain.gain.exponentialRampToValueAtTime(0.12, now + offset + 0.015);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + offset + 0.13);
+    oscillator.connect(gain);
+    gain.connect(audio.destination);
+    oscillator.start(now + offset);
+    oscillator.stop(now + offset + 0.14);
+  }
+}
 const CONFIGURED_LOCAL_KINDS = new Set<WorkflowNodeKind>([
   "input",
   "http-request",
@@ -297,6 +330,7 @@ interface AgentEffortOption {
   value: AiTerminalEffort;
   title: string;
   description?: string;
+  badge?: string;
 }
 
 // Claude Code: one menu that maps directly to --permission-mode values.
@@ -391,6 +425,7 @@ const CODEX_EFFORT_OPTIONS: AgentEffortOption[] = [
   { value: "medium", title: "Medium" },
   { value: "high", title: "High" },
   { value: "xhigh", title: "XHigh" },
+  { value: "max", title: "Max", badge: "GPT-5.6 only" },
 ];
 const CLAUDE_EFFORT_OPTIONS: AgentEffortOption[] = [
   { value: "low", title: "Low" },
@@ -693,6 +728,7 @@ export function WorkflowTab({
   const saveInFlightRef = useRef(0);
   const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const abortRef = useRef<AbortController | null>(null);
+  const waitingAlertKeyRef = useRef("");
   const undoStackRef = useRef<WorkflowRecord[]>([]);
   const redoStackRef = useRef<WorkflowRecord[]>([]);
   const [historyTick, setHistoryTick] = useState(0);
@@ -796,6 +832,27 @@ export function WorkflowTab({
     () => workflow?.nodes.find((node) => node.id === selectedId) ?? null,
     [workflow, selectedId]
   );
+  const waitingForChoiceNode = useMemo(
+    () =>
+      workflow?.nodes.find((node) => {
+        const snapshot = runDetailsSnapshot(node);
+        return snapshot?.status === "running" && snapshot.terminalStatus === "waiting-for-choice";
+      }) ?? null,
+    [workflow]
+  );
+  const waitingForChoiceSnapshot = waitingForChoiceNode
+    ? runDetailsSnapshot(waitingForChoiceNode)
+    : null;
+  const waitingAlertKey = waitingForChoiceNode
+    ? `${waitingForChoiceNode.id}:${waitingForChoiceSnapshot?.terminalSessionId ?? ""}`
+    : "";
+
+  useEffect(() => {
+    if (waitingAlertKey && waitingAlertKeyRef.current !== waitingAlertKey) {
+      playWorkflowWaitingSound();
+    }
+    waitingAlertKeyRef.current = waitingAlertKey;
+  }, [waitingAlertKey]);
 
   const canvasSize = useMemo(() => {
     const nodes = workflow?.nodes ?? [];
@@ -1485,11 +1542,13 @@ export function WorkflowTab({
 
   const runSelected = async () => {
     if (!selectedNode) return;
+    prepareWorkflowAlertSound();
     await startBackendRun([selectedNode.id]);
   };
 
   const runWorkflow = async () => {
     if (!workflow) return;
+    prepareWorkflowAlertSound();
     await startBackendRun();
   };
 
@@ -1763,7 +1822,13 @@ export function WorkflowTab({
         if (toolRun) {
           raw = toolRun.raw;
         }
-        const output = agentOutput(node, raw, current);
+        const output = agentOutput(
+          node,
+          raw,
+          current,
+          result.result?.changedFiles ?? [],
+          result.result?.verification ?? []
+        );
         const outputText = stringifyBlockOutput(output);
         current = workflowRef.current ?? current;
         if (result.aborted) {
@@ -2085,6 +2150,27 @@ export function WorkflowTab({
           )}
         </div>
       </div>
+
+      {waitingForChoiceNode && (
+        <div className="workflow-waiting-choice" role="alert" aria-live="assertive">
+          <span className="workflow-waiting-choice__signal" aria-hidden="true">
+            !
+          </span>
+          <div className="workflow-waiting-choice__message">
+            <strong>等待用户选择</strong>
+            <span>{waitingForChoiceNode.title} 正在等待你在终端中选择后继续。</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setSelectedId(waitingForChoiceNode.id);
+              setDetailNodeId(waitingForChoiceNode.id);
+            }}
+          >
+            打开终端
+          </button>
+        </div>
+      )}
 
       {error && (
         <div className="workflow-error">
@@ -2904,16 +2990,57 @@ function WorkflowDetailsPanel({
             initialAutoSuccess={snapshot.autoSuccess ?? true}
           />
         ) : (
-          <pre>
-            {snapshot?.transcript ||
-              snapshot?.stdout ||
-              snapshot?.stderr ||
-              "Run this block to capture a terminal snapshot."}
-          </pre>
+          <WorkflowFinishedRunSnapshot snapshot={snapshot} />
         )}
       </div>
     </aside>
   );
+}
+
+function WorkflowFinishedRunSnapshot({
+  snapshot,
+}: {
+  snapshot: WorkflowRunDetailSnapshot | null;
+}) {
+  if (!snapshot) {
+    return <pre>Run this block to capture a terminal snapshot.</pre>;
+  }
+  if (snapshot.kind === "command") {
+    return <pre>{snapshot.transcript || snapshot.stdout || snapshot.stderr}</pre>;
+  }
+
+  const conversation = readableAgentConversation(snapshot);
+  const label =
+    snapshot.status === "success"
+      ? "Completed"
+      : snapshot.status === "stopped"
+        ? "Stopped"
+        : snapshot.status === "error"
+          ? "Failed"
+          : "Running";
+  return (
+    <div className="workflow-run-details__snapshot">
+      <div className={`workflow-run-details__outcome is-${snapshot.status}`}>
+        <span />
+        <strong>{label}</strong>
+        <small>clean conversation snapshot</small>
+      </div>
+      <pre>{conversation || snapshot.stderr || "No conversation output was captured."}</pre>
+    </div>
+  );
+}
+
+function readableAgentConversation(snapshot: WorkflowRunDetailSnapshot): string {
+  const structured = /^(?:User|Claude|Tool(?: · \S+)?|Tool result|Tool error):/m.test(
+    snapshot.transcript
+  );
+  if (structured) return snapshot.transcript.trim();
+  const rawTerminal = /\x1b|\r/.test(snapshot.stdout) ? snapshot.stdout : "";
+  const source = rawTerminal || snapshot.transcript || snapshot.stdout;
+  const cleaned = cleanAgentTerminalConversation(source);
+  if (snapshot.status !== "error" || !snapshot.stderr.trim()) return cleaned;
+  if (cleaned.includes(snapshot.stderr.trim())) return cleaned;
+  return [cleaned, `[error] ${snapshot.stderr.trim()}`].filter(Boolean).join("\n");
 }
 
 function WorkflowAgentTerminal({
@@ -3090,9 +3217,7 @@ function WorkflowAgentTerminal({
         <span>
           {paused
             ? "manual input enabled"
-            : terminalStatus === "waiting-for-choice"
-              ? "waiting for user selection"
-              : terminalStatus === "ready-for-success"
+            : terminalStatus === "ready-for-success"
                 ? "ready to mark success"
             : terminalStatus === "waiting-for-input"
               ? "waiting for CLI input"
@@ -3957,7 +4082,12 @@ function EffortMenu({
                     <span className="workflow-mode-menu__item-desc">{option.description}</span>
                   ) : null}
                 </span>
-                <span className="workflow-effort-menu__check" aria-hidden />
+                <span className="workflow-effort-menu__trailing">
+                  {option.badge ? (
+                    <small className="workflow-effort-menu__badge">{option.badge}</small>
+                  ) : null}
+                  <span className="workflow-effort-menu__check" aria-hidden />
+                </span>
               </button>
             );
           })}
@@ -5064,14 +5194,14 @@ function agentEffort(node: WorkflowNode): AiTerminalEffort {
       value === "low" ||
       value === "medium" ||
       value === "high" ||
-      value === "xhigh"
+      value === "xhigh" ||
+      value === "max"
     ) {
       return value;
     }
     if (
       value === "off" ||
       value === "minimal" ||
-      value === "max" ||
       value === "ultracode"
     ) {
       return "high";
@@ -5198,7 +5328,8 @@ function agentEffortCliValue(
     effort === "low" ||
     effort === "medium" ||
     effort === "high" ||
-    effort === "xhigh"
+    effort === "xhigh" ||
+    effort === "max"
   ) {
     return effort;
   }
@@ -5376,15 +5507,23 @@ function triggerOutput(node: WorkflowNode): WorkflowBlockOutput {
 function agentOutput(
   node: WorkflowNode,
   raw: string,
-  record: WorkflowRecord
+  record: WorkflowRecord,
+  discoveredChangedFiles: string[] = [],
+  discoveredVerification: string[] = []
 ): WorkflowBlockOutput {
+  const changedFiles = uniqueStrings([
+    ...discoveredChangedFiles,
+    ...inferChangedFiles(record),
+  ]);
+  const verification = uniqueStrings(discoveredVerification);
   const parsed = parseJsonObject(raw);
   if (parsed) {
     return normalizeOutputObject(parsed, {
       type: node.providerKind === "claude-cli" ? "claude" : "codex",
       status: "success",
       text: textFromOutput(parsed) || raw.trim(),
-      CHANGED_FILES: [],
+      CHANGED_FILES: changedFiles,
+      VERIFICATION: verification,
     });
   }
 
@@ -5392,8 +5531,8 @@ function agentOutput(
     type: node.providerKind === "claude-cli" ? "claude" : "codex",
     status: "success",
     text: raw.trim(),
-    CHANGED_FILES: inferChangedFiles(record),
-    VERIFICATION: [],
+    CHANGED_FILES: changedFiles,
+    VERIFICATION: verification,
   };
 }
 
@@ -5405,9 +5544,22 @@ function normalizeOutputObject(
     ...defaults,
     ...value,
     CHANGED_FILES: Array.isArray(value.CHANGED_FILES)
+      && value.CHANGED_FILES.length > 0
       ? value.CHANGED_FILES
       : defaults.CHANGED_FILES,
+    VERIFICATION: Array.isArray(value.VERIFICATION)
+      && value.VERIFICATION.length > 0
+      ? value.VERIFICATION
+      : defaults.VERIFICATION,
   };
+}
+
+function uniqueStrings(values: unknown[]): string[] {
+  return [...new Set(
+    values
+      .filter((value): value is string => typeof value === "string" && !!value.trim())
+      .map((value) => value.trim())
+  )];
 }
 
 function stringifyBlockOutput(output: WorkflowBlockOutput): string {

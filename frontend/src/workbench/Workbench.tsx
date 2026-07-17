@@ -21,7 +21,13 @@ import {
   saveOsheepSettings,
   writeFileText,
 } from "./fs";
-import { getGitDiff, getGitStatus, type GitStatus } from "./api";
+import {
+  getGitDiff,
+  getGitStatus,
+  type AgentSessionSummary,
+  type GitStatus,
+} from "./api";
+import type { AgentTerminalLaunchRequest } from "./Terminal";
 import { buildDecorations } from "./git-decorations";
 import "./workbench.css";
 
@@ -121,6 +127,8 @@ export function Workbench() {
   // close (× in BottomPanel header) flips it back to false, which unmounts
   // the panel and kills its terminal sessions.
   const [bottomActivated, setBottomActivated] = useState(false);
+  const [terminalLaunchRequest, setTerminalLaunchRequest] =
+    useState<AgentTerminalLaunchRequest | null>(null);
 
   const lastLeftWidthRef = useRef(DEFAULT_LEFT_WIDTH);
   const leftProgressRef = useRef(0);
@@ -430,7 +438,27 @@ export function Workbench() {
   const hardCloseBottom = () => {
     setBottomActivated(false);
     setBottomHeight(0);
+    setTerminalLaunchRequest(null);
   };
+
+  const resumeAgentSession = useCallback((session: AgentSessionSummary) => {
+    if (!workspaceId) return;
+    setTerminalLaunchRequest({
+      key: Date.now() + Math.random(),
+      app: session.app,
+      sessionId: session.id,
+      title: session.title,
+      workspaceId,
+    });
+    setBottomActivated(true);
+    setBottomHeight((height) => height || 300);
+  }, [workspaceId]);
+
+  const handleTerminalLaunch = useCallback((key: number) => {
+    setTerminalLaunchRequest((current) =>
+      current?.key === key ? null : current
+    );
+  }, []);
 
   const activeTab = tabs.find((t) => t.path === activePath) ?? null;
   const activeFileTab = activeTab?.kind === "file" ? activeTab : null;
@@ -532,8 +560,18 @@ export function Workbench() {
                 onOpenDiff={(p, base, head) => void openDiffTab(p, base, head)}
               />
             )}
-            {activeView === "claude-code" && <ClaudeCodeAgentView />}
-            {activeView === "codex" && <CodexAgentView />}
+            {activeView === "claude-code" && (
+              <ClaudeCodeAgentView
+                workspaceId={workspaceId}
+                onResumeSession={resumeAgentSession}
+              />
+            )}
+            {activeView === "codex" && (
+              <CodexAgentView
+                workspaceId={workspaceId}
+                onResumeSession={resumeAgentSession}
+              />
+            )}
           </div>
         )}
         <Resizer
@@ -674,6 +712,8 @@ export function Workbench() {
               <BottomPanel
                 workspaceId={workspaceId}
                 onClose={hardCloseBottom}
+                terminalLaunchRequest={terminalLaunchRequest}
+                onTerminalLaunchHandled={handleTerminalLaunch}
               />
             </div>
           )}
