@@ -3037,7 +3037,10 @@ function readableAgentConversation(snapshot: WorkflowRunDetailSnapshot): string 
   if (structured) return snapshot.transcript.trim();
   const rawTerminal = /\x1b|\r/.test(snapshot.stdout) ? snapshot.stdout : "";
   const source = rawTerminal || snapshot.transcript || snapshot.stdout;
-  const cleaned = cleanAgentTerminalConversation(source);
+  const kind = /^\s*codex(?:\.exe)?\b/i.test(snapshot.commandLine)
+    ? "codex-cli"
+    : "claude-cli";
+  const cleaned = cleanAgentTerminalConversation(source, kind);
   if (snapshot.status !== "error" || !snapshot.stderr.trim()) return cleaned;
   if (cleaned.includes(snapshot.stderr.trim())) return cleaned;
   return [cleaned, `[error] ${snapshot.stderr.trim()}`].filter(Boolean).join("\n");
@@ -5511,7 +5514,7 @@ function agentOutput(
   discoveredChangedFiles: string[] = [],
   discoveredVerification: string[] = []
 ): WorkflowBlockOutput {
-  const changedFiles = uniqueStrings([
+  const changedFiles = reportableChangedFiles([
     ...discoveredChangedFiles,
     ...inferChangedFiles(record),
   ]);
@@ -5540,13 +5543,17 @@ function normalizeOutputObject(
   value: WorkflowBlockOutput,
   defaults: WorkflowBlockOutput
 ): WorkflowBlockOutput {
+  const suppliedChangedFiles = Array.isArray(value.CHANGED_FILES)
+    ? reportableChangedFiles(value.CHANGED_FILES)
+    : [];
   return {
     ...defaults,
     ...value,
-    CHANGED_FILES: Array.isArray(value.CHANGED_FILES)
-      && value.CHANGED_FILES.length > 0
-      ? value.CHANGED_FILES
-      : defaults.CHANGED_FILES,
+    CHANGED_FILES: suppliedChangedFiles.length > 0
+      ? suppliedChangedFiles
+      : reportableChangedFiles(
+          Array.isArray(defaults.CHANGED_FILES) ? defaults.CHANGED_FILES : []
+        ),
     VERIFICATION: Array.isArray(value.VERIFICATION)
       && value.VERIFICATION.length > 0
       ? value.VERIFICATION
@@ -5560,6 +5567,12 @@ function uniqueStrings(values: unknown[]): string[] {
       .filter((value): value is string => typeof value === "string" && !!value.trim())
       .map((value) => value.trim())
   )];
+}
+
+function reportableChangedFiles(values: unknown[]): string[] {
+  return uniqueStrings(values).filter(
+    (value) => !/^\.osheep\/workflows(?:\/|$)/i.test(value.replace(/\\/g, "/"))
+  );
 }
 
 function stringifyBlockOutput(output: WorkflowBlockOutput): string {

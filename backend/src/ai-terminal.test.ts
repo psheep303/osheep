@@ -749,6 +749,25 @@ test("Codex completion remains visible when the idle prompt returns", () => {
   assert.equal(classifyAgentTerminalContent(content), "ready-for-success");
 });
 
+test("Codex final answer removes the terminal footer separator", () => {
+  const transcript = [
+    "• 已新增 weather_spider.py。",
+    "  用法：python weather_spider.py Beijing",
+    "────────────────────────────────────────────────────────",
+    "› Implement the weather spider",
+    "gpt-5.5 low · D:\\demo",
+  ].join("\n");
+
+  assert.equal(
+    extractAgentTerminalContentForTest(
+      transcript,
+      "Implement the weather spider",
+      "codex-cli"
+    ),
+    "已新增 weather_spider.py。\n用法：python weather_spider.py Beijing"
+  );
+});
+
 test("terminal screen signature ignores cursor-only Codex redraws", () => {
   const screen = [
     "• 已完成实现和验证。",
