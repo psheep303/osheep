@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { execRun } from "./ai-exec.js";
 import {
   buildAgentTerminalCommand,
@@ -22,6 +23,7 @@ import {
 } from "./workflows.js";
 
 type WorkflowBlockOutput = Record<string, unknown>;
+type RunLogEntry = { stream: "stdout" | "stderr"; content: string };
 
 interface LocalNodeResult {
   output: WorkflowBlockOutput;
@@ -76,7 +78,7 @@ interface LiveAgentRunDetailsOptions {
   startedAt: number;
   autoSuccess: boolean;
   writeSnapshot: (snapshot: WorkflowRunDetailSnapshot) => Promise<void>;
-  logs?: Array<{ stream: "stdout" | "stderr"; content: string }>;
+  logs?: RunLogEntry[];
   minUpdateIntervalMs?: number;
 }
 
@@ -95,14 +97,29 @@ export interface LiveAgentRunDetails {
 }
 
 export interface AgentTerminalFailure {
+  failed: boolean;
   retryable: boolean;
   hasModelOutput: boolean;
   message: string;
   modelOutput: string;
 }
 
+interface AgentTerminalProcessResult {
+  content: string;
+  transcript: string;
+  exitCode: number | null;
+  signal: number | string | null;
+}
+
 const activeRuns = new Map<string, WorkflowRunState>();
+const RUN_LOG_CHAR_LIMIT = 256 * 1024;
+const RUN_LOG_TRUNCATION_TEXT =
+  "[osheep] run detail output exceeded 256 KiB; keeping the latest output only.";
+const AGENT_RETAINED_OUTPUT_CHAR_LIMIT = 512 * 1024;
+const AGENT_RETAINED_OUTPUT_TRUNCATION_TEXT =
+  "[osheep] retained retry output exceeded 512 KiB; keeping the latest output only.";
 const CONFIGURED_LOCAL_KINDS = new Set<WorkflowNodeKind>([
+  "input",
   "http-request",
   "set",
   "if",
@@ -176,7 +193,7 @@ export function createLiveAgentRunDetails(
       return update("running");
     }
     if (frame.type === "output") {
-      logs.push({ stream: "stdout", content: frame.data });
+      appendRunLog(logs, { stream: "stdout", content: frame.data });
       return update("running", undefined, false);
     }
     if (frame.type === "status") {
@@ -199,19 +216,177 @@ export function classifyAgentTerminalFailure(
   prompt: string
 ): AgentTerminalFailure {
   const text = stripAnsi(raw).replace(/\r/g, "\n");
-  const match = text.match(
+  const apiError = lastRegexMatch(
+    text,
+    /^[ \t]*(?:[●•*✖×!]\s*)?(?:Please run\s+\/login\s*(?:[·•-]\s*)?)?API Error\s*:\s*\S[^\n]*/im
+  );
+  if (apiError?.index !== undefined) {
+    if (!isAgentErrorSuperseded(text, apiError.index)) {
+      return agentTerminalFailure(
+        text,
+        prompt,
+        apiError,
+        isRetryableAgentTerminalMessage(apiError[0])
+      );
+    }
+  }
+
+  const transient = lastRegexMatch(
+    text,
     /\b(?:unexpected status\s+(?:408|429|5\d\d)\b[^\n]*|(?:service unavailable|auth_unavailable|rate limit|temporarily unavailable|overloaded|econnreset|etimedout)[^\n]*)/i
   );
-  if (!match || match.index === undefined) {
-    return { retryable: false, hasModelOutput: false, message: "", modelOutput: "" };
+  if (
+    transient?.index !== undefined &&
+    !isAgentErrorSuperseded(text, transient.index)
+  ) {
+    return agentTerminalFailure(text, prompt, transient, true);
   }
-  const modelOutput = terminalModelOutputBeforeError(text.slice(0, match.index), prompt);
+
+  const permanent = lastRegexMatch(
+    text,
+    /^[ \t]*(?:[●•*✖×!]\s*)?(?:Please run\s+\/login\b[^\n]*|Image generation is not enabled for this (?:group|organization|account)\b[^\n]*|(?:authentication|authorization) (?:failed|required)\b[^\n]*)/im
+  );
+  if (
+    permanent?.index !== undefined &&
+    !isAgentErrorSuperseded(text, permanent.index)
+  ) {
+    return agentTerminalFailure(text, prompt, permanent, false);
+  }
+
+  const decoratedError = lastRegexMatch(
+    text,
+    /^[ \t]*[●•✖×!]\s*(?:(?:fatal|authentication|authorization|request)\s+)?error\s*:\s*\S[^\n]*/im
+  );
+  if (
+    decoratedError?.index !== undefined &&
+    !isAgentErrorSuperseded(text, decoratedError.index)
+  ) {
+    return agentTerminalFailure(
+      text,
+      prompt,
+      decoratedError,
+      isRetryableAgentTerminalMessage(decoratedError[0])
+    );
+  }
+
+  return noAgentTerminalFailure();
+}
+
+export function classifyAgentTerminalResultFailure(
+  result: AgentTerminalProcessResult,
+  prompt: string
+): AgentTerminalFailure {
+  const contentFailure = classifyAgentTerminalFailure(result.content, prompt);
+  if (contentFailure.failed) return contentFailure;
+
+  const transcriptFailure = classifyAgentTerminalFailure(terminalTail(result.transcript, 80), prompt);
+  if (transcriptFailure.failed) return transcriptFailure;
+
+  const modelOutput = terminalModelOutputBeforeError(result.content || result.transcript, prompt);
+  if (result.signal === "auto-timeout") {
+    return agentTerminalLifecycleFailure("Agent terminal timed out.", true, modelOutput);
+  }
+  if (result.exitCode === null) {
+    const suffix = result.signal === null ? "without an exit code" : `with signal ${result.signal}`;
+    return agentTerminalLifecycleFailure(`Agent terminal exited ${suffix}.`, false, modelOutput);
+  }
+  if (result.exitCode !== 0) {
+    return agentTerminalLifecycleFailure(
+      `Agent terminal exited with code ${result.exitCode}.`,
+      false,
+      modelOutput
+    );
+  }
+  if (
+    result.signal !== null &&
+    result.signal !== "auto-finished" &&
+    result.signal !== "manual-success"
+  ) {
+    return agentTerminalLifecycleFailure(
+      `Agent terminal completed with unexpected signal ${result.signal}.`,
+      false,
+      modelOutput
+    );
+  }
+  return noAgentTerminalFailure();
+}
+
+function agentTerminalFailure(
+  text: string,
+  prompt: string,
+  match: RegExpMatchArray,
+  retryable: boolean
+): AgentTerminalFailure {
+  const matchIndex = match.index ?? 0;
+  const modelOutput = terminalModelOutputBeforeError(text.slice(0, matchIndex), prompt);
   return {
-    retryable: true,
+    failed: true,
+    retryable,
     hasModelOutput: modelOutput.length > 0,
-    message: match[0].trim(),
+    message: match[0].trim().replace(/^[●•*✖×!]\s*/, ""),
     modelOutput,
   };
+}
+
+function agentTerminalLifecycleFailure(
+  message: string,
+  retryable: boolean,
+  modelOutput: string
+): AgentTerminalFailure {
+  return {
+    failed: true,
+    retryable,
+    hasModelOutput: modelOutput.length > 0,
+    message,
+    modelOutput,
+  };
+}
+
+function noAgentTerminalFailure(): AgentTerminalFailure {
+  return {
+    failed: false,
+    retryable: false,
+    hasModelOutput: false,
+    message: "",
+    modelOutput: "",
+  };
+}
+
+function isRetryableAgentTerminalMessage(message: string): boolean {
+  const status = message.match(/(?:API Error\s*:\s*|unexpected status\s+)(\d{3})\b/i);
+  if (status) {
+    const code = Number(status[1]);
+    return code === 408 || code === 409 || code === 425 || code === 429 || code >= 500;
+  }
+  return /\b(?:service unavailable|auth_unavailable|rate limit|temporarily unavailable|overloaded|econnreset|etimedout|connection reset|network error|gateway timeout|internal server error)\b/i.test(
+    message
+  );
+}
+
+function isAgentErrorSuperseded(
+  text: string,
+  errorAt: number
+): boolean {
+  const recovery = text.slice(errorAt);
+  return /(?:^|\n)\s*(?:[\p{S}\p{P}]\s*)?(?:Thought\s+for\s+\d|\p{L}[\p{L}'’-]*(?:…|\.\.\.)?\s*\(\s*\d+(?:\.\d+)?(?:ms|s|m|h)\b)/imu.test(
+    recovery
+  );
+}
+
+function lastRegexMatch(text: string, pattern: RegExp): RegExpMatchArray | null {
+  const flags = pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`;
+  const regex = new RegExp(pattern.source, flags);
+  let last: RegExpMatchArray | null = null;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(text)) !== null) {
+    last = match;
+    if (!match[0]) regex.lastIndex += 1;
+  }
+  return last;
+}
+
+function terminalTail(text: string, lineCount: number): string {
+  return text.split("\n").slice(-lineCount).join("\n");
 }
 
 export function nextAgentRetryPrompt(
@@ -221,6 +396,15 @@ export function nextAgentRetryPrompt(
   void originalPrompt;
   void failure;
   return "继续";
+}
+
+export function shouldRetryAgentTerminalFailure(
+  failure: AgentTerminalFailure,
+  attempt: number,
+  retries: number,
+  retryForever: boolean
+): boolean {
+  return failure.failed && (retryForever || attempt < retries);
 }
 
 export async function startWorkflowRun(
@@ -387,7 +571,7 @@ async function executeAgentNode(
   abort: AbortController
 ): Promise<LocalNodeResult> {
   if (!node.prompt.trim()) throw new Error(`${node.title} has no prompt.`);
-  const logs: Array<{ stream: "stdout" | "stderr"; content: string }> = [];
+  const logs: RunLogEntry[] = [];
   const autoSuccess = agentAutoSuccess(node);
   const details = createLiveAgentRunDetails({
     node,
@@ -416,12 +600,14 @@ async function executeAgentNode(
   let raw = "";
   let terminalFailure: AgentTerminalFailure | null = null;
   let retainedOutput = "";
+  let terminalTranscript = "";
   const retries = agentRetryCount(node);
   const retryForever = agentRetryForever(node);
+  const conversationSessionId = node.providerKind === "claude-cli" ? randomUUID() : undefined;
   let attempt = 0;
   while (true) {
     if (attempt > 0) {
-      logs.push({
+      appendRunLog(logs, {
         stream: "stderr",
         content: `\n[osheep] retry ${attempt}/${
           retryForever ? "infinity" : retries
@@ -441,35 +627,47 @@ async function executeAgentNode(
       codexSandbox: agentCodexSandbox(node),
       effort: agentEffort(node),
       alwaysEnter: agentAlwaysEnter(node),
+      conversationSessionId,
+      resumeConversation: attempt > 0,
       signal: abort.signal,
       onFrame,
     });
     await details.drain();
+    if (abort.signal.aborted) throw new Error("Stopped");
+    terminalTranscript = appendAgentAttemptTranscript(
+      terminalTranscript,
+      result.transcript || result.content,
+      attempt,
+      retries,
+      retryForever
+    );
     raw =
       result.content ||
       `${node.providerKind === "codex-cli" ? "Codex CLI" : "Claude Code CLI"} completed without text output.`;
-    terminalFailure = classifyAgentTerminalFailure(
-      result.content || result.transcript || raw,
-      currentPrompt
-    );
-    if (!terminalFailure.retryable) break;
+    terminalFailure = classifyAgentTerminalResultFailure(result, currentPrompt);
+    if (!terminalFailure.failed) break;
+    if (!shouldRetryAgentTerminalFailure(terminalFailure, attempt, retries, retryForever)) break;
     if (terminalFailure.modelOutput) {
-      retainedOutput = [retainedOutput, terminalFailure.modelOutput].filter(Boolean).join("\n");
+      retainedOutput = appendBoundedJoinedText(
+        retainedOutput,
+        terminalFailure.modelOutput,
+        AGENT_RETAINED_OUTPUT_CHAR_LIMIT,
+        AGENT_RETAINED_OUTPUT_TRUNCATION_TEXT
+      );
     }
-    if (!retryForever && attempt >= retries) break;
     attempt += 1;
     currentPrompt = nextAgentRetryPrompt(originalTerminalPrompt, terminalFailure);
     await sleep(1_000, abort.signal);
   }
   if (!result) throw new Error(`${node.title} did not start.`);
-  if (terminalFailure?.retryable) {
-    const errorMessage = `${node.providerKind === "codex-cli" ? "Codex CLI" : "Claude Code CLI"} failed after ${
-      attempt + 1
-    } attempt${attempt === 0 ? "" : "s"}: ${terminalFailure.message}`;
+  if (terminalFailure?.failed) {
+    const agentLabel = node.providerKind === "codex-cli" ? "Codex CLI" : "Claude Code CLI";
+    const errorMessage = attempt > 0
+      ? `${agentLabel} failed after ${attempt + 1} attempt${attempt === 0 ? "" : "s"}: ${terminalFailure.message}`
+      : `${agentLabel} failed: ${terminalFailure.message}`;
     const errorDetails = details.snapshot("error", Date.now());
     errorDetails.terminalSessionId = errorDetails.terminalSessionId ?? result.sessionId;
-    errorDetails.transcript = result.transcript;
-    errorDetails.stdout = result.content;
+    if (terminalTranscript) errorDetails.transcript = terminalTranscript;
     errorDetails.stderr = [errorDetails.stderr, errorMessage].filter(Boolean).join("\n");
     errorDetails.exitCode = result.exitCode;
     errorDetails.signal =
@@ -495,21 +693,27 @@ async function executeAgentNode(
       },
     };
   }
-  if (retainedOutput) raw = [retainedOutput, raw].filter(Boolean).join("\n");
+  if (retainedOutput) {
+    raw = appendBoundedJoinedText(
+      retainedOutput,
+      raw,
+      AGENT_RETAINED_OUTPUT_CHAR_LIMIT,
+      AGENT_RETAINED_OUTPUT_TRUNCATION_TEXT
+    );
+  }
   const toolRun = await maybeRunAgentMcpToolCalls(
     record,
     node,
     mcpTools,
     raw,
     abort.signal,
-    (entry) => logs.push(entry)
+    (entry) => appendRunLog(logs, entry)
   );
   if (toolRun) raw = toolRun.raw;
   const output = agentOutput(node, raw, record);
   const finalDetails = details.snapshot("success", Date.now());
   finalDetails.terminalSessionId = finalDetails.terminalSessionId ?? result.sessionId;
-  finalDetails.transcript = result.transcript;
-  finalDetails.stdout = result.content;
+  if (terminalTranscript) finalDetails.transcript = terminalTranscript;
   finalDetails.exitCode = result.exitCode;
   finalDetails.signal =
     typeof result.signal === "string" || result.signal === null
@@ -527,6 +731,41 @@ async function executeAgentNode(
   };
 }
 
+function appendAgentAttemptTranscript(
+  transcript: string,
+  attemptTranscript: string,
+  attempt: number,
+  retries: number,
+  retryForever: boolean
+): string {
+  const marker =
+    attempt > 0
+      ? `[osheep] retry ${attempt}/${retryForever ? "infinity" : retries}`
+      : "";
+  return appendBoundedJoinedText(
+    transcript,
+    [marker, attemptTranscript.trim()].filter(Boolean).join("\n"),
+    AGENT_RETAINED_OUTPUT_CHAR_LIMIT,
+    AGENT_RETAINED_OUTPUT_TRUNCATION_TEXT
+  );
+}
+
+export function appendAgentAttemptTranscriptForTest(
+  transcript: string,
+  attemptTranscript: string,
+  attempt: number,
+  retries: number,
+  retryForever = false
+): string {
+  return appendAgentAttemptTranscript(
+    transcript,
+    attemptTranscript,
+    attempt,
+    retries,
+    retryForever
+  );
+}
+
 async function executeCommandNode(
   workspaceRoot: string,
   record: WorkflowRecord,
@@ -536,12 +775,11 @@ async function executeCommandNode(
 ): Promise<LocalNodeResult> {
   const commandLine = resolveBlockTemplate(node.prompt, record).trim();
   if (!commandLine) throw new Error(`${node.title} has no input.`);
-  const logs: Array<{ stream: "stdout" | "stderr"; content: string }> = [
-    { stream: "stdout", content: `$ ${commandLine}\n` },
-  ];
+  const logs: RunLogEntry[] = [];
+  appendRunLog(logs, { stream: "stdout", content: `$ ${commandLine}\n` });
   const result = await execRun(workspaceRoot, commandLine, "", 600_000, undefined, {
     signal: abort.signal,
-    onLog: (entry) => logs.push({ stream: entry.stream, content: entry.content }),
+    onLog: (entry) => appendRunLog(logs, { stream: entry.stream, content: entry.content }),
   });
   const failed = result.exitCode !== 0;
   return {
@@ -584,6 +822,19 @@ async function executeLocalNode(
 ): Promise<LocalNodeResult> {
   const input = resolveBlockTemplate(node.prompt, record).trim();
   const kind = nodeKind(node);
+  if (kind === "input") {
+    const value = resolveBlockTemplate(node.prompt, record);
+    return {
+      output: {
+        type: "input",
+        status: "success",
+        value,
+        data: value,
+        text: value,
+        CHANGED_FILES: [],
+      },
+    };
+  }
   if (!input && !CONFIGURED_LOCAL_KINDS.has(kind)) {
     throw new Error(`${node.title} has no input.`);
   }
@@ -1358,7 +1609,8 @@ function inferChangedFiles(record: WorkflowRecord): string[] {
 }
 
 function resolveBlockTemplate(input: string, record: WorkflowRecord): string {
-  return input.replace(/\{\{\s*blocks\[(\d+)\]((?:\.[A-Za-z_$][\w$]*|\[[^\]]+\])*)\s*\}\}/g, (
+  assertValidBlockTemplates(input);
+  return input.replace(/\{\{\s*blocks\[(\d+)\]((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}/g, (
     _match,
     idText: string,
     pathText: string
@@ -1366,16 +1618,18 @@ function resolveBlockTemplate(input: string, record: WorkflowRecord): string {
 }
 
 function resolveTemplateValue(input: string, record: WorkflowRecord): unknown {
+  assertValidBlockTemplates(input);
   const trimmed = input.trim();
   const whole = trimmed.match(
-    /^\{\{\s*blocks\[(\d+)\]((?:\.[A-Za-z_$][\w$]*|\[[^\]]+\])*)\s*\}\}$/
+    /^\{\{\s*blocks\[(\d+)\]((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}$/
   );
   if (whole) return resolveBlockReference(record, whole[1] ?? "", whole[2] ?? "");
   return parseMaybeJson(resolveBlockTemplate(input, record));
 }
 
 function resolveJsonTemplate(input: string, record: WorkflowRecord): string {
-  const re = /\{\{\s*blocks\[(\d+)\]((?:\.[A-Za-z_$][\w$]*|\[[^\]]+\])*)\s*\}\}/g;
+  assertValidBlockTemplates(input);
+  const re = /\{\{\s*blocks\[(\d+)\]((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}/g;
   let output = "";
   let index = 0;
   let inString = false;
@@ -1404,9 +1658,43 @@ function resolveJsonTemplate(input: string, record: WorkflowRecord): string {
 function resolveBlockReference(record: WorkflowRecord, idText: string, pathText: string): unknown {
   const blockId = Number(idText);
   const node = record.nodes.find((item) => displayBlockId(item) === blockId);
-  const output = node ? parseBlockOutput(node) : null;
-  if (!output) return undefined;
-  return getPathValue(output, pathText);
+  const reference = `{{blocks[${idText}]${pathText}}}`;
+  if (!node) {
+    throw new Error(`Workflow variable ${reference} references missing block #${idText}.`);
+  }
+  const output = parseBlockOutput(node);
+  if (!output) {
+    throw new Error(`Workflow variable ${reference} references block #${idText}, which has no output yet.`);
+  }
+  const result = getPathResult(output, pathText);
+  if (!result.found) {
+    throw new Error(`Workflow variable ${reference} references a value that does not exist.`);
+  }
+  return result.value;
+}
+
+export function resolveWorkflowTemplate(input: string, record: WorkflowRecord): string {
+  return resolveBlockTemplate(input, record);
+}
+
+function assertValidBlockTemplates(input: string): void {
+  const expressionRe = /\{\{[\s\S]*?\}\}/g;
+  const validRe = /^\{\{\s*blocks\[(\d+)\]((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}$/;
+  const expressions = input.match(expressionRe) ?? [];
+  for (const expression of expressions) {
+    if (!validRe.test(expression)) throw invalidWorkflowVariable(expression);
+  }
+  const remainder = input.replace(expressionRe, "");
+  if (remainder.includes("{{") || remainder.includes("}}")) {
+    throw invalidWorkflowVariable(remainder.trim() || input.trim());
+  }
+}
+
+function invalidWorkflowVariable(expression: string): Error {
+  const preview = expression.length > 120 ? `${expression.slice(0, 117)}...` : expression;
+  return new Error(
+    `Invalid workflow variable ${JSON.stringify(preview)}. Expected syntax: {{blocks[2].text}}.`
+  );
 }
 
 function escapeJsonStringContent(value: string): string {
@@ -1414,22 +1702,35 @@ function escapeJsonStringContent(value: string): string {
 }
 
 function getPathValue(value: unknown, pathText: string): unknown {
+  return getPathResult(value, pathText).value;
+}
+
+function getPathResult(
+  value: unknown,
+  pathText: string
+): { found: boolean; value: unknown } {
   let current = value;
   const re = /\.([A-Za-z_$][\w$]*)|\[("([^"]+)"|'([^']+)'|(\d+))\]/g;
   let match: RegExpExecArray | null;
   while ((match = re.exec(pathText)) !== null) {
     const key = match[1] ?? match[3] ?? match[4] ?? match[5] ?? "";
-    if (!key) return undefined;
+    if (!key) return { found: false, value: undefined };
     if (Array.isArray(current)) {
       const index = Number(key);
-      current = Number.isInteger(index) ? current[index] : undefined;
+      if (!Number.isInteger(index) || index < 0 || index >= current.length) {
+        return { found: false, value: undefined };
+      }
+      current = current[index];
     } else if (current && typeof current === "object") {
+      if (!Object.prototype.hasOwnProperty.call(current, key)) {
+        return { found: false, value: undefined };
+      }
       current = (current as Record<string, unknown>)[key];
     } else {
-      return undefined;
+      return { found: false, value: undefined };
     }
   }
-  return current;
+  return { found: true, value: current };
 }
 
 function getLoosePathValue(value: unknown, pathText: string): unknown {
@@ -1783,7 +2084,7 @@ function terminalModelOutputBeforeError(text: string, prompt: string): string {
 
 function keepTerminalModelLine(line: string, promptLines: Set<string>): boolean {
   if (!line) return false;
-  const unprompted = line.replace(/^[›>]\s*/, "").trim();
+  const unprompted = line.replace(/^[\u276f\u203a>]\s*/, "").trim();
   if (!unprompted) return false;
   if (promptLines.has(unprompted) || promptLines.has(line)) return false;
   if (/^(?:OpenAI Codex|Claude Code)\b/i.test(unprompted)) return false;
@@ -1804,12 +2105,78 @@ function stripAnsi(text: string): string {
     .replace(/\x1b[()][A-Za-z0-9]/g, "");
 }
 
+function appendRunLog(logs: RunLogEntry[], entry: RunLogEntry): void {
+  if (!entry.content) return;
+  logs.push(entry);
+  trimRunLogs(logs);
+}
+
+function appendBoundedJoinedText(
+  current: string,
+  next: string,
+  maxChars: number,
+  markerText: string
+): string {
+  if (!next) return current;
+  const joined = current ? `${current}\n${next}` : next;
+  if (joined.length <= maxChars) return joined;
+  const marker = `\n${markerText}\n`;
+  const tailLength = Math.max(0, maxChars - marker.length);
+  return marker + joined.slice(-tailLength);
+}
+
+function trimRunLogs(logs: RunLogEntry[]): void {
+  const source = logs.filter((log) => !isRunLogTruncationMarker(log));
+  const hadMarker = source.length !== logs.length;
+  const total = source.reduce((sum, log) => sum + log.content.length, 0);
+  if (total <= RUN_LOG_CHAR_LIMIT) {
+    if (hadMarker) logs.splice(0, logs.length, runLogTruncationMarker(), ...source);
+    return;
+  }
+
+  const marker = runLogTruncationMarker();
+  const target = Math.max(0, RUN_LOG_CHAR_LIMIT - marker.content.length);
+  const kept: RunLogEntry[] = [];
+  let remaining = target;
+  for (let i = source.length - 1; i >= 0 && remaining > 0; i -= 1) {
+    const log = source[i]!;
+    if (log.content.length <= remaining) {
+      kept.push(log);
+      remaining -= log.content.length;
+    } else {
+      kept.push({ ...log, content: log.content.slice(-remaining) });
+      remaining = 0;
+    }
+  }
+  kept.reverse();
+  logs.splice(0, logs.length, marker, ...kept);
+}
+
+function isRunLogTruncationMarker(log: RunLogEntry): boolean {
+  return log.stream === "stderr" && log.content.includes(RUN_LOG_TRUNCATION_TEXT);
+}
+
+function runLogTruncationMarker(): RunLogEntry {
+  return { stream: "stderr", content: `\n${RUN_LOG_TRUNCATION_TEXT}\n` };
+}
+
+function runLogStreamText(logs: RunLogEntry[], stream: RunLogEntry["stream"]): string {
+  return logs
+    .filter((log) => log.stream === stream)
+    .map((log) => log.content)
+    .join("");
+}
+
+function formatRunTranscript(logs: RunLogEntry[]): string {
+  return logs.map((log) => `[${log.stream}] ${log.content}`).join("");
+}
+
 function agentRunSnapshot(
   node: WorkflowNode,
   status: WorkflowRunDetailSnapshot["status"],
   startedAt: number,
   completedAt: number | undefined,
-  logs: Array<{ stream: "stdout" | "stderr"; content: string }>,
+  logs: RunLogEntry[],
   terminalSessionId?: string,
   terminalStatus?: string,
   autoSuccess?: boolean
@@ -1827,9 +2194,9 @@ function agentRunSnapshot(
       codexSandbox: agentCodexSandbox(node),
       effort: agentEffort(node),
     }).command,
-    stdout: logs.filter((log) => log.stream === "stdout").map((log) => log.content).join(""),
-    stderr: logs.filter((log) => log.stream === "stderr").map((log) => log.content).join(""),
-    transcript: logs.map((log) => `[${log.stream}] ${log.content}`).join(""),
+    stdout: runLogStreamText(logs, "stdout"),
+    stderr: runLogStreamText(logs, "stderr"),
+    transcript: formatRunTranscript(logs),
   };
   if (completedAt !== undefined) snapshot.durationMs = Math.max(0, completedAt - startedAt);
   if (terminalSessionId) snapshot.terminalSessionId = terminalSessionId;
@@ -1844,7 +2211,7 @@ function commandRunSnapshot(
   startedAt: number,
   completedAt: number | undefined,
   commandLine: string,
-  logs: Array<{ stream: "stdout" | "stderr"; content: string }>,
+  logs: RunLogEntry[],
   result?: { exitCode: number | null; signal: string | null; durationMs?: number }
 ): WorkflowRunDetailSnapshot {
   return {
@@ -1854,9 +2221,9 @@ function commandRunSnapshot(
     startedAt,
     completedAt,
     commandLine,
-    stdout: logs.filter((log) => log.stream === "stdout").map((log) => log.content).join(""),
-    stderr: logs.filter((log) => log.stream === "stderr").map((log) => log.content).join(""),
-    transcript: logs.map((log) => `[${log.stream}] ${log.content}`).join(""),
+    stdout: runLogStreamText(logs, "stdout"),
+    stderr: runLogStreamText(logs, "stderr"),
+    transcript: formatRunTranscript(logs),
     exitCode: result?.exitCode,
     signal: result?.signal,
     durationMs: result?.durationMs ?? (completedAt ? Math.max(0, completedAt - startedAt) : undefined),

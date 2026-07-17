@@ -38,6 +38,7 @@ test("every workflow kind has a standard empty output", async () => {
   assert.ok(behavior, "workflow behavior module should exist");
   const expectedTypes = new Map([
     ["agent", "codex"],
+    ["input", "input"],
     ["trigger", "trigger"],
     ["manual-trigger", "manual-trigger"],
     ["cron", "cron"],
@@ -71,8 +72,12 @@ test("empty output values preserve their JSON types", async () => {
   assert.ok(behavior, "workflow behavior module should exist");
   const command = behavior.emptyBlockOutput(node("command") as never);
   const http = behavior.emptyBlockOutput(node("http-request") as never);
+  const input = behavior.emptyBlockOutput(node("input") as never);
   const merge = behavior.emptyBlockOutput(node("merge", "codex-cli", { mode: "object" }) as never);
 
+  assert.equal(input.value, "");
+  assert.equal(input.data, "");
+  assert.equal(input.text, "");
   assert.equal(command.stdout, "");
   assert.equal(command.exitCode, null);
   assert.equal(command.truncated, null);

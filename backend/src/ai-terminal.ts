@@ -57,6 +57,8 @@ export interface AgentTerminalOptions {
   codexSandbox?: CodexSandbox;
   effort?: AgentEffort;
   alwaysEnter?: boolean;
+  conversationSessionId?: string;
+  resumeConversation?: boolean;
   signal?: AbortSignal;
   onFrame?: (frame: AgentTerminalFrame) => void;
 }
@@ -85,6 +87,7 @@ const QUIET_READY_MS = 700;
 const RESPONSE_MIN_MS = 2_400;
 const RESPONSE_IDLE_MS = 6_000;
 const RESPONSE_MAX_MS = 20 * 60_000;
+const MAX_AGENT_TRANSCRIPT_CHARS = 512 * 1024;
 const BRACKETED_PASTE_MIN_LENGTH = 512;
 const PASTE_CHUNK_SIZE = 2048;
 const PROMPT_SUBMIT_DELAY_MS = 80;
@@ -151,7 +154,7 @@ export async function runAgentTerminal(
     if (!frame) return;
     if (frame.type === "output") {
       lastOutputAt = Date.now();
-      transcript += frame.data;
+      transcript = appendBoundedTail(transcript, frame.data, MAX_AGENT_TRANSCRIPT_CHARS);
       opts.onFrame?.({ type: "output", data: frame.data });
       wakeOutput();
       return;
@@ -164,7 +167,7 @@ export async function runAgentTerminal(
     }
   });
   if (replayed) {
-    transcript += replayed;
+    transcript = appendBoundedTail(transcript, replayed, MAX_AGENT_TRANSCRIPT_CHARS);
     opts.onFrame?.({ type: "output", data: replayed });
   }
 
@@ -183,6 +186,8 @@ export async function runAgentTerminal(
         codexApproval: opts.codexApproval,
         codexSandbox: opts.codexSandbox,
         effort: opts.effort,
+        conversationSessionId: opts.conversationSessionId,
+        resumeConversation: opts.resumeConversation,
       }).command}\r`
     );
     opts.onFrame?.({ type: "status", status: "waiting-for-input" });
@@ -210,8 +215,8 @@ export async function runAgentTerminal(
     }
     const completion = await waitForAgentCompletion(
       session.id,
+      opts.kind,
       () => exited,
-      () => lastOutputAt,
       () => transcript,
       () => extractTerminalContent(transcript, opts.prompt, opts.kind),
       (status) => opts.onFrame?.({ type: "status", status }),
@@ -365,15 +370,24 @@ export function buildAgentTerminalCommand(
     codexApproval?: CodexApproval;
     codexSandbox?: CodexSandbox;
     effort?: AgentEffort;
+    conversationSessionId?: string;
+    resumeConversation?: boolean;
   } = {}
 ): { command: string } {
   const base = kind === "codex-cli" ? "codex" : "claude";
   const args: string[] = [];
   if (kind === "claude-cli") {
-    args.push(
-      "--permission-mode",
-      options.mode === "plan" ? "plan" : options.claudePermissionMode ?? "acceptEdits"
-    );
+    if (options.resumeConversation && options.conversationSessionId) {
+      args.push("--resume", quoteShell(options.conversationSessionId));
+    } else {
+      args.push(
+        "--permission-mode",
+        options.mode === "plan" ? "plan" : options.claudePermissionMode ?? "acceptEdits"
+      );
+      if (options.conversationSessionId) {
+        args.push("--session-id", quoteShell(options.conversationSessionId));
+      }
+    }
     const effort = agentEffortCliValue(kind, options.effort);
     if (effort) args.push("--effort", effort);
   } else {
@@ -452,6 +466,13 @@ export function shouldAutoEnterChoice(input: {
     (input.lastEnterAt === undefined ||
       input.now - input.lastEnterAt >= ALWAYS_ENTER_COOLDOWN_MS)
   );
+}
+
+export function shouldExposeWaitingForChoice(
+  alwaysEnter: boolean,
+  state: AgentTerminalContentState
+): boolean {
+  return !alwaysEnter && state === "waiting-for-choice";
 }
 
 async function writePrompt(
@@ -806,13 +827,14 @@ function normalizeTerminalPlainText(text: string): string {
     .join("\n");
 }
 
-function renderTerminalScreen(raw: string): string {
+function renderTerminalScreen(raw: string, maxRows?: number): string {
   const rows: string[] = [""];
   let row = 0;
   let col = 0;
 
   const ensureRow = () => {
     while (rows.length <= row) rows.push("");
+    if (maxRows && rows.length > maxRows) rows.splice(0, rows.length - maxRows);
   };
   const setLine = (value: string) => {
     ensureRow();
@@ -826,7 +848,7 @@ function renderTerminalScreen(raw: string): string {
     col += 1;
   };
   const move = (nextRow: number, nextCol: number) => {
-    row = Math.max(0, nextRow);
+    row = Math.max(0, maxRows ? Math.min(maxRows - 1, nextRow) : nextRow);
     col = Math.max(0, nextCol);
     ensureRow();
   };
@@ -845,7 +867,13 @@ function renderTerminalScreen(raw: string): string {
       continue;
     }
     if (ch === "\n") {
-      row += 1;
+      if (maxRows && row >= maxRows - 1) {
+        rows.shift();
+        rows.push("");
+        row = maxRows - 1;
+      } else {
+        row += 1;
+      }
       col = 0;
       ensureRow();
       continue;
@@ -981,8 +1009,8 @@ function isReadyText(kind: CliProviderKind, text: string): boolean {
 
 function waitForAgentCompletion(
   sessionId: string,
+  kind: CliProviderKind,
   done: () => boolean,
-  lastOutputAt: () => number,
   rawTranscript: () => string,
   content: () => string,
   onStatus: (status: AgentTerminalStatus) => void,
@@ -991,6 +1019,8 @@ function waitForAgentCompletion(
   if (done()) return Promise.resolve("exited");
   if (signal?.aborted) return Promise.resolve("aborted");
   return new Promise((resolve) => {
+    let screenSignature = agentTerminalScreenSignature(rawTranscript());
+    let screenChangedAt = Date.now();
     const timer = setInterval(() => {
       if (done()) {
         clearInterval(timer);
@@ -1011,11 +1041,17 @@ function waitForAgentCompletion(
       }
       const now = Date.now();
       const sinceSubmit = now - control.promptSubmittedAt;
-      const state = classifyAgentTerminalContent(content());
+      const transcript = rawTranscript();
+      const nextScreenSignature = agentTerminalScreenSignature(transcript);
+      if (nextScreenSignature !== screenSignature) {
+        screenSignature = nextScreenSignature;
+        screenChangedAt = now;
+      }
+      const state = resolveAgentTerminalContentState(kind, transcript, content());
       if (
         shouldFollowUpPastedPromptSubmit({
           prompt: control.prompt,
-          rawTranscript: rawTranscript(),
+          rawTranscript: transcript,
           state,
           now,
           promptSubmittedAt: control.promptSubmittedAt,
@@ -1035,25 +1071,27 @@ function waitForAgentCompletion(
         return;
       }
       if (state === "waiting-for-choice") {
-        if (
-          shouldAutoEnterChoice({
-            alwaysEnter: control.alwaysEnter,
-            state,
-            now,
-            lastEnterAt: control.lastAlwaysEnterAt,
-          })
-        ) {
-          try {
-            writeRawInput(getSession(sessionId), "\r");
-            control.lastAlwaysEnterAt = now;
-            control.lastCompletionState = "empty";
-            onStatus("prompt-sent");
-          } catch {
-            /* session may have exited between classification and input */
+        if (control.alwaysEnter) {
+          if (
+            shouldAutoEnterChoice({
+              alwaysEnter: true,
+              state,
+              now,
+              lastEnterAt: control.lastAlwaysEnterAt,
+            })
+          ) {
+            try {
+              writeRawInput(getSession(sessionId), "\r");
+              control.lastAlwaysEnterAt = now;
+              control.lastCompletionState = "empty";
+              onStatus("prompt-sent");
+            } catch {
+              /* session may have exited between classification and input */
+            }
           }
           return;
         }
-        if (state !== control.lastCompletionState) {
+        if (shouldExposeWaitingForChoice(control.alwaysEnter, state) && state !== control.lastCompletionState) {
           control.lastCompletionState = state;
           onStatus("waiting-for-choice");
         }
@@ -1072,8 +1110,8 @@ function waitForAgentCompletion(
       }
       if (
         sinceSubmit >= RESPONSE_MIN_MS &&
-        now - lastOutputAt() >= RESPONSE_IDLE_MS &&
-        state === "ready-for-success"
+        now - screenChangedAt >= RESPONSE_IDLE_MS &&
+        isAgentTerminalReadyForAutoFinish(kind, transcript, state)
       ) {
         if (control.lastCompletionState !== "ready-for-success") {
           control.lastCompletionState = "ready-for-success";
@@ -1090,6 +1128,122 @@ function waitForAgentCompletion(
   });
 }
 
+function agentTerminalScreenSignature(rawTranscript: string): string {
+  const rendered = renderTerminalScreen(rawTranscript, DEFAULT_ROWS);
+  return normalizeTerminalPlainText(rendered || rawTranscript).trimEnd();
+}
+
+export function agentTerminalScreenSignatureForTest(rawTranscript: string): string {
+  return agentTerminalScreenSignature(rawTranscript);
+}
+
+function isAgentTerminalBusy(rawTranscript: string): boolean {
+  const screen = agentTerminalScreenSignature(rawTranscript);
+  return lastAgentActivityIndex(screen) >= 0;
+}
+
+function lastAgentActivityIndex(screen: string): number {
+  return maxLastRegexIndex(screen, [
+    /\bEsc to interrupt\b/i,
+    /(?:^|\n)\s*(?:[\p{S}\p{P}]\s*)?\p{L}[\p{L}'’-]*(?:…|\.\.\.)?\s*\(\s*\d+(?:\.\d+)?(?:ms|s|m|h)\b[^\n)]*\)/iu,
+  ]);
+}
+
+function isAgentTerminalReadyForAutoFinish(
+  kind: CliProviderKind,
+  rawTranscript: string,
+  state: AgentTerminalContentState
+): boolean {
+  if (isAgentTerminalBusy(rawTranscript)) return false;
+  const screen = agentTerminalScreenSignature(rawTranscript);
+  if (kind === "claude-cli") {
+    if (state === "empty") return false;
+    if (hasActiveClaudeBackgroundAgent(screen)) return false;
+    if (!isClaudeIdlePromptVisible(screen)) return false;
+    return !isClaudeChoicePromptVisible(screen);
+  }
+  return state === "ready-for-success" && isCodexIdlePromptVisible(screen);
+}
+
+function hasActiveClaudeBackgroundAgent(screen: string): boolean {
+  if (
+    /\bWaiting for\s+(?:\d+\s+)?(?:background\s+)?(?:agents?|teammates?)\s+to finish\b/i.test(
+      screen
+    )
+  ) {
+    return true;
+  }
+
+  return screen.split("\n").some((line) => {
+    const trimmed = line.trim();
+    if (!/^[\u25cb\u25ef]\s+\S/.test(trimmed)) return false;
+    if (/\b(?:idle|done|finished|completed|failed|stopped)\b/i.test(trimmed)) {
+      return false;
+    }
+    return /\b\d+(?:\.\d+)?(?:ms|s|m|h)(?:\s+\d+(?:\.\d+)?(?:ms|s|m|h))*\s*$/i.test(
+      trimmed
+    );
+  });
+}
+
+export function agentTerminalReadyForAutoFinishForTest(
+  kind: CliProviderKind,
+  rawTranscript: string,
+  state: AgentTerminalContentState
+): boolean {
+  return isAgentTerminalReadyForAutoFinish(kind, rawTranscript, state);
+}
+
+export function agentTerminalReadyForManualSuccessForTest(
+  kind: CliProviderKind,
+  rawTranscript: string,
+  state: AgentTerminalContentState
+): boolean {
+  return isAgentTerminalReadyForAutoFinish(kind, rawTranscript, state);
+}
+
+function isClaudeIdlePromptVisible(screen: string): boolean {
+  const tail = terminalTail(screen, 10);
+  return /\b(?:(?:auto|manual|plan)\s+mode|bypass permissions|accept edits)\s+on\b[^\n]*for agents/i.test(
+    tail
+  );
+}
+
+function isClaudeChoicePromptVisible(screen: string): boolean {
+  const tail = terminalTail(screen, 18);
+  return isTerminalChoicePrompt(tail);
+}
+
+function resolveAgentTerminalContentState(
+  kind: CliProviderKind,
+  rawTranscript: string,
+  content: string
+): AgentTerminalContentState {
+  const state = classifyAgentTerminalContent(content);
+  if (kind !== "claude-cli") return state;
+
+  const screen = agentTerminalScreenSignature(rawTranscript);
+  if (isClaudeChoicePromptVisible(screen)) return "waiting-for-choice";
+  return state === "waiting-for-choice" ? "ready-for-success" : state;
+}
+
+export function resolveAgentTerminalContentStateForTest(
+  kind: CliProviderKind,
+  rawTranscript: string,
+  content: string
+): AgentTerminalContentState {
+  return resolveAgentTerminalContentState(kind, rawTranscript, content);
+}
+
+function isCodexIdlePromptVisible(screen: string): boolean {
+  const tail = terminalTail(screen, 10);
+  return /(?:^|\n)[\u203a\u276f]\s+\S/.test(tail);
+}
+
+function terminalTail(text: string, lineCount: number): string {
+  return text.split("\n").slice(-lineCount).join("\n");
+}
+
 export function classifyAgentTerminalContent(content: string): AgentTerminalContentState {
   const text = normalizeTerminalPlainText(content);
   const compact = text.replace(/\s+/g, " ").trim();
@@ -1100,46 +1254,82 @@ export function classifyAgentTerminalContent(content: string): AgentTerminalCont
 }
 
 function isTerminalChoicePrompt(text: string): boolean {
-  const promptAt = lastTerminalChoicePromptIndex(text);
-  if (promptAt < 0) return false;
-  if (hasLaterTerminalChoiceContent(text, promptAt)) return false;
-  return promptAt > lastTerminalChoiceReleaseIndex(text);
+  const block = lastInteractiveChoiceBlock(text);
+  if (!block) return false;
+  if (hasLaterTerminalChoiceContent(text, block.endAt)) return false;
+  return block.startAt > lastTerminalChoiceReleaseIndex(text);
 }
 
-function hasLaterTerminalChoiceContent(text: string, promptAt: number): boolean {
+function hasLaterTerminalChoiceContent(text: string, choiceEndAt: number): boolean {
   return text
-    .slice(promptAt)
+    .slice(choiceEndAt)
     .split("\n")
-    .slice(1)
-    .some((line) => {
-      const trimmed = line.trim();
-      return (
-        !!trimmed &&
-        !isAgentTerminalChromeLine(trimmed) &&
-        !isAgentTerminalPromptLine(trimmed)
-      );
-    });
+    .some((line) => isTerminalChoiceReleaseLine(line.trim()));
 }
 
-function lastTerminalChoicePromptIndex(text: string): number {
-  let index = maxLastRegexIndex(text, [
-    /\bEnter to select\b/i,
-    /\bTab\/Arrow keys to navigate\b/i,
-    /\bEsc to cancel\b/i,
-    /\bReady to code\?/i,
-    /\bapprove with this feedback\b/i,
-    /\bYes,\s*(?:and bypass permissions|manually approve edits)\b/i,
-  ]);
-  const arrowIndex = Math.max(text.lastIndexOf("\u276f"), text.lastIndexOf("\u203a"));
-  if (
-    arrowIndex >= 0 &&
-    /\b(?:select|navigate|cancel|submit|approve|type something)\b/i.test(
-      text.slice(arrowIndex, arrowIndex + 800)
-    )
-  ) {
-    index = Math.max(index, arrowIndex);
+function lastInteractiveChoiceBlock(
+  text: string
+): { startAt: number; endAt: number } | null {
+  const lines = text.split("\n");
+  const offsets: number[] = [];
+  let offset = 0;
+  for (const line of lines) {
+    offsets.push(offset);
+    offset += line.length + 1;
   }
-  return index;
+
+  for (let cueLine = lines.length - 1; cueLine >= 0; cueLine -= 1) {
+    if (!isTerminalChoiceInteractionCue(lines[cueLine]!.trim())) continue;
+    const startLine = Math.max(0, cueLine - 12);
+    const endLine = Math.min(lines.length - 1, cueLine + 4);
+    const window = lines.slice(startLine, endLine + 1).map((line) => line.trim());
+    const selected = window.filter(isSelectedTerminalChoiceOption).length;
+    const options = window.filter(isTerminalChoiceOption).length;
+    if (selected < 1 || options < 2) continue;
+    return {
+      startAt: offsets[startLine] ?? 0,
+      endAt: (offsets[endLine] ?? text.length) + (lines[endLine]?.length ?? 0),
+    };
+  }
+  return null;
+}
+
+function isTerminalChoiceInteractionCue(trimmed: string): boolean {
+  return /\b(?:Enter to select|Tab\/Arrow keys to navigate|Esc to cancel|approve with this feedback)\b/i.test(
+    trimmed
+  );
+}
+
+function isSelectedTerminalChoiceOption(trimmed: string): boolean {
+  return /^[\u276f\u203a>]\s*(?:\d+[.)]?\s*)?\S/.test(trimmed);
+}
+
+function isTerminalChoiceOption(trimmed: string): boolean {
+  return (
+    isSelectedTerminalChoiceOption(trimmed) ||
+    /^\d+[.)]\s+\S/.test(trimmed)
+  );
+}
+
+function isTerminalChoiceChromeLine(trimmed: string): boolean {
+  if (/^(?:[\u276f\u203a>]\s*)?\d+\.\s+(?:Yes,|Tell Claude\b)/i.test(trimmed)) {
+    return true;
+  }
+  if (/\bshift\+tab to approve with this feedback\b/i.test(trimmed)) return true;
+  if (/\bctrl\+g to edit\b/i.test(trimmed)) return true;
+  if (/\.claude[\\/]+plans[\\/]+/i.test(trimmed)) return true;
+  if (/^[\u25cb\u25ef]\s+\S+/.test(trimmed)) return true;
+  return false;
+}
+
+function isTerminalChoiceReleaseLine(trimmed: string): boolean {
+  if (!trimmed) return false;
+  if (isAgentTerminalChromeLine(trimmed) || isAgentTerminalPromptLine(trimmed)) return false;
+  if (isTerminalChoiceChromeLine(trimmed)) return false;
+  if (/\b(?:Done|completed|successfully|auto-finished|manual-success)\b/i.test(trimmed)) {
+    return true;
+  }
+  return /(?:已完成|完成|整理完成|执行完成|通过|成功)/.test(trimmed);
 }
 
 function lastTerminalChoiceReleaseIndex(text: string): number {
@@ -1149,7 +1339,7 @@ function lastTerminalChoiceReleaseIndex(text: string): number {
     /\bsuccessfully\b/i,
     /\bauto-finished\b/i,
     /\bmanual-success\b/i,
-    /\bSaut(?:e|é)ed for\b/i,
+    /\b(?:auto mode|bypass permissions) on\s*\(shift\+tab to cycle\)/i,
     /(?:已完成|完成|整理完成|执行完成|通过)/,
   ]);
 }
@@ -1179,6 +1369,14 @@ function quoteShell(value: string): string {
   return platform === "windows"
     ? `"${value.replace(/"/g, '\\"')}"`
     : `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function appendBoundedTail(current: string, chunk: string, maxChars: number): string {
+  if (!chunk) return current;
+  if (maxChars <= 0) return "";
+  if (chunk.length >= maxChars) return chunk.slice(-maxChars);
+  const roomForCurrent = Math.max(0, maxChars - chunk.length);
+  return (roomForCurrent > 0 ? current.slice(-roomForCurrent) : "") + chunk;
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {

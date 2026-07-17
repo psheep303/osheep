@@ -38,6 +38,21 @@ Applies to Claude Code CLI and Codex CLI blocks.
 }
 ```
 
+## Input Block
+
+Input blocks have both incoming and outgoing connectors. Their entered text is available under the three common value fields:
+
+```json
+{
+  "type": "input",
+  "status": "success",
+  "value": "hello",
+  "data": "hello",
+  "text": "hello",
+  "CHANGED_FILES": []
+}
+```
+
 ## Command Block
 
 ```json
@@ -137,7 +152,7 @@ MCP blocks store a Remote MCP Link, optional headers/API key, discovered tools, 
 
 ## Template Rules
 
-Templates are resolved before a block runs. Missing blocks or fields resolve to an empty string.
+Templates are resolved before a block runs. Invalid syntax, missing blocks, and missing fields stop the block with a descriptive error.
 
 Example:
 

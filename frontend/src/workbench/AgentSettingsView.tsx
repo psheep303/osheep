@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from "react";
+import { AgentAdvancedSettingsView } from "./AgentAdvancedSettingsView";
 import { AiSettingsView } from "./AiSettingsView";
 import { ClaudePluginsView } from "./ClaudePluginsView";
 import { CodexPluginsView } from "./CodexPluginsView";
@@ -6,7 +7,7 @@ import { CodexPluginsView } from "./CodexPluginsView";
 interface AgentSection<T extends string> {
   id: T;
   label: string;
-  future?: boolean;
+  hidden?: boolean;
 }
 
 type ClaudeCodeSection = "api-model" | "plugins" | "hooks" | "mcp" | "environment";
@@ -15,16 +16,16 @@ type CodexSection = "api-model" | "plugins" | "permissions" | "environment";
 const CLAUDE_CODE_SECTIONS: AgentSection<ClaudeCodeSection>[] = [
   { id: "api-model", label: "API & Model" },
   { id: "plugins", label: "Plugins" },
-  { id: "hooks", label: "Hooks", future: true },
-  { id: "mcp", label: "MCP", future: true },
-  { id: "environment", label: "Environment", future: true },
+  { id: "hooks", label: "Hooks", hidden: true },
+  { id: "mcp", label: "MCP", hidden: true },
+  { id: "environment", label: "Environment", hidden: true },
 ];
 
 const CODEX_SECTIONS: AgentSection<CodexSection>[] = [
   { id: "api-model", label: "API & Model" },
   { id: "plugins", label: "Plugins" },
-  { id: "permissions", label: "Permissions", future: true },
-  { id: "environment", label: "Environment", future: true },
+  { id: "permissions", label: "Permissions", hidden: true },
+  { id: "environment", label: "Environment", hidden: true },
 ];
 
 export function ClaudeCodeAgentView() {
@@ -41,8 +42,12 @@ export function ClaudeCodeAgentView() {
         <AiSettingsView app="claude" />
       ) : section === "plugins" ? (
         <ClaudePluginsView />
+      ) : section === "hooks" ? (
+        <AgentAdvancedSettingsView app="claude" section="hooks" />
+      ) : section === "mcp" ? (
+        <AgentAdvancedSettingsView app="claude" section="mcp" />
       ) : (
-        <AgentPlaceholder title={sectionLabel(CLAUDE_CODE_SECTIONS, section)} />
+        <AgentAdvancedSettingsView app="claude" section="environment" />
       )}
     </AgentShell>
   );
@@ -62,8 +67,10 @@ export function CodexAgentView() {
         <AiSettingsView app="codex" />
       ) : section === "plugins" ? (
         <CodexPluginsView />
+      ) : section === "permissions" ? (
+        <AgentAdvancedSettingsView app="codex" section="permissions" />
       ) : (
-        <AgentPlaceholder title={sectionLabel(CODEX_SECTIONS, section)} />
+        <AgentAdvancedSettingsView app="codex" section="environment" />
       )}
     </AgentShell>
   );
@@ -89,7 +96,7 @@ function AgentShell<T extends string>({
       </div>
 
       <div className="agent-settings__nav" role="tablist" aria-label={`${title} sections`}>
-        {sections.map((section) => (
+        {sections.filter((section) => !section.hidden).map((section) => (
           <button
             key={section.id}
             type="button"
@@ -99,11 +106,9 @@ function AgentShell<T extends string>({
               (activeSection === section.id ? " is-active" : "")
             }
             aria-selected={activeSection === section.id}
-            disabled={section.future}
             onClick={() => onSelect(section.id)}
           >
             <span>{section.label}</span>
-            {section.future && <span className="agent-settings__future">未来</span>}
           </button>
         ))}
       </div>
@@ -111,17 +116,4 @@ function AgentShell<T extends string>({
       <div className="agent-settings__body">{children}</div>
     </div>
   );
-}
-
-function AgentPlaceholder({ title }: { title: string }) {
-  return (
-    <div className="agent-settings__placeholder">
-      <div className="agent-settings__placeholder-title">{title}</div>
-      <div className="agent-settings__placeholder-subtitle">即将可用</div>
-    </div>
-  );
-}
-
-function sectionLabel<T extends string>(sections: AgentSection<T>[], id: T): string {
-  return sections.find((section) => section.id === id)?.label ?? id;
 }
