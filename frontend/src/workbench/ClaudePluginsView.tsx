@@ -19,6 +19,7 @@ export function ClaudePluginsView() {
   const [message, setMessage] = useState<string | null>(null);
   const [dialog, setDialog] = useState<DialogMode>(null);
   const [source, setSource] = useState("");
+  const [searchText, setSearchText] = useState("");
 
   useEffect(() => {
     void refresh();
@@ -28,6 +29,12 @@ export function ClaudePluginsView() {
     () => groupPlugins(snapshot?.plugins ?? []),
     [snapshot]
   );
+  const filteredGroups = useMemo(
+    () => filterGroups(groups, searchText),
+    [groups, searchText]
+  );
+  const hasVisiblePlugins =
+    filteredGroups.installed.length + filteredGroups.available.length > 0;
 
   async function refresh() {
     await run(async () => {
@@ -115,6 +122,19 @@ export function ClaudePluginsView() {
         </button>
       </div>
 
+      <div className="codex-plugins__search">
+        <SearchIcon />
+        <input
+          className="codex-plugins__search-input"
+          type="text"
+          value={searchText}
+          onChange={(e) => setSearchText(e.target.value)}
+          placeholder="Search plugins"
+          aria-label="Search plugins"
+          spellCheck={false}
+        />
+      </div>
+
       {snapshot && (
         <div className="codex-plugins__path" title={snapshot.paths.marketplaces}>
           {snapshot.paths.marketplaces}
@@ -158,22 +178,28 @@ export function ClaudePluginsView() {
 
       <div className="codex-plugins__list">
         {!snapshot && <div className="codex-plugins__empty">Loading...</div>}
-        <PluginGroup
-          title="Installed"
-          plugins={groups.installed}
-          busy={busy}
-          onInstall={install}
-          onUninstall={uninstall}
-          onToggleEnabled={toggleEnabled}
-        />
-        <PluginGroup
-          title="Available"
-          plugins={groups.available}
-          busy={busy}
-          onInstall={install}
-          onUninstall={uninstall}
-          onToggleEnabled={toggleEnabled}
-        />
+        {snapshot && searchText.trim() && !hasVisiblePlugins ? (
+          <div className="codex-plugins__empty">No matching plugins</div>
+        ) : (
+          <>
+            <PluginGroup
+              title="Installed"
+              plugins={filteredGroups.installed}
+              busy={busy}
+              onInstall={install}
+              onUninstall={uninstall}
+              onToggleEnabled={toggleEnabled}
+            />
+            <PluginGroup
+              title="Available"
+              plugins={filteredGroups.available}
+              busy={busy}
+              onInstall={install}
+              onUninstall={uninstall}
+              onToggleEnabled={toggleEnabled}
+            />
+          </>
+        )}
       </div>
     </div>
   );
@@ -186,6 +212,43 @@ function groupPlugins(plugins: ClaudePluginRecord[]) {
     (plugin) => plugin.status.available && !installedSelectors.has(plugin.selector)
   );
   return { installed, available };
+}
+
+function filterGroups(groups: ReturnType<typeof groupPlugins>, query: string) {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) return groups;
+  return {
+    installed: groups.installed.filter((plugin) =>
+      matchesClaudePluginSearch(plugin, normalized)
+    ),
+    available: groups.available.filter((plugin) =>
+      matchesClaudePluginSearch(plugin, normalized)
+    ),
+  };
+}
+
+function matchesClaudePluginSearch(plugin: ClaudePluginRecord, query: string): boolean {
+  const haystack = [
+    plugin.name,
+    plugin.marketplace,
+    plugin.selector,
+    plugin.displayName,
+    plugin.version,
+    plugin.description,
+    plugin.scope,
+    plugin.installCount?.toString(),
+    plugin.source.path,
+    plugin.status.installed ? "installed" : "",
+    plugin.status.available ? "available" : "",
+    plugin.status.enabled ? "enabled" : "",
+    plugin.status.installed && !plugin.status.enabled ? "disabled" : "",
+    plugin.status.cached ? "cached" : "",
+    plugin.status.local ? "local" : "",
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return haystack.includes(query);
 }
 
 function PluginGroup({
@@ -323,6 +386,28 @@ function PluginIcon({ plugin }: { plugin: ClaudePluginRecord }) {
         plugin.displayName.slice(0, 1).toUpperCase()
       )}
     </div>
+  );
+}
+
+function SearchIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+      <circle
+        cx="7"
+        cy="7"
+        r="4.5"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        fill="none"
+      />
+      <path
+        d="M10.5 10.5L14 14"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+        fill="none"
+      />
+    </svg>
   );
 }
 

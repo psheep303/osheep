@@ -24,6 +24,7 @@ export function CodexPluginsView() {
   const [description, setDescription] = useState("");
   const [pluginPath, setPluginPath] = useState("");
   const [source, setSource] = useState("");
+  const [searchText, setSearchText] = useState("");
 
   useEffect(() => {
     void refresh();
@@ -33,6 +34,15 @@ export function CodexPluginsView() {
     () => groupPlugins(snapshot?.plugins ?? []),
     [snapshot]
   );
+  const filteredGroups = useMemo(
+    () => filterGroups(groups, searchText),
+    [groups, searchText]
+  );
+  const hasVisiblePlugins =
+    filteredGroups.installed.length +
+      filteredGroups.available.length +
+      filteredGroups.local.length >
+    0;
 
   async function refresh() {
     await run(async () => {
@@ -149,6 +159,19 @@ export function CodexPluginsView() {
         </button>
       </div>
 
+      <div className="codex-plugins__search">
+        <SearchIcon />
+        <input
+          className="codex-plugins__search-input"
+          type="text"
+          value={searchText}
+          onChange={(e) => setSearchText(e.target.value)}
+          placeholder="Search plugins"
+          aria-label="Search plugins"
+          spellCheck={false}
+        />
+      </div>
+
       {snapshot && (
         <div className="codex-plugins__path" title={snapshot.paths.personalMarketplace}>
           {snapshot.paths.personalMarketplace}
@@ -224,33 +247,39 @@ export function CodexPluginsView() {
 
       <div className="codex-plugins__list">
         {!snapshot && <div className="codex-plugins__empty">Loading...</div>}
-        <PluginGroup
-          title="Installed"
-          plugins={groups.installed}
-          busy={busy}
-          personalPluginRoot={snapshot?.paths.personalPluginRoot ?? ""}
-          onInstall={install}
-          onUninstall={uninstall}
-          onRemoveLocal={removeLocal}
-        />
-        <PluginGroup
-          title="Available"
-          plugins={groups.available}
-          busy={busy}
-          personalPluginRoot={snapshot?.paths.personalPluginRoot ?? ""}
-          onInstall={install}
-          onUninstall={uninstall}
-          onRemoveLocal={removeLocal}
-        />
-        <PluginGroup
-          title="Local"
-          plugins={groups.local}
-          busy={busy}
-          personalPluginRoot={snapshot?.paths.personalPluginRoot ?? ""}
-          onInstall={install}
-          onUninstall={uninstall}
-          onRemoveLocal={removeLocal}
-        />
+        {snapshot && searchText.trim() && !hasVisiblePlugins ? (
+          <div className="codex-plugins__empty">No matching plugins</div>
+        ) : (
+          <>
+            <PluginGroup
+              title="Installed"
+              plugins={filteredGroups.installed}
+              busy={busy}
+              personalPluginRoot={snapshot?.paths.personalPluginRoot ?? ""}
+              onInstall={install}
+              onUninstall={uninstall}
+              onRemoveLocal={removeLocal}
+            />
+            <PluginGroup
+              title="Available"
+              plugins={filteredGroups.available}
+              busy={busy}
+              personalPluginRoot={snapshot?.paths.personalPluginRoot ?? ""}
+              onInstall={install}
+              onUninstall={uninstall}
+              onRemoveLocal={removeLocal}
+            />
+            <PluginGroup
+              title="Local"
+              plugins={filteredGroups.local}
+              busy={busy}
+              personalPluginRoot={snapshot?.paths.personalPluginRoot ?? ""}
+              onInstall={install}
+              onUninstall={uninstall}
+              onRemoveLocal={removeLocal}
+            />
+          </>
+        )}
       </div>
     </div>
   );
@@ -270,6 +299,43 @@ function groupPlugins(plugins: CodexPluginRecord[]) {
       !localSelectors.has(plugin.selector)
   );
   return { installed, available, local };
+}
+
+function filterGroups(groups: ReturnType<typeof groupPlugins>, query: string) {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) return groups;
+  return {
+    installed: groups.installed.filter((plugin) =>
+      matchesCodexPluginSearch(plugin, normalized)
+    ),
+    available: groups.available.filter((plugin) =>
+      matchesCodexPluginSearch(plugin, normalized)
+    ),
+    local: groups.local.filter((plugin) =>
+      matchesCodexPluginSearch(plugin, normalized)
+    ),
+  };
+}
+
+function matchesCodexPluginSearch(plugin: CodexPluginRecord, query: string): boolean {
+  const haystack = [
+    plugin.name,
+    plugin.marketplace,
+    plugin.selector,
+    plugin.displayName,
+    plugin.version,
+    plugin.description,
+    plugin.source.path,
+    plugin.status.installed ? "installed" : "",
+    plugin.status.available ? "available" : "",
+    plugin.status.enabled ? "enabled" : "",
+    plugin.status.cached ? "cached" : "",
+    plugin.status.local ? "local" : "",
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return haystack.includes(query);
 }
 
 function isInstalled(plugin: CodexPluginRecord): boolean {
@@ -440,6 +506,28 @@ function canDeletePersonalSource(
 
 function normalizeFilePath(value: string): string {
   return value.replace(/\\/g, "/").replace(/\/+$/g, "");
+}
+
+function SearchIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+      <circle
+        cx="7"
+        cy="7"
+        r="4.5"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        fill="none"
+      />
+      <path
+        d="M10.5 10.5L14 14"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+        fill="none"
+      />
+    </svg>
+  );
 }
 
 function RefreshIcon() {

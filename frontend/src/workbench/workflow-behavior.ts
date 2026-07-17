@@ -21,6 +21,15 @@ function configNumber(node: WorkflowNode, key: string, fallback: number): number
 export function emptyBlockOutput(node: WorkflowNode): WorkflowBlockOutput {
   const kind: WorkflowNodeKind = node.kind ?? "agent";
   switch (kind) {
+    case "input":
+      return {
+        type: kind,
+        status: "",
+        value: "",
+        data: "",
+        text: "",
+        CHANGED_FILES: [],
+      };
     case "agent":
       return {
         type: node.providerKind === "claude-cli" ? "claude" : "codex",

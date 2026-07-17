@@ -18,7 +18,7 @@ Most block inputs support templates like:
 
 `blocks[n]` uses the visible block id shown on the block itself.
 
-If a block or field is missing, the template resolves to an empty string.
+Invalid template syntax, missing block ids, and missing output fields stop the block with a descriptive error.
 
 ## Triggers
 
@@ -89,6 +89,37 @@ Current behavior:
 - The block can be configured now.
 - When you click Run in the UI, it evaluates as a trigger for that run.
 - It does not yet expose a persistent incoming webhook endpoint by itself.
+
+## Input
+
+### Input
+
+Kind: `input`
+
+Field:
+
+- input text
+
+Connect it after a trigger or another block, then enter text for downstream blocks. It exposes the entered value through `value`, `data`, and `text`.
+
+Example downstream reference:
+
+```text
+{{blocks[2].text}}
+```
+
+Output:
+
+```json
+{
+  "type": "input",
+  "status": "success",
+  "value": "hello",
+  "data": "hello",
+  "text": "hello",
+  "CHANGED_FILES": []
+}
+```
 
 ## Command and AI
 
@@ -347,7 +378,7 @@ Input:
 
 - markdown text
 
-Use it to generate a final formatted markdown output. In the inspector, use `see MPE` to preview it.
+Use it to generate a final formatted markdown output. In the inspector, use `See result` to preview it.
 
 This block has no outgoing connector.
 

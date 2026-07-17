@@ -112,9 +112,10 @@ interface ViewportSize {
   height: number;
 }
 
-type BlockCategoryId = "triggers" | "logic" | "command" | "ai" | "network" | "file" | "output";
+type BlockCategoryId = "triggers" | "input" | "logic" | "command" | "ai" | "network" | "file" | "output";
 type WorkflowIconName =
   | "trigger"
+  | "input"
   | "cron"
   | "webhook"
   | "command"
@@ -264,6 +265,7 @@ const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 1.8;
 const ZOOM_STEP = 0.1;
 const CONFIGURED_LOCAL_KINDS = new Set<WorkflowNodeKind>([
+  "input",
   "http-request",
   "set",
   "if",
@@ -411,6 +413,7 @@ const MERGE_MODES = ["object", "array"] as const;
 const LOOP_MODES = ["items", "batches"] as const;
 const BLOCK_CATEGORIES: BlockCategory[] = [
   { id: "triggers", label: "Triggers", icon: "trigger" },
+  { id: "input", label: "输入", icon: "input" },
   { id: "logic", label: "Logic", icon: "if" },
   { id: "command", label: "命令", icon: "command" },
   { id: "ai", label: "AI", icon: "ai" },
@@ -419,6 +422,13 @@ const BLOCK_CATEGORIES: BlockCategory[] = [
   { id: "output", label: "输出", icon: "output" },
 ];
 const BLOCK_TEMPLATES: BlockTemplate[] = [
+  {
+    category: "input",
+    label: "Input",
+    title: "Input",
+    kind: "input",
+    icon: "input",
+  },
   {
     category: "triggers",
     label: "工作流运行时",
@@ -672,6 +682,7 @@ export function WorkflowTab({
   const [renameTarget, setRenameTarget] = useState<string | null>(null);
   const localRevisionRef = useRef(0);
   const nodeDragRef = useRef<NodeDragState | null>(null);
+  const runtimeLayoutRef = useRef<Map<string, CanvasPoint>>(new Map());
   const suppressNodeClickRef = useRef<string | null>(null);
   const canvasPanRef = useRef<CanvasPanState | null>(null);
   const suppressContextMenuRef = useRef(false);
@@ -691,6 +702,7 @@ export function WorkflowTab({
     setLoading(true);
     setError(null);
     setSelectedId(null);
+    runtimeLayoutRef.current.clear();
     void apiGetWorkflow(workspaceId, workflowId)
       .then((record) => {
         if (cancelled) return;
@@ -741,8 +753,9 @@ export function WorkflowTab({
           return;
         }
         const isRunning = workflowIsRunning(record);
-        workflowRef.current = record;
-        setWorkflow(record);
+        const next = applyNodePositions(record, runtimeLayoutRef.current);
+        workflowRef.current = next;
+        setWorkflow(next);
         setRunning(isRunning);
         if (!isRunning) onWorkflowChanged();
       } catch {
@@ -833,6 +846,13 @@ export function WorkflowTab({
       if (next) void persist(next);
     }, SAVE_DELAY_MS);
   };
+
+  useEffect(() => {
+    if (running || runtimeLayoutRef.current.size === 0) return;
+    const current = workflowRef.current;
+    runtimeLayoutRef.current.clear();
+    if (current) scheduleSave(current);
+  }, [running]);
 
   const flushPendingSave = async () => {
     if (saveTimerRef.current !== null) {
@@ -949,25 +969,25 @@ export function WorkflowTab({
     const node = record?.nodes.find((item) => item.id === nodeId);
     if (!record || !node || running) return;
     const config = mcpNodeConfig(node);
-    const remoteLink = resolveBlockTemplate(config.remoteLink, record).trim();
-    if (!remoteLink) {
+    try {
+      const remoteLink = resolveBlockTemplate(config.remoteLink, record).trim();
+      if (!remoteLink) {
+        updateNode(nodeId, {
+          config: {
+            ...(node.config ?? {}),
+            connectionStatus: "error",
+            connectionError: "Remote MCP Link is required.",
+          },
+        });
+        return;
+      }
       updateNode(nodeId, {
         config: {
           ...(node.config ?? {}),
-          connectionStatus: "error",
-          connectionError: "Remote MCP Link is required.",
+          connectionStatus: "connecting",
+          connectionError: "",
         },
       });
-      return;
-    }
-    updateNode(nodeId, {
-      config: {
-        ...(node.config ?? {}),
-        connectionStatus: "connecting",
-        connectionError: "",
-      },
-    });
-    try {
       const headers = parseJsonObject(config.headers) ?? {};
       const discovery = await discoverRemoteMcp(workspaceId, {
         remoteLink,
@@ -1027,17 +1047,19 @@ export function WorkflowTab({
   };
 
   const moveNodeLive = (nodeId: string, x: number, y: number) => {
+    const position = {
+      x: Math.max(WORLD_MIN_X, Math.round(x)),
+      y: Math.max(WORLD_MIN_Y, Math.round(y)),
+    };
+    if (running) runtimeLayoutRef.current.set(nodeId, position);
     updateWorkflow(
-      (record) =>
-        patchNode(record, nodeId, {
-          x: Math.max(WORLD_MIN_X, Math.round(x)),
-          y: Math.max(WORLD_MIN_Y, Math.round(y)),
-        }),
+      (record) => patchNode(record, nodeId, position),
       false
     );
   };
 
   const addBlock = (template: BlockTemplate) => {
+    if (running) return;
     const nodeId = makeId("node");
     updateWorkflow((record) => {
       const last = record.nodes[record.nodes.length - 1];
@@ -1158,7 +1180,7 @@ export function WorkflowTab({
     node: WorkflowNode,
     e: ReactPointerEvent<HTMLDivElement>
   ) => {
-    if (running || e.button !== 0) return;
+    if (e.button !== 0) return;
     if ((e.target as HTMLElement).closest(".workflow-node__handle")) return;
     e.preventDefault();
     e.stopPropagation();
@@ -1200,7 +1222,7 @@ export function WorkflowTab({
     setDraggingNodeId(null);
     if (drag.moved) {
       suppressNodeClickRef.current = drag.nodeId;
-      scheduleCurrentSave();
+      if (!running) scheduleCurrentSave();
     }
   };
 
@@ -1361,13 +1383,18 @@ export function WorkflowTab({
 
   const autoArrange = () => {
     const current = workflowRef.current;
-    if (!current || running) return;
-    updateWorkflow((record) => autoLayout(record), true, false);
+    if (!current) return;
+    const arranged = autoLayout(current);
+    if (running) {
+      for (const node of arranged.nodes) {
+        runtimeLayoutRef.current.set(node.id, { x: node.x, y: node.y });
+      }
+    }
+    updateWorkflow(() => arranged, !running, false);
     window.requestAnimationFrame(() => fitView(workflowRef.current ?? undefined));
   };
 
   const startCanvasPan = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if (running) return;
     if (e.button !== 0 && e.button !== 2) return;
     if (e.button === 0) {
       const el = e.target as HTMLElement;
@@ -1471,11 +1498,13 @@ export function WorkflowTab({
     if (!current || running) return;
     await flushPendingSave();
     setRunning(true);
+    setBlockPickerOpen(false);
     setError(null);
     try {
       const result = await apiRunWorkflow(workspaceId, current.id, nodeIds);
-      workflowRef.current = result.workflow;
-      setWorkflow(result.workflow);
+      const next = applyNodePositions(result.workflow, runtimeLayoutRef.current);
+      workflowRef.current = next;
+      setWorkflow(next);
       onWorkflowChanged();
     } catch (e) {
       setRunning(false);
@@ -1959,6 +1988,7 @@ export function WorkflowTab({
               setNodeMenu(null);
               setBlockPickerOpen(true);
             }}
+            disabled={running}
             title="Add block"
             aria-label="Add block"
           >
@@ -1967,8 +1997,7 @@ export function WorkflowTab({
           <button
             className="workflow-toolbar__btn workflow-toolbar__btn--icon"
             onClick={autoArrange}
-            disabled={running}
-            title="鑷姩鏁寸悊"
+            title="自动整理"
             aria-label="Auto arrange"
           >
             <IconArrange />
@@ -1976,7 +2005,7 @@ export function WorkflowTab({
           <button
             className="workflow-toolbar__btn workflow-toolbar__btn--icon"
             onClick={() => void fitView()}
-            title="閫傚簲瑙嗗浘"
+            title="适应视图"
             aria-label="Fit view"
           >
             <IconFit />
@@ -1987,7 +2016,7 @@ export function WorkflowTab({
             className="workflow-toolbar__btn workflow-toolbar__btn--icon"
             onClick={undo}
             disabled={running || !canUndo}
-            title="鎾ら攢 (Ctrl+Z)"
+            title="撤销 (Ctrl+Z)"
             aria-label="Undo"
           >
             <IconUndo />
@@ -2008,7 +2037,7 @@ export function WorkflowTab({
               className="workflow-toolbar__btn workflow-toolbar__btn--icon"
               onClick={() => setZoomValue(zoom - ZOOM_STEP)}
               disabled={zoom <= MIN_ZOOM}
-              title="缂╁皬"
+              title="缩小"
               aria-label="Zoom out"
             >
               <IconZoomOut />
@@ -2018,7 +2047,7 @@ export function WorkflowTab({
               className="workflow-toolbar__btn workflow-toolbar__btn--icon"
               onClick={() => setZoomValue(zoom + ZOOM_STEP)}
               disabled={zoom >= MAX_ZOOM}
-              title="鏀惧ぇ"
+              title="放大"
               aria-label="Zoom in"
             >
               <IconZoomIn />
@@ -2039,7 +2068,7 @@ export function WorkflowTab({
             <button
               className="workflow-toolbar__btn workflow-toolbar__btn--icon is-danger"
               onClick={stopRun}
-              title="鍋滄"
+              title="停止"
               aria-label="Stop"
             >
               <IconStop />
@@ -2283,7 +2312,7 @@ export function WorkflowTab({
       {mpeNodeId && workflow.nodes.some((node) => node.id === mpeNodeId) && (
         <div className="workflow-panel-shell">
           <WorkflowMpePanel
-            markdown={resolveBlockTemplate(
+            markdown={resolveBlockTemplatePreview(
               workflow.nodes.find((node) => node.id === mpeNodeId)!.prompt,
               workflow
             )}
@@ -2454,8 +2483,8 @@ function WorkflowRenamePanel({
           type="button"
           className="workflow-inspector__close"
           onClick={onClose}
-          aria-label="鍏抽棴"
-          title="鍏抽棴"
+          aria-label="关闭"
+          title="关闭"
         >
           x
         </button>
@@ -3690,7 +3719,7 @@ function WorkflowNodeInspector({
       {isMarkdown && (
         <div className="workflow-inspector__mpe-link-row">
           <button type="button" onClick={onShowMpe}>
-            see MPE
+            See result
           </button>
         </div>
       )}
@@ -4245,6 +4274,19 @@ async function executeLocalNode(
 ): Promise<LocalNodeResult> {
   const input = resolveBlockTemplate(node.prompt, record).trim();
   const kind = nodeKind(node);
+  if (kind === "input") {
+    const value = resolveBlockTemplate(node.prompt, record);
+    return {
+      output: {
+        type: "input",
+        status: "success",
+        value,
+        data: value,
+        text: value,
+        CHANGED_FILES: [],
+      },
+    };
+  }
   if (!input && !CONFIGURED_LOCAL_KINDS.has(kind)) {
     throw new Error(`${node.title} has no input.`);
   }
@@ -4907,6 +4949,8 @@ async function runAiTerminalWithRetries(
     codexSandbox?: AiTerminalCodexSandbox;
     effort?: AiTerminalEffort;
     alwaysEnter?: boolean;
+    conversationSessionId?: string;
+    resumeConversation?: boolean;
   },
   onFrame: (frame: AiTerminalFrame) => void,
   signal: AbortSignal,
@@ -4916,6 +4960,7 @@ async function runAiTerminalWithRetries(
 ): Promise<{ result: AiTerminalResult | null; aborted: boolean }> {
   let lastError: unknown = null;
   const attempts = Math.max(1, retries + 1);
+  const conversationSessionId = input.kind === "claude-cli" ? crypto.randomUUID() : undefined;
   let attempt = 1;
   while (true) {
     try {
@@ -4929,7 +4974,11 @@ async function runAiTerminalWithRetries(
       }
       return await aiChatTerminalStream(
         workspaceId,
-        attempt > 1 ? continueOnlyTerminalInput(input) : input,
+        {
+          ...(attempt > 1 ? continueOnlyTerminalInput(input) : input),
+          conversationSessionId,
+          resumeConversation: attempt > 1,
+        },
         onFrame,
         signal
       );
@@ -4953,8 +5002,8 @@ function continueOnlyTerminalInput<T extends {
 }>(input: T): T {
   return {
     ...input,
-    messages: [{ role: "user", content: "缁х画" }],
-    terminalPrompt: "缁х画",
+    messages: [{ role: "user", content: "继续" }],
+    terminalPrompt: "继续",
   };
 }
 
@@ -5438,7 +5487,8 @@ function inferChangedFiles(record: WorkflowRecord): string[] {
 }
 
 function resolveBlockTemplate(input: string, record: WorkflowRecord): string {
-  return input.replace(/\{\{\s*blocks\[(\d+)\]((?:\.[A-Za-z_$][\w$]*|\[[^\]]+\])*)\s*\}\}/g, (
+  assertValidBlockTemplates(input);
+  return input.replace(/\{\{\s*blocks\[(\d+)\]((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}/g, (
     _match,
     idText: string,
     pathText: string
@@ -5448,9 +5498,10 @@ function resolveBlockTemplate(input: string, record: WorkflowRecord): string {
 }
 
 function resolveTemplateValue(input: string, record: WorkflowRecord): unknown {
+  assertValidBlockTemplates(input);
   const trimmed = input.trim();
   const whole = trimmed.match(
-    /^\{\{\s*blocks\[(\d+)\]((?:\.[A-Za-z_$][\w$]*|\[[^\]]+\])*)\s*\}\}$/
+    /^\{\{\s*blocks\[(\d+)\]((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}$/
   );
   if (whole) {
     return resolveBlockReference(record, whole[1], whole[2] ?? "");
@@ -5459,7 +5510,8 @@ function resolveTemplateValue(input: string, record: WorkflowRecord): unknown {
 }
 
 function resolveJsonTemplate(input: string, record: WorkflowRecord): string {
-  const re = /\{\{\s*blocks\[(\d+)\]((?:\.[A-Za-z_$][\w$]*|\[[^\]]+\])*)\s*\}\}/g;
+  assertValidBlockTemplates(input);
+  const re = /\{\{\s*blocks\[(\d+)\]((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}/g;
   let output = "";
   let index = 0;
   let inString = false;
@@ -5499,9 +5551,47 @@ function resolveBlockReference(
 ): unknown {
   const blockId = Number(idText);
   const node = record.nodes.find((item) => displayBlockId(item) === blockId);
-  const output = node ? parseBlockOutput(node) : null;
-  if (!output) return undefined;
-  return getPathValue(output, pathText);
+  const reference = `{{blocks[${idText}]${pathText}}}`;
+  if (!node) {
+    throw new Error(`Workflow variable ${reference} references missing block #${idText}.`);
+  }
+  const output = parseBlockOutput(node);
+  if (!output) {
+    throw new Error(`Workflow variable ${reference} references block #${idText}, which has no output yet.`);
+  }
+  const result = getPathResult(output, pathText);
+  if (!result.found) {
+    throw new Error(`Workflow variable ${reference} references a value that does not exist.`);
+  }
+  return result.value;
+}
+
+function resolveBlockTemplatePreview(input: string, record: WorkflowRecord): string {
+  try {
+    return resolveBlockTemplate(input, record);
+  } catch (error) {
+    return `Template error: ${(error as Error).message}`;
+  }
+}
+
+function assertValidBlockTemplates(input: string): void {
+  const expressionRe = /\{\{[\s\S]*?\}\}/g;
+  const validRe = /^\{\{\s*blocks\[(\d+)\]((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}$/;
+  const expressions = input.match(expressionRe) ?? [];
+  for (const expression of expressions) {
+    if (!validRe.test(expression)) throw invalidWorkflowVariable(expression);
+  }
+  const remainder = input.replace(expressionRe, "");
+  if (remainder.includes("{{") || remainder.includes("}}")) {
+    throw invalidWorkflowVariable(remainder.trim() || input.trim());
+  }
+}
+
+function invalidWorkflowVariable(expression: string): Error {
+  const preview = expression.length > 120 ? `${expression.slice(0, 117)}...` : expression;
+  return new Error(
+    `Invalid workflow variable ${JSON.stringify(preview)}. Expected syntax: {{blocks[2].text}}.`
+  );
 }
 
 function escapeJsonStringContent(value: string): string {
@@ -5509,22 +5599,35 @@ function escapeJsonStringContent(value: string): string {
 }
 
 function getPathValue(value: unknown, pathText: string): unknown {
+  return getPathResult(value, pathText).value;
+}
+
+function getPathResult(
+  value: unknown,
+  pathText: string
+): { found: boolean; value: unknown } {
   let current = value;
   const re = /\.([A-Za-z_$][\w$]*)|\[("([^"]+)"|'([^']+)'|(\d+))\]/g;
   let match: RegExpExecArray | null;
   while ((match = re.exec(pathText)) !== null) {
     const key = match[1] ?? match[3] ?? match[4] ?? match[5] ?? "";
-    if (!key) return undefined;
+    if (!key) return { found: false, value: undefined };
     if (Array.isArray(current)) {
       const index = Number(key);
-      current = Number.isInteger(index) ? current[index] : undefined;
+      if (!Number.isInteger(index) || index < 0 || index >= current.length) {
+        return { found: false, value: undefined };
+      }
+      current = current[index];
     } else if (current && typeof current === "object") {
+      if (!Object.prototype.hasOwnProperty.call(current, key)) {
+        return { found: false, value: undefined };
+      }
       current = (current as Record<string, unknown>)[key];
     } else {
-      return undefined;
+      return { found: false, value: undefined };
     }
   }
-  return current;
+  return { found: true, value: current };
 }
 
 function getLoosePathValue(value: unknown, pathText: string): unknown {
@@ -5834,6 +5937,21 @@ function snapPan(pan: PanOffset): PanOffset {
   };
 }
 
+function applyNodePositions(
+  record: WorkflowRecord,
+  positions: ReadonlyMap<string, CanvasPoint>
+): WorkflowRecord {
+  if (positions.size === 0) return record;
+  let changed = false;
+  const nodes = record.nodes.map((node) => {
+    const position = positions.get(node.id);
+    if (!position || (node.x === position.x && node.y === position.y)) return node;
+    changed = true;
+    return { ...node, ...position };
+  });
+  return changed ? { ...record, nodes } : record;
+}
+
 function bezierPath(start: CanvasPoint, end: CanvasPoint): string {
   const bend = Math.max(56, Math.abs(end.x - start.x) / 2);
   return `M ${start.x} ${start.y} C ${start.x + bend} ${start.y}, ${
@@ -5848,6 +5966,7 @@ function findInputNodeFromPoint(clientX: number, clientY: number): string | null
 }
 
 function blockEyebrow(kind: WorkflowNodeKind): string {
+  if (kind === "input") return "Input";
   if (kind === "trigger" || kind === "manual-trigger" || kind === "cron" || kind === "webhook-trigger") return "Trigger";
   if (kind === "command") return "Command";
   if (kind === "web" || kind === "http-request") return "Network";
@@ -5860,6 +5979,7 @@ function blockEyebrow(kind: WorkflowNodeKind): string {
 }
 
 function inputLabelForKind(kind: WorkflowNodeKind): string {
+  if (kind === "input") return "Input";
   if (kind === "command") return "Command";
   if (kind === "web") return "URL";
   if (kind === "http-request") return "Request";
@@ -5879,6 +5999,7 @@ function inputLabelForKind(kind: WorkflowNodeKind): string {
 
 function nodeKind(node: WorkflowNode): WorkflowNodeKind {
   if (
+    node.kind === "input" ||
     node.kind === "trigger" ||
     node.kind === "manual-trigger" ||
     node.kind === "cron" ||
@@ -5938,6 +6059,7 @@ function nodeIconName(node: WorkflowNode): WorkflowIconName {
   const icon = toWorkflowIconName(node.config?.icon);
   if (icon) return icon;
   const kind = nodeKind(node);
+  if (kind === "input") return "input";
   if (kind === "trigger") return "trigger";
   if (kind === "manual-trigger") return "trigger";
   if (kind === "cron") return "cron";
@@ -5964,6 +6086,7 @@ function toWorkflowIconName(value: unknown): WorkflowIconName | null {
   const icon = value.trim();
   const current = new Set<WorkflowIconName>([
     "trigger",
+    "input",
     "cron",
     "webhook",
     "command",
@@ -6007,6 +6130,7 @@ function toWorkflowIconName(value: unknown): WorkflowIconName | null {
 
 const WORKFLOW_CODICONS: Partial<Record<WorkflowIconName, string>> = {
   trigger: "debug-start",
+  input: "symbol-string",
   cron: "clock",
   webhook: "radio-tower",
   command: "terminal",

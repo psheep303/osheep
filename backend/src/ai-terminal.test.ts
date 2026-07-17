@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  agentTerminalScreenSignatureForTest,
+  agentTerminalReadyForAutoFinishForTest,
+  agentTerminalReadyForManualSuccessForTest,
   agentTerminalPromptEnterCount,
   agentTerminalPromptSubmitDelayMs,
   buildAgentTerminalCommand,
@@ -9,8 +12,10 @@ import {
   createAgentTerminalControlForTest,
   extractAgentTerminalContentForTest,
   finishAgentTerminalSuccess,
+  resolveAgentTerminalContentStateForTest,
   shouldFollowUpPastedPromptSubmit,
   shouldAutoEnterChoice,
+  shouldExposeWaitingForChoice,
   type AgentEffort,
 } from "./ai-terminal.js";
 
@@ -91,6 +96,28 @@ test("Claude terminal command can start in plan mode with effort", () => {
   );
 });
 
+test("Claude retry resumes the exact conversation session", () => {
+  const sessionId = "123e4567-e89b-12d3-a456-426614174000";
+
+  assert.equal(
+    buildAgentTerminalCommand("claude-cli", "gpt-5.4", {
+      mode: "plan",
+      effort: "low",
+      conversationSessionId: sessionId,
+    }).command,
+    `claude --permission-mode plan --session-id ${sessionId} --effort low --model gpt-5.4`
+  );
+  assert.equal(
+    buildAgentTerminalCommand("claude-cli", "gpt-5.4", {
+      mode: "plan",
+      effort: "low",
+      conversationSessionId: sessionId,
+      resumeConversation: true,
+    }).command,
+    `claude --resume ${sessionId} --effort low --model gpt-5.4`
+  );
+});
+
 test("Claude terminal command passes ultracode effort through", () => {
   assert.equal(
     buildAgentTerminalCommand("claude-cli", "default", {
@@ -153,6 +180,8 @@ test("always enter only presses choice prompts after cooldown", () => {
     }),
     false
   );
+  assert.equal(shouldExposeWaitingForChoice(true, "waiting-for-choice"), false);
+  assert.equal(shouldExposeWaitingForChoice(false, "waiting-for-choice"), true);
 });
 
 test("terminal choice prompts are classified as waiting for user input", () => {
@@ -167,6 +196,36 @@ test("terminal choice prompts are classified as waiting for user input", () => {
   assert.equal(classifyAgentTerminalContent(content), "waiting-for-choice");
 });
 
+test("ordinary numbered suggestions are not an interactive choice", () => {
+  const content = [
+    "一句话结论：已经能用了。",
+    "如果你要，我下一步可以直接继续做其中一个：",
+    "1. 再帮你把它压到更短",
+    "2. 改成抓你指定城市",
+    "3. 改输出字段格式",
+    "4. 改成别的天气源",
+    "* Crunched for 8m 46s",
+    "\u276f",
+    "auto mode on (shift+tab to cycle) \u00b7 \u2190 for agents",
+  ].join("\n");
+
+  assert.equal(classifyAgentTerminalContent(content), "ready-for-success");
+  assert.equal(
+    agentTerminalReadyForAutoFinishForTest("claude-cli", content, "ready-for-success"),
+    true
+  );
+});
+
+test("choice-like text without an enter interaction cue is not waiting", () => {
+  const content = [
+    "\u276f 1. 推荐方案",
+    "  2. 备选方案",
+    "  3. 其他方案",
+  ].join("\n");
+
+  assert.equal(classifyAgentTerminalContent(content), "ready-for-success");
+});
+
 test("Claude plan mode approval prompts are classified as waiting for user input", () => {
   const content = [
     "Ready to code?",
@@ -179,6 +238,237 @@ test("Claude plan mode approval prompts are classified as waiting for user input
   ].join("\n");
 
   assert.equal(classifyAgentTerminalContent(content), "waiting-for-choice");
+});
+
+test("Claude auto-mode approval menu with edit chrome waits for user input", () => {
+  const content = [
+    "Weather spider implementation plan",
+    "\u276f 1. Yes, and use auto mode",
+    "  2. Yes, manually approve edits",
+    "  3. Tell Claude what to change",
+    "shift+tab to approve with this feedback",
+    "ctrl+g to edit in Notepad.exe - C:\\Users\\tzx sheep\\.claude\\plans\\dazzling-swinging-marble.md",
+    "\u25cb explore_weather_combined read-only exploration 7s",
+    "Recommended implementation",
+    "1. Update scripts/spiders/weather_spider.py",
+  ].join("\n");
+
+  assert.equal(classifyAgentTerminalContent(content), "waiting-for-choice");
+});
+
+test("Claude raw screen restores a plan choice removed from extracted content", () => {
+  const screen = [
+    "Claude has written up a plan and is ready to execute. Would you like to proceed?",
+    "",
+    "\u276f 1. Yes, and use auto mode",
+    "  2. Yes, manually approve edits",
+    "  3. Tell Claude what to change",
+    "     shift+tab to approve with this feedback",
+  ].join("\n");
+  const content = extractAgentTerminalContentForTest(screen, "", "claude-cli");
+  const state = resolveAgentTerminalContentStateForTest(
+    "claude-cli",
+    screen,
+    content
+  );
+
+  assert.doesNotMatch(content, /\u276f 1\. Yes/);
+  assert.equal(classifyAgentTerminalContent(content), "ready-for-success");
+  assert.equal(state, "waiting-for-choice");
+  assert.equal(
+    shouldAutoEnterChoice({ alwaysEnter: true, state, now: 2_000 }),
+    true
+  );
+  assert.equal(shouldExposeWaitingForChoice(true, state), false);
+});
+
+test("Claude auto finish waits until current work is idle", () => {
+  const running = [
+    "Completed weather spider implementation and verification.",
+    "* Seasoning (15m 29s - 35.2k tokens)",
+    "Tip: Use /btw to ask a quick side question without interrupting Claude's current work",
+    "auto mode on (shift+tab to cycle) - <- for agents",
+  ].join("\n");
+  const idle = [
+    "Completed weather spider implementation and verification.",
+    "* Cooked for 15m 29s",
+    "\u203a weather-spider-plan",
+    "auto mode on (shift+tab to cycle) - <- for agents",
+  ].join("\n");
+
+  assert.equal(
+    agentTerminalReadyForAutoFinishForTest("claude-cli", running, "ready-for-success"),
+    false
+  );
+  assert.equal(
+    agentTerminalReadyForAutoFinishForTest("claude-cli", idle, "ready-for-success"),
+    true
+  );
+});
+
+test("Claude plan approval followed by auto mode and final idle output auto finishes", () => {
+  const screen = [
+    "Claude Code v2.1.204",
+    "Tip: Use /btw to ask a quick side question without interrupting Claude's current work",
+    "Ready to code?",
+    "Here is Claude's plan:",
+    "\u276f 1. Yes, and use auto mode",
+    "  2. Yes, manually approve edits",
+    "shift+tab to approve with this feedback",
+    "Thinking for 6s (ctrl+o to expand)",
+    "Teammate @plan-weather finished",
+    "收到队友会话的消息了。",
+    "当前代码已经完成并验证通过，和你批准的方案一致：",
+    "- 极简城市入口在 scripts/spiders/weather_spider.py",
+    "- 测试已收敛在 tests/test_weather_spider.py",
+    "- 文档已同步在 docs/weather.md 和 README.md",
+    "验证状态不变：",
+    "- python -m unittest discover -s tests -p 'test_weather_spider.py' 通过",
+    "如果你要把它进一步压成更小版本，我可以继续再收一刀。",
+    "* Cogitated for 12m 40s",
+    "\u276f simplify-weather-spider",
+    "auto mode on (shift+tab to cycle) \u00b7 \u2190 for agents",
+  ].join("\n");
+
+  assert.equal(classifyAgentTerminalContent(screen), "ready-for-success");
+  assert.equal(
+    agentTerminalReadyForAutoFinishForTest("claude-cli", screen, "ready-for-success"),
+    true
+  );
+});
+
+test("Claude active work in the current terminal tail still blocks auto finish", () => {
+  const screen = [
+    "Implementation is nearly complete.",
+    "Working (press Esc to interrupt)",
+    "auto mode on (shift+tab to cycle) \u00b7 \u2190 for agents",
+  ].join("\n");
+
+  assert.equal(
+    agentTerminalReadyForAutoFinishForTest("claude-cli", screen, "ready-for-success"),
+    false
+  );
+});
+
+test("Claude parenthesized activity blocks auto finish without relying on a footer", () => {
+  const screen = [
+    "方案已经写入计划文件。",
+    "\u2722 Garnishing\u2026 (47s \u00b7 \u2193 1.4k tokens)",
+    "\u276f minimal-weather-spider",
+    "auto mode on (shift+tab to cycle) \u00b7 \u2190 for agents",
+  ].join("\n");
+
+  assert.equal(
+    agentTerminalReadyForAutoFinishForTest("claude-cli", screen, "ready-for-success"),
+    false
+  );
+});
+
+test("Claude stable idle final output succeeds without a word-for-duration footer", () => {
+  const screen = [
+    "测试和实际运行均已通过。",
+    "所以这次最省事、最快的做法已经完成了。",
+    "如果你现在要我继续，我可以立即开始下一项工作。",
+    "\u276f minimal-weather-spider",
+    "auto mode on (shift+tab to cycle) \u00b7 \u2190 for agents",
+  ].join("\n");
+
+  assert.equal(classifyAgentTerminalContent(screen), "ready-for-success");
+  assert.equal(
+    agentTerminalReadyForAutoFinishForTest("claude-cli", screen, "ready-for-success"),
+    true
+  );
+  assert.equal(
+    agentTerminalReadyForManualSuccessForTest("claude-cli", screen, "ready-for-success"),
+    true
+  );
+});
+
+test("Claude resumed manual-mode footer is recognized as idle", () => {
+  const screen = [
+    "\u276f \u7ee7\u7eed",
+    "\u25cf API Error: 503 auth_unavailable: no auth available (providers=codex, model=gpt-5.4).",
+    "\u273b Brewed for 3m 8s",
+    "\u276f",
+    "\u23f8 manual mode on \u00b7 \u2190 for agents",
+  ].join("\n");
+
+  assert.equal(classifyAgentTerminalContent(screen), "ready-for-success");
+  assert.equal(
+    agentTerminalReadyForAutoFinishForTest("claude-cli", screen, "ready-for-success"),
+    true
+  );
+});
+
+test("Claude current viewport drops stale activity without requiring a duration footer", () => {
+  const transcript = [
+    "\x1b[10;1H\u2736 Wrangling\u2026 (34s \u00b7 \u2193 930 tokens)\r",
+    ...Array.from({ length: 34 }, (_, index) => `final output ${index}\n`),
+    "\u276f\r",
+    "\u23f5\u23f5 auto mode on (shift+tab to cycle) \u00b7 \u2190 for agents",
+  ].join("");
+
+  assert.equal(
+    agentTerminalReadyForAutoFinishForTest(
+      "claude-cli",
+      transcript,
+      "ready-for-success"
+    ),
+    true
+  );
+});
+
+test("Claude cannot succeed while a background agent is still running", () => {
+  const screen = [
+    "\u25cf \u5df2\u5b8c\u6210\u9a8c\u8bc1\uff0c\u53ef\u76f4\u63a5\u4f7f\u7528\u3002",
+    "\u273b Waiting for 1 background agent to finish",
+    "\u276f",
+    "\u23f5\u23f5 auto mode on (shift+tab to cycle) \u00b7 \u2190 for agents",
+    "\u25cf main",
+    "\u25cb Explore  Explore weather spider  1m 6s",
+  ].join("\n");
+
+  assert.equal(
+    agentTerminalReadyForAutoFinishForTest("claude-cli", screen, "ready-for-success"),
+    false
+  );
+  assert.equal(
+    agentTerminalReadyForManualSuccessForTest("claude-cli", screen, "ready-for-success"),
+    false
+  );
+});
+
+test("Claude can succeed after every background agent becomes idle", () => {
+  const screen = [
+    "\u25cf \u5df2\u5b8c\u6210\u9a8c\u8bc1\uff0c\u53ef\u76f4\u63a5\u4f7f\u7528\u3002",
+    "\u276f",
+    "\u23f5\u23f5 auto mode on (shift+tab to cycle) \u00b7 \u2190 for agents",
+    "\u25cf main",
+    "\u25cb Explore  Explore weather spider  idle",
+  ].join("\n");
+
+  assert.equal(
+    agentTerminalReadyForAutoFinishForTest("claude-cli", screen, "ready-for-success"),
+    true
+  );
+});
+
+test("Claude parenthesized activity remains busy after the idle prompt is redrawn", () => {
+  const screen = [
+    "Recombobulating (7m 46s \u00b7 \u2193 3.1k tokens)",
+    "Tip: Use /btw to ask a quick side question without interrupting Claude's current work",
+    "\u276f",
+    "plan mode on (shift+tab to cycle) \u00b7 \u2190 for agents",
+  ].join("\n");
+
+  assert.equal(
+    agentTerminalReadyForAutoFinishForTest("claude-cli", screen, "ready-for-success"),
+    false
+  );
+  assert.equal(
+    agentTerminalReadyForManualSuccessForTest("claude-cli", screen, "ready-for-success"),
+    false
+  );
 });
 
 test("terminal prompt-only content is classified as empty", () => {
@@ -361,6 +651,26 @@ test("Claude cooked footer after a completed plan releases a stale choice prompt
   assert.equal(classifyAgentTerminalContent(content), "ready-for-success");
 });
 
+test("Claude generic word-for-duration footer releases a stale choice prompt", () => {
+  const content = [
+    "Ready to code?",
+    "Here is Claude's plan:",
+    "\u276f 1. Yes, and use auto mode",
+    "  2. Yes, manually approve edits",
+    "shift+tab to approve with this feedback",
+    "验证结果：4 个测试全部成功。",
+    "* Cogitated for 12m 40s",
+    "\u276f",
+    "auto mode on (shift+tab to cycle) \u00b7 \u2190 for agents",
+  ].join("\n");
+
+  assert.equal(classifyAgentTerminalContent(content), "ready-for-success");
+  assert.equal(
+    agentTerminalReadyForAutoFinishForTest("claude-cli", content, "ready-for-success"),
+    true
+  );
+});
+
 test("manual success is allowed even when the previous terminal state was stale waiting", () => {
   createAgentTerminalControlForTest("session_stale_waiting", {
     lastCompletionState: "waiting-for-choice",
@@ -377,4 +687,42 @@ test("completed-looking assistant output is classified as ready for success", ()
   ].join("\n");
 
   assert.equal(classifyAgentTerminalContent(content), "ready-for-success");
+});
+
+test("Codex completion remains visible when the idle prompt returns", () => {
+  const prompt = "Implement {feature}";
+  const transcript = [
+    "• 已按方案实现天气爬虫增强，修改文件：scripts/spiders/weather_spider.py。",
+    "",
+    "主要完成：",
+    "- 支持中文城市名和 9 位城市代码",
+    "- 请求异常会给出清晰提示",
+    "",
+    "已验证：python -m py_compile scripts/spiders/weather_spider.py 通过",
+    "",
+    "─ Worked for 2m 15s ─",
+    `› ${prompt}`,
+    "gpt-5.5 low · D:\\project\\osheep\\backend\\workspaces\\demo",
+  ].join("\n");
+
+  const content = extractAgentTerminalContentForTest(transcript, prompt, "codex-cli");
+  assert.match(content, /已按方案实现天气爬虫增强/);
+  assert.equal(classifyAgentTerminalContent(content), "ready-for-success");
+});
+
+test("terminal screen signature ignores cursor-only Codex redraws", () => {
+  const screen = [
+    "• 已完成实现和验证。",
+    "─ Worked for 2m 15s ─",
+    "› Implement {feature}",
+  ].join("\n");
+
+  assert.equal(
+    agentTerminalScreenSignatureForTest(`${screen}\x1b[?25l\x1b[?25h`),
+    agentTerminalScreenSignatureForTest(screen)
+  );
+  assert.notEqual(
+    agentTerminalScreenSignatureForTest(`${screen}\nnew output`),
+    agentTerminalScreenSignatureForTest(screen)
+  );
 });
