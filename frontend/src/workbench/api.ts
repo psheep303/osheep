@@ -965,6 +965,7 @@ export async function addClaudeMarketplaceApi(
 export type WorkflowProviderKind = "codex-cli" | "claude-cli";
 export type WorkflowNodeKind =
   | "agent"
+  | "input"
   | "trigger"
   | "manual-trigger"
   | "cron"
@@ -1466,6 +1467,8 @@ export async function aiChatTerminalStream(
     codexSandbox?: AiTerminalCodexSandbox;
     effort?: AiTerminalEffort;
     alwaysEnter?: boolean;
+    conversationSessionId?: string;
+    resumeConversation?: boolean;
   },
   onFrame: (frame: AiTerminalFrame) => void,
   signal?: AbortSignal
