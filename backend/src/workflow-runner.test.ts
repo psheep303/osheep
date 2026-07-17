@@ -7,11 +7,24 @@ import {
   createLiveAgentRunDetails,
   nextAgentRetryPrompt,
   planWorkflowRunNodeIds,
+  reportableChangedFilesForTest,
   resolveWorkflowTemplate,
   shouldRetryAgentTerminalFailure,
   type WorkflowRunDetailSnapshot,
 } from "./workflow-runner.js";
 import type { WorkflowNode, WorkflowRecord } from "./workflows.js";
+
+test("agent output hides workflow snapshot bookkeeping from changed files", () => {
+  assert.deepEqual(
+    reportableChangedFilesForTest([
+      ".osheep/workflows/wf_demo.json",
+      ".osheep\\workflows\\wf_demo.json",
+      "weather_spider.py",
+      "weather_spider.py",
+    ]),
+    ["weather_spider.py"]
+  );
+});
 
 test("workflow run planning excludes nodes that are not reachable from a trigger", () => {
   const record: WorkflowRecord = {

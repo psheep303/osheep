@@ -44,6 +44,39 @@ test("clean conversation keeps agent history and removes Claude terminal chrome"
   );
 });
 
+test("Codex conversation starts at the first real event and removes TUI redraw fragments", () => {
+  const raw = [
+    "PS D:\\demo> codex --model gpt-5.5",
+    "Do you trust the contents of this directory?",
+    "╭──────────────────────────────────────╮",
+    "│ >_ OpenAI Codex (v0.144.4)          │",
+    "│ model: loading                      │",
+    "╰──────────────────────────────────────╯",
+    "gpt-5.5 low · D:\\demo",
+    "- echoed user prompt",
+    "•Wor",
+    "•Work",
+    "•Working",
+    "• 我会直接新增极简 weather_spider.py。",
+    "•orking",
+    "• Added weather_spider.py (+16 -0)",
+    "  1 +import sys",
+    "10s • esc to interupt)",
+    "• 已新增 weather_spider.py。",
+    "──────────────────────────────────────",
+  ].join("\r\n");
+
+  assert.equal(
+    cleanAgentTerminalConversation(raw, "", "codex-cli"),
+    [
+      "• 我会直接新增极简 weather_spider.py。",
+      "• Added weather_spider.py (+16 -0)",
+      "  1 +import sys",
+      "• 已新增 weather_spider.py。",
+    ].join("\n")
+  );
+});
+
 test("conversation collector retains early and late dialogue across chunks", () => {
   const collector = new AgentTerminalConversationCollector();
   collector.push("● 先检查项目文件。\r\n● Read 1 file\r\n");
