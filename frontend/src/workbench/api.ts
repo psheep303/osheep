@@ -82,6 +82,18 @@ export interface TerminalCreateResp {
   wsUrl: string;
 }
 
+export type AgentSessionApp = "claude" | "codex";
+
+export interface AgentSessionSummary {
+  app: AgentSessionApp;
+  id: string;
+  title: string;
+  cwd: string;
+  createdAt: number;
+  updatedAt: number;
+  size: number;
+}
+
 // ─── Workspaces ───
 
 export async function listWorkspaces(): Promise<Workspace[]> {
@@ -300,6 +312,60 @@ export async function createTerminal(input: {
 
 export async function killTerminal(id: string): Promise<void> {
   await http.delete(`/api/terminals/${encodeURIComponent(id)}`);
+}
+
+export async function listAgentSessions(
+  app: AgentSessionApp,
+  workspaceId: string
+): Promise<AgentSessionSummary[]> {
+  const query = new URLSearchParams({ app, workspaceId }).toString();
+  const { sessions } = await http.get<{ sessions: AgentSessionSummary[] }>(
+    `/api/agent-sessions?${query}`
+  );
+  return sessions;
+}
+
+export async function deleteAgentSession(
+  app: AgentSessionApp,
+  id: string,
+  workspaceId: string
+): Promise<void> {
+  const query = new URLSearchParams({ workspaceId }).toString();
+  await http.delete(
+    `/api/agent-sessions/${encodeURIComponent(app)}/${encodeURIComponent(id)}?${query}`
+  );
+}
+
+export async function batchDeleteAgentSessions(
+  app: AgentSessionApp,
+  ids: string[],
+  workspaceId: string
+): Promise<{ deleted: AgentSessionSummary[]; failed: Array<{ id: string; message: string }> }> {
+  return await http.post(
+    `/api/agent-sessions/${encodeURIComponent(app)}/batch-delete`,
+    { ids, workspaceId }
+  );
+}
+
+export async function createAgentSessionTerminal(input: {
+  app: AgentSessionApp;
+  sessionId: string;
+  workspaceId: string;
+  shell: string;
+  cols: number;
+  rows: number;
+}): Promise<TerminalCreateResp> {
+  return await http.post(
+    `/api/agent-sessions/${encodeURIComponent(input.app)}/${encodeURIComponent(
+      input.sessionId
+    )}/terminal`,
+    {
+      workspaceId: input.workspaceId,
+      shell: input.shell,
+      cols: input.cols,
+      rows: input.rows,
+    }
+  );
 }
 
 export function openTerminalSocket(wsPath: string): WebSocket {
@@ -1430,6 +1496,8 @@ export interface AiTerminalResult {
   sessionId: string;
   content: string;
   transcript: string;
+  changedFiles: string[];
+  verification: string[];
   exitCode: number | null;
   signal: number | string | null;
 }

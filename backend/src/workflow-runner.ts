@@ -599,7 +599,6 @@ async function executeAgentNode(
   let result = null as Awaited<ReturnType<typeof runAgentTerminal>> | null;
   let raw = "";
   let terminalFailure: AgentTerminalFailure | null = null;
-  let retainedOutput = "";
   let terminalTranscript = "";
   const retries = agentRetryCount(node);
   const retryForever = agentRetryForever(node);
@@ -647,14 +646,6 @@ async function executeAgentNode(
     terminalFailure = classifyAgentTerminalResultFailure(result, currentPrompt);
     if (!terminalFailure.failed) break;
     if (!shouldRetryAgentTerminalFailure(terminalFailure, attempt, retries, retryForever)) break;
-    if (terminalFailure.modelOutput) {
-      retainedOutput = appendBoundedJoinedText(
-        retainedOutput,
-        terminalFailure.modelOutput,
-        AGENT_RETAINED_OUTPUT_CHAR_LIMIT,
-        AGENT_RETAINED_OUTPUT_TRUNCATION_TEXT
-      );
-    }
     attempt += 1;
     currentPrompt = nextAgentRetryPrompt(originalTerminalPrompt, terminalFailure);
     await sleep(1_000, abort.signal);
@@ -693,14 +684,6 @@ async function executeAgentNode(
       },
     };
   }
-  if (retainedOutput) {
-    raw = appendBoundedJoinedText(
-      retainedOutput,
-      raw,
-      AGENT_RETAINED_OUTPUT_CHAR_LIMIT,
-      AGENT_RETAINED_OUTPUT_TRUNCATION_TEXT
-    );
-  }
   const toolRun = await maybeRunAgentMcpToolCalls(
     record,
     node,
@@ -710,7 +693,13 @@ async function executeAgentNode(
     (entry) => appendRunLog(logs, entry)
   );
   if (toolRun) raw = toolRun.raw;
-  const output = agentOutput(node, raw, record);
+  const output = agentOutput(
+    node,
+    raw,
+    record,
+    result.changedFiles,
+    result.verification
+  );
   const finalDetails = details.snapshot("success", Date.now());
   finalDetails.terminalSessionId = finalDetails.terminalSessionId ?? result.sessionId;
   if (terminalTranscript) finalDetails.transcript = terminalTranscript;
@@ -1502,22 +1491,34 @@ function extractMcpToolCalls(raw: string): Array<{ name: string; arguments: Reco
   return calls;
 }
 
-function agentOutput(node: WorkflowNode, raw: string, record: WorkflowRecord): WorkflowBlockOutput {
+function agentOutput(
+  node: WorkflowNode,
+  raw: string,
+  record: WorkflowRecord,
+  discoveredChangedFiles: string[] = [],
+  discoveredVerification: string[] = []
+): WorkflowBlockOutput {
+  const changedFiles = uniqueStrings([
+    ...discoveredChangedFiles,
+    ...inferChangedFiles(record),
+  ]);
+  const verification = uniqueStrings(discoveredVerification);
   const parsed = parseJsonObject(raw);
   if (parsed) {
     return normalizeOutputObject(parsed, {
       type: node.providerKind === "claude-cli" ? "claude" : "codex",
       status: "success",
       text: textFromOutput(parsed) || raw.trim(),
-      CHANGED_FILES: [],
+      CHANGED_FILES: changedFiles,
+      VERIFICATION: verification,
     });
   }
   return {
     type: node.providerKind === "claude-cli" ? "claude" : "codex",
     status: "success",
     text: raw.trim(),
-    CHANGED_FILES: inferChangedFiles(record),
-    VERIFICATION: [],
+    CHANGED_FILES: changedFiles,
+    VERIFICATION: verification,
   };
 }
 
@@ -1529,9 +1530,18 @@ function normalizeOutputObject(
     ...defaults,
     ...value,
     CHANGED_FILES: Array.isArray(value.CHANGED_FILES)
+      && value.CHANGED_FILES.length > 0
       ? value.CHANGED_FILES
       : defaults.CHANGED_FILES,
+    VERIFICATION: Array.isArray(value.VERIFICATION)
+      && value.VERIFICATION.length > 0
+      ? value.VERIFICATION
+      : defaults.VERIFICATION,
   };
+}
+
+function uniqueStrings(values: unknown[]): string[] {
+  return [...new Set(values.filter((value): value is string => typeof value === "string" && !!value.trim()).map((value) => value.trim()))];
 }
 
 function stringifyBlockOutput(output: WorkflowBlockOutput): string {

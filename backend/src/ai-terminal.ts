@@ -9,6 +9,19 @@ import {
 } from "./pty.js";
 import type { WorkspaceInfo } from "./workspace.js";
 import type { CliProviderKind } from "./ai-cli.js";
+import {
+  captureWorkspaceChanges,
+  changedWorkspaceFiles,
+  type WorkspaceChangeBaseline,
+} from "./workspace-change-tracker.js";
+import {
+  AgentTerminalConversationCollector,
+  cleanAgentTerminalConversation,
+  extractAgentRunMetadata,
+  extractLastClaudeAnswer,
+  extractLastStructuredClaudeAnswer,
+  readClaudeSessionConversation,
+} from "./terminal-conversation.js";
 
 export type ClaudePermissionMode =
   | "default"
@@ -41,6 +54,7 @@ export type AgentTerminalStatus =
   | "prompt-timeout"
   | "waiting-for-choice"
   | "ready-for-success"
+  | "auto-error"
   | "auto-finished"
   | "manual-success"
   | "exited";
@@ -76,6 +90,8 @@ export interface AgentTerminalResult {
   sessionId: string;
   content: string;
   transcript: string;
+  changedFiles: string[];
+  verification: string[];
   exitCode: number | null;
   signal: number | string | null;
 }
@@ -123,6 +139,9 @@ const controls = new Map<string, AgentTerminalControl>();
 export async function runAgentTerminal(
   opts: AgentTerminalOptions
 ): Promise<AgentTerminalResult> {
+  const workspaceBaseline = await captureWorkspaceChanges(opts.workspace.path).catch(
+    () => null as WorkspaceChangeBaseline | null
+  );
   const session = createSession({
     workspace: opts.workspace,
     shell: platform === "windows" ? "powershell" : "bash",
@@ -143,6 +162,7 @@ export async function runAgentTerminal(
   opts.onFrame?.({ type: "session", sessionId: session.id });
 
   let transcript = "";
+  const conversation = new AgentTerminalConversationCollector(opts.prompt);
   let exitCode: number | null = null;
   let exitSignal: number | string | null = null;
   let exited = false;
@@ -155,6 +175,7 @@ export async function runAgentTerminal(
     if (frame.type === "output") {
       lastOutputAt = Date.now();
       transcript = appendBoundedTail(transcript, frame.data, MAX_AGENT_TRANSCRIPT_CHARS);
+      conversation.push(frame.data);
       opts.onFrame?.({ type: "output", data: frame.data });
       wakeOutput();
       return;
@@ -168,6 +189,7 @@ export async function runAgentTerminal(
   });
   if (replayed) {
     transcript = appendBoundedTail(transcript, replayed, MAX_AGENT_TRANSCRIPT_CHARS);
+    conversation.push(replayed);
     opts.onFrame?.({ type: "output", data: replayed });
   }
 
@@ -222,12 +244,29 @@ export async function runAgentTerminal(
       (status) => opts.onFrame?.({ type: "status", status }),
       opts.signal
     );
-    if (completion === "idle" || completion === "timeout" || completion === "manual-success") {
-      const content = extractTerminalContent(transcript, opts.prompt, opts.kind);
-      const cleanTranscript = cleanTerminalTranscript(transcript, opts.prompt);
+    if (
+      completion === "idle" ||
+      completion === "timeout" ||
+      completion === "manual-success" ||
+      completion === "terminal-error"
+    ) {
+      const structuredConversation = await structuredAgentConversation(opts);
+      const content =
+        extractLastStructuredClaudeAnswer(structuredConversation) ||
+        extractTerminalContent(transcript, opts.prompt, opts.kind);
+      const cleanTranscript =
+        structuredConversation ||
+        conversation.value() ||
+        cleanTerminalTranscript(transcript, opts.prompt);
+      const metadata = await agentRunMetadata(cleanTranscript, opts, workspaceBaseline);
       opts.onFrame?.({
         type: "status",
-        status: completion === "manual-success" ? "manual-success" : "auto-finished",
+        status:
+          completion === "manual-success"
+            ? "manual-success"
+            : completion === "terminal-error"
+              ? "auto-error"
+              : "auto-finished",
       });
       try {
         session.pty.kill();
@@ -239,20 +278,34 @@ export async function runAgentTerminal(
         sessionId: session.id,
         content,
         transcript: cleanTranscript,
+        changedFiles: metadata.changedFiles,
+        verification: metadata.verification,
         exitCode: 0,
         signal:
           completion === "timeout"
             ? "auto-timeout"
             : completion === "manual-success"
               ? "manual-success"
-              : "auto-finished",
+              : completion === "terminal-error"
+                ? "terminal-error"
+                : "auto-finished",
       };
     }
     opts.onFrame?.({ type: "status", status: "exited" });
+    const structuredConversation = await structuredAgentConversation(opts);
+    const cleanTranscript =
+      structuredConversation ||
+      conversation.value() ||
+      cleanTerminalTranscript(transcript, opts.prompt);
+    const metadata = await agentRunMetadata(cleanTranscript, opts, workspaceBaseline);
     return {
       sessionId: session.id,
-      content: extractTerminalContent(transcript, opts.prompt, opts.kind),
-      transcript: cleanTerminalTranscript(transcript, opts.prompt),
+      content:
+        extractLastStructuredClaudeAnswer(structuredConversation) ||
+        extractTerminalContent(transcript, opts.prompt, opts.kind),
+      transcript: cleanTranscript,
+      changedFiles: metadata.changedFiles,
+      verification: metadata.verification,
       exitCode,
       signal: exitSignal,
     };
@@ -261,6 +314,33 @@ export async function runAgentTerminal(
     controls.delete(session.id);
     detach();
   }
+}
+
+async function agentRunMetadata(
+  conversation: string,
+  opts: AgentTerminalOptions,
+  baseline: WorkspaceChangeBaseline | null
+): Promise<{ changedFiles: string[]; verification: string[] }> {
+  const extracted = extractAgentRunMetadata(conversation, opts.workspace.path);
+  const observed = baseline
+    ? await changedWorkspaceFiles(opts.workspace.path, baseline).catch(() => [])
+    : [];
+  return {
+    changedFiles: [...new Set([...observed, ...extracted.changedFiles])],
+    verification: extracted.verification,
+  };
+}
+
+async function structuredAgentConversation(opts: AgentTerminalOptions): Promise<string> {
+  if (opts.kind !== "claude-cli" || !opts.conversationSessionId) return "";
+  let latest = "";
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const conversation = await readClaudeSessionConversation(opts.conversationSessionId);
+    if (conversation && conversation === latest) return conversation;
+    if (conversation) latest = conversation;
+    if (attempt < 3) await new Promise<void>((resolve) => setTimeout(resolve, 75));
+  }
+  return latest;
 }
 
 export function setAgentTerminalAutoContinue(
@@ -443,11 +523,12 @@ function agentEffortCliValue(
     effort === "low" ||
     effort === "medium" ||
     effort === "high" ||
-    effort === "xhigh"
+    effort === "xhigh" ||
+    effort === "max"
   ) {
     return effort;
   }
-  return effort === "max" ? "high" : null;
+  return null;
 }
 
 function quoteCodexConfig(value: string): string {
@@ -653,6 +734,12 @@ function extractTerminalContent(
     const codexAnswer = stripAgentTerminalChrome(extractCodexFinalAnswer(plain));
     if (isPromptEchoOnly(codexAnswer, prompt)) return "";
     if (codexAnswer) return codexAnswer;
+  }
+  if (kind === "claude-cli") {
+    const conversation = cleanAgentTerminalConversation(transcript, prompt);
+    const finalAnswer = extractLastClaudeAnswer(conversation);
+    if (isPromptEchoOnly(finalAnswer, prompt)) return "";
+    if (finalAnswer) return finalAnswer;
   }
   const clean = stripAgentTerminalChrome(cleanTerminalTranscript(transcript, prompt));
   const output = clean
@@ -1015,7 +1102,9 @@ function waitForAgentCompletion(
   content: () => string,
   onStatus: (status: AgentTerminalStatus) => void,
   signal?: AbortSignal
-): Promise<"exited" | "idle" | "timeout" | "aborted" | "manual-success"> {
+): Promise<
+  "exited" | "idle" | "timeout" | "aborted" | "manual-success" | "terminal-error"
+> {
   if (done()) return Promise.resolve("exited");
   if (signal?.aborted) return Promise.resolve("aborted");
   return new Promise((resolve) => {
@@ -1033,12 +1122,7 @@ function waitForAgentCompletion(
         return;
       }
       const control = controls.get(sessionId);
-      if (!control?.promptSubmittedAt || control.autoFinishPaused) return;
-      if (control.manualSuccessRequested) {
-        clearInterval(timer);
-        resolve("manual-success");
-        return;
-      }
+      if (!control?.promptSubmittedAt) return;
       const now = Date.now();
       const sinceSubmit = now - control.promptSubmittedAt;
       const transcript = rawTranscript();
@@ -1046,6 +1130,17 @@ function waitForAgentCompletion(
       if (nextScreenSignature !== screenSignature) {
         screenSignature = nextScreenSignature;
         screenChangedAt = now;
+      }
+      if (hasAgentTerminalFailure(transcript)) {
+        clearInterval(timer);
+        resolve("terminal-error");
+        return;
+      }
+      if (control.autoFinishPaused) return;
+      if (control.manualSuccessRequested) {
+        clearInterval(timer);
+        resolve("manual-success");
+        return;
       }
       const state = resolveAgentTerminalContentState(kind, transcript, content());
       if (
@@ -1126,6 +1221,36 @@ function waitForAgentCompletion(
       }
     }, 500);
   });
+}
+
+function hasAgentTerminalFailure(rawTranscript: string): boolean {
+  const screen = agentTerminalScreenSignature(rawTranscript);
+  const patterns = [
+    /^[ \t]*(?:[●•*✖×!]\s*)?(?:Please run\s+\/login\s*(?:[·•-]\s*)?)?API Error\s*:\s*\S[^\n]*/im,
+    /^[ \t]*(?:[●•*✖×!]\s*)?Please run\s+\/login\b[^\n]*/im,
+    /^[ \t]*(?:[●•*✖×!]\s*)?Image generation is not enabled for this (?:group|organization|account)\b[^\n]*/im,
+    /^[ \t]*[●•✖×!]\s*(?:(?:fatal|authentication|authorization|request)\s+)?error\s*:\s*\S[^\n]*/im,
+    /\bunexpected status\s+(?:4\d\d|5\d\d)\b[^\n]*/i,
+  ];
+  let lastErrorAt = -1;
+  let lastErrorEnd = -1;
+  for (const pattern of patterns) {
+    const flags = pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`;
+    for (const match of screen.matchAll(new RegExp(pattern.source, flags))) {
+      if ((match.index ?? -1) >= lastErrorAt) {
+        lastErrorAt = match.index ?? -1;
+        lastErrorEnd = lastErrorAt + match[0].length;
+      }
+    }
+  }
+  if (lastErrorAt < 0) return false;
+  return !/(?:^|\n)\s*(?:[\p{S}\p{P}]\s*)?(?:Thought\s+for\s+\d|\p{L}[\p{L}'’-]*(?:…|\.\.\.)?\s*\(\s*\d+(?:\.\d+)?(?:ms|s|m|h)\b)/imu.test(
+    screen.slice(lastErrorEnd)
+  );
+}
+
+export function hasAgentTerminalFailureForTest(rawTranscript: string): boolean {
+  return hasAgentTerminalFailure(rawTranscript);
 }
 
 function agentTerminalScreenSignature(rawTranscript: string): string {
