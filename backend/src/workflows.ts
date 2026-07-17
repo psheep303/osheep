@@ -208,8 +208,8 @@ function sanitizeNode(raw: unknown, index: number): WorkflowNode | null {
     y: asFiniteNumber(r.y, 90),
     status: asStatus(r.status),
   };
-  if (typeof r.summary === "string") node.summary = r.summary;
-  if (typeof r.rawOutput === "string") node.rawOutput = r.rawOutput;
+  if (typeof r.summary === "string") node.summary = sanitizeBlockOutputText(r.summary);
+  if (typeof r.rawOutput === "string") node.rawOutput = sanitizeBlockOutputText(r.rawOutput);
   if (typeof r.error === "string") node.error = r.error;
   if (r.config && typeof r.config === "object" && !Array.isArray(r.config)) {
     node.config = r.config as Record<string, unknown>;
@@ -217,6 +217,19 @@ function sanitizeNode(raw: unknown, index: number): WorkflowNode | null {
   if (typeof r.startedAt === "number") node.startedAt = r.startedAt;
   if (typeof r.completedAt === "number") node.completedAt = r.completedAt;
   return node;
+}
+
+function sanitizeBlockOutputText(value: string): string {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return value;
+    const sanitized = { ...(parsed as Record<string, unknown>) };
+    delete sanitized.CHANGED_FILES;
+    delete sanitized.VERIFICATION;
+    return JSON.stringify(sanitized, null, 2);
+  } catch {
+    return value;
+  }
 }
 
 function sanitizeEdge(raw: unknown, nodeIds: Set<string>): WorkflowEdge | null {

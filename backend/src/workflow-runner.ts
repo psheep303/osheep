@@ -66,6 +66,7 @@ export interface WorkflowRunDetailSnapshot {
   stderr: string;
   transcript: string;
   terminalSessionId?: string;
+  conversationSessionId?: string;
   terminalStatus?: string;
   autoSuccess?: boolean;
   exitCode?: number | null;
@@ -150,6 +151,7 @@ export function createLiveAgentRunDetails(
   const logs = options.logs ?? [];
   const minUpdateIntervalMs = Math.max(0, options.minUpdateIntervalMs ?? 250);
   let terminalSessionId = "";
+  let conversationSessionId = "";
   let terminalStatus = "";
   let lastUpdateAt = 0;
   let queue = Promise.resolve();
@@ -165,6 +167,7 @@ export function createLiveAgentRunDetails(
       completedAt,
       logs,
       terminalSessionId || undefined,
+      conversationSessionId || undefined,
       terminalStatus || undefined,
       options.autoSuccess
     );
@@ -190,6 +193,10 @@ export function createLiveAgentRunDetails(
   const handleFrame = (frame: AgentTerminalFrame) => {
     if (frame.type === "session") {
       terminalSessionId = frame.sessionId;
+      return update("running");
+    }
+    if (frame.type === "conversation") {
+      conversationSessionId = frame.sessionId;
       return update("running");
     }
     if (frame.type === "output") {
@@ -671,8 +678,6 @@ async function executeAgentNode(
         status: "failed",
         text: raw.trim(),
         error: errorMessage,
-        CHANGED_FILES: [],
-        VERIFICATION: [],
       },
       changedFiles: false,
       error: errorMessage,
@@ -693,13 +698,7 @@ async function executeAgentNode(
     (entry) => appendRunLog(logs, entry)
   );
   if (toolRun) raw = toolRun.raw;
-  const output = agentOutput(
-    node,
-    raw,
-    record,
-    result.changedFiles,
-    result.verification
-  );
+  const output = agentOutput(node, raw);
   const finalDetails = details.snapshot("success", Date.now());
   finalDetails.terminalSessionId = finalDetails.terminalSessionId ?? result.sessionId;
   if (terminalTranscript) finalDetails.transcript = terminalTranscript;
@@ -782,7 +781,6 @@ async function executeCommandNode(
       stdout: result.stdout,
       stderr: result.stderr,
       truncated: result.truncated,
-      CHANGED_FILES: [],
     },
     nodePatch: {
       config: {
@@ -820,7 +818,6 @@ async function executeLocalNode(
         value,
         data: value,
         text: value,
-        CHANGED_FILES: [],
       },
     };
   }
@@ -842,7 +839,6 @@ async function executeLocalNode(
         stderr: result.stderr,
         exitCode: result.exitCode,
         truncated: result.truncated,
-        CHANGED_FILES: [],
       },
       error: failed ? `Failed to fetch ${input}.` : undefined,
     };
@@ -885,7 +881,6 @@ async function executeLocalNode(
           exitCode: result.exitCode,
           truncated: result.truncated,
           text: result.stderr || result.stdout,
-          CHANGED_FILES: [],
         },
         error: `${node.title} request failed.`,
       };
@@ -904,7 +899,6 @@ async function executeLocalNode(
             : parsed.body !== undefined
               ? stringifyTemplateValue(parsed.body)
               : result.stdout,
-        CHANGED_FILES: [],
       },
     };
   }
@@ -919,7 +913,6 @@ async function executeLocalNode(
         content: file.content,
         size: file.size,
         mtime: file.mtime,
-        CHANGED_FILES: [],
       },
     };
   }
@@ -937,7 +930,6 @@ async function executeLocalNode(
         path,
         bytes: Buffer.byteLength(content, "utf-8"),
         content,
-        CHANGED_FILES: [path],
       },
       changedFiles: true,
     };
@@ -954,7 +946,6 @@ async function executeLocalNode(
         status: "success",
         data: parsed.value,
         text: textFromAny(parsed.value),
-        CHANGED_FILES: [],
       },
     };
   }
@@ -973,7 +964,6 @@ async function executeLocalNode(
         left,
         right,
         text: result ? "true" : "false",
-        CHANGED_FILES: [],
       },
     };
   }
@@ -993,7 +983,6 @@ async function executeLocalNode(
         data,
         items,
         text: jsonPreview(data),
-        CHANGED_FILES: [],
       },
     };
   }
@@ -1023,7 +1012,6 @@ async function executeLocalNode(
         data: config.mode === "batches" ? batches : items,
         count: items.length,
         text: jsonPreview(config.mode === "batches" ? batches : items),
-        CHANGED_FILES: [],
       },
     };
   }
@@ -1040,7 +1028,6 @@ async function executeLocalNode(
         seconds,
         durationMs,
         text: `Waited ${(durationMs / 1000).toFixed(1)}s.`,
-        CHANGED_FILES: [],
       },
     };
   }
@@ -1064,7 +1051,6 @@ async function executeLocalNode(
         value,
         data: value,
         text: textFromAny(value),
-        CHANGED_FILES: [],
       },
     };
   }
@@ -1077,7 +1063,6 @@ async function executeLocalNode(
         status: "success",
         markdown,
         text: markdown,
-        CHANGED_FILES: [],
       },
     };
   }
@@ -1112,7 +1097,6 @@ async function executeLocalNode(
             inputSchema: tool.inputSchema,
           })),
           text: `Ready. Discovered ${discovery.tools.length} tool${discovery.tools.length === 1 ? "" : "s"}: ${discovery.tools.map((tool) => tool.name).join(", ") || "none"}.`,
-          CHANGED_FILES: [],
         },
         nodePatch: {
           config: {
@@ -1152,7 +1136,6 @@ async function executeLocalNode(
         error: result.error,
         response: result.response,
         text: mcpResultText(result.result, result.error),
-        CHANGED_FILES: [],
       },
       nodePatch: {
         config: {
@@ -1320,7 +1303,6 @@ function triggerOutput(node: WorkflowNode, kind: WorkflowNodeKind): WorkflowBloc
         : kind === "webhook-trigger"
           ? "Webhook trigger evaluated for manual run."
           : "Workflow run trigger fired.",
-    CHANGED_FILES: [],
   };
 }
 
@@ -1364,10 +1346,10 @@ function buildBlockPrompt(
   return [
     `You are executing osheep workflow block "${node.title}".`,
     "Return exactly one JSON object and no markdown fences.",
-    "The JSON object must include: text, status, CHANGED_FILES, VERIFICATION, NEXT.",
-    "Put the user-facing answer in text. CHANGED_FILES and VERIFICATION must be arrays.",
+    "The JSON object must include: text, status, NEXT.",
+    "Put the user-facing answer in text.",
     "If the prompt asks for project work, use your native CLI capabilities to inspect, edit, and verify files in the current project root.",
-    "If the prompt is conversational, answer naturally inside text and keep CHANGED_FILES empty.",
+    "If the prompt is conversational, answer naturally inside text.",
     ...mcpInstructions,
     "",
     "Incoming summaries:",
@@ -1434,11 +1416,9 @@ async function maybeRunAgentMcpToolCalls(
   return {
     raw: JSON.stringify(
       {
-        text: textFromOutput(agentOutput(node, raw, record)),
+        text: textFromOutput(agentOutput(node, raw)),
         status: "success",
         tool_results: results,
-        CHANGED_FILES: [],
-        VERIFICATION: [],
         NEXT: [],
       },
       null,
@@ -1493,32 +1473,20 @@ function extractMcpToolCalls(raw: string): Array<{ name: string; arguments: Reco
 
 function agentOutput(
   node: WorkflowNode,
-  raw: string,
-  record: WorkflowRecord,
-  discoveredChangedFiles: string[] = [],
-  discoveredVerification: string[] = []
+  raw: string
 ): WorkflowBlockOutput {
-  const changedFiles = reportableChangedFiles([
-    ...discoveredChangedFiles,
-    ...inferChangedFiles(record),
-  ]);
-  const verification = uniqueStrings(discoveredVerification);
   const parsed = parseJsonObject(raw);
   if (parsed) {
     return normalizeOutputObject(parsed, {
       type: node.providerKind === "claude-cli" ? "claude" : "codex",
       status: "success",
       text: textFromOutput(parsed) || raw.trim(),
-      CHANGED_FILES: changedFiles,
-      VERIFICATION: verification,
     });
   }
   return {
     type: node.providerKind === "claude-cli" ? "claude" : "codex",
     status: "success",
     text: raw.trim(),
-    CHANGED_FILES: changedFiles,
-    VERIFICATION: verification,
   };
 }
 
@@ -1526,44 +1494,26 @@ function normalizeOutputObject(
   value: WorkflowBlockOutput,
   defaults: WorkflowBlockOutput
 ): WorkflowBlockOutput {
-  const suppliedChangedFiles = Array.isArray(value.CHANGED_FILES)
-    ? reportableChangedFiles(value.CHANGED_FILES)
-    : [];
   return {
-    ...defaults,
-    ...value,
-    CHANGED_FILES: suppliedChangedFiles.length > 0
-      ? suppliedChangedFiles
-      : reportableChangedFiles(
-          Array.isArray(defaults.CHANGED_FILES) ? defaults.CHANGED_FILES : []
-        ),
-    VERIFICATION: Array.isArray(value.VERIFICATION)
-      && value.VERIFICATION.length > 0
-      ? value.VERIFICATION
-      : defaults.VERIFICATION,
+    ...sanitizeBlockOutput(defaults),
+    ...sanitizeBlockOutput(value),
   };
 }
 
-function uniqueStrings(values: unknown[]): string[] {
-  return [...new Set(values.filter((value): value is string => typeof value === "string" && !!value.trim()).map((value) => value.trim()))];
-}
-
-function reportableChangedFiles(values: unknown[]): string[] {
-  return uniqueStrings(values).filter(
-    (value) => !/^\.osheep\/workflows(?:\/|$)/i.test(value.replace(/\\/g, "/"))
-  );
-}
-
-export function reportableChangedFilesForTest(values: unknown[]): string[] {
-  return reportableChangedFiles(values);
+function sanitizeBlockOutput(output: WorkflowBlockOutput): WorkflowBlockOutput {
+  const sanitized = { ...output };
+  delete sanitized.CHANGED_FILES;
+  delete sanitized.VERIFICATION;
+  return sanitized;
 }
 
 function stringifyBlockOutput(output: WorkflowBlockOutput): string {
-  return JSON.stringify(output, null, 2);
+  return JSON.stringify(sanitizeBlockOutput(output), null, 2);
 }
 
 function parseBlockOutput(node: WorkflowNode): WorkflowBlockOutput | null {
-  return parseJsonObject(node.rawOutput || node.summary || "");
+  const output = parseJsonObject(node.rawOutput || node.summary || "");
+  return output ? sanitizeBlockOutput(output) : null;
 }
 
 function parseJsonObject(text: string): WorkflowBlockOutput | null {
@@ -1617,19 +1567,6 @@ function textFromAny(value: unknown): string {
   if (typeof value === "string") return value;
   if (typeof value === "number" || typeof value === "boolean") return String(value);
   return jsonPreview(value);
-}
-
-function inferChangedFiles(record: WorkflowRecord): string[] {
-  const changed = new Set<string>();
-  for (const node of record.nodes) {
-    const output = parseBlockOutput(node);
-    const files = output?.CHANGED_FILES;
-    if (!Array.isArray(files)) continue;
-    for (const file of files) {
-      if (typeof file === "string" && file.trim()) changed.add(file.trim());
-    }
-  }
-  return [...changed];
 }
 
 function resolveBlockTemplate(input: string, record: WorkflowRecord): string {
@@ -1841,7 +1778,6 @@ function outputFromValue(type: string, value: unknown): WorkflowBlockOutput {
       status: "success",
       data: value,
       text: textFromAny(obj.text ?? obj.data ?? value),
-      CHANGED_FILES: [],
     });
   }
   return {
@@ -1849,7 +1785,6 @@ function outputFromValue(type: string, value: unknown): WorkflowBlockOutput {
     status: "success",
     data: value,
     text: textFromAny(value),
-    CHANGED_FILES: [],
   };
 }
 
@@ -2202,6 +2137,7 @@ function agentRunSnapshot(
   completedAt: number | undefined,
   logs: RunLogEntry[],
   terminalSessionId?: string,
+  conversationSessionId?: string,
   terminalStatus?: string,
   autoSuccess?: boolean
 ): WorkflowRunDetailSnapshot {
@@ -2224,6 +2160,7 @@ function agentRunSnapshot(
   };
   if (completedAt !== undefined) snapshot.durationMs = Math.max(0, completedAt - startedAt);
   if (terminalSessionId) snapshot.terminalSessionId = terminalSessionId;
+  if (conversationSessionId) snapshot.conversationSessionId = conversationSessionId;
   if (terminalStatus) snapshot.terminalStatus = terminalStatus;
   if (autoSuccess !== undefined) snapshot.autoSuccess = autoSuccess;
   return snapshot;

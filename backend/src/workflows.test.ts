@@ -38,3 +38,28 @@ test("workflow preserves input node kinds", async () => {
   assert.equal(loaded.nodes[0]?.kind, "input");
   assert.equal(loaded.nodes[0]?.prompt, "hello");
 });
+
+test("workflow loading removes legacy changed-file and verification output fields", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-workflow-output-"));
+  const created = await createWorkflow(root, {});
+  const legacyOutput = JSON.stringify({
+    type: "codex",
+    status: "success",
+    text: "done",
+    CHANGED_FILES: ["weather.py"],
+    VERIFICATION: [],
+  });
+
+  await saveWorkflow(root, {
+    ...created,
+    nodes: created.nodes.map((node, index) =>
+      index === 1 ? { ...node, rawOutput: legacyOutput, summary: legacyOutput } : node
+    ),
+  });
+  const loaded = await getWorkflow(root, created.id);
+  const output = JSON.parse(loaded.nodes[1]?.rawOutput ?? "{}") as Record<string, unknown>;
+
+  assert.equal(output.text, "done");
+  assert.equal("CHANGED_FILES" in output, false);
+  assert.equal("VERIFICATION" in output, false);
+});

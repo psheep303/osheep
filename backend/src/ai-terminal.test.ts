@@ -14,6 +14,7 @@ import {
   finishAgentTerminalSuccess,
   hasAgentTerminalFailureForTest,
   resolveAgentTerminalContentStateForTest,
+  selectConversationSessionIdForTest,
   shouldFollowUpPastedPromptSubmit,
   shouldAutoEnterChoice,
   shouldExposeWaitingForChoice,
@@ -135,6 +136,54 @@ test("Claude retry resumes the exact conversation session", () => {
       resumeConversation: true,
     }).command,
     `claude --resume ${sessionId} --effort low --model gpt-5.4`
+  );
+});
+
+test("conversation session selection prefers the expected id and newest new Codex session", () => {
+  const project = "D:\\project\\demo";
+  const sessions = [
+    {
+      app: "codex" as const,
+      id: "session-old",
+      title: "Old",
+      cwd: project,
+      createdAt: 1_000,
+      updatedAt: 1_000,
+      size: 10,
+    },
+    {
+      app: "codex" as const,
+      id: "session-new",
+      title: "New",
+      cwd: project,
+      createdAt: 3_000,
+      updatedAt: 3_200,
+      size: 20,
+    },
+    {
+      app: "codex" as const,
+      id: "session-sibling",
+      title: "Sibling",
+      cwd: "D:\\project\\other",
+      createdAt: 4_000,
+      updatedAt: 4_000,
+      size: 30,
+    },
+  ];
+
+  assert.equal(
+    selectConversationSessionIdForTest(sessions, project, ["session-old"], 2_500),
+    "session-new"
+  );
+  assert.equal(
+    selectConversationSessionIdForTest(
+      sessions,
+      project,
+      ["session-old", "session-new"],
+      2_500,
+      "session-old"
+    ),
+    "session-old"
   );
 });
 

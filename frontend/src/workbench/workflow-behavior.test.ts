@@ -28,8 +28,6 @@ test("unrun Claude output keeps known values and typed empty values", async () =
     type: "claude",
     status: "",
     text: "",
-    CHANGED_FILES: [],
-    VERIFICATION: [],
   });
 });
 
@@ -63,7 +61,8 @@ test("every workflow kind has a standard empty output", async () => {
     const output = behavior.emptyBlockOutput(node(kind) as never);
     assert.equal(output.type, type, `${kind} should expose its concrete output type`);
     assert.equal(output.status, "", `${kind} should have an empty runtime status`);
-    assert.deepEqual(output.CHANGED_FILES, [], `${kind} should have an empty file list`);
+    assert.equal("CHANGED_FILES" in output, false, `${kind} should omit CHANGED_FILES`);
+    assert.equal("VERIFICATION" in output, false, `${kind} should omit VERIFICATION`);
   }
 });
 
@@ -98,6 +97,25 @@ test("inspector output prefers real node state before the empty schema", async (
   assert.equal(
     behavior.blockOutputText(base as never),
     JSON.stringify(behavior.emptyBlockOutput(base as never), null, 2)
+  );
+});
+
+test("inspector removes legacy changed-file and verification metadata", async () => {
+  const behavior = await loadBehavior();
+  assert.ok(behavior, "workflow behavior module should exist");
+  const base = node("agent", "codex-cli");
+  assert.equal(
+    behavior.blockOutputText({
+      ...base,
+      rawOutput: JSON.stringify({
+        type: "codex",
+        status: "success",
+        text: "done",
+        CHANGED_FILES: ["weather.py"],
+        VERIFICATION: [],
+      }),
+    } as never),
+    JSON.stringify({ type: "codex", status: "success", text: "done" }, null, 2)
   );
 });
 
