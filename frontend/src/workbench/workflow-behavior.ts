@@ -28,19 +28,16 @@ export function emptyBlockOutput(node: WorkflowNode): WorkflowBlockOutput {
         value: "",
         data: "",
         text: "",
-        CHANGED_FILES: [],
       };
     case "agent":
       return {
         type: node.providerKind === "claude-cli" ? "claude" : "codex",
         status: "",
         text: "",
-        CHANGED_FILES: [],
-        VERIFICATION: [],
       };
     case "trigger":
     case "manual-trigger":
-      return { type: kind, status: "", id: blockId(node), text: "", CHANGED_FILES: [] };
+      return { type: kind, status: "", id: blockId(node), text: "" };
     case "cron":
       return {
         type: kind,
@@ -48,7 +45,6 @@ export function emptyBlockOutput(node: WorkflowNode): WorkflowBlockOutput {
         id: blockId(node),
         schedule: configString(node, "cron"),
         text: "",
-        CHANGED_FILES: [],
       };
     case "webhook-trigger":
       return {
@@ -57,7 +53,6 @@ export function emptyBlockOutput(node: WorkflowNode): WorkflowBlockOutput {
         id: blockId(node),
         webhookPath: configString(node, "path"),
         text: "",
-        CHANGED_FILES: [],
       };
     case "command":
       return {
@@ -70,7 +65,6 @@ export function emptyBlockOutput(node: WorkflowNode): WorkflowBlockOutput {
         stdout: "",
         stderr: "",
         truncated: null,
-        CHANGED_FILES: [],
       };
     case "web":
       return {
@@ -81,7 +75,6 @@ export function emptyBlockOutput(node: WorkflowNode): WorkflowBlockOutput {
         stderr: "",
         exitCode: null,
         truncated: null,
-        CHANGED_FILES: [],
       };
     case "http-request":
       return {
@@ -97,10 +90,9 @@ export function emptyBlockOutput(node: WorkflowNode): WorkflowBlockOutput {
         body: null,
         text: "",
         truncated: null,
-        CHANGED_FILES: [],
       };
     case "set":
-      return { type: kind, status: "", data: null, text: "", CHANGED_FILES: [] };
+      return { type: kind, status: "", data: null, text: "" };
     case "if":
       return {
         type: kind,
@@ -110,7 +102,6 @@ export function emptyBlockOutput(node: WorkflowNode): WorkflowBlockOutput {
         left: null,
         right: null,
         text: "",
-        CHANGED_FILES: [],
       };
     case "merge": {
       const mode = configString(node, "mode", "object") === "array" ? "array" : "object";
@@ -121,11 +112,10 @@ export function emptyBlockOutput(node: WorkflowNode): WorkflowBlockOutput {
         data: mode === "array" ? [] : {},
         items: [],
         text: "",
-        CHANGED_FILES: [],
       };
     }
     case "code":
-      return { type: kind, status: "", data: null, text: "", CHANGED_FILES: [] };
+      return { type: kind, status: "", data: null, text: "" };
     case "loop-items": {
       const mode = configString(node, "mode", "items") === "batches" ? "batches" : "items";
       return {
@@ -138,7 +128,6 @@ export function emptyBlockOutput(node: WorkflowNode): WorkflowBlockOutput {
         data: [],
         count: null,
         text: "",
-        CHANGED_FILES: [],
       };
     }
     case "wait":
@@ -148,7 +137,6 @@ export function emptyBlockOutput(node: WorkflowNode): WorkflowBlockOutput {
         seconds: configNumber(node, "seconds", 1),
         durationMs: null,
         text: "",
-        CHANGED_FILES: [],
       };
     case "json":
       return {
@@ -159,7 +147,6 @@ export function emptyBlockOutput(node: WorkflowNode): WorkflowBlockOutput {
         value: null,
         data: null,
         text: "",
-        CHANGED_FILES: [],
       };
     case "file-read":
       return {
@@ -169,7 +156,6 @@ export function emptyBlockOutput(node: WorkflowNode): WorkflowBlockOutput {
         content: "",
         size: null,
         mtime: null,
-        CHANGED_FILES: [],
       };
     case "file-write":
       return {
@@ -178,10 +164,9 @@ export function emptyBlockOutput(node: WorkflowNode): WorkflowBlockOutput {
         path: "",
         bytes: null,
         content: "",
-        CHANGED_FILES: [],
       };
     case "markdown":
-      return { type: kind, status: "", markdown: "", text: "", CHANGED_FILES: [] };
+      return { type: kind, status: "", markdown: "", text: "" };
     case "mcp":
       return {
         type: kind,
@@ -194,18 +179,26 @@ export function emptyBlockOutput(node: WorkflowNode): WorkflowBlockOutput {
         error: {},
         response: {},
         text: "",
-        CHANGED_FILES: [],
       };
   }
 }
 
 export function blockOutputText(node: WorkflowNode): string {
-  return (
-    node.rawOutput ||
-    node.summary ||
-    node.error ||
-    JSON.stringify(emptyBlockOutput(node), null, 2)
-  );
+  const output = node.rawOutput || node.summary;
+  if (output) {
+    try {
+      const parsed = JSON.parse(output) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        const sanitized = { ...(parsed as Record<string, unknown>) };
+        delete sanitized.CHANGED_FILES;
+        delete sanitized.VERIFICATION;
+        return JSON.stringify(sanitized, null, 2);
+      }
+    } catch {
+      return output;
+    }
+  }
+  return node.error || JSON.stringify(emptyBlockOutput(node), null, 2);
 }
 
 interface WorkflowRefreshState {

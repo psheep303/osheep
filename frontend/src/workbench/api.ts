@@ -1473,7 +1473,7 @@ export async function aiChatStream(
 }
 
 export interface AiTerminalFrame {
-  type: "session" | "output" | "status" | "exit";
+  type: "session" | "conversation" | "output" | "status" | "exit";
   sessionId?: string;
   data?: string;
   status?:
@@ -1485,6 +1485,7 @@ export interface AiTerminalFrame {
       | "prompt-timeout"
       | "waiting-for-choice"
       | "ready-for-success"
+      | "auto-error"
       | "auto-finished"
       | "manual-success"
       | "exited";
@@ -1494,6 +1495,7 @@ export interface AiTerminalFrame {
 
 export interface AiTerminalResult {
   sessionId: string;
+  conversationSessionId?: string;
   content: string;
   transcript: string;
   changedFiles: string[];
