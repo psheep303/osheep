@@ -49,6 +49,28 @@ Default local URLs:
 - Backend: `http://127.0.0.1:4178`
 - Frontend: `http://127.0.0.1:5173`
 
+## Windows Desktop
+
+The Windows application uses a Tauri/WebView2 shell and keeps the existing Node
+backend as a bundled sidecar. It does not bundle Chromium, Codex, Claude Code,
+Git, or Docker.
+
+After installing Rust and Visual Studio 2022 Build Tools with the C++ desktop
+workload, run:
+
+```powershell
+.\desktop-dev.cmd
+```
+
+Build the per-user NSIS installer with:
+
+```powershell
+.\desktop-build.cmd
+```
+
+See [`desktop/README.md`](desktop/README.md) for prerequisites, packaging, logs,
+runtime data, and remote mode.
+
 ## Verification
 
 ```powershell

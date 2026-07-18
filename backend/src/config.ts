@@ -14,6 +14,7 @@ export interface Config {
   templatesRoot: string;
   systemTemplatesRoot: string;
   developerMode: boolean;
+  frontendRoot?: string;
 }
 
 function readEnvInt(key: string, fallback: number): number {
@@ -45,6 +46,9 @@ export const config: Config = {
       path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "template-library", "system")
   ),
   developerMode: /^(1|true|yes)$/i.test(process.env.OSHEEP_DEVELOPER_MODE ?? ""),
+  frontendRoot: process.env.OSHEEP_FRONTEND_ROOT?.trim()
+    ? path.resolve(process.env.OSHEEP_FRONTEND_ROOT)
+    : undefined,
 };
 
 export const platform: "windows" | "macos" | "linux" =
