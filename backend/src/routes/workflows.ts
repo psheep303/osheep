@@ -14,6 +14,7 @@ import {
   stopWorkflowRun,
   stopWorkflowRunAndWait,
 } from "../workflow-runner.js";
+import { updateTemplateFromWorkflow } from "../templates.js";
 
 export async function registerWorkflowRoutes(app: FastifyInstance) {
   app.get<{ Params: { id: string } }>(
@@ -38,7 +39,8 @@ export async function registerWorkflowRoutes(app: FastifyInstance) {
     Body: Partial<WorkflowRecord>;
   }>("/api/workspaces/:id/workflows", async (req) => {
     const ws = await resolveWorkspace(req.params.id);
-    return await createWorkflow(ws.path, req.body ?? {});
+    const { templateBinding: _templateBinding, ...body } = req.body ?? {};
+    return await createWorkflow(ws.path, body);
   });
 
   app.put<{
@@ -50,7 +52,9 @@ export async function registerWorkflowRoutes(app: FastifyInstance) {
     if (!body || body.id !== req.params.wid) {
       throw errors.invalidPath("workflow id does not match URL");
     }
-    return await saveWorkflow(ws.path, body);
+    const saved = await saveWorkflow(ws.path, body);
+    await updateTemplateFromWorkflow(saved);
+    return saved;
   });
 
   app.post<{

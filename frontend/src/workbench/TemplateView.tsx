@@ -4,6 +4,7 @@ import { ContextMenu } from "./ContextMenu";
 import {
   createWorkflow,
   deleteWorkflowTemplate as apiDeleteWorkflowTemplate,
+  editWorkflowTemplate,
   getWorkflowTemplate,
   listWorkflowTemplates,
   updateWorkflowTemplateIcon,
@@ -17,12 +18,16 @@ interface TemplateViewProps {
   activeTemplateId: string | null;
   onOpenTemplate: (source: TemplateSource, templateId: string) => void;
   onTemplateDeleted: (source: TemplateSource, templateId: string) => void;
+  developerMode: boolean;
+  refreshSignal: number;
 }
 
 export function TemplateView({
   activeTemplateId,
   onOpenTemplate,
   onTemplateDeleted,
+  developerMode,
+  refreshSignal,
 }: TemplateViewProps) {
   const [section, setSection] = useState<TemplateSource>("system");
   const [templates, setTemplates] = useState<{
@@ -37,6 +42,7 @@ export function TemplateView({
     y: number;
     templateId: string;
     title: string;
+    source: TemplateSource;
   } | null>(null);
 
   const reload = useCallback(async () => {
@@ -53,7 +59,7 @@ export function TemplateView({
 
   useEffect(() => {
     void reload();
-  }, [reload]);
+  }, [reload, refreshSignal]);
 
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -64,11 +70,15 @@ export function TemplateView({
     );
   }, [query, section, templates]);
 
-  const deleteTemplate = async (templateId: string, title: string) => {
-    if (!window.confirm(`Delete user template "${title}"?`)) return;
+  const deleteTemplate = async (
+    source: TemplateSource,
+    templateId: string,
+    title: string
+  ) => {
+    if (!window.confirm(`Delete ${source} template "${title}"?`)) return;
     try {
-      await apiDeleteWorkflowTemplate(templateId);
-      onTemplateDeleted("user", templateId);
+      await apiDeleteWorkflowTemplate(source, templateId);
+      onTemplateDeleted(source, templateId);
       await reload();
     } catch (cause) {
       setError((cause as Error).message);
@@ -77,7 +87,10 @@ export function TemplateView({
 
   return (
     <div className="template-sidebar">
-      <div className="template-sidebar__brand">TEMPLATES</div>
+      <div className="template-sidebar__brand">
+        TEMPLATES
+        {developerMode && <span>DEVELOPER</span>}
+      </div>
       <div className="template-sidebar__nav">
         <button
           className={section === "system" ? "is-active" : ""}
@@ -124,7 +137,7 @@ export function TemplateView({
             }
             onClick={() => onOpenTemplate(template.source, template.id)}
             onContextMenu={(event) => {
-              if (template.source !== "user") return;
+              if (template.source === "system" && !developerMode) return;
               event.preventDefault();
               event.stopPropagation();
               setMenu({
@@ -132,6 +145,7 @@ export function TemplateView({
                 y: event.clientY,
                 templateId: template.id,
                 title: template.title,
+                source: template.source,
               });
             }}
           >
@@ -152,9 +166,10 @@ export function TemplateView({
             {
               items: [
                 {
-                  label: "删除模板",
+                  label: menu.source === "system" ? "删除内置模板" : "删除模板",
                   danger: true,
-                  onSelect: () => void deleteTemplate(menu.templateId, menu.title),
+                  onSelect: () =>
+                    void deleteTemplate(menu.source, menu.templateId, menu.title),
                 },
               ],
             },
@@ -170,8 +185,13 @@ interface TemplateDetailProps {
   workspaceId: string | null;
   source: TemplateSource;
   templateId: string;
-  onOpenWorkflow: (workflowId: string) => void;
+  onOpenWorkflow: (
+    workflowId: string,
+    templateBinding?: { source: TemplateSource; id: string }
+  ) => void;
   onWorkflowCreated: () => void;
+  developerMode: boolean;
+  onTemplateChanged: () => void;
 }
 
 export function TemplateDetail({
@@ -180,12 +200,15 @@ export function TemplateDetail({
   templateId,
   onOpenWorkflow,
   onWorkflowCreated,
+  developerMode,
+  onTemplateChanged,
 }: TemplateDetailProps) {
   const [template, setTemplate] = useState<WorkflowTemplate | null>(null);
   const [loading, setLoading] = useState(true);
   const [using, setUsing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
+  const templateEditable = source === "user" || developerMode;
 
   useEffect(() => {
     let cancelled = false;
@@ -227,8 +250,27 @@ export function TemplateDetail({
     }
   };
 
+  const editTemplate = async () => {
+    if (!workspaceId || !template || !templateEditable) return;
+    setUsing(true);
+    setError(null);
+    try {
+      const workflow = await editWorkflowTemplate(
+        workspaceId,
+        template.source,
+        template.id
+      );
+      onWorkflowCreated();
+      onOpenWorkflow(workflow.id, workflow.templateBinding);
+    } catch (cause) {
+      setError((cause as Error).message);
+    } finally {
+      setUsing(false);
+    }
+  };
+
   const uploadIcon = async (file: File | undefined) => {
-    if (!file || !template || template.source !== "user") return;
+    if (!file || !template || !templateEditable) return;
     if (!file.type.startsWith("image/")) {
       setError("Please choose an image file.");
       return;
@@ -239,8 +281,13 @@ export function TemplateDetail({
     }
     try {
       const icon = await readAsDataUrl(file);
-      const updated = await updateWorkflowTemplateIcon(template.id, icon);
+      const updated = await updateWorkflowTemplateIcon(
+        template.source,
+        template.id,
+        icon
+      );
       setTemplate(updated);
+      onTemplateChanged();
     } catch (cause) {
       setError((cause as Error).message);
     }
@@ -253,12 +300,12 @@ export function TemplateDetail({
     <div className="template-detail">
       <div className="template-detail__hero">
         <button
-          className={"template-detail__avatar" + (template.source === "user" ? " is-editable" : "")}
-          onClick={() => template.source === "user" && fileRef.current?.click()}
-          title={template.source === "user" ? "Upload a custom icon" : template.title}
+          className={"template-detail__avatar" + (templateEditable ? " is-editable" : "")}
+          onClick={() => templateEditable && fileRef.current?.click()}
+          title={templateEditable ? "Upload a custom icon" : template.title}
         >
           <TemplateAvatar template={template} large />
-          {template.source === "user" && <span>Change icon</span>}
+          {templateEditable && <span>Change icon</span>}
         </button>
         <input
           ref={fileRef}
@@ -287,6 +334,15 @@ export function TemplateDetail({
           >
             {using ? "Adding..." : "Use this template"}
           </button>
+          {templateEditable && (
+            <button
+              className="template-detail__edit"
+              disabled={!workspaceId || using}
+              onClick={() => void editTemplate()}
+            >
+              Edit workflow
+            </button>
+          )}
           {!workspaceId && <small className="template-detail__workspace-hint">Open a workspace to use this template.</small>}
         </div>
       </div>
