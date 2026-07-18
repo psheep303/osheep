@@ -589,6 +589,8 @@ export interface GitCommit {
 export interface GitLog {
   commits: GitCommit[];
   head: string | null;
+  currentRef: string | null;
+  currentRemoteRef: string | null;
 }
 
 export async function getGitLog(
