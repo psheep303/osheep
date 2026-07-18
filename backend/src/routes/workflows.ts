@@ -12,6 +12,7 @@ import {
 import {
   startWorkflowRun,
   stopWorkflowRun,
+  stopWorkflowRunAndWait,
 } from "../workflow-runner.js";
 
 export async function registerWorkflowRoutes(app: FastifyInstance) {
@@ -73,6 +74,7 @@ export async function registerWorkflowRoutes(app: FastifyInstance) {
   app.delete<{ Params: { id: string; wid: string } }>(
     "/api/workspaces/:id/workflows/:wid",
     async (req) => {
+      await stopWorkflowRunAndWait(req.params.id, req.params.wid);
       const ws = await resolveWorkspace(req.params.id);
       await deleteWorkflow(ws.path, req.params.wid);
       return { ok: true };
