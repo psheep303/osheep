@@ -5,6 +5,7 @@ import {
   deleteWorkflow as apiDeleteWorkflow,
   getWorkflow as apiGetWorkflow,
   listWorkflows as apiListWorkflows,
+  saveWorkflowAsTemplate as apiSaveWorkflowAsTemplate,
   saveWorkflow as apiSaveWorkflow,
   type WorkflowRecord,
   type WorkflowSummary,
@@ -15,6 +16,7 @@ interface AiPanelProps {
   onOpenWorkflow: (workflowId: string) => void;
   activeWorkflowId: string | null;
   refreshSignal: number;
+  onWorkflowDeleted: (workflowId: string) => void;
 }
 
 export function AiPanel({
@@ -22,10 +24,12 @@ export function AiPanel({
   onOpenWorkflow,
   activeWorkflowId,
   refreshSignal,
+  onWorkflowDeleted,
 }: AiPanelProps) {
   const [workflows, setWorkflows] = useState<WorkflowSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [searchText, setSearchText] = useState("");
   const [copiedWorkflow, setCopiedWorkflow] = useState<WorkflowRecord | null>(null);
   const [workflowMenu, setWorkflowMenu] = useState<{
@@ -37,6 +41,7 @@ export function AiPanel({
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const renameCommitRef = useRef<string | null>(null);
+  const importInputRef = useRef<HTMLInputElement | null>(null);
 
   const reload = useCallback(async () => {
     if (!workspaceId) {
@@ -64,6 +69,7 @@ export function AiPanel({
     setWorkflowMenu(null);
     setPanelMenu(null);
     setRenamingId(null);
+    setNotice(null);
   }, [workspaceId]);
 
   useEffect(() => {
@@ -98,6 +104,7 @@ export function AiPanel({
     if (!window.confirm(`Delete workflow "${title}"?`)) return;
     try {
       await apiDeleteWorkflow(workspaceId, id);
+      onWorkflowDeleted(id);
       await reload();
     } catch (e) {
       setError((e as Error).message);
@@ -120,6 +127,50 @@ export function AiPanel({
         workspaceId,
         workflowCopy(copiedWorkflow, workflows)
       );
+      await reload();
+      onOpenWorkflow(workflow.id);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  const handleExport = async (id: string) => {
+    if (!workspaceId) return;
+    try {
+      const workflow = await apiGetWorkflow(workspaceId, id);
+      const blob = new Blob([JSON.stringify(workflow, null, 2)], {
+        type: "application/json",
+      });
+      const href = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = href;
+      anchor.download = `${safeFileName(workflow.title || "workflow")}.json`;
+      anchor.click();
+      URL.revokeObjectURL(href);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  const handleSaveToTemplate = async (id: string) => {
+    if (!workspaceId) return;
+    try {
+      await apiSaveWorkflowAsTemplate(workspaceId, id);
+      setNotice("Saved to user templates.");
+      window.setTimeout(() => setNotice(null), 2400);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  const handleImport = async (file: File | undefined) => {
+    if (!workspaceId || !file) return;
+    try {
+      const parsed = JSON.parse(await file.text()) as Partial<WorkflowRecord>;
+      if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.nodes)) {
+        throw new Error("The selected file is not a valid workflow JSON file.");
+      }
+      const workflow = await apiCreateWorkflow(workspaceId, importedWorkflow(parsed));
       await reload();
       onOpenWorkflow(workflow.id);
     } catch (e) {
@@ -165,6 +216,15 @@ export function AiPanel({
               label: "重命名",
               disabled: menuWorkflow.status === "running",
               onSelect: () => beginRename(menuWorkflow),
+            },
+            {
+              label: "导出工作流",
+              onSelect: () => void handleExport(menuWorkflow.id),
+            },
+            {
+              label: "保存到模板",
+              disabled: menuWorkflow.status === "running",
+              onSelect: () => void handleSaveToTemplate(menuWorkflow.id),
             },
           ],
         },
@@ -214,6 +274,26 @@ export function AiPanel({
         <span>New workflow</span>
       </button>
 
+      <button
+        className="ai-panel__new ai-panel__import"
+        disabled={!workspaceId}
+        onClick={() => importInputRef.current?.click()}
+        title="Import workflow JSON"
+      >
+        <ImportIcon />
+        <span>Import workflow</span>
+      </button>
+      <input
+        ref={importInputRef}
+        type="file"
+        accept="application/json,.json"
+        hidden
+        onChange={(event) => {
+          void handleImport(event.target.files?.[0]);
+          event.currentTarget.value = "";
+        }}
+      />
+
       <div className="ai-panel__search">
         <SearchIcon />
         <input
@@ -232,6 +312,7 @@ export function AiPanel({
           </button>
         </div>
       )}
+      {notice && <div className="ai-panel__notice">{notice}</div>}
 
       {!workspaceId && (
         <div className="ai-panel__empty">Open a workspace first</div>
@@ -380,6 +461,7 @@ function workflowCopy(
   const title = nextCopyTitle(source.title || "Workflow", workflows);
   return {
     title,
+    readme: source.readme,
     nodes: source.nodes.map((node) => {
       const { runDetails: _runDetails, ...config } = node.config ?? {};
       return {
@@ -396,6 +478,38 @@ function workflowCopy(
     edges: source.edges.map((edge) => ({ ...edge })),
     runs: [],
   };
+}
+
+function importedWorkflow(source: Partial<WorkflowRecord>): Partial<WorkflowRecord> {
+  return {
+    title:
+      typeof source.title === "string" && source.title.trim()
+        ? source.title.trim()
+        : "Imported workflow",
+    readme: typeof source.readme === "string" ? source.readme : "",
+    nodes: (Array.isArray(source.nodes) ? source.nodes : []).map((node) => {
+      const { runDetails: _runDetails, ...config } = node.config ?? {};
+      return {
+        ...node,
+        status: "idle" as const,
+        summary: "",
+        rawOutput: "",
+        error: "",
+        startedAt: undefined,
+        completedAt: undefined,
+        config,
+      };
+    }),
+    edges: (Array.isArray(source.edges) ? source.edges : []).map((edge) => ({
+      ...edge,
+    })),
+    runs: [],
+  };
+}
+
+function safeFileName(value: string): string {
+  const safe = value.trim().replace(/[<>:"/\\|?*\u0000-\u001f]/g, "-");
+  return safe || "workflow";
 }
 
 function nextCopyTitle(title: string, workflows: WorkflowSummary[]): string {
@@ -429,6 +543,21 @@ function PlusIcon() {
         stroke="currentColor"
         strokeWidth="1.4"
         strokeLinecap="round"
+        fill="none"
+      />
+    </svg>
+  );
+}
+
+function ImportIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden>
+      <path
+        d="M8 2v8m0 0 3-3m-3 3L5 7M3 12.5h10"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinecap="round"
+        strokeLinejoin="round"
         fill="none"
       />
     </svg>

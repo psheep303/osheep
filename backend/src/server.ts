@@ -17,6 +17,7 @@ import { registerMcpRoutes } from "./routes/mcp.js";
 import { registerClaudePluginRoutes } from "./routes/claude-plugins.js";
 import { registerCodexPluginRoutes } from "./routes/codex-plugins.js";
 import { registerAgentSessionRoutes } from "./routes/agent-sessions.js";
+import { registerTemplateRoutes } from "./routes/templates.js";
 
 export async function buildServer() {
   const app = Fastify({
@@ -69,6 +70,7 @@ export async function buildServer() {
   await registerClaudePluginRoutes(app);
   await registerCodexPluginRoutes(app);
   await registerAgentSessionRoutes(app);
+  await registerTemplateRoutes(app);
 
   await ensureWorkspacesRoot();
   return app;

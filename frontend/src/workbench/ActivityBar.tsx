@@ -3,6 +3,7 @@ import { ClaudeLogo, OpenAILogo } from "./BrandIcons";
 
 export type ViewId =
   | "workflow"
+  | "template"
   | "explorer"
   | "search"
   | "git"
@@ -24,6 +25,7 @@ interface Item {
 
 const ITEMS: Item[] = [
   { id: "workflow", label: "Workflow", icon: <WorkflowIcon /> },
+  { id: "template", label: "Templates", icon: <TemplateIcon /> },
   { id: "explorer", label: "资源管理器", icon: <FilesIcon /> },
   { id: "search", label: "搜索", icon: <SearchIcon /> },
   { id: "git", label: "源代码管理", icon: <GitIcon /> },
@@ -82,6 +84,26 @@ function WorkflowIcon() {
       <path d="M8.1 8.2 10.7 15" />
       <path d="M15.9 8.2 13.3 15" />
       <path d="M8.4 7h7.2" />
+    </svg>
+  );
+}
+
+function TemplateIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="22"
+      height="22"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M5 4.5h9.5L19 9v10.5H5z" />
+      <path d="M14.5 4.5V9H19" />
+      <path d="M8 12h8M8 15h6" />
+      <path d="M3 7.5v14h13" opacity=".65" />
     </svg>
   );
 }
