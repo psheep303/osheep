@@ -6,6 +6,7 @@ import {
   getWorkflow as apiGetWorkflow,
   listWorkflows as apiListWorkflows,
   saveWorkflowAsTemplate as apiSaveWorkflowAsTemplate,
+  saveWorkflowAsSystemTemplate as apiSaveWorkflowAsSystemTemplate,
   saveWorkflow as apiSaveWorkflow,
   type WorkflowRecord,
   type WorkflowSummary,
@@ -17,6 +18,8 @@ interface AiPanelProps {
   activeWorkflowId: string | null;
   refreshSignal: number;
   onWorkflowDeleted: (workflowId: string) => void;
+  developerMode: boolean;
+  onTemplatesChanged: () => void;
 }
 
 export function AiPanel({
@@ -25,6 +28,8 @@ export function AiPanel({
   activeWorkflowId,
   refreshSignal,
   onWorkflowDeleted,
+  developerMode,
+  onTemplatesChanged,
 }: AiPanelProps) {
   const [workflows, setWorkflows] = useState<WorkflowSummary[]>([]);
   const [loading, setLoading] = useState(false);
@@ -156,7 +161,20 @@ export function AiPanel({
     if (!workspaceId) return;
     try {
       await apiSaveWorkflowAsTemplate(workspaceId, id);
+      onTemplatesChanged();
       setNotice("Saved to user templates.");
+      window.setTimeout(() => setNotice(null), 2400);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  const handleSaveAsBuiltIn = async (id: string) => {
+    if (!workspaceId || !developerMode) return;
+    try {
+      await apiSaveWorkflowAsSystemTemplate(workspaceId, id);
+      onTemplatesChanged();
+      setNotice("Saved as a built-in template.");
       window.setTimeout(() => setNotice(null), 2400);
     } catch (e) {
       setError((e as Error).message);
@@ -226,6 +244,15 @@ export function AiPanel({
               disabled: menuWorkflow.status === "running",
               onSelect: () => void handleSaveToTemplate(menuWorkflow.id),
             },
+            ...(developerMode
+              ? [
+                  {
+                    label: "保存为内置模板",
+                    disabled: menuWorkflow.status === "running",
+                    onSelect: () => void handleSaveAsBuiltIn(menuWorkflow.id),
+                  },
+                ]
+              : []),
           ],
         },
         {

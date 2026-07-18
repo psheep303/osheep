@@ -3,7 +3,14 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { createWorkflow, getWorkflow, saveWorkflow } from "./workflows.js";
+import {
+  createWorkflow,
+  findWorkflowByTemplateBinding,
+  getWorkflow,
+  listWorkflowIdsByTemplateBinding,
+  listWorkflows,
+  saveWorkflow,
+} from "./workflows.js";
 
 test("workflow node model can be saved as an empty string", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-workflow-model-"));
@@ -74,4 +81,22 @@ test("workflow README is persisted inside the workflow JSON record", async () =>
   const loaded = await getWorkflow(root, created.id);
 
   assert.equal(loaded.readme, "# Purpose\n\nExplain this workflow.");
+});
+
+test("template editing workflows are reusable but hidden from the workflow menu", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-template-editor-"));
+  const created = await createWorkflow(root, {
+    title: "Template editor",
+    templateBinding: { source: "user", id: "tpl_editorflow1" },
+  });
+
+  assert.deepEqual(await listWorkflows(root), []);
+  assert.equal(
+    (await findWorkflowByTemplateBinding(root, "user", "tpl_editorflow1"))?.id,
+    created.id
+  );
+  assert.deepEqual(
+    await listWorkflowIdsByTemplateBinding(root, "user", "tpl_editorflow1"),
+    [created.id]
+  );
 });

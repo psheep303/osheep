@@ -25,6 +25,7 @@ import {
 import {
   getGitDiff,
   getGitStatus,
+  getTemplateCapabilities,
   type AgentSessionSummary,
   type GitStatus,
 } from "./api";
@@ -52,6 +53,10 @@ interface WorkflowTabState {
   kind: "workflow";
   path: string; // __workflow__:<workflowId>
   workflowId: string;
+  templateBinding?: {
+    source: "system" | "user";
+    id: string;
+  };
 }
 
 interface TemplateTabState {
@@ -96,6 +101,22 @@ export function Workbench() {
   const [settings, setSettings] = useState<OsheepSettings>(DEFAULT_SETTINGS);
 
   const [activeView, setActiveView] = useState<ViewId>("workflow");
+  const [developerMode, setDeveloperMode] = useState(false);
+  const [templateRefreshSignal, setTemplateRefreshSignal] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getTemplateCapabilities()
+      .then((capabilities) => {
+        if (!cancelled) setDeveloperMode(capabilities.developerMode);
+      })
+      .catch(() => {
+        if (!cancelled) setDeveloperMode(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const [gitStatus, setGitStatus] = useState<GitStatus | null>(null);
   const decorations = useMemo(() => buildDecorations(gitStatus), [gitStatus]);
@@ -306,11 +327,22 @@ export function Workbench() {
     setAiRefreshSignal((v) => v + 1);
   }, []);
 
-  const openWorkflowTab = useCallback((workflowId: string) => {
+  const openWorkflowTab = useCallback((
+    workflowId: string,
+    templateBinding?: WorkflowTabState["templateBinding"]
+  ) => {
     const path = workflowPath(workflowId);
     setTabs((prev) => {
-      if (prev.some((t) => t.path === path)) return prev;
-      return [...prev, { kind: "workflow", path, workflowId }];
+      if (prev.some((t) => t.path === path)) {
+        return templateBinding
+          ? prev.map((tab) =>
+              tab.path === path && tab.kind === "workflow"
+                ? { ...tab, templateBinding }
+                : tab
+            )
+          : prev;
+      }
+      return [...prev, { kind: "workflow", path, workflowId, templateBinding }];
     });
     setActivePath(path);
   }, []);
@@ -434,6 +466,35 @@ export function Workbench() {
     [activePath]
   );
 
+  const closeTemplateArtifacts = useCallback(
+    (source: "system" | "user", templateId: string) => {
+      const matches = (tab: Tab) =>
+        (tab.kind === "template" &&
+          tab.source === source &&
+          tab.templateId === templateId) ||
+        (tab.kind === "workflow" &&
+          tab.templateBinding?.source === source &&
+          tab.templateBinding.id === templateId);
+      setTabs((prev) => {
+        const firstRemovedIndex = prev.findIndex(matches);
+        const activeRemoved = prev.some(
+          (tab) => tab.path === activePath && matches(tab)
+        );
+        const next = prev.filter((tab) => !matches(tab));
+        if (activeRemoved) {
+          const fallback =
+            next[firstRemovedIndex] ??
+            next[firstRemovedIndex - 1] ??
+            next[next.length - 1] ??
+            null;
+          setActivePath(fallback?.path ?? null);
+        }
+        return next;
+      });
+    },
+    [activePath]
+  );
+
   const onSelectView = (id: ViewId) => {
     if (id === activeView && !leftCollapsed) {
       lastLeftWidthRef.current = leftWidth;
@@ -512,6 +573,7 @@ export function Workbench() {
     <div className="workbench">
       <div className="titlebar">
         <span className="titlebar__brand">osheep</span>
+        {developerMode && <span className="titlebar__dev-badge">DEVELOPER</span>}
         <span className="titlebar__sep">·</span>
         <button
           className="titlebar__project-btn"
@@ -565,6 +627,10 @@ export function Workbench() {
                 onWorkflowDeleted={(workflowId) =>
                   closeTab(workflowPath(workflowId))
                 }
+                developerMode={developerMode}
+                onTemplatesChanged={() =>
+                  setTemplateRefreshSignal((signal) => signal + 1)
+                }
               />
             )}
             {activeView === "template" && (
@@ -574,8 +640,10 @@ export function Workbench() {
                 }
                 onOpenTemplate={openTemplateTab}
                 onTemplateDeleted={(source, templateId) =>
-                  closeTab(templatePath(source, templateId))
+                  closeTemplateArtifacts(source, templateId)
                 }
+                developerMode={developerMode}
+                refreshSignal={templateRefreshSignal}
               />
             )}
             {activeView === "explorer" &&
@@ -750,6 +818,16 @@ export function Workbench() {
                     onWorkflowChanged={bumpAiRefresh}
                     onFilesChanged={bumpFileTree}
                     onResumeSession={resumeAgentSession}
+                    onTemplateBinding={(templateBinding) =>
+                      setTabs((current) =>
+                        current.map((tab) =>
+                          tab.kind === "workflow" &&
+                          tab.workflowId === activeTab.workflowId
+                            ? { ...tab, templateBinding }
+                            : tab
+                        )
+                      )
+                    }
                   />
                 ) : (
                   <div className="empty-hint">请先打开工作区</div>
@@ -759,11 +837,15 @@ export function Workbench() {
                   workspaceId={workspaceId}
                   source={activeTab.source}
                   templateId={activeTab.templateId}
-                  onOpenWorkflow={(workflowId) => {
-                    openWorkflowTab(workflowId);
+                  onOpenWorkflow={(workflowId, templateBinding) => {
+                    openWorkflowTab(workflowId, templateBinding);
                     setActiveView("workflow");
                   }}
                   onWorkflowCreated={bumpAiRefresh}
+                  developerMode={developerMode}
+                  onTemplateChanged={() =>
+                    setTemplateRefreshSignal((signal) => signal + 1)
+                  }
                 />
               ) : (
                 <div className="empty-hint">在左侧选择文件以开始编辑</div>

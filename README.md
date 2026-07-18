@@ -19,6 +19,17 @@ Use the root launcher on Windows:
 .\dev.ps1
 ```
 
+For built-in workflow template authoring, use the developer launcher:
+
+```powershell
+.\dev-developer.cmd
+```
+
+Developer mode enables saving workflows as built-in templates and editing,
+re-iconing, or deleting system templates. Shipped system template assets live
+under `backend/template-library/system/`; the runtime system/user library and
+copied icon files live outside workspaces under `~/.osheep/templates/`.
+
 Or run each side directly:
 
 ```powershell

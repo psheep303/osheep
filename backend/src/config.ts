@@ -12,6 +12,7 @@ export interface Config {
   corsOrigin: string;
   templatesRoot: string;
   systemTemplatesRoot: string;
+  developerMode: boolean;
 }
 
 function readEnvInt(key: string, fallback: number): number {
@@ -39,8 +40,9 @@ export const config: Config = {
   ),
   systemTemplatesRoot: path.resolve(
     process.env.OSHEEP_SYSTEM_TEMPLATES_ROOT ??
-      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "system-templates")
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "template-library", "system")
   ),
+  developerMode: /^(1|true|yes)$/i.test(process.env.OSHEEP_DEVELOPER_MODE ?? ""),
 };
 
 export const platform: "windows" | "macos" | "linux" =

@@ -1099,6 +1099,10 @@ export interface WorkflowRecord {
   id: string;
   title: string;
   readme: string;
+  templateBinding?: {
+    source: TemplateSource;
+    id: string;
+  };
   createdAt: number;
   updatedAt: number;
   nodes: WorkflowNode[];
@@ -1213,8 +1217,15 @@ export interface WorkflowTemplate {
 export async function listWorkflowTemplates(): Promise<{
   system: WorkflowTemplateSummary[];
   user: WorkflowTemplateSummary[];
+  developerMode: boolean;
 }> {
   return await http.get("/api/templates");
+}
+
+export async function getTemplateCapabilities(): Promise<{
+  developerMode: boolean;
+}> {
+  return await http.get("/api/templates/capabilities");
 }
 
 export async function getWorkflowTemplate(
@@ -1235,18 +1246,44 @@ export async function saveWorkflowAsTemplate(
   );
 }
 
+export async function saveWorkflowAsSystemTemplate(
+  workspaceId: string,
+  workflowId: string
+): Promise<WorkflowTemplate> {
+  return await http.post(
+    workflowsUrl(
+      workspaceId,
+      `/${encodeURIComponent(workflowId)}/system-template`
+    )
+  );
+}
+
+export async function editWorkflowTemplate(
+  workspaceId: string,
+  source: TemplateSource,
+  templateId: string
+): Promise<WorkflowRecord> {
+  return await http.post(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/templates/${source}/${encodeURIComponent(templateId)}/edit`
+  );
+}
+
 export async function updateWorkflowTemplateIcon(
+  source: TemplateSource,
   templateId: string,
   icon: string
 ): Promise<WorkflowTemplate> {
   return await http.put(
-    `/api/templates/user/${encodeURIComponent(templateId)}/icon`,
+    `/api/templates/${source}/${encodeURIComponent(templateId)}/icon`,
     { icon }
   );
 }
 
-export async function deleteWorkflowTemplate(templateId: string): Promise<void> {
-  await http.delete(`/api/templates/user/${encodeURIComponent(templateId)}`);
+export async function deleteWorkflowTemplate(
+  source: TemplateSource,
+  templateId: string
+): Promise<void> {
+  await http.delete(`/api/templates/${source}/${encodeURIComponent(templateId)}`);
 }
 
 // Remote MCP

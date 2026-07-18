@@ -3,11 +3,13 @@
 #   .\dev.ps1              start/restart both
 #   .\dev.ps1 -Backend     restart backend only
 #   .\dev.ps1 -Frontend    restart frontend only
+#   .\dev.ps1 -Developer   start with built-in template authoring enabled
 
 [CmdletBinding()]
 param(
   [switch]$Backend,
-  [switch]$Frontend
+  [switch]$Frontend,
+  [switch]$Developer
 )
 
 $ErrorActionPreference = 'Stop'
@@ -50,7 +52,8 @@ function Start-DevWindow($title, $workDir, $cmd) {
   Write-Host "  spawn $title in $workDir" -ForegroundColor Green
 }
 
-Write-Host "==> osheep dev launch" -ForegroundColor Cyan
+$modeLabel = if ($Developer) { 'developer template mode' } else { 'standard mode' }
+Write-Host "==> osheep dev launch ($modeLabel)" -ForegroundColor Cyan
 
 if ($Backend) {
   Write-Host "[backend] free port $BackendPort" -ForegroundColor Cyan
@@ -61,7 +64,13 @@ if ($Backend) {
     Push-Location $beDir
     try { npm install } finally { Pop-Location }
   }
-  Start-DevWindow 'osheep-backend' $beDir 'npm run dev'
+  $beCommand = if ($Developer) {
+    "`$env:OSHEEP_DEVELOPER_MODE='1'; npm run dev"
+  } else {
+    'npm run dev'
+  }
+  $beTitle = if ($Developer) { 'osheep-backend [developer]' } else { 'osheep-backend' }
+  Start-DevWindow $beTitle $beDir $beCommand
 }
 
 if ($Frontend) {
