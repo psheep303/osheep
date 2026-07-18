@@ -101,7 +101,10 @@ can select a dedicated release runtime.
 
 ## Runtime Data
 
-Desktop workspaces live in Tauri's per-user local application data directory,
-not in the installation directory. The existing `~/.osheep`, `~/.codex`, and
-`~/.claude` locations remain available to the Node backend, so Codex and Claude
-Code are discovered from the user's current installation and `PATH`.
+Desktop workspaces default to Tauri's per-user local application data
+directory, not the installation directory. The workspace picker can replace
+that default with another local `workspaces` root; the selected path is saved
+in the app's local data and restored at the next start. The existing
+`~/.osheep`, `~/.codex`, and `~/.claude` locations remain available to the Node
+backend, so Codex and Claude Code are discovered from the user's current
+installation and `PATH`.

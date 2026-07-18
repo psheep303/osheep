@@ -9,6 +9,7 @@
     "frontendDist": "../shell"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [],
     "security": {
       "csp": null
