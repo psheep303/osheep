@@ -593,6 +593,10 @@ export interface GitLog {
   currentRemoteRef: string | null;
 }
 
+export async function registerWorkspacePath(path: string): Promise<Workspace> {
+  return await http.post<Workspace>("/api/workspaces/open", { path });
+}
+
 export async function getGitLog(
   workspaceId: string,
   limit = 200,

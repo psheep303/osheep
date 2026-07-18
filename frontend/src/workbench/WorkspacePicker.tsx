@@ -1,15 +1,36 @@
 import { useEffect, useState } from "react";
-import { listWorkspaces, type Workspace } from "./api";
+import { listWorkspaces, registerWorkspacePath, type Workspace } from "./api";
+import { isDesktopShell, pickWorkspaceFolder } from "./desktop-folder-picker";
 
 interface Props {
   currentId: string | null;
-  onChoose: (id: string) => void;
+  onChoose: (workspace: Workspace) => void;
   onCancel: () => void;
 }
 
 export function WorkspacePicker({ currentId, onChoose, onCancel }: Props) {
   const [items, setItems] = useState<Workspace[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [opening, setOpening] = useState(false);
+
+  const openFolder = async () => {
+    if (!isDesktopShell()) {
+      setError("打开任意文件夹需要使用 osheep 桌面版");
+      return;
+    }
+    setOpening(true);
+    setError(null);
+    try {
+      const folder = await pickWorkspaceFolder();
+      if (!folder) return;
+      const workspace = await registerWorkspacePath(folder);
+      onChoose(workspace);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setOpening(false);
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -35,6 +56,14 @@ export function WorkspacePicker({ currentId, onChoose, onCancel }: Props) {
       >
         <div className="modal__header">
           <span className="modal__title">选择工作区</span>
+          <button
+            type="button"
+            className="tb-btn workspace-picker__open"
+            onClick={() => void openFolder()}
+            disabled={opening}
+          >
+            {opening ? "打开中..." : "打开文件夹"}
+          </button>
           <button className="icon-btn" onClick={onCancel} title="关闭">
             ×
           </button>
@@ -60,7 +89,7 @@ export function WorkspacePicker({ currentId, onChoose, onCancel }: Props) {
                     "workspace-list__item" +
                     (w.id === currentId ? " is-active" : "")
                   }
-                  onClick={() => onChoose(w.id)}
+                  onClick={() => onChoose(w)}
                 >
                   <span className="workspace-list__name">{w.name}</span>
                   <span className="workspace-list__id">{w.id}</span>

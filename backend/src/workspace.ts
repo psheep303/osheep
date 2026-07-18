@@ -1,5 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { createHash } from "node:crypto";
 import { config } from "./config.js";
 import { errors } from "./errors.js";
 
@@ -10,6 +11,13 @@ export interface WorkspaceInfo {
 }
 
 const WORKSPACE_ID_RE = /^[a-zA-Z0-9._-]{1,64}$/;
+const EXTERNAL_WORKSPACES_FILE = ".osheep-workspaces.json";
+
+interface ExternalWorkspaceRecord {
+  id: string;
+  name: string;
+  path: string;
+}
 
 function isValidWorkspaceId(name: string): boolean {
   if (!name) return false;
@@ -37,11 +45,23 @@ export async function listWorkspaces(): Promise<WorkspaceInfo[]> {
     });
   }
   out.sort((a, b) => a.id.localeCompare(b.id));
-  return out;
+  const external = await readExternalWorkspaces();
+  return [...out, ...external].sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export async function resolveWorkspace(id: string): Promise<WorkspaceInfo> {
   if (!isValidWorkspaceId(id)) throw errors.workspaceNotFound(id);
+  const external = await readExternalWorkspaces();
+  const registered = external.find((workspace) => workspace.id === id);
+  if (registered) {
+    try {
+      const stat = await fs.stat(registered.path);
+      if (stat.isDirectory()) return registered;
+    } catch {
+      // Treat removed external folders as unavailable.
+    }
+    throw errors.workspaceNotFound(id);
+  }
   const abs = path.join(config.workspacesRoot, id);
   let stat;
   try {
@@ -51,6 +71,62 @@ export async function resolveWorkspace(id: string): Promise<WorkspaceInfo> {
   }
   if (!stat.isDirectory()) throw errors.workspaceNotFound(id);
   return { id, name: id, path: abs };
+}
+
+export async function registerExternalWorkspace(rawPath: string): Promise<WorkspaceInfo> {
+  if (!path.isAbsolute(rawPath)) throw errors.invalidPath("工作区必须是绝对路径");
+  const abs = path.resolve(rawPath);
+  let stat;
+  try {
+    stat = await fs.stat(abs);
+  } catch {
+    throw errors.workspaceNotFound(abs);
+  }
+  if (!stat.isDirectory()) throw errors.workspaceNotFound(abs);
+
+  const realPath = await fs.realpath(abs);
+  const existing = await readExternalWorkspaces();
+  const found = existing.find((workspace) => workspace.path.toLowerCase() === realPath.toLowerCase());
+  if (found) return found;
+
+  const id = `external-${createHash("sha256").update(realPath.toLowerCase()).digest("hex").slice(0, 16)}`;
+  const record: ExternalWorkspaceRecord = {
+    id,
+    name: path.basename(realPath) || realPath,
+    path: realPath,
+  };
+  await writeExternalWorkspaces([...existing, record]);
+  return record;
+}
+
+async function readExternalWorkspaces(): Promise<ExternalWorkspaceRecord[]> {
+  const filePath = path.join(config.workspacesRoot, EXTERNAL_WORKSPACES_FILE);
+  try {
+    const parsed = JSON.parse(await fs.readFile(filePath, "utf8")) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(isExternalWorkspaceRecord);
+  } catch {
+    return [];
+  }
+}
+
+async function writeExternalWorkspaces(records: ExternalWorkspaceRecord[]): Promise<void> {
+  await ensureWorkspacesRoot();
+  const filePath = path.join(config.workspacesRoot, EXTERNAL_WORKSPACES_FILE);
+  await fs.writeFile(filePath, JSON.stringify(records, null, 2), "utf8");
+}
+
+function isExternalWorkspaceRecord(value: unknown): value is ExternalWorkspaceRecord {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Partial<ExternalWorkspaceRecord>;
+  return (
+    typeof record.id === "string" &&
+    isValidWorkspaceId(record.id) &&
+    record.id.startsWith("external-") &&
+    typeof record.name === "string" &&
+    typeof record.path === "string" &&
+    path.isAbsolute(record.path)
+  );
 }
 
 /**
