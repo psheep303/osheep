@@ -63,3 +63,15 @@ test("workflow loading removes legacy changed-file and verification output field
   assert.equal("CHANGED_FILES" in output, false);
   assert.equal("VERIFICATION" in output, false);
 });
+
+test("workflow README is persisted inside the workflow JSON record", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-workflow-readme-"));
+  const created = await createWorkflow(root, {
+    title: "Documented workflow",
+    readme: "# Purpose\n\nExplain this workflow.",
+  });
+
+  const loaded = await getWorkflow(root, created.id);
+
+  assert.equal(loaded.readme, "# Purpose\n\nExplain this workflow.");
+});

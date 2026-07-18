@@ -70,6 +70,7 @@ export interface WorkflowRun {
 export interface WorkflowRecord {
   id: string;
   title: string;
+  readme?: string;
   createdAt: number;
   updatedAt: number;
   nodes: WorkflowNode[];
@@ -322,6 +323,7 @@ function sanitize(raw: unknown, fallbackId: string): WorkflowRecord {
     id,
     title:
       typeof r.title === "string" && r.title.trim() ? r.title : "New workflow",
+    readme: typeof r.readme === "string" ? r.readme : "",
     createdAt,
     updatedAt: typeof r.updatedAt === "number" ? r.updatedAt : createdAt,
     nodes: safeNodes,

@@ -718,6 +718,8 @@ export function WorkflowTab({
   const [mpeNodeId, setMpeNodeId] = useState<string | null>(null);
   const [titleMenu, setTitleMenu] = useState<{ x: number; y: number } | null>(null);
   const [titleRenaming, setTitleRenaming] = useState(false);
+  const [readmeOpen, setReadmeOpen] = useState(false);
+  const [readmeEditing, setReadmeEditing] = useState(false);
   const [renameSeq, setRenameSeq] = useState(0);
   const [renameTarget, setRenameTarget] = useState<string | null>(null);
   const localRevisionRef = useRef(0);
@@ -743,6 +745,8 @@ export function WorkflowTab({
     setLoading(true);
     setError(null);
     setSelectedId(null);
+    setReadmeOpen(false);
+    setReadmeEditing(false);
     runtimeLayoutRef.current.clear();
     void apiGetWorkflow(workspaceId, workflowId)
       .then((record) => {
@@ -981,6 +985,13 @@ export function WorkflowTab({
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (
+        target?.matches("input, textarea, select") ||
+        target?.isContentEditable
+      ) {
+        return;
+      }
       const mod = event.ctrlKey || event.metaKey;
       if (!mod) return;
       const key = event.key.toLowerCase();
@@ -2071,6 +2082,16 @@ export function WorkflowTab({
           >
             {workflow.title || "Untitled workflow"}
           </div>
+          <button
+            className={"workflow-toolbar__readme" + (readmeOpen ? " is-active" : "")}
+            onClick={() => {
+              setReadmeOpen((open) => !open);
+              setReadmeEditing(false);
+            }}
+            title="Open workflow README"
+          >
+            README
+          </button>
           <div className={`workflow-toolbar__status is-${toolbarStatus}`}>
             {toolbarStatus === "saving"
               ? "Saving"
@@ -2335,6 +2356,50 @@ export function WorkflowTab({
             onNavigate={navigateToCanvasPoint}
           />
         </div>
+
+        {readmeOpen && (
+          <section className="workflow-readme" aria-label="Workflow README">
+            <div className="workflow-readme__bar">
+              <span>README.md</span>
+              <button
+                className="workflow-readme__mode"
+                onClick={() => setReadmeEditing((editing) => !editing)}
+              >
+                {readmeEditing ? "result" : "edit"}
+              </button>
+              <button
+                className="workflow-readme__close"
+                onClick={() => setReadmeOpen(false)}
+                title="Close README"
+                aria-label="Close README"
+              >
+                ×
+              </button>
+            </div>
+            <div className="workflow-readme__content">
+              {readmeEditing ? (
+                <textarea
+                  value={workflow.readme}
+                  onChange={(event) =>
+                    updateWorkflow((record) => ({
+                      ...record,
+                      readme: event.target.value,
+                    }))
+                  }
+                  placeholder="# About this workflow\n\nDescribe what this workflow does and how to use it."
+                  spellCheck={false}
+                  autoFocus
+                />
+              ) : workflow.readme.trim() ? (
+                <MarkdownPreview source={workflow.readme} />
+              ) : (
+                <div className="workflow-readme__empty">
+                  No README yet. Click <strong>edit</strong> to describe this workflow.
+                </div>
+              )}
+            </div>
+          </section>
+        )}
 
         {selectedNode && !blockPickerOpen && (
           <div className="workflow-panel-shell">

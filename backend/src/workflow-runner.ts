@@ -53,6 +53,7 @@ interface WorkflowRunState {
   workflowId: string;
   runId: string;
   abort: AbortController;
+  done: Promise<void>;
 }
 
 export interface WorkflowRunDetailSnapshot {
@@ -459,13 +460,18 @@ export async function startWorkflowRun(
   }));
 
   const abort = new AbortController();
-  activeRuns.set(key, { workspaceId, workflowId, runId: run.id, abort });
-  void runWorkflowInBackground(workspace, workflowId, run, ordered, abort).finally(
-    () => {
-      const state = activeRuns.get(key);
-      if (state?.runId === run.id) activeRuns.delete(key);
-    }
-  );
+  const done = runWorkflowInBackground(
+    workspace,
+    workflowId,
+    run,
+    ordered,
+    abort
+  ).catch(() => undefined);
+  activeRuns.set(key, { workspaceId, workflowId, runId: run.id, abort, done });
+  void done.finally(() => {
+    const state = activeRuns.get(key);
+    if (state?.runId === run.id) activeRuns.delete(key);
+  });
   return { runId: run.id, workflow: record };
 }
 
@@ -473,6 +479,19 @@ export function stopWorkflowRun(workspaceId: string, workflowId: string): boolea
   const state = activeRuns.get(runKey(workspaceId, workflowId));
   if (!state) return false;
   state.abort.abort();
+  return true;
+}
+
+export async function stopWorkflowRunAndWait(
+  workspaceId: string,
+  workflowId: string
+): Promise<boolean> {
+  const key = runKey(workspaceId, workflowId);
+  const state = activeRuns.get(key);
+  if (!state) return false;
+  state.abort.abort();
+  await state.done;
+  if (activeRuns.get(key) === state) activeRuns.delete(key);
   return true;
 }
 

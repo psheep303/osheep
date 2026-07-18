@@ -12,6 +12,7 @@ import { Resizer } from "./Resizer";
 import { SearchView } from "./SearchView";
 import { SettingsView } from "./SettingsView";
 import { WorkflowTab } from "./WorkflowTab";
+import { TemplateDetail, TemplateView } from "./TemplateView";
 import { WorkspacePicker } from "./WorkspacePicker";
 import { DEFAULT_SETTINGS, type OsheepSettings } from "./settings";
 import {
@@ -53,6 +54,13 @@ interface WorkflowTabState {
   workflowId: string;
 }
 
+interface TemplateTabState {
+  kind: "template";
+  path: string;
+  templateId: string;
+  source: "system" | "user";
+}
+
 interface DiffTab {
   kind: "diff";
   path: string; // synthetic tab id
@@ -64,11 +72,14 @@ interface DiffTab {
   binary: boolean;
 }
 
-type Tab = FileTab | SettingsTab | WorkflowTabState | DiffTab;
+type Tab = FileTab | SettingsTab | WorkflowTabState | TemplateTabState | DiffTab;
 
 const SETTINGS_PATH = "__settings__";
 const WORKFLOW_PREFIX = "__workflow__:";
 const workflowPath = (workflowId: string) => WORKFLOW_PREFIX + workflowId;
+const TEMPLATE_PREFIX = "__template__:";
+const templatePath = (source: "system" | "user", templateId: string) =>
+  `${TEMPLATE_PREFIX}${source}:${templateId}`;
 
 const DEFAULT_LEFT_WIDTH = 230;
 const SIDE_THRESHOLD = 80;
@@ -304,6 +315,18 @@ export function Workbench() {
     setActivePath(path);
   }, []);
 
+  const openTemplateTab = useCallback(
+    (source: "system" | "user", templateId: string) => {
+      const path = templatePath(source, templateId);
+      setTabs((prev) => {
+        if (prev.some((tab) => tab.path === path)) return prev;
+        return [...prev, { kind: "template", path, source, templateId }];
+      });
+      setActivePath(path);
+    },
+    []
+  );
+
   const onPathRenamed = useCallback(
     (oldPath: string, newPath: string) => {
       const matches = (p: string) => p === oldPath || p.startsWith(oldPath + "/");
@@ -321,14 +344,35 @@ export function Workbench() {
     [activePath]
   );
 
-  const onPathDeleted = useCallback((path: string) => {
-    const matches = (p: string) => p === path || p.startsWith(path + "/");
-    setTabs((prev) =>
-      prev.map((t) =>
-        t.kind === "file" && matches(t.path) ? { ...t, deleted: true, dirty: false } : t
-      )
-    );
-  }, []);
+  const onPathDeleted = useCallback(
+    (path: string) => {
+      const matches = (candidate: string) =>
+        candidate === path || candidate.startsWith(path + "/");
+      const tabMatches = (tab: Tab) =>
+        (tab.kind === "file" && matches(tab.path)) ||
+        (tab.kind === "diff" && matches(tab.filePath));
+      setTabs((prev) => {
+        const firstRemovedIndex = prev.findIndex(tabMatches);
+        const activeRemoved = prev.some(
+          (tab) => tab.path === activePath && tabMatches(tab)
+        );
+        const next = prev.filter((tab) => !tabMatches(tab));
+        if (activeRemoved) {
+          const fallback =
+            next[firstRemovedIndex] ??
+            next[firstRemovedIndex - 1] ??
+            next[next.length - 1] ??
+            null;
+          setActivePath(fallback?.path ?? null);
+        }
+        return next;
+      });
+      setSelectedTreePath((selected) =>
+        selected && matches(selected) ? null : selected
+      );
+    },
+    [activePath]
+  );
 
   const togglePreview = useCallback((path: string) => {
     setTabs((prev) =>
@@ -518,6 +562,20 @@ export function Workbench() {
                   activeTab?.kind === "workflow" ? activeTab.workflowId : null
                 }
                 refreshSignal={aiRefreshSignal}
+                onWorkflowDeleted={(workflowId) =>
+                  closeTab(workflowPath(workflowId))
+                }
+              />
+            )}
+            {activeView === "template" && (
+              <TemplateView
+                activeTemplateId={
+                  activeTab?.kind === "template" ? activeTab.templateId : null
+                }
+                onOpenTemplate={openTemplateTab}
+                onTemplateDeleted={(source, templateId) =>
+                  closeTab(templatePath(source, templateId))
+                }
               />
             )}
             {activeView === "explorer" &&
@@ -591,6 +649,8 @@ export function Workbench() {
                       ? "设置"
                       : t.kind === "workflow"
                       ? "Workflow"
+                      : t.kind === "template"
+                      ? "Template"
                       : t.kind === "diff"
                       ? `${basename(t.filePath)} (${diffLabel(t)})`
                       : t.path.split("/").pop();
@@ -603,6 +663,8 @@ export function Workbench() {
                       ? `${t.filePath} · ${diffLabel(t)}`
                       : t.kind === "workflow"
                       ? `Workflow ${t.workflowId}`
+                      : t.kind === "template"
+                      ? `Template ${t.templateId}`
                       : "设置";
                   return (
                     <div
@@ -692,6 +754,17 @@ export function Workbench() {
                 ) : (
                   <div className="empty-hint">请先打开工作区</div>
                 )
+              ) : activeTab?.kind === "template" ? (
+                <TemplateDetail
+                  workspaceId={workspaceId}
+                  source={activeTab.source}
+                  templateId={activeTab.templateId}
+                  onOpenWorkflow={(workflowId) => {
+                    openWorkflowTab(workflowId);
+                    setActiveView("workflow");
+                  }}
+                  onWorkflowCreated={bumpAiRefresh}
+                />
               ) : (
                 <div className="empty-hint">在左侧选择文件以开始编辑</div>
               )}

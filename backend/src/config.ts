@@ -1,5 +1,6 @@
 import * as path from "node:path";
 import * as os from "node:os";
+import { fileURLToPath } from "node:url";
 
 export interface Config {
   host: string;
@@ -9,6 +10,8 @@ export interface Config {
   maxTerminalSessions: number;
   terminalIdleTimeoutMs: number;
   corsOrigin: string;
+  templatesRoot: string;
+  systemTemplatesRoot: string;
 }
 
 function readEnvInt(key: string, fallback: number): number {
@@ -31,6 +34,13 @@ export const config: Config = {
   maxTerminalSessions: readEnvInt("MAX_TERMINAL_SESSIONS", 16),
   terminalIdleTimeoutMs: readEnvInt("TERMINAL_IDLE_TIMEOUT_MS", 30 * 60 * 1000),
   corsOrigin: process.env.CORS_ORIGIN ?? "*",
+  templatesRoot: path.resolve(
+    process.env.OSHEEP_TEMPLATES_ROOT ?? path.join(os.homedir(), ".osheep", "templates")
+  ),
+  systemTemplatesRoot: path.resolve(
+    process.env.OSHEEP_SYSTEM_TEMPLATES_ROOT ??
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "system-templates")
+  ),
 };
 
 export const platform: "windows" | "macos" | "linux" =

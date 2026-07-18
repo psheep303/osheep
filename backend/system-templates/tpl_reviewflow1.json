@@ -1,0 +1,61 @@
+{
+  "id": "tpl_reviewflow1",
+  "source": "system",
+  "title": "Review and summarize",
+  "description": "Review an input, then turn the findings into a concise summary.",
+  "readme": "# Review and summarize\n\nThis two-stage workflow separates detailed review from final communication.\n\n## Suggested uses\n\n- Review a document or implementation plan\n- Analyze a change and produce release notes\n- Convert raw research into an executive summary\n\nCustomize both agent prompts after adding the template to your workspace.",
+  "createdAt": 2,
+  "updatedAt": 2,
+  "nodes": [
+    {
+      "id": "node_reviewtrg",
+      "blockId": 1,
+      "kind": "trigger",
+      "title": "Workflow run",
+      "providerKind": "codex-cli",
+      "model": "default",
+      "prompt": "",
+      "x": 60,
+      "y": 120,
+      "status": "idle"
+    },
+    {
+      "id": "node_reviewer1",
+      "blockId": 2,
+      "kind": "agent",
+      "title": "Reviewer",
+      "providerKind": "codex-cli",
+      "model": "default",
+      "prompt": "Review the input carefully. Identify risks, gaps, and important details.",
+      "x": 340,
+      "y": 120,
+      "status": "idle"
+    },
+    {
+      "id": "node_summary01",
+      "blockId": 3,
+      "kind": "agent",
+      "title": "Summarizer",
+      "providerKind": "codex-cli",
+      "model": "default",
+      "prompt": "Turn the review into a concise, actionable summary.",
+      "x": 620,
+      "y": 120,
+      "status": "idle"
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge_review01",
+      "from": "node_reviewtrg",
+      "to": "node_reviewer1",
+      "passSummary": true
+    },
+    {
+      "id": "edge_review02",
+      "from": "node_reviewer1",
+      "to": "node_summary01",
+      "passSummary": true
+    }
+  ]
+}

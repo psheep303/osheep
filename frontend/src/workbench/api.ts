@@ -1098,6 +1098,7 @@ export interface WorkflowRun {
 export interface WorkflowRecord {
   id: string;
   title: string;
+  readme: string;
   createdAt: number;
   updatedAt: number;
   nodes: WorkflowNode[];
@@ -1183,6 +1184,70 @@ export async function deleteWorkflow(
 }
 
 // ─── AI proxy ───
+
+export type TemplateSource = "system" | "user";
+
+export interface WorkflowTemplateSummary {
+  id: string;
+  source: TemplateSource;
+  title: string;
+  description: string;
+  icon?: string;
+  updatedAt: number;
+  nodeCount: number;
+}
+
+export interface WorkflowTemplate {
+  id: string;
+  source: TemplateSource;
+  title: string;
+  description: string;
+  readme: string;
+  icon?: string;
+  createdAt: number;
+  updatedAt: number;
+  nodes: WorkflowNode[];
+  edges: WorkflowEdge[];
+}
+
+export async function listWorkflowTemplates(): Promise<{
+  system: WorkflowTemplateSummary[];
+  user: WorkflowTemplateSummary[];
+}> {
+  return await http.get("/api/templates");
+}
+
+export async function getWorkflowTemplate(
+  source: TemplateSource,
+  templateId: string
+): Promise<WorkflowTemplate> {
+  return await http.get(
+    `/api/templates/${source}/${encodeURIComponent(templateId)}`
+  );
+}
+
+export async function saveWorkflowAsTemplate(
+  workspaceId: string,
+  workflowId: string
+): Promise<WorkflowTemplate> {
+  return await http.post(
+    workflowsUrl(workspaceId, `/${encodeURIComponent(workflowId)}/template`)
+  );
+}
+
+export async function updateWorkflowTemplateIcon(
+  templateId: string,
+  icon: string
+): Promise<WorkflowTemplate> {
+  return await http.put(
+    `/api/templates/user/${encodeURIComponent(templateId)}/icon`,
+    { icon }
+  );
+}
+
+export async function deleteWorkflowTemplate(templateId: string): Promise<void> {
+  await http.delete(`/api/templates/user/${encodeURIComponent(templateId)}`);
+}
 
 // Remote MCP
 

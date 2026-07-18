@@ -1,0 +1,43 @@
+{
+  "id": "tpl_quickstart01",
+  "source": "system",
+  "title": "AI quick start",
+  "description": "A minimal trigger-to-agent workflow for everyday tasks.",
+  "readme": "# AI quick start\n\nUse this template when you need a simple, reusable AI task.\n\n## How it works\n\n1. The workflow starts from a manual trigger.\n2. The trigger passes its input to a Codex agent.\n3. Edit the agent prompt to describe the task you want to automate.\n\nClick **Use this template** to add a copy to the current workspace.",
+  "createdAt": 1,
+  "updatedAt": 1,
+  "nodes": [
+    {
+      "id": "node_quicktrg",
+      "blockId": 1,
+      "kind": "trigger",
+      "title": "Workflow run",
+      "providerKind": "codex-cli",
+      "model": "default",
+      "prompt": "",
+      "x": 80,
+      "y": 120,
+      "status": "idle"
+    },
+    {
+      "id": "node_quickagt",
+      "blockId": 2,
+      "kind": "agent",
+      "title": "Codex",
+      "providerKind": "codex-cli",
+      "model": "default",
+      "prompt": "Describe the task this workflow should complete.",
+      "x": 360,
+      "y": 120,
+      "status": "idle"
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge_quick001",
+      "from": "node_quicktrg",
+      "to": "node_quickagt",
+      "passSummary": true
+    }
+  ]
+}
