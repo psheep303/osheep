@@ -354,17 +354,22 @@ test("agent result never treats abnormal process completion as success", () => {
     { content: "", transcript: "", exitCode: null, signal: "SIGTERM" },
     "Build a weather crawler"
   );
-  const timeout = classifyAgentTerminalResultFailure(
-    { content: "Partial work", transcript: "Partial work", exitCode: 0, signal: "auto-timeout" },
+  const stalled = classifyAgentTerminalResultFailure(
+    {
+      content: "Partial work",
+      transcript: "Partial work",
+      exitCode: 0,
+      signal: "agent-stalled",
+    },
     "Build a weather crawler"
   );
-
   assert.equal(nonzero.failed, true);
   assert.match(nonzero.message, /code 1/);
   assert.equal(missingExit.failed, true);
   assert.match(missingExit.message, /SIGTERM/);
-  assert.equal(timeout.failed, true);
-  assert.equal(timeout.retryable, true);
+  assert.equal(stalled.failed, true);
+  assert.equal(stalled.retryable, true);
+  assert.match(stalled.message, /stalled without output activity/);
 });
 
 test("normal auto-finished agent result remains successful", () => {

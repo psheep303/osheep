@@ -291,8 +291,12 @@ export function classifyAgentTerminalResultFailure(
   if (transcriptFailure.failed) return transcriptFailure;
 
   const modelOutput = terminalModelOutputBeforeError(result.content || result.transcript, prompt);
-  if (result.signal === "auto-timeout") {
-    return agentTerminalLifecycleFailure("Agent terminal timed out.", true, modelOutput);
+  if (result.signal === "agent-stalled") {
+    return agentTerminalLifecycleFailure(
+      "Agent terminal stalled without output activity.",
+      true,
+      modelOutput
+    );
   }
   if (result.exitCode === null) {
     const suffix = result.signal === null ? "without an exit code" : `with signal ${result.signal}`;

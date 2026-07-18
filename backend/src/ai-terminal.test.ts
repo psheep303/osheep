@@ -4,6 +4,7 @@ import {
   agentTerminalScreenSignatureForTest,
   agentTerminalReadyForAutoFinishForTest,
   agentTerminalReadyForManualSuccessForTest,
+  agentTerminalStalledForTest,
   agentTerminalPromptEnterCount,
   agentTerminalPromptSubmitDelayMs,
   buildAgentTerminalCommand,
@@ -20,6 +21,23 @@ import {
   shouldExposeWaitingForChoice,
   type AgentEffort,
 } from "./ai-terminal.js";
+
+test("agent stall timeout measures inactivity instead of total runtime", () => {
+  const hour = 60 * 60 * 1000;
+  const now = 5 * hour;
+  const submittedAt = 0;
+  const thirtyMinutes = 30 * 60 * 1000;
+
+  assert.equal(
+    agentTerminalStalledForTest(now, submittedAt, now - 60_000, thirtyMinutes),
+    false
+  );
+  assert.equal(
+    agentTerminalStalledForTest(now, submittedAt, now - thirtyMinutes, thirtyMinutes),
+    true
+  );
+  assert.equal(agentTerminalStalledForTest(now, submittedAt, 0, 0), false);
+});
 
 test("terminal failures are detected independently of auto success", () => {
   assert.equal(
@@ -814,6 +832,27 @@ test("Codex final answer removes the terminal footer separator", () => {
       "codex-cli"
     ),
     "已新增 weather_spider.py。\n用法：python weather_spider.py Beijing"
+  );
+});
+
+test("Codex tool output is never mistaken for the final answer", () => {
+  const prompt = "Inspect the workflow storage problem";
+  const transcript = [
+    "• Ran Get-ChildItem .osheep\\workflows\\*.json | ForEach-Object { $j=Get-Content",
+    "│ $_.FullName -Raw | ConvertFrom-Json;",
+    "│ [pscustomobject]@{File=$_.Name;Bytes=$_.Length;Id=$j.id;Title=$j.title}",
+    "│ … +9 lines",
+    "… +6 lines (ctrl + t to view transcript)",
+    "Runs  : 0",
+    "─ Worked for 2m 33s ─",
+    `› ${prompt}`,
+    "gpt-5.5 low · D:\\demo",
+  ].join("\n");
+
+  assert.equal(extractAgentTerminalContentForTest(transcript, prompt, "codex-cli"), "");
+  assert.equal(
+    agentTerminalReadyForAutoFinishForTest("codex-cli", transcript, "empty"),
+    true
   );
 });
 

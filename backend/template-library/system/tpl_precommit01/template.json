@@ -1,0 +1,152 @@
+{
+  "id": "tpl_precommit01",
+  "source": "system",
+  "title": "提交前自动收尾",
+  "description": "检查当前改动、修复高价值问题，并通过 git diff --check 做最终门禁。",
+  "readme": "# 提交前自动收尾\n\n用于代码已经基本完成、准备提交前的最后一次自动检查。命令块先提供工作区状态，Claude Code 对实际 diff 做高精度评审，Codex 只修复确认的问题，最后用 `git diff --check` 检查空白错误和冲突标记。\n\n## 输入建议\n\n说明本次改动的目标、验收标准、允许修改范围，以及希望重点检查的内容。\n\n## 为什么这样分工\n\n- Git 状态块提供确定事实，几乎没有成本。\n- Claude Code 只做一次只读审查，把慢模型用在最需要准确性的地方。\n- Codex 根据明确问题快速修正。\n- 最终命令块提供可重复、非主观的基础门禁。\n\n## 注意\n\n模板不会自动提交代码，也不会执行发布。Codex 会按项目实际情况运行相关测试；`git diff --check` 只是最后一道轻量检查，不能替代完整测试。",
+  "createdAt": 106,
+  "updatedAt": 1106,
+  "nodes": [
+    {
+      "id": "node_commitrun",
+      "blockId": 1,
+      "kind": "trigger",
+      "title": "工作流运行时",
+      "providerKind": "codex-cli",
+      "model": "default",
+      "prompt": "",
+      "x": 20,
+      "y": 120,
+      "status": "idle"
+    },
+    {
+      "id": "node_commitinput",
+      "blockId": 2,
+      "kind": "input",
+      "title": "输入变更目标",
+      "providerKind": "codex-cli",
+      "model": "default",
+      "prompt": "请填写本次改动目标、验收标准、允许修改范围和评审重点。",
+      "x": 300,
+      "y": 120,
+      "status": "idle"
+    },
+    {
+      "id": "node_commitstatus",
+      "blockId": 3,
+      "kind": "command",
+      "title": "读取 Git 状态",
+      "providerKind": "codex-cli",
+      "model": "default",
+      "prompt": "git status --short",
+      "x": 590,
+      "y": 120,
+      "status": "idle"
+    },
+    {
+      "id": "node_commitreview",
+      "blockId": 4,
+      "kind": "agent",
+      "title": "Claude 提交前审查",
+      "providerKind": "claude-cli",
+      "model": "default",
+      "prompt": "只审查，不修改文件。检查当前工作区的实际 diff，并对照变更目标判断是否完整、正确且保持兼容。重点检查逻辑错误、边界条件、安全性、错误处理、接口契约、测试缺口和无关改动。只输出有证据、值得在提交前处理的问题，按严重度列出文件/位置、影响和最小修复建议；最后列出已验证通过项。\n\n变更目标：\n{{blocks[2].text}}\n\nGit 状态：\n{{blocks[3].stdout}}",
+      "x": 880,
+      "y": 120,
+      "status": "idle",
+      "config": {
+        "effort": "high",
+        "mode": "plan",
+        "retries": 0,
+        "retryForever": false,
+        "alwaysEnter": false,
+        "autoSuccess": true,
+        "claudePermissionMode": "acceptEdits",
+        "claudeMode": "plan"
+      }
+    },
+    {
+      "id": "node_commitfix",
+      "blockId": 5,
+      "kind": "agent",
+      "title": "Codex 修正并测试",
+      "providerKind": "codex-cli",
+      "model": "default",
+      "prompt": "处理提交前审查结果。逐条验证问题，只修复真实、相关且高价值的问题；保持 diff 小而聚焦，不做无关重构。按项目现有命令运行最小充分的测试、类型检查或构建。若某条建议不成立或不应修改，保留现状并说明理由。输出修复项、未采纳项、验证结果和剩余风险。\n\n变更目标：\n{{blocks[2].text}}\n\nClaude 审查：\n{{blocks[4].text}}",
+      "x": 1170,
+      "y": 120,
+      "status": "idle",
+      "config": {
+        "effort": "medium",
+        "retries": 0,
+        "retryForever": false,
+        "alwaysEnter": false,
+        "autoSuccess": true,
+        "codexApproval": "on-request",
+        "codexSandbox": "workspace-write"
+      }
+    },
+    {
+      "id": "node_commitcheck",
+      "blockId": 6,
+      "kind": "command",
+      "title": "最终 Diff 检查",
+      "providerKind": "codex-cli",
+      "model": "default",
+      "prompt": "git diff --check",
+      "x": 1460,
+      "y": 120,
+      "status": "idle"
+    },
+    {
+      "id": "node_commitmarkdown",
+      "blockId": 7,
+      "kind": "markdown",
+      "title": "提交前报告",
+      "providerKind": "codex-cli",
+      "model": "default",
+      "prompt": "# 提交前收尾结果\n\n## 初始工作区状态\n\n```text\n{{blocks[3].stdout}}\n```\n\n## Claude 审查\n\n{{blocks[4].text}}\n\n## Codex 修正与验证\n\n{{blocks[5].text}}\n\n## 最终门禁\n\n`git diff --check` 状态：**{{blocks[6].status}}**\n\n```text\n{{blocks[6].stdout}}{{blocks[6].stderr}}\n```",
+      "x": 1750,
+      "y": 120,
+      "status": "idle"
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge_commitrun",
+      "from": "node_commitrun",
+      "to": "node_commitinput",
+      "passSummary": false
+    },
+    {
+      "id": "edge_commitinput",
+      "from": "node_commitinput",
+      "to": "node_commitstatus",
+      "passSummary": false
+    },
+    {
+      "id": "edge_commitstatus",
+      "from": "node_commitstatus",
+      "to": "node_commitreview",
+      "passSummary": true
+    },
+    {
+      "id": "edge_commitreview",
+      "from": "node_commitreview",
+      "to": "node_commitfix",
+      "passSummary": true
+    },
+    {
+      "id": "edge_commitfix",
+      "from": "node_commitfix",
+      "to": "node_commitcheck",
+      "passSummary": false
+    },
+    {
+      "id": "edge_commitoutput",
+      "from": "node_commitcheck",
+      "to": "node_commitmarkdown",
+      "passSummary": true
+    }
+  ]
+}

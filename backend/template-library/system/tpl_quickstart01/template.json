@@ -1,42 +1,87 @@
 {
   "id": "tpl_quickstart01",
   "source": "system",
-  "title": "AI quick start",
-  "description": "A minimal trigger-to-agent workflow for everyday tasks.",
-  "readme": "# AI quick start\n\nUse this template when you need a simple, reusable AI task.\n\n## How it works\n\n1. The workflow starts from a manual trigger.\n2. The trigger passes its input to a Codex agent.\n3. Edit the agent prompt to describe the task you want to automate.\n\nClick **Use this template** to add a copy to the current workspace.",
+  "title": "极速编码",
+  "description": "用一次输入驱动 Codex 快速完成明确的小型编码任务。",
+  "readme": "# 极速编码\n\n这是日常使用频率最高、成本最低的编码工作流。链路只有工作流运行时、Input、Codex 和 Markdown，适合需求明确、影响范围较小的任务。\n\n## 适用场景\n\n- 修改一个组件、接口或配置\n- 修复已知原因的小 Bug\n- 增加字段、校验、日志或简单测试\n- 执行明确的重命名或批量替换\n\n## 输入建议\n\n请写清楚：目标、涉及范围、验收标准、禁止事项。示例：\n\n```text\n在用户列表页增加按邮箱搜索。复用现有筛选组件，不新增依赖；补充对应测试，并运行最小相关测试。\n```\n\n## 模型分工\n\n此模板只使用 Codex。它速度快、成本低，面对明确任务时无需额外规划节点。若需求跨多个模块或方案尚未确定，请改用“规划后实现”或“复杂功能闭环”。\n\n## 使用方式\n\n1. 修改 Input 内容。\n2. 点击运行。\n3. 在 Markdown 块查看改动、验证和注意事项。",
   "createdAt": 1,
-  "updatedAt": 1,
+  "updatedAt": 1101,
   "nodes": [
     {
-      "id": "node_quicktrg",
+      "id": "node_quickrun",
       "blockId": 1,
       "kind": "trigger",
-      "title": "Workflow run",
+      "title": "工作流运行时",
       "providerKind": "codex-cli",
       "model": "default",
       "prompt": "",
-      "x": 80,
+      "x": 20,
       "y": 120,
       "status": "idle"
     },
     {
-      "id": "node_quickagt",
+      "id": "node_quickinput",
       "blockId": 2,
-      "kind": "agent",
-      "title": "Codex",
+      "kind": "input",
+      "title": "输入编码任务",
       "providerKind": "codex-cli",
       "model": "default",
-      "prompt": "Describe the task this workflow should complete.",
-      "x": 360,
+      "prompt": "请填写一个目标明确的小型编码任务，并尽量包含验收标准。",
+      "x": 340,
+      "y": 120,
+      "status": "idle"
+    },
+    {
+      "id": "node_quickcodex",
+      "blockId": 3,
+      "kind": "agent",
+      "title": "Codex 快速实现",
+      "providerKind": "codex-cli",
+      "model": "default",
+      "prompt": "你是快速编码执行者。直接完成下面的任务，不要先写冗长计划。先用最少的检索确认相关文件和现有约定，然后实施改动并运行最小且相关的验证。若信息略有缺失，采用与现有项目最一致、影响最小的方案；只有存在会导致明显错误的关键歧义时才停止。最后简洁说明：完成内容、改动文件、验证结果、仍需注意的事项。\n\n任务：\n{{blocks[2].text}}",
+      "x": 660,
+      "y": 120,
+      "status": "idle",
+      "config": {
+        "effort": "medium",
+        "retries": 0,
+        "retryForever": false,
+        "alwaysEnter": false,
+        "autoSuccess": true,
+        "codexApproval": "on-request",
+        "codexSandbox": "workspace-write"
+      }
+    },
+    {
+      "id": "node_quickmarkdown",
+      "blockId": 4,
+      "kind": "markdown",
+      "title": "执行结果",
+      "providerKind": "codex-cli",
+      "model": "default",
+      "prompt": "# 极速编码结果\n\n{{blocks[3].text}}",
+      "x": 980,
       "y": 120,
       "status": "idle"
     }
   ],
   "edges": [
     {
-      "id": "edge_quick001",
-      "from": "node_quicktrg",
-      "to": "node_quickagt",
+      "id": "edge_quickrun",
+      "from": "node_quickrun",
+      "to": "node_quickinput",
+      "passSummary": false
+    },
+    {
+      "id": "edge_quickinput",
+      "from": "node_quickinput",
+      "to": "node_quickcodex",
+      "passSummary": true
+    },
+    {
+      "id": "edge_quickoutput",
+      "from": "node_quickcodex",
+      "to": "node_quickmarkdown",
       "passSummary": true
     }
   ]
