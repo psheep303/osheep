@@ -1,5 +1,6 @@
 import * as path from "node:path";
 import * as os from "node:os";
+import * as fs from "node:fs";
 import { fileURLToPath } from "node:url";
 
 export interface Config {
@@ -16,6 +17,7 @@ export interface Config {
   developerMode: boolean;
   frontendRoot?: string;
   allowExternalWorkspacePaths: boolean;
+  workspaceRootConfigFile?: string;
 }
 
 function readEnvInt(key: string, fallback: number): number {
@@ -26,6 +28,17 @@ function readEnvInt(key: string, fallback: number): number {
 }
 
 function resolveWorkspacesRoot(raw: string | undefined): string {
+  const configFile = process.env.OSHEEP_WORKSPACE_ROOT_CONFIG;
+  if (configFile) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(configFile, "utf8")) as { root?: unknown };
+      if (typeof parsed.root === "string" && parsed.root.trim()) {
+        return path.resolve(parsed.root);
+      }
+    } catch {
+      // Fall back to the default when the first-run settings file is absent.
+    }
+  }
   if (raw && raw.trim()) return path.resolve(raw);
   return path.resolve(process.cwd(), "workspaces");
 }
@@ -53,6 +66,9 @@ export const config: Config = {
   allowExternalWorkspacePaths: /^(1|true|yes)$/i.test(
     process.env.OSHEEP_ALLOW_EXTERNAL_WORKSPACE_PATHS ?? ""
   ),
+  workspaceRootConfigFile: process.env.OSHEEP_WORKSPACE_ROOT_CONFIG
+    ? path.resolve(process.env.OSHEEP_WORKSPACE_ROOT_CONFIG)
+    : undefined,
 };
 
 export const platform: "windows" | "macos" | "linux" =

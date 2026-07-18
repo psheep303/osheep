@@ -23,8 +23,7 @@ function Initialize-RustAndMsvc {
   $vsRoots = @(
     (Join-Path $PSScriptRoot '.tools\BuildTools'),
     (Join-Path ${env:ProgramFiles} 'Microsoft Visual Studio\2022\BuildTools'),
-    (Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\2022\BuildTools'),
-    'C:\BuildTools'
+    (Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\2022\BuildTools')
   ) | Where-Object { Test-Path $_ }
   $msvcRoot = $vsRoots |
     ForEach-Object { Get-ChildItem (Join-Path $_ 'VC\Tools\MSVC') -Directory -ErrorAction SilentlyContinue } |

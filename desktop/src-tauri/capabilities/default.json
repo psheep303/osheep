@@ -3,7 +3,7 @@
   "identifier": "default",
   "description": "Core permissions for the osheep desktop window",
   "windows": ["main"],
-  "permissions": ["core:default"],
+  "permissions": ["core:default", "allow-pick-workspace-folder"],
   "remote": {
     "urls": ["http://127.0.0.1:*"]
   }

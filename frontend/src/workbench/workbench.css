@@ -7167,8 +7167,9 @@
   border: 1px solid #454545;
   border-radius: 6px;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
-  min-width: 420px;
-  max-width: 540px;
+  width: min(560px, calc(100vw - 32px));
+  min-width: 0;
+  max-width: 560px;
   max-height: 70vh;
   display: flex;
   flex-direction: column;
@@ -7187,6 +7188,81 @@
   font-weight: 600;
   color: var(--fg-strong);
   flex: 1 1 auto;
+}
+
+.workspace-picker .modal__header {
+  gap: 6px;
+}
+
+.workspace-picker__add {
+  width: 28px;
+  min-width: 28px;
+  padding: 0;
+  font-size: 18px;
+  line-height: 26px;
+}
+
+.workspace-picker__open {
+  white-space: nowrap;
+}
+
+.workspace-picker__root {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  margin-bottom: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-faint);
+  background: var(--bg-shell);
+  border-radius: 4px;
+}
+
+.workspace-picker__root-label {
+  flex: 0 0 auto;
+  color: var(--fg-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.workspace-picker__root code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-default);
+  font-size: 12px;
+}
+
+.workspace-picker__create {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.workspace-picker__create input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 28px;
+  padding: 4px 8px;
+  background: #313131;
+  color: var(--fg-default);
+  border: 1px solid var(--border-edge);
+  border-radius: 2px;
+  outline: none;
+  font: inherit;
+  font-size: 12px;
+}
+
+.workspace-picker__create input:focus {
+  border-color: var(--accent);
+}
+
+.workspace-picker__empty {
+  padding: 20px 8px;
+  text-align: center;
 }
 
 .modal__body {

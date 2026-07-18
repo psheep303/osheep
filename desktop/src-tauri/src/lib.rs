@@ -1,4 +1,4 @@
-use rfd::FileDialog;
+use rfd::AsyncFileDialog;
 use std::{
     env,
     fs::{self, File},
@@ -15,15 +15,21 @@ use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 struct BackendProcess(Mutex<Option<Child>>);
 
 #[tauri::command]
-async fn pick_workspace_folder() -> Result<Option<String>, String> {
-    tauri::async_runtime::spawn_blocking(|| {
-        FileDialog::new()
-            .set_title("选择工作区文件夹")
-            .pick_folder()
-            .map(|path| path.to_string_lossy().into_owned())
-    })
-    .await
-    .map_err(|error| format!("文件夹选择器失败: {error}"))
+async fn pick_workspace_folder(
+    window: tauri::WebviewWindow,
+    initial_path: Option<String>,
+) -> Result<Option<String>, String> {
+    let mut dialog = AsyncFileDialog::new()
+        .set_parent(&window)
+        .set_title("选择 osheep workspaces 文件夹");
+    if let Some(path) = initial_path.filter(|path| !path.trim().is_empty()) {
+        dialog = dialog.set_directory(path);
+    }
+
+    Ok(dialog
+        .pick_folder()
+        .await
+        .map(|folder| folder.path().to_string_lossy().into_owned()))
 }
 
 impl BackendProcess {
@@ -182,6 +188,10 @@ fn spawn_local_backend(app: &tauri::App, port: u16) -> io::Result<Child> {
         .env(
             "WORKSPACES_ROOT",
             data_dir.join("workspaces").to_string_lossy().as_ref(),
+        )
+        .env(
+            "OSHEEP_WORKSPACE_ROOT_CONFIG",
+            data_dir.join("workspace-root.json").to_string_lossy().as_ref(),
         )
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
