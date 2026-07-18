@@ -388,6 +388,8 @@ export interface GitCommit {
 export interface GitLog {
   commits: GitCommit[];
   head: string | null;
+  currentRef: string | null;
+  currentRemoteRef: string | null;
 }
 
 export async function getLog(
@@ -398,6 +400,7 @@ export async function getLog(
 ): Promise<GitLog> {
   const args = [
     "log",
+    "--decorate=full",
     `--pretty=format:%H%x00%P%x00%an%x00%at%x00%D%x00%s%x1e`,
     `-n`,
     String(limit),
@@ -416,7 +419,7 @@ export async function getLog(
       err.includes("ambiguous argument") ||
       err.includes("unknown revision")
     ) {
-      return { commits: [], head: null };
+      return { commits: [], head: null, currentRef: null, currentRemoteRef: null };
     }
     throw errors.gitFailed(r.stderr.trim() || "git log 失败");
   }
@@ -451,12 +454,26 @@ export async function getLog(
     });
   }
   let head: string | null = null;
+  let currentRef: string | null = null;
+  let currentRemoteRef: string | null = null;
   try {
     head = (await runGitText(workspaceRoot, ["rev-parse", "HEAD"])).trim();
   } catch {
     head = null;
   }
-  return { commits, head };
+  try {
+    currentRef = (await runGitText(workspaceRoot, ["symbolic-ref", "-q", "HEAD"])).trim();
+  } catch {
+    currentRef = null;
+  }
+  try {
+    currentRemoteRef = (
+      await runGitText(workspaceRoot, ["rev-parse", "--symbolic-full-name", "@{upstream}"])
+    ).trim();
+  } catch {
+    currentRemoteRef = null;
+  }
+  return { commits, head, currentRef, currentRemoteRef };
 }
 
 export async function getDiff(
