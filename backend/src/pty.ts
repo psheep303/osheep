@@ -27,6 +27,7 @@ export interface TerminalSession {
   scrollback: string;
   // Currently attached WS sink (single attach per session for MVP).
   sink: ((frame: string) => void) | null;
+  taps: Set<(frame: string) => void>;
   idleTimer: NodeJS.Timeout | null;
   // Logical cwd inside the workspaces root, updated when we recognize a `cd`.
   // Best-effort: covers plain `cd <path>` / `chdir` / `Set-Location` / `pushd`.
@@ -41,6 +42,7 @@ export interface TerminalSession {
   bufferDirty: boolean;
   // Tear down per-session shell-init temp files when the session ends.
   guardCleanup: (() => void) | null;
+  killOnDetach: boolean;
 }
 
 const sessions = new Map<string, TerminalSession>();
@@ -144,6 +146,8 @@ export interface CreateSessionInput {
   shell: string;
   cols: number;
   rows: number;
+  killOnDetach?: boolean;
+  guardRoot?: string;
 }
 
 export function createSession(input: CreateSessionInput): TerminalSession {
@@ -158,7 +162,7 @@ export function createSession(input: CreateSessionInput): TerminalSession {
 
   // Build shell-level guard if supported. The guard returns args to spawn with
   // and a cleanup to call when the session ends.
-  const workspacesRootAbs = path.resolve(config.workspacesRoot);
+  const workspacesRootAbs = path.resolve(input.guardRoot ?? config.workspacesRoot);
   const initialCwd = path.resolve(input.workspace.path);
   let spawnArgs = profile.args;
   let guardCleanup: (() => void) | null = null;
@@ -209,20 +213,24 @@ export function createSession(input: CreateSessionInput): TerminalSession {
     lastActivity: Date.now(),
     scrollback: "",
     sink: null,
+    taps: new Set(),
     idleTimer: null,
     logicalCwd: initialCwd,
     workspacesRoot: workspacesRootAbs,
     inputBuffer: "",
     bufferDirty: false,
     guardCleanup,
+    killOnDetach: input.killOnDetach !== false,
   };
   sessions.set(session.id, session);
   bumpActivity(session);
 
   pty.onData((data) => {
     bumpActivity(session);
+    const frame = JSON.stringify({ type: "output", data });
+    for (const tap of session.taps) tap(frame);
     if (session.sink) {
-      session.sink(JSON.stringify({ type: "output", data }));
+      session.sink(frame);
     } else {
       // Keep a bounded buffer so a slightly-delayed WS still sees the prompt.
       const MAX = 64 * 1024;
@@ -230,11 +238,9 @@ export function createSession(input: CreateSessionInput): TerminalSession {
     }
   });
   pty.onExit(({ exitCode, signal }) => {
-    if (session.sink) {
-      session.sink(
-        JSON.stringify({ type: "exit", code: exitCode, signal: signal ?? null })
-      );
-    }
+    const frame = JSON.stringify({ type: "exit", code: exitCode, signal: signal ?? null });
+    for (const tap of session.taps) tap(frame);
+    if (session.sink) session.sink(frame);
     cleanupSession(session, "pty-exit");
   });
   return session;
@@ -307,9 +313,28 @@ export function attachSink(
   };
 }
 
+export function addTap(
+  s: TerminalSession,
+  tap: (frame: string) => void
+): { detach: () => void; replayed: string } {
+  s.taps.add(tap);
+  const replayed = s.scrollback;
+  return {
+    detach: () => {
+      s.taps.delete(tap);
+    },
+    replayed,
+  };
+}
+
 export function writeInput(s: TerminalSession, data: string): void {
   bumpActivity(s);
   handleInputData(s, data);
+}
+
+export function writeRawInput(s: TerminalSession, data: string): void {
+  bumpActivity(s);
+  s.pty.write(data);
 }
 
 // ─── Workspace boundary enforcement for `cd` ───

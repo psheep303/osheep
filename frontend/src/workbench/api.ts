@@ -82,6 +82,18 @@ export interface TerminalCreateResp {
   wsUrl: string;
 }
 
+export type AgentSessionApp = "claude" | "codex";
+
+export interface AgentSessionSummary {
+  app: AgentSessionApp;
+  id: string;
+  title: string;
+  cwd: string;
+  createdAt: number;
+  updatedAt: number;
+  size: number;
+}
+
 // ─── Workspaces ───
 
 export async function listWorkspaces(): Promise<Workspace[]> {
@@ -196,6 +208,92 @@ export async function putSettings(
 
 // ─── Terminal ───
 
+// AI Settings
+
+export type AiSettingsApp = "claude" | "codex";
+
+export interface AiSettingsProvider {
+  id: string;
+  name: string;
+  settingsConfig: unknown;
+  websiteUrl?: string;
+  category?: string;
+  createdAt?: number;
+  sortIndex?: number;
+  notes?: string;
+  meta?: Record<string, unknown>;
+  icon?: string;
+  iconColor?: string;
+  inFailoverQueue?: boolean;
+}
+
+export interface AiSettingsProviderManager {
+  providers: Record<string, AiSettingsProvider>;
+  current: string;
+}
+
+export interface AiSettingsState {
+  version: 1;
+  apps: Record<AiSettingsApp, AiSettingsProviderManager>;
+}
+
+export interface AiSettingsSnapshot {
+  state: AiSettingsState;
+  paths: {
+    store: string;
+    claude: { dir: string; settings: string; exists: boolean };
+    codex: {
+      dir: string;
+      auth: string;
+      config: string;
+      authExists: boolean;
+      configExists: boolean;
+    };
+  };
+}
+
+export async function getAiSettings(): Promise<AiSettingsSnapshot> {
+  return await http.get("/api/ai-settings");
+}
+
+export async function importAiLiveProvider(
+  app: AiSettingsApp
+): Promise<AiSettingsSnapshot> {
+  return await http.post("/api/ai-settings/import-live", { app });
+}
+
+export async function saveAiProvider(
+  app: AiSettingsApp,
+  provider: AiSettingsProvider,
+  originalId?: string,
+  apply = false
+): Promise<AiSettingsSnapshot> {
+  if (originalId) {
+    return await http.put(
+      `/api/ai-settings/providers/${encodeURIComponent(originalId)}`,
+      { app, provider, apply }
+    );
+  }
+  return await http.post("/api/ai-settings/providers", { app, provider, apply });
+}
+
+export async function deleteAiSettingsProvider(
+  app: AiSettingsApp,
+  id: string
+): Promise<AiSettingsSnapshot> {
+  const qs = new URLSearchParams({ app }).toString();
+  return await http.delete(
+    `/api/ai-settings/providers/${encodeURIComponent(id)}?${qs}`
+  );
+}
+
+export async function switchAiSettingsProvider(
+  app: AiSettingsApp,
+  id: string
+): Promise<AiSettingsSnapshot> {
+  return await http.post("/api/ai-settings/switch", { app, id });
+}
+
 export async function getProfiles(): Promise<{
   os: "windows" | "macos" | "linux";
   profiles: ShellProfile[];
@@ -214,6 +312,60 @@ export async function createTerminal(input: {
 
 export async function killTerminal(id: string): Promise<void> {
   await http.delete(`/api/terminals/${encodeURIComponent(id)}`);
+}
+
+export async function listAgentSessions(
+  app: AgentSessionApp,
+  workspaceId: string
+): Promise<AgentSessionSummary[]> {
+  const query = new URLSearchParams({ app, workspaceId }).toString();
+  const { sessions } = await http.get<{ sessions: AgentSessionSummary[] }>(
+    `/api/agent-sessions?${query}`
+  );
+  return sessions;
+}
+
+export async function deleteAgentSession(
+  app: AgentSessionApp,
+  id: string,
+  workspaceId: string
+): Promise<void> {
+  const query = new URLSearchParams({ workspaceId }).toString();
+  await http.delete(
+    `/api/agent-sessions/${encodeURIComponent(app)}/${encodeURIComponent(id)}?${query}`
+  );
+}
+
+export async function batchDeleteAgentSessions(
+  app: AgentSessionApp,
+  ids: string[],
+  workspaceId: string
+): Promise<{ deleted: AgentSessionSummary[]; failed: Array<{ id: string; message: string }> }> {
+  return await http.post(
+    `/api/agent-sessions/${encodeURIComponent(app)}/batch-delete`,
+    { ids, workspaceId }
+  );
+}
+
+export async function createAgentSessionTerminal(input: {
+  app: AgentSessionApp;
+  sessionId: string;
+  workspaceId: string;
+  shell: string;
+  cols: number;
+  rows: number;
+}): Promise<TerminalCreateResp> {
+  return await http.post(
+    `/api/agent-sessions/${encodeURIComponent(input.app)}/${encodeURIComponent(
+      input.sessionId
+    )}/terminal`,
+    {
+      workspaceId: input.workspaceId,
+      shell: input.shell,
+      cols: input.cols,
+      rows: input.rows,
+    }
+  );
 }
 
 export function openTerminalSocket(wsPath: string): WebSocket {
@@ -575,16 +727,17 @@ export type ChatRole = "user" | "assistant" | "tool";
 /** Step records attached to assistant messages by osheep code. */
 export type ChatStep =
   | { kind: "plan"; items: string[] }
-  | { kind: "thought"; id: string; text: string }
+  | { kind: "thought"; id: string; text: string; startedAt?: number; endedAt?: number }
   | {
       kind: "tool";
       id: string;
       tool: ToolKind;
       args: unknown;
-      status: "running" | "ok" | "err" | "denied";
+      status: "queued" | "running" | "ok" | "err" | "denied" | "cached";
       result?: unknown;
       error?: string;
     }
+  | { kind: "ask"; id?: string; question: string; options: string[]; answer?: string }
   | { kind: "verify"; text: string }
   | { kind: "text"; text: string };
 
@@ -668,24 +821,435 @@ export async function deleteSession(
   );
 }
 
+// Codex Plugins
+
+export interface CodexPluginRecord {
+  name: string;
+  marketplace?: string;
+  selector: string;
+  displayName: string;
+  version?: string;
+  description?: string;
+  icon?: string;
+  iconColor?: string;
+  status: {
+    installed: boolean;
+    available: boolean;
+    enabled: boolean;
+    cached: boolean;
+    local: boolean;
+  };
+  source: {
+    kind: "marketplace" | "personal" | "cache" | "config";
+    path?: string;
+  };
+}
+
+export interface CodexMarketplaceRecord {
+  name: string;
+  source?: string;
+  path?: string;
+}
+
+export interface CodexPluginSnapshot {
+  plugins: CodexPluginRecord[];
+  marketplaces: CodexMarketplaceRecord[];
+  warnings: string[];
+  paths: {
+    codexDir: string;
+    codexConfig: string;
+    codexPluginCache: string;
+    personalMarketplace: string;
+    personalPluginRoot: string;
+  };
+}
+
+export async function getCodexPlugins(): Promise<CodexPluginSnapshot> {
+  return await http.get("/api/codex-plugins");
+}
+
+export async function installCodexPluginApi(
+  selector: string
+): Promise<CodexPluginSnapshot> {
+  const result = await http.post<{ snapshot: CodexPluginSnapshot }>(
+    "/api/codex-plugins/install",
+    { selector }
+  );
+  return result.snapshot;
+}
+
+export async function uninstallCodexPluginApi(
+  selector: string
+): Promise<CodexPluginSnapshot> {
+  const result = await http.post<{ snapshot: CodexPluginSnapshot }>(
+    "/api/codex-plugins/uninstall",
+    { selector }
+  );
+  return result.snapshot;
+}
+
+export async function createLocalCodexPluginApi(input: {
+  name: string;
+  displayName?: string;
+  description?: string;
+}): Promise<CodexPluginSnapshot> {
+  return await http.post("/api/codex-plugins/local", input);
+}
+
+export async function importLocalCodexPluginApi(
+  path: string
+): Promise<CodexPluginSnapshot> {
+  return await http.post("/api/codex-plugins/import-local", { path });
+}
+
+export async function removeLocalCodexPluginApi(
+  name: string,
+  deleteSource: boolean
+): Promise<CodexPluginSnapshot> {
+  const qs = new URLSearchParams({
+    deleteSource: deleteSource ? "true" : "false",
+  }).toString();
+  return await http.delete(
+    `/api/codex-plugins/local/${encodeURIComponent(name)}?${qs}`
+  );
+}
+
+export async function addCodexMarketplaceApi(
+  source: string
+): Promise<CodexPluginSnapshot> {
+  const result = await http.post<{ snapshot: CodexPluginSnapshot }>(
+    "/api/codex-plugins/marketplaces",
+    { source }
+  );
+  return result.snapshot;
+}
+
+// Claude Plugins
+
+export interface ClaudePluginRecord {
+  name: string;
+  marketplace?: string;
+  selector: string;
+  displayName: string;
+  version?: string;
+  description?: string;
+  icon?: string;
+  iconColor?: string;
+  scope?: string;
+  installCount?: number;
+  status: {
+    installed: boolean;
+    available: boolean;
+    enabled: boolean;
+    cached: boolean;
+    local: boolean;
+  };
+  source: {
+    kind: "marketplace" | "cache" | "settings";
+    path?: string;
+  };
+}
+
+export interface ClaudeMarketplaceRecord {
+  name: string;
+  source?: string;
+  repo?: string;
+  url?: string;
+  path?: string;
+}
+
+export interface ClaudePluginSnapshot {
+  plugins: ClaudePluginRecord[];
+  marketplaces: ClaudeMarketplaceRecord[];
+  warnings: string[];
+  paths: {
+    claudeDir: string;
+    settings: string;
+    localSettings: string;
+    pluginCache: string;
+    marketplaces: string;
+    skills: string;
+  };
+}
+
+export async function getClaudePlugins(): Promise<ClaudePluginSnapshot> {
+  return await http.get("/api/claude-plugins");
+}
+
+export async function installClaudePluginApi(
+  selector: string
+): Promise<ClaudePluginSnapshot> {
+  const result = await http.post<{ snapshot: ClaudePluginSnapshot }>(
+    "/api/claude-plugins/install",
+    { selector }
+  );
+  return result.snapshot;
+}
+
+export async function uninstallClaudePluginApi(
+  selector: string
+): Promise<ClaudePluginSnapshot> {
+  const result = await http.post<{ snapshot: ClaudePluginSnapshot }>(
+    "/api/claude-plugins/uninstall",
+    { selector }
+  );
+  return result.snapshot;
+}
+
+export async function enableClaudePluginApi(
+  selector: string
+): Promise<ClaudePluginSnapshot> {
+  const result = await http.post<{ snapshot: ClaudePluginSnapshot }>(
+    "/api/claude-plugins/enable",
+    { selector }
+  );
+  return result.snapshot;
+}
+
+export async function disableClaudePluginApi(
+  selector: string
+): Promise<ClaudePluginSnapshot> {
+  const result = await http.post<{ snapshot: ClaudePluginSnapshot }>(
+    "/api/claude-plugins/disable",
+    { selector }
+  );
+  return result.snapshot;
+}
+
+export async function addClaudeMarketplaceApi(
+  source: string
+): Promise<ClaudePluginSnapshot> {
+  const result = await http.post<{ snapshot: ClaudePluginSnapshot }>(
+    "/api/claude-plugins/marketplaces",
+    { source }
+  );
+  return result.snapshot;
+}
+
+// Workflows
+
+export type WorkflowProviderKind = "codex-cli" | "claude-cli";
+export type WorkflowNodeKind =
+  | "agent"
+  | "input"
+  | "trigger"
+  | "manual-trigger"
+  | "cron"
+  | "webhook-trigger"
+  | "command"
+  | "web"
+  | "http-request"
+  | "set"
+  | "if"
+  | "merge"
+  | "code"
+  | "loop-items"
+  | "wait"
+  | "json"
+  | "file-read"
+  | "file-write"
+  | "markdown"
+  | "mcp";
+export type WorkflowNodeStatus = "idle" | "running" | "success" | "error";
+export type WorkflowRunStatus =
+  | "idle"
+  | "running"
+  | "success"
+  | "error"
+  | "stopped";
+
+export interface WorkflowNode {
+  id: string;
+  blockId?: number;
+  kind?: WorkflowNodeKind;
+  title: string;
+  providerKind: WorkflowProviderKind;
+  model: string;
+  prompt: string;
+  x: number;
+  y: number;
+  status: WorkflowNodeStatus;
+  summary?: string;
+  rawOutput?: string;
+  error?: string;
+  config?: Record<string, unknown>;
+  startedAt?: number;
+  completedAt?: number;
+}
+
+export interface WorkflowEdge {
+  id: string;
+  from: string;
+  to: string;
+  passSummary: boolean;
+}
+
+export interface WorkflowRun {
+  id: string;
+  status: WorkflowRunStatus;
+  startedAt: number;
+  completedAt?: number;
+  nodeIds: string[];
+  error?: string;
+}
+
+export interface WorkflowRecord {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  nodes: WorkflowNode[];
+  edges: WorkflowEdge[];
+  runs: WorkflowRun[];
+}
+
+export interface WorkflowSummary {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  nodeCount: number;
+  edgeCount: number;
+  status: WorkflowRunStatus;
+}
+
+const workflowsUrl = (id: string, suffix = "") =>
+  `/api/workspaces/${encodeURIComponent(id)}/workflows${suffix}`;
+
+export async function listWorkflows(
+  workspaceId: string
+): Promise<WorkflowSummary[]> {
+  const { workflows } = await http.get<{ workflows: WorkflowSummary[] }>(
+    workflowsUrl(workspaceId)
+  );
+  return workflows;
+}
+
+export async function getWorkflow(
+  workspaceId: string,
+  workflowId: string
+): Promise<WorkflowRecord> {
+  return await http.get(
+    workflowsUrl(workspaceId, `/${encodeURIComponent(workflowId)}`)
+  );
+}
+
+export async function createWorkflow(
+  workspaceId: string,
+  partial: Partial<WorkflowRecord> = {}
+): Promise<WorkflowRecord> {
+  return await http.post(workflowsUrl(workspaceId), partial);
+}
+
+export async function saveWorkflow(
+  workspaceId: string,
+  record: WorkflowRecord
+): Promise<WorkflowRecord> {
+  return await http.put(
+    workflowsUrl(workspaceId, `/${encodeURIComponent(record.id)}`),
+    record
+  );
+}
+
+export async function runWorkflow(
+  workspaceId: string,
+  workflowId: string,
+  nodeIds?: string[]
+): Promise<{ runId: string; workflow: WorkflowRecord }> {
+  return await http.post(
+    workflowsUrl(workspaceId, `/${encodeURIComponent(workflowId)}/run`),
+    { nodeIds }
+  );
+}
+
+export async function stopWorkflow(
+  workspaceId: string,
+  workflowId: string
+): Promise<{ ok: boolean; stopped: boolean }> {
+  return await http.post(
+    workflowsUrl(workspaceId, `/${encodeURIComponent(workflowId)}/stop`)
+  );
+}
+
+export async function deleteWorkflow(
+  workspaceId: string,
+  workflowId: string
+): Promise<void> {
+  await http.delete(
+    workflowsUrl(workspaceId, `/${encodeURIComponent(workflowId)}`)
+  );
+}
+
 // ─── AI proxy ───
+
+// Remote MCP
+
+export interface RemoteMcpTool {
+  name: string;
+  description?: string;
+  inputSchema?: unknown;
+  [key: string]: unknown;
+}
+
+export interface RemoteMcpConnectionInput {
+  remoteLink: string;
+  postUrl?: string;
+  headers?: Record<string, string>;
+  apiKey?: string;
+}
+
+export interface RemoteMcpDiscovery {
+  remoteLink: string;
+  postUrl: string;
+  tools: RemoteMcpTool[];
+  raw: unknown;
+  connectedAt: number;
+}
+
+export interface RemoteMcpCallResult {
+  remoteLink: string;
+  postUrl: string;
+  ok: boolean;
+  status?: "success" | "failed";
+  result?: unknown;
+  error?: unknown;
+  response: unknown;
+}
+
+const mcpUrl = (id: string, suffix: string) =>
+  `/api/workspaces/${encodeURIComponent(id)}/mcp${suffix}`;
+
+export async function discoverRemoteMcp(
+  workspaceId: string,
+  input: RemoteMcpConnectionInput
+): Promise<RemoteMcpDiscovery> {
+  return await http.post(mcpUrl(workspaceId, "/discover"), input);
+}
+
+export async function callRemoteMcp(
+  workspaceId: string,
+  input: RemoteMcpConnectionInput & {
+    name: string;
+    arguments?: Record<string, unknown>;
+  }
+): Promise<RemoteMcpCallResult> {
+  return await http.post(mcpUrl(workspaceId, "/call"), input);
+}
 
 export interface AiChatMessage {
   role: "system" | "user" | "assistant" | "tool";
   content: string;
-  /** present when role === "tool" — used to correlate with the originating tool_call */
+  /** present when role === "tool"  - used to correlate with the originating tool_call */
   tool_call_id?: string;
 }
 
 export async function fetchProviderModels(
   workspaceId: string,
-  baseUrl: string,
-  apiKey: string,
-  kind: "openai" | "anthropic" = "openai"
+  kind: "claude-cli" | "codex-cli" = "claude-cli"
 ): Promise<string[]> {
   const { models } = await http.post<{ models: string[] }>(
     `/api/workspaces/${encodeURIComponent(workspaceId)}/ai/models`,
-    { baseUrl, apiKey, kind }
+    { kind }
   );
   return models;
 }
@@ -693,11 +1257,9 @@ export async function fetchProviderModels(
 export async function aiChat(
   workspaceId: string,
   input: {
-    baseUrl: string;
-    apiKey: string;
     model: string;
     messages: AiChatMessage[];
-    kind?: "openai" | "anthropic";
+    kind?: "claude-cli" | "codex-cli";
   }
 ): Promise<{ content: string }> {
   return await http.post(
@@ -716,18 +1278,18 @@ export async function aiChat(
  * Network or upstream errors reject with an Error whose message is the
  * server-supplied reason (or fetch failure).
  */
-export async function aiChatStream(
+async function aiChatStreamOnce(
   workspaceId: string,
   input: {
-    baseUrl: string;
-    apiKey: string;
     model: string;
     messages: AiChatMessage[];
-    kind?: "openai" | "anthropic";
+    kind?: "claude-cli" | "codex-cli";
     reasoning?: { effort: "off" | "minimal" | "low" | "medium" | "high" };
   },
   onDelta: (chunk: string) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  onReasoningDelta?: (chunk: string) => void,
+  onLog?: (entry: { stream: "stdout" | "stderr"; content: string }) => void
 ): Promise<{ content: string; aborted: boolean }> {
   const url = `/api/workspaces/${encodeURIComponent(
     workspaceId
@@ -786,6 +1348,26 @@ export async function aiChatStream(
       } catch {
         /* ignore malformed payload */
       }
+    } else if (event === "reasoning") {
+      try {
+        const obj = JSON.parse(dataLine) as { content?: string };
+        const piece = typeof obj.content === "string" ? obj.content : "";
+        if (piece) onReasoningDelta?.(piece);
+      } catch {
+        /* ignore malformed payload */
+      }
+    } else if (event === "log") {
+      try {
+        const obj = JSON.parse(dataLine) as {
+          stream?: "stdout" | "stderr";
+          content?: string;
+        };
+        if ((obj.stream === "stdout" || obj.stream === "stderr") && typeof obj.content === "string") {
+          onLog?.({ stream: obj.stream, content: obj.content });
+        }
+      } catch {
+        /* ignore malformed payload */
+      }
     } else if (event === "done") {
       done = true;
     } else if (event === "error") {
@@ -817,7 +1399,7 @@ export async function aiChatStream(
         if (line.startsWith("event:")) {
           event = line.slice(6).trim();
         } else if (line.startsWith("data:")) {
-          // Append (in case of multi-line data — rare here but safe)
+          // Append (in case of multi-line data  - rare here but safe)
           const piece = line.slice(5).trimStart();
           dataLine = dataLine ? dataLine + "\n" + piece : piece;
         }
@@ -845,11 +1427,337 @@ export async function aiChatStream(
   return { content: acc, aborted };
 }
 
+export async function aiChatStream(
+  workspaceId: string,
+  input: {
+    model: string;
+    messages: AiChatMessage[];
+    kind?: "claude-cli" | "codex-cli";
+    reasoning?: { effort: "off" | "minimal" | "low" | "medium" | "high" };
+  },
+  onDelta: (chunk: string) => void,
+  signal?: AbortSignal,
+  onReasoningDelta?: (chunk: string) => void,
+  onLog?: (entry: { stream: "stdout" | "stderr"; content: string }) => void
+): Promise<{ content: string; aborted: boolean }> {
+  const maxRetries = 3;
+  const maxAttempts = 1 + maxRetries;
+  let lastError: unknown = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    let emitted = false;
+    try {
+      const result = await aiChatStreamOnce(
+        workspaceId,
+        input,
+        (chunk) => {
+          emitted = true;
+          onDelta(chunk);
+        },
+        signal,
+        (chunk) => {
+          emitted = true;
+          onReasoningDelta?.(chunk);
+        },
+        onLog
+      );
+      return result;
+    } catch (e) {
+      lastError = e;
+      if (signal?.aborted || emitted || !isRetryableStreamError(e) || attempt >= maxAttempts) {
+        throw e;
+      }
+      await sleep(350 * attempt, signal);
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+export interface AiTerminalFrame {
+  type: "session" | "conversation" | "output" | "status" | "exit";
+  sessionId?: string;
+  data?: string;
+  status?:
+      | "starting"
+      | "waiting-for-input"
+      | "ready"
+      | "prompt-injected"
+      | "prompt-sent"
+      | "prompt-timeout"
+      | "waiting-for-choice"
+      | "ready-for-success"
+      | "auto-error"
+      | "auto-finished"
+      | "manual-success"
+      | "exited";
+  code?: number | null;
+  signal?: number | string | null;
+}
+
+export interface AiTerminalResult {
+  sessionId: string;
+  conversationSessionId?: string;
+  content: string;
+  transcript: string;
+  changedFiles: string[];
+  verification: string[];
+  exitCode: number | null;
+  signal: number | string | null;
+}
+
+export type AiTerminalMode = "default" | "goal" | "plan";
+export type AiTerminalClaudePermissionMode =
+  | "default"
+  | "acceptEdits"
+  | "auto"
+  | "dontAsk"
+  | "bypassPermissions";
+export type AiTerminalCodexApproval = "untrusted" | "on-request" | "never";
+export type AiTerminalCodexSandbox = "read-only" | "workspace-write" | "danger-full-access";
+export type AiTerminalEffort =
+  | "off"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max"
+  | "ultracode";
+
+export async function aiChatTerminalStream(
+  workspaceId: string,
+  input: {
+    model: string;
+    messages: AiChatMessage[];
+    kind?: "claude-cli" | "codex-cli";
+    terminalPrompt?: string;
+    autoSuccess?: boolean;
+    claudePermissionMode?: AiTerminalClaudePermissionMode;
+    mode?: AiTerminalMode;
+    codexApproval?: AiTerminalCodexApproval;
+    codexSandbox?: AiTerminalCodexSandbox;
+    effort?: AiTerminalEffort;
+    alwaysEnter?: boolean;
+    conversationSessionId?: string;
+    resumeConversation?: boolean;
+  },
+  onFrame: (frame: AiTerminalFrame) => void,
+  signal?: AbortSignal
+): Promise<{ result: AiTerminalResult | null; aborted: boolean }> {
+  const url = `/api/workspaces/${encodeURIComponent(workspaceId)}/ai/chat/terminal`;
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      signal,
+      headers: {
+        "content-type": "application/json",
+        accept: "text/event-stream",
+      },
+      body: JSON.stringify(input),
+    });
+  } catch (e) {
+    if ((e as Error).name === "AbortError") return { result: null, aborted: true };
+    throw e;
+  }
+
+  if (!res.ok || !res.body) {
+    const txt = await res.text().catch(() => "");
+    let msg = `HTTP ${res.status}`;
+    try {
+      const parsed = JSON.parse(txt) as ApiErrorBody;
+      msg = parsed.error?.message ?? msg;
+    } catch {
+      if (txt) msg = txt;
+    }
+    throw new ApiClientError(res.status, "TERMINAL_STREAM_FAILED", msg);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let buffer = "";
+  let event = "";
+  let dataLine = "";
+  let result: AiTerminalResult | null = null;
+  let serverError: string | null = null;
+  let aborted = false;
+  let done = false;
+
+  const flushEvent = () => {
+    if (!event && !dataLine) return;
+    if (event === "result") {
+      try {
+        result = JSON.parse(dataLine) as AiTerminalResult;
+      } catch {
+        serverError = "malformed terminal result";
+      }
+    } else if (event === "done") {
+      done = true;
+    } else if (event === "error") {
+      try {
+        const obj = JSON.parse(dataLine) as { message?: string };
+        serverError = obj.message ?? "terminal stream error";
+      } catch {
+        serverError = "terminal stream error";
+      }
+    } else if (event) {
+      try {
+        onFrame(JSON.parse(dataLine) as AiTerminalFrame);
+      } catch {
+        /* ignore malformed payload */
+      }
+    }
+    event = "";
+    dataLine = "";
+  };
+
+  try {
+    while (!done) {
+      const r = await reader.read();
+      if (r.done) break;
+      buffer += decoder.decode(r.value, { stream: true });
+      let nl: number;
+      while ((nl = buffer.indexOf("\n")) !== -1) {
+        const raw = buffer.slice(0, nl);
+        buffer = buffer.slice(nl + 1);
+        const line = raw.replace(/\r$/, "");
+        if (line === "") {
+          flushEvent();
+          continue;
+        }
+        if (line.startsWith("event:")) {
+          event = line.slice(6).trim();
+        } else if (line.startsWith("data:")) {
+          const piece = line.slice(5).trimStart();
+          dataLine = dataLine ? dataLine + "\n" + piece : piece;
+        }
+      }
+    }
+    flushEvent();
+  } catch (e) {
+    if ((e as Error).name === "AbortError") {
+      aborted = true;
+    } else {
+      throw e;
+    }
+  } finally {
+    try {
+      await reader.cancel();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  if (serverError && !aborted) {
+    throw new ApiClientError(502, "TERMINAL_STREAM_FAILED", serverError);
+  }
+  return { result, aborted };
+}
+
+export async function injectAiTerminalPrompt(
+  workspaceId: string,
+  sessionId: string,
+  options?: { submit?: boolean }
+): Promise<void> {
+  await http.post(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/ai/chat/terminal/${encodeURIComponent(
+      sessionId
+    )}/inject`,
+    options ?? {}
+  );
+}
+
+export async function setAiTerminalAutoContinue(
+  workspaceId: string,
+  sessionId: string,
+  autoContinue: boolean
+): Promise<void> {
+  await http.post(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/ai/chat/terminal/${encodeURIComponent(
+      sessionId
+    )}/auto-continue`,
+    { autoContinue }
+  );
+}
+
+export async function setAiTerminalAutoSuccess(
+  workspaceId: string,
+  sessionId: string,
+  autoSuccess: boolean
+): Promise<void> {
+  await http.post(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/ai/chat/terminal/${encodeURIComponent(
+      sessionId
+    )}/auto-success`,
+    { autoSuccess }
+  );
+}
+
+export async function pauseAiTerminal(
+  workspaceId: string,
+  sessionId: string
+): Promise<void> {
+  await http.post(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/ai/chat/terminal/${encodeURIComponent(
+      sessionId
+    )}/pause`
+  );
+}
+
+export async function finishAiTerminalSuccess(
+  workspaceId: string,
+  sessionId: string
+): Promise<void> {
+  await http.post(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/ai/chat/terminal/${encodeURIComponent(
+      sessionId
+    )}/success`
+  );
+}
+
+export async function continueAiTerminal(
+  workspaceId: string,
+  sessionId: string
+): Promise<void> {
+  await http.post(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/ai/chat/terminal/${encodeURIComponent(
+      sessionId
+    )}/continue`
+  );
+}
+
+function isRetryableStreamError(e: unknown): boolean {
+  if (e instanceof ApiClientError) {
+    if (e.status === 408 || e.status === 425 || e.status === 429) return true;
+    return e.status >= 500 && e.status < 600;
+  }
+  return true;
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const id = window.setTimeout(resolve, ms);
+    signal?.addEventListener(
+      "abort",
+      () => {
+        window.clearTimeout(id);
+        resolve();
+      },
+      { once: true }
+    );
+  });
+}
+
 // ─── AI tool exec (osheep code) ───
 
 export type ToolKind = "read" | "write" | "run";
 
-export interface ReadFileArgs { kind: "file"; path: string }
+export interface ReadFileArgs {
+  kind: "file";
+  path: string;
+  startLine?: number;
+  lineCount?: number;
+}
 export interface ReadListArgs { kind: "list"; path: string; includeHidden?: boolean }
 export interface ReadSearchArgs {
   kind: "search";
@@ -872,6 +1780,11 @@ export interface EditFileArgs {
   oldString: string;
   newString: string;
 }
+export interface MultiEditArgs {
+  kind: "multi_edit";
+  path: string;
+  edits: Array<{ oldString: string; newString: string }>;
+}
 export interface MoveArgs { kind: "move"; from: string; to: string }
 export interface DeleteArgs { kind: "delete"; path: string; recursive?: boolean }
 export interface CreateArgs {
@@ -883,6 +1796,7 @@ export type WriteArgs =
   | WriteFileArgs
   | AppendFileArgs
   | EditFileArgs
+  | MultiEditArgs
   | MoveArgs
   | DeleteArgs
   | CreateArgs;
@@ -897,12 +1811,83 @@ export interface RunArgs {
 export interface RunResult {
   command: string;
   cwd: string;
+  shell?: string;
   exitCode: number | null;
   signal: string | null;
   durationMs: number;
   stdout: string;
   stderr: string;
   truncated: boolean;
+  attempts?: Array<{
+    shell: string;
+    exitCode: number | null;
+    signal: string | null;
+    durationMs: number;
+  }>;
+}
+
+/**
+ * Structured diff payload returned by `edit_file`. Used by the chat UI to
+ * render an inline thumbnail and (on click) a full Monaco DiffEditor tab.
+ *
+ * `before` / `after` are full file contents  - heavy fields that the chat
+ * runtime strips before sending the tool result back to the model so the
+ * conversation context doesn't double-quote the whole file.
+ */
+export interface EditFileDiff {
+  oldString: string;
+  newString: string;
+  startLine: number;
+  endLineBefore: number;
+  endLineAfter: number;
+  added: number;
+  removed: number;
+  before: string;
+  after: string;
+}
+
+export interface EditFileResult {
+  ok: true;
+  kind: "edit_file";
+  path: string;
+  size: number;
+  mtime: number;
+  replacements: number;
+  diff: EditFileDiff;
+}
+
+/**
+ * Per-edit diff entry inside a `multi_edit` result. Same shape as
+ * `EditFileDiff` minus the heavy `before` / `after` strings  - those live once
+ * at the top of the multi_edit `diff` payload covering the whole file
+ * before/after the entire batch.
+ */
+export interface MultiEditEntry {
+  oldString: string;
+  newString: string;
+  startLine: number;
+  endLineBefore: number;
+  endLineAfter: number;
+  added: number;
+  removed: number;
+}
+
+export interface MultiEditDiff {
+  edits: MultiEditEntry[];
+  added: number;
+  removed: number;
+  before: string;
+  after: string;
+}
+
+export interface MultiEditResult {
+  ok: true;
+  kind: "multi_edit";
+  path: string;
+  size: number;
+  mtime: number;
+  replacements: number;
+  diff: MultiEditDiff;
 }
 
 export async function execRead(
@@ -935,56 +1920,234 @@ export async function execRun(
   );
 }
 
+export async function execRunStream(
+  workspaceId: string,
+  args: RunArgs,
+  options: {
+    signal?: AbortSignal;
+    onLog?: (entry: { stream: "stdout" | "stderr"; content: string; shell?: string }) => void;
+  } = {}
+): Promise<{ result: RunResult | null; aborted: boolean }> {
+  const url = `/api/workspaces/${encodeURIComponent(workspaceId)}/ai/exec/run/stream`;
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      signal: options.signal,
+      headers: {
+        "content-type": "application/json",
+        accept: "text/event-stream",
+      },
+      body: JSON.stringify(args),
+    });
+  } catch (e) {
+    if ((e as Error).name === "AbortError") return { result: null, aborted: true };
+    throw e;
+  }
+
+  if (!res.ok || !res.body) {
+    const txt = await res.text().catch(() => "");
+    let msg = `HTTP ${res.status}`;
+    try {
+      const parsed = JSON.parse(txt) as ApiErrorBody;
+      msg = parsed.error?.message ?? msg;
+    } catch {
+      if (txt) msg = txt;
+    }
+    throw new ApiClientError(res.status, "STREAM_FAILED", msg);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let buffer = "";
+  let event = "";
+  let dataLine = "";
+  let result: RunResult | null = null;
+  let serverError: string | null = null;
+  let aborted = false;
+  let done = false;
+
+  const flushEvent = () => {
+    if (!event && !dataLine) return;
+    if (event === "log") {
+      try {
+        const obj = JSON.parse(dataLine) as {
+          stream?: "stdout" | "stderr";
+          content?: string;
+          shell?: string;
+        };
+        if ((obj.stream === "stdout" || obj.stream === "stderr") && typeof obj.content === "string") {
+          options.onLog?.({ stream: obj.stream, content: obj.content, shell: obj.shell });
+        }
+      } catch {
+        /* ignore malformed payload */
+      }
+    } else if (event === "result") {
+      try {
+        result = JSON.parse(dataLine) as RunResult;
+      } catch {
+        serverError = "malformed run result";
+      }
+    } else if (event === "done") {
+      done = true;
+    } else if (event === "error") {
+      try {
+        const obj = JSON.parse(dataLine) as { message?: string };
+        serverError = obj.message ?? "stream error";
+      } catch {
+        serverError = "stream error";
+      }
+    }
+    event = "";
+    dataLine = "";
+  };
+
+  try {
+    while (!done) {
+      const r = await reader.read();
+      if (r.done) break;
+      buffer += decoder.decode(r.value, { stream: true });
+      let nl: number;
+      while ((nl = buffer.indexOf("\n")) !== -1) {
+        const raw = buffer.slice(0, nl);
+        buffer = buffer.slice(nl + 1);
+        const line = raw.replace(/\r$/, "");
+        if (line === "") {
+          flushEvent();
+          continue;
+        }
+        if (line.startsWith("event:")) {
+          event = line.slice(6).trim();
+        } else if (line.startsWith("data:")) {
+          const piece = line.slice(5).trimStart();
+          dataLine = dataLine ? dataLine + "\n" + piece : piece;
+        }
+      }
+    }
+    flushEvent();
+  } catch (e) {
+    if ((e as Error).name === "AbortError") {
+      aborted = true;
+    } else {
+      throw e;
+    }
+  } finally {
+    try {
+      await reader.cancel();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  if (serverError && !aborted) {
+    throw new ApiClientError(502, "RUN_STREAM_FAILED", serverError);
+  }
+
+  return { result, aborted };
+}
+
 // ─── osheep code tag-aware streaming ───
 //
 // The backend `/ai/chat/stream` still emits a raw delta stream. osheep code's
-// tag protocol (<plan>/<thought>/<tool>/<verify>) is parsed here, on the
+// tag protocol (<tasks>/<thought>/<tool>/<ask>/<verify>) is parsed here, on the
 // client. The caller passes semantic callbacks instead of a single onDelta.
 
 export interface OsheepCodeStreamHandlers {
   onPlan?: (items: string[]) => void;
+  /**
+   * Fired once when a thought / reasoning node begins, so the UI can show a
+   * placeholder ("正在思考 - ) with the running animation. No per-token deltas
+   * are emitted  - see `onThought` for the atomic fill.
+   */
   onThoughtStart?: (id: string) => void;
-  onThoughtDelta?: (id: string, chunk: string) => void;
-  onThoughtEnd?: (id: string) => void;
+  /**
+   * Fired once when a thought / reasoning node is complete, carrying the FULL
+   * text. osheep code renders each timeline node atomically: the upstream
+   * request still streams, but a node only materialises (or fills its
+   * placeholder) once it has fully closed  - we never repaint a node mid-token.
+   */
+  onThought?: (id: string, text: string) => void;
   onTextDelta?: (chunk: string) => void;
   onToolCall?: (call: {
     id: string;
     tool: ToolKind;
     args: unknown;
   }) => void;
+  onAsk?: (ask: { id: string; question: string; options: string[] }) => void;
   onVerify?: (text: string) => void;
 }
 
 class TagStreamParser {
   private buffer = "";
-  private state: "outside" | "in_plan" | "in_thought" | "in_tool" | "in_verify" =
-    "outside";
+  private state:
+    | "outside"
+    | "in_plan"
+    | "in_thought"
+    | "in_tool"
+    | "in_tool_result"
+    | "in_ask"
+    | "in_verify" = "outside";
   private tagSeq = 0;
   private currentId = "";
+  private reasoningId: string | null = null;
+  private accReasoning = "";
   // Tool open-tag may carry attrs like name="run". We capture the full opening
   // tag text until we see the matching `>` before we know what tool it is.
   private toolName: ToolKind | null = null;
   private accInTag = "";
+  private expectedCloseTag = "";
 
   constructor(private readonly h: OsheepCodeStreamHandlers) {}
 
   feed(chunk: string) {
+    // A thought/reasoning node renders atomically: as soon as the model
+    // starts emitting tagged/plain content, the preceding reasoning phase is
+    // over, so flush it as one complete node (filling its placeholder).
+    this.flushReasoning();
     this.buffer += chunk;
     this.drain();
   }
 
+  feedReasoning(chunk: string) {
+    if (!chunk) return;
+    if (!this.reasoningId) {
+      this.reasoningId = this.nextId("rt");
+      this.accReasoning = "";
+      // Placeholder only  - content is buffered and emitted whole on flush.
+      this.h.onThoughtStart?.(this.reasoningId);
+    }
+    this.accReasoning += chunk;
+  }
+
+  /** Emit the buffered reasoning node atomically, if any is open. */
+  private flushReasoning() {
+    if (!this.reasoningId) return;
+    this.h.onThought?.(this.reasoningId, this.accReasoning.trim());
+    this.reasoningId = null;
+    this.accReasoning = "";
+  }
+
   finish() {
+    // Flush a still-open reasoning node as one complete thought.
+    this.flushReasoning();
     // Flush any pending text or in-tag content as best-effort.
     if (this.state === "outside" && this.buffer) {
       this.emitText(this.buffer);
       this.buffer = "";
     }
-    // Unclosed tags: surface accumulated content as plain text so user sees something.
-    if (this.state !== "outside" && this.accInTag) {
-      this.emitText(this.accInTag);
+    // Unclosed tags: surface accumulated content so the user sees something,
+    // except tool_result echoes which are never user-facing. An unclosed
+    // <thought> still fills its placeholder atomically via onThought.
+    if (this.state !== "outside" && this.state !== "in_tool_result" && this.accInTag) {
+      if (this.state === "in_thought" && this.currentId) {
+        this.h.onThought?.(this.currentId, this.accInTag.trim());
+      } else {
+        this.emitText(this.accInTag);
+      }
       this.accInTag = "";
     }
     this.state = "outside";
+    this.expectedCloseTag = "";
   }
 
   private emitText(t: string) {
@@ -1017,7 +2180,7 @@ class TagStreamParser {
           const consumed = this.tryConsumeBareToolCall();
           if (consumed === "ok") continue;
           if (consumed === "wait") return;
-          // "skip" — pattern didn't actually resolve to a tool call, fall
+          // "skip"  - pattern didn't actually resolve to a tool call, fall
           // through to normal `<` handling so we emit a single char as text
           // and keep scanning.
         } else if (bareIdx > 0) {
@@ -1030,11 +2193,8 @@ class TagStreamParser {
 
         const ltIdx = this.buffer.indexOf("<");
         if (ltIdx === -1) {
-          // No tag-start in sight — entire buffer is plain text.
-          if (this.buffer) {
-            this.emitText(this.buffer);
-            this.buffer = "";
-          }
+          // No complete node yet. Keep buffering plain text so the UI only
+          // receives completed nodes, not token-by-token deltas.
           return;
         }
         // Emit everything before the `<` as text.
@@ -1055,13 +2215,23 @@ class TagStreamParser {
           this.buffer = this.buffer.slice(gtIdx + 1);
           continue;
         }
-        // Not a tag we recognise — emit the `<` as text and continue scanning.
+        // Some upstreams/models echo host tool-result tags in the assistant
+        // stream. They are protocol noise, not user-facing text; consume them
+        // as a whole so raw JSON never appears in the timeline.
+        if (/^<tool_result\b[^>]*>$/i.test(opening)) {
+          this.state = "in_tool_result";
+          this.expectedCloseTag = "</tool_result>";
+          this.accInTag = "";
+          this.buffer = this.buffer.slice(gtIdx + 1);
+          continue;
+        }
+        // Not a tag we recognise  - emit the `<` as text and continue scanning.
         this.emitText("<");
         this.buffer = this.buffer.slice(1);
         continue;
       }
 
-      // Inside a tag — find the matching closing tag.
+      // Inside a tag  - find the matching closing tag.
       const closeTag = this.closingFor(this.state);
       const cIdx = this.buffer.indexOf(closeTag);
       if (cIdx === -1) {
@@ -1099,16 +2269,16 @@ class TagStreamParser {
     const m = this.buffer.match(/\n[ \t]*(?:Read|Write|Run|read|write|run)\s*\r?\n\s*\{/);
     if (!m || m.index === undefined) return -1;
     // Return the position of the newline so the caller emits text up to (and
-    // including) it before retrying — this keeps prose ending in a newline
+    // including) it before retrying  - this keeps prose ending in a newline
     // intact.
     return m.index + 1;
   }
 
   /**
    * Try to consume a bare tool call at the start of the buffer. Returns:
-   *   "ok"   — consumed a complete tool call and emitted it
-   *   "wait" — pattern looks right but the JSON args aren't complete yet
-   *   "skip" — pattern didn't match cleanly; let normal text handling resume
+   *   "ok"    - consumed a complete tool call and emitted it
+   *   "wait"  - pattern looks right but the JSON args aren't complete yet
+   *   "skip"  - pattern didn't match cleanly; let normal text handling resume
    */
   private tryConsumeBareToolCall(): "ok" | "wait" | "skip" {
     const m = this.buffer.match(
@@ -1118,7 +2288,7 @@ class TagStreamParser {
     const openIdx = m[0].length - 1; // index of `{` in the buffer
     const closeIdx = findMatchingBrace(this.buffer, openIdx);
     if (closeIdx === -1) {
-      // Args still streaming — wait for more.
+      // Args still streaming  - wait for more.
       return "wait";
     }
     const jsonStr = this.buffer.slice(openIdx, closeIdx + 1);
@@ -1126,6 +2296,12 @@ class TagStreamParser {
     try {
       args = JSON.parse(jsonStr);
     } catch {
+      return "skip";
+    }
+    // Only treat this as a tool call if the JSON actually looks like one of
+    // our tool argument shapes. Otherwise prose like "Read this:\n{...}" with
+    // an arbitrary object would get hijacked.
+    if (!looksLikeToolArgs(m[1]!.toLowerCase() as ToolKind, args)) {
       return "skip";
     }
     const toolName = m[1]!.toLowerCase() as ToolKind;
@@ -1140,13 +2316,18 @@ class TagStreamParser {
   }
 
   private closingFor(s: typeof this.state): string {
+    if (this.expectedCloseTag) return this.expectedCloseTag;
     switch (s) {
       case "in_plan":
-        return "</plan>";
+        return "</tasks>";
       case "in_thought":
         return "</thought>";
       case "in_tool":
         return "</tool>";
+      case "in_tool_result":
+        return "</tool_result>";
+      case "in_ask":
+        return "</ask>";
       case "in_verify":
         return "</verify>";
       default:
@@ -1156,8 +2337,12 @@ class TagStreamParser {
 
   private tryEnterTag(opening: string): boolean {
     const lower = opening.toLowerCase();
-    if (lower === "<plan>") {
+    if (lower === "<plan>" || lower === "<tasks>") {
+      // <tasks> is the new name; <plan> stays as a legacy alias and flows
+      // through the same state  - downstream `kind: "plan"` is the persistent
+      // data field, the UI label is "Tasks".
       this.state = "in_plan";
+      this.expectedCloseTag = lower === "<tasks>" ? "</tasks>" : "</plan>";
       this.accInTag = "";
       return true;
     }
@@ -1173,6 +2358,12 @@ class TagStreamParser {
       this.accInTag = "";
       return true;
     }
+    if (lower === "<ask>") {
+      this.state = "in_ask";
+      this.accInTag = "";
+      this.currentId = this.nextId("ask");
+      return true;
+    }
     // <tool name="run"> / <tool name='read'> / <tool name=write>
     const m = opening.match(/^<tool\b[^>]*\bname\s*=\s*["']?(read|write|run)["']?[^>]*>$/i);
     if (m) {
@@ -1186,13 +2377,10 @@ class TagStreamParser {
   }
 
   private onInTagChunk(part: string) {
-    if (this.state === "in_thought") {
-      this.accInTag += part;
-      this.h.onThoughtDelta?.(this.currentId, part);
-    } else {
-      // plan / verify / tool: accumulate, emit on close.
-      this.accInTag += part;
-    }
+    // Buffer only. Every semantic block  - including <thought>  - is emitted as
+    // one complete node on its closing tag, so the timeline never repaints a
+    // node mid-token (the upstream request still streams; the UI does not).
+    this.accInTag += part;
   }
 
   private onCloseTag() {
@@ -1211,9 +2399,21 @@ class TagStreamParser {
         .filter((l) => l.length > 0);
       this.h.onPlan?.(items);
     } else if (this.state === "in_thought") {
-      this.h.onThoughtEnd?.(this.currentId);
+      this.h.onThought?.(this.currentId, this.accInTag.trim());
     } else if (this.state === "in_verify") {
       this.h.onVerify?.(this.accInTag.trim());
+    } else if (this.state === "in_ask") {
+      const parsed = parseAskBody(this.accInTag);
+      if (parsed) {
+        this.h.onAsk?.({
+          id: this.currentId,
+          question: parsed.question,
+          options: parsed.options,
+        });
+      } else {
+        // Fall back to plain text so the user still sees the model's words.
+        this.emitText(this.accInTag);
+      }
     } else if (this.state === "in_tool" && this.toolName) {
       let parsedArgs: unknown = null;
       const trimmed = this.accInTag.trim();
@@ -1231,7 +2431,91 @@ class TagStreamParser {
     this.state = "outside";
     this.accInTag = "";
     this.toolName = null;
+    this.expectedCloseTag = "";
   }
+}
+
+/**
+ * Parse the body of an `<ask>` tag. Accepts:
+ *   - JSON object: {"question": "...", "options": ["a", "b"]}
+ *   - Lenient fallback: first non-empty line as question, lines starting with
+ *     `A.` / `B.` / `1.` / `-` etc. as options. This catches models that
+ *     forget the JSON shape (rare but cheap to support).
+ */
+function parseAskBody(
+  raw: string
+): { question: string; options: string[] } | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  // JSON path
+  if (trimmed.startsWith("{")) {
+    try {
+      const obj = JSON.parse(trimmed) as {
+        question?: unknown;
+        options?: unknown;
+      };
+      const question =
+        typeof obj.question === "string" ? obj.question.trim() : "";
+      const opts = Array.isArray(obj.options)
+        ? obj.options
+            .filter((o): o is string => typeof o === "string")
+            .map((o) => o.trim())
+            .filter((o) => o.length > 0)
+        : [];
+      if (question && opts.length >= 2) {
+        // Cap at 4 options; anything beyond is dropped.
+        return { question, options: opts.slice(0, 4) };
+      }
+    } catch {
+      /* fall through */
+    }
+  }
+  // Lenient: first non-empty line = question, subsequent list items =
+  // options. This is a best-effort fallback for models that didn't follow
+  // the JSON contract.
+  const lines = trimmed.split(/\r?\n/).map((l) => l.replace(/\s+$/, ""));
+  let question = "";
+  const options: string[] = [];
+  for (const ln of lines) {
+    const l = ln.replace(/^\s+/, "");
+    if (!l) continue;
+    const optMatch = l.match(/^(?:[-*+]|\(?[A-Da-d]\)|[A-Da-d][.)、]|\d+[.)、])\s*(.+)$/);
+    if (optMatch) {
+      options.push(optMatch[1]!.trim());
+    } else if (!question) {
+      question = l;
+    }
+  }
+  if (question && options.length >= 2) {
+    return { question, options: options.slice(0, 4) };
+  }
+  return null;
+}
+
+/**
+ * Cheap shape check for "this JSON object actually plausibly maps to the named
+ * osheep code tool argument set." Used by the bare-tool fallback to avoid
+ * hijacking prose like `Read this:\n{ "title": "..." }`.
+ */
+function looksLikeToolArgs(tool: ToolKind, args: unknown): boolean {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return false;
+  const a = args as Record<string, unknown>;
+  if (tool === "run") {
+    return typeof a.command === "string";
+  }
+  if (tool === "read") {
+    return a.kind === "file" || a.kind === "list" || a.kind === "search";
+  }
+  // write
+  return (
+    a.kind === "write_file" ||
+    a.kind === "append_file" ||
+    a.kind === "edit_file" ||
+    a.kind === "multi_edit" ||
+    a.kind === "move" ||
+    a.kind === "delete" ||
+    a.kind === "create"
+  );
 }
 
 /**
@@ -1283,11 +2567,9 @@ function findMatchingBrace(s: string, openIdx: number): number {
 export async function aiChatStreamOsheepCode(
   workspaceId: string,
   input: {
-    baseUrl: string;
-    apiKey: string;
     model: string;
     messages: AiChatMessage[];
-    kind?: "openai" | "anthropic";
+    kind?: "claude-cli" | "codex-cli";
     reasoning?: { effort: "off" | "minimal" | "low" | "medium" | "high" };
   },
   handlers: OsheepCodeStreamHandlers,
@@ -1302,7 +2584,10 @@ export async function aiChatStreamOsheepCode(
       rawAcc += delta;
       parser.feed(delta);
     },
-    signal
+    signal,
+    (delta) => {
+      parser.feedReasoning(delta);
+    }
   );
   parser.finish();
   // `content` and `rawAcc` should match; keep `rawAcc` since it's the one we
@@ -1310,4 +2595,3 @@ export async function aiChatStreamOsheepCode(
   void content;
   return { rawAcc, aborted };
 }
-

@@ -156,8 +156,10 @@ export async function registerTerminalRoutes(app: FastifyInstance) {
       socket.on("close", () => {
         clearInterval(heartbeat);
         detach();
-        // Conservative MVP: kill PTY on disconnect. Multi-attach can be revisited.
-        killSession(session.id, "ws-close");
+        if (session.killOnDetach) {
+          // Conservative default for regular terminal panel sessions.
+          killSession(session.id, "ws-close");
+        }
       });
     }
   );

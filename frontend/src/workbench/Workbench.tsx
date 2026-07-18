@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityBar, type ViewId } from "./ActivityBar";
+import { ClaudeCodeAgentView, CodexAgentView } from "./AgentSettingsView";
 import { AiPanel } from "./AiPanel";
 import { BottomPanel } from "./BottomPanel";
-import { ChatTab } from "./ChatTab";
 import { DiffPane } from "./DiffPane";
 import { EditorPane, type GotoTarget } from "./EditorPane";
 import { FileTree } from "./FileTree";
@@ -11,6 +11,7 @@ import { MarkdownPreview } from "./MarkdownPreview";
 import { Resizer } from "./Resizer";
 import { SearchView } from "./SearchView";
 import { SettingsView } from "./SettingsView";
+import { WorkflowTab } from "./WorkflowTab";
 import { WorkspacePicker } from "./WorkspacePicker";
 import { DEFAULT_SETTINGS, type OsheepSettings } from "./settings";
 import {
@@ -20,7 +21,13 @@ import {
   saveOsheepSettings,
   writeFileText,
 } from "./fs";
-import { getGitDiff, getGitStatus, type GitStatus } from "./api";
+import {
+  getGitDiff,
+  getGitStatus,
+  type AgentSessionSummary,
+  type GitStatus,
+} from "./api";
+import type { AgentTerminalLaunchRequest } from "./Terminal";
 import { buildDecorations } from "./git-decorations";
 import "./workbench.css";
 
@@ -40,10 +47,10 @@ interface SettingsTab {
   path: "__settings__";
 }
 
-interface ChatTabState {
-  kind: "chat";
-  path: string; // __chat__:<sessionId>
-  sessionId: string;
+interface WorkflowTabState {
+  kind: "workflow";
+  path: string; // __workflow__:<workflowId>
+  workflowId: string;
 }
 
 interface DiffTab {
@@ -57,15 +64,13 @@ interface DiffTab {
   binary: boolean;
 }
 
-type Tab = FileTab | SettingsTab | ChatTabState | DiffTab;
+type Tab = FileTab | SettingsTab | WorkflowTabState | DiffTab;
 
 const SETTINGS_PATH = "__settings__";
-const CHAT_PREFIX = "__chat__:";
-const chatPath = (sessionId: string) => CHAT_PREFIX + sessionId;
+const WORKFLOW_PREFIX = "__workflow__:";
+const workflowPath = (workflowId: string) => WORKFLOW_PREFIX + workflowId;
 
-const DEFAULT_LEFT_WIDTH = 260;
-const DEFAULT_RIGHT_WIDTH = 320;
-const DEFAULT_BOTTOM_HEIGHT = 200;
+const DEFAULT_LEFT_WIDTH = 230;
 const SIDE_THRESHOLD = 80;
 const BOTTOM_THRESHOLD = 60;
 const SIDE_MAX = 600;
@@ -79,7 +84,7 @@ export function Workbench() {
   const [error, setError] = useState<string | null>(null);
   const [settings, setSettings] = useState<OsheepSettings>(DEFAULT_SETTINGS);
 
-  const [activeView, setActiveView] = useState<ViewId>("explorer");
+  const [activeView, setActiveView] = useState<ViewId>("workflow");
 
   const [gitStatus, setGitStatus] = useState<GitStatus | null>(null);
   const decorations = useMemo(() => buildDecorations(gitStatus), [gitStatus]);
@@ -87,6 +92,15 @@ export function Workbench() {
   const refreshGitStatus = useCallback(() => {
     setStatusVersion((v) => v + 1);
   }, []);
+
+  // Bumped to force the file explorer (FileTree) to reload its tree. Driven by
+  // osheep code file mutations so the explorer refreshes without a manual
+  // click; also refreshes git decorations.
+  const [fileTreeVersion, setFileTreeVersion] = useState(0);
+  const bumpFileTree = useCallback(() => {
+    setFileTreeVersion((v) => v + 1);
+    refreshGitStatus();
+  }, [refreshGitStatus]);
 
   useEffect(() => {
     if (!workspaceId) {
@@ -107,24 +121,20 @@ export function Workbench() {
   }, [workspaceId, statusVersion]);
 
   const [leftWidth, setLeftWidth] = useState(DEFAULT_LEFT_WIDTH);
-  const [rightWidth, setRightWidth] = useState(DEFAULT_RIGHT_WIDTH);
   const [bottomHeight, setBottomHeight] = useState(0);
   // BottomPanel keeps mounting across collapse so terminals survive.
   // Toggling visibility or drag-collapse leaves this true; only an explicit
   // close (× in BottomPanel header) flips it back to false, which unmounts
   // the panel and kills its terminal sessions.
   const [bottomActivated, setBottomActivated] = useState(false);
+  const [terminalLaunchRequest, setTerminalLaunchRequest] =
+    useState<AgentTerminalLaunchRequest | null>(null);
 
   const lastLeftWidthRef = useRef(DEFAULT_LEFT_WIDTH);
-  const lastRightWidthRef = useRef(DEFAULT_RIGHT_WIDTH);
-  const lastBottomHeightRef = useRef(DEFAULT_BOTTOM_HEIGHT);
-
   const leftProgressRef = useRef(0);
-  const rightProgressRef = useRef(0);
   const bottomProgressRef = useRef(0);
 
   const leftCollapsed = leftWidth === 0;
-  const rightCollapsed = rightWidth === 0;
   const bottomCollapsed = bottomHeight === 0;
 
   useEffect(() => {
@@ -285,11 +295,11 @@ export function Workbench() {
     setAiRefreshSignal((v) => v + 1);
   }, []);
 
-  const openChatTab = useCallback((sessionId: string) => {
-    const path = chatPath(sessionId);
+  const openWorkflowTab = useCallback((workflowId: string) => {
+    const path = workflowPath(workflowId);
     setTabs((prev) => {
       if (prev.some((t) => t.path === path)) return prev;
-      return [...prev, { kind: "chat", path, sessionId }];
+      return [...prev, { kind: "workflow", path, workflowId }];
     });
     setActivePath(path);
   }, []);
@@ -407,21 +417,6 @@ export function Workbench() {
     }
   }, []);
 
-  const onRightStart = () => {
-    rightProgressRef.current = rightWidth;
-  };
-  const onRightResize = useCallback((delta: number) => {
-    rightProgressRef.current -= delta;
-    const p = rightProgressRef.current;
-    if (p < SIDE_THRESHOLD) {
-      setRightWidth(0);
-    } else {
-      const w = Math.min(p, SIDE_MAX);
-      setRightWidth(w);
-      lastRightWidthRef.current = w;
-    }
-  }, []);
-
   const onBottomStart = () => {
     bottomProgressRef.current = bottomHeight;
   };
@@ -433,36 +428,37 @@ export function Workbench() {
     } else {
       const h = Math.min(p, SIDE_MAX);
       setBottomHeight(h);
-      lastBottomHeightRef.current = h;
       // Drag-expanding from a hidden state re-activates the panel
       setBottomActivated(true);
     }
   }, []);
 
-  const toggleRight = () => {
-    if (rightCollapsed) setRightWidth(lastRightWidthRef.current);
-    else {
-      lastRightWidthRef.current = rightWidth;
-      setRightWidth(0);
-    }
-  };
-  // Soft toggle: only flips visibility. BottomPanel stays mounted so its
-  // terminal sessions and any state are preserved across collapse/restore.
-  const toggleBottom = () => {
-    if (bottomCollapsed) {
-      setBottomActivated(true);
-      setBottomHeight(lastBottomHeightRef.current);
-    } else {
-      lastBottomHeightRef.current = bottomHeight;
-      setBottomHeight(0);
-    }
-  };
   // Hard close: invoked by the × button inside the BottomPanel header.
   // Unmounts the panel, which tears down its terminal sessions.
   const hardCloseBottom = () => {
     setBottomActivated(false);
     setBottomHeight(0);
+    setTerminalLaunchRequest(null);
   };
+
+  const resumeAgentSession = useCallback((session: Pick<AgentSessionSummary, "app" | "id" | "title">) => {
+    if (!workspaceId) return;
+    setTerminalLaunchRequest({
+      key: Date.now() + Math.random(),
+      app: session.app,
+      sessionId: session.id,
+      title: session.title,
+      workspaceId,
+    });
+    setBottomActivated(true);
+    setBottomHeight((height) => height || 300);
+  }, [workspaceId]);
+
+  const handleTerminalLaunch = useCallback((key: number) => {
+    setTerminalLaunchRequest((current) =>
+      current?.key === key ? null : current
+    );
+  }, []);
 
   const activeTab = tabs.find((t) => t.path === activePath) ?? null;
   const activeFileTab = activeTab?.kind === "file" ? activeTab : null;
@@ -473,13 +469,14 @@ export function Workbench() {
       <div className="titlebar">
         <span className="titlebar__brand">osheep</span>
         <span className="titlebar__sep">·</span>
-        <span className="titlebar__project">
-          {workspaceId ?? "未选择工作区"}
-        </span>
+        <button
+          className="titlebar__project-btn"
+          onClick={() => setPicking(true)}
+          title={workspaceId ? "切换工作区" : "选择工作区"}
+        >
+          {workspaceId ?? "选择工作区"}
+        </button>
         <div className="titlebar__actions">
-          <button className="tb-btn" onClick={() => setPicking(true)}>
-            选择工作区…
-          </button>
           <button
             className="tb-btn"
             onClick={saveActive}
@@ -487,19 +484,6 @@ export function Workbench() {
           >
             保存
           </button>
-          <span className="titlebar__spacer" />
-          <LayoutToggle
-            active={!bottomCollapsed}
-            title="切换底部面板"
-            onClick={toggleBottom}
-            icon={<PanelBottomIcon />}
-          />
-          <LayoutToggle
-            active={!rightCollapsed}
-            title="切换右侧栏"
-            onClick={toggleRight}
-            icon={<PanelRightIcon />}
-          />
         </div>
       </div>
 
@@ -526,6 +510,16 @@ export function Workbench() {
 
         {!leftCollapsed && (
           <div className="side" style={{ width: leftWidth }}>
+            {activeView === "workflow" && (
+              <AiPanel
+                workspaceId={workspaceId}
+                onOpenWorkflow={openWorkflowTab}
+                activeWorkflowId={
+                  activeTab?.kind === "workflow" ? activeTab.workflowId : null
+                }
+                refreshSignal={aiRefreshSignal}
+              />
+            )}
             {activeView === "explorer" &&
               (workspaceId ? (
                 <FileTree
@@ -538,6 +532,7 @@ export function Workbench() {
                   onPathDeleted={onPathDeleted}
                   decorations={decorations}
                   onFsChange={refreshGitStatus}
+                  refreshSignal={fileTreeVersion}
                 />
               ) : (
                 <div className="side-view">
@@ -545,13 +540,7 @@ export function Workbench() {
                     <span className="side-view__title">资源管理器</span>
                   </div>
                   <div className="side-view__body side-view__body--padded">
-                    <button
-                      className="primary-btn"
-                      onClick={() => setPicking(true)}
-                    >
-                      选择工作区
-                    </button>
-                    <div className="muted" style={{ marginTop: 12 }}>
+                    <div className="muted">
                       所有文件由后端 osheep-backend 提供
                     </div>
                   </div>
@@ -571,6 +560,18 @@ export function Workbench() {
                 onOpenDiff={(p, base, head) => void openDiffTab(p, base, head)}
               />
             )}
+            {activeView === "claude-code" && (
+              <ClaudeCodeAgentView
+                workspaceId={workspaceId}
+                onResumeSession={resumeAgentSession}
+              />
+            )}
+            {activeView === "codex" && (
+              <CodexAgentView
+                workspaceId={workspaceId}
+                onResumeSession={resumeAgentSession}
+              />
+            )}
           </div>
         )}
         <Resizer
@@ -588,8 +589,8 @@ export function Workbench() {
                   const label =
                     t.kind === "settings"
                       ? "设置"
-                      : t.kind === "chat"
-                      ? "对话"
+                      : t.kind === "workflow"
+                      ? "Workflow"
                       : t.kind === "diff"
                       ? `${basename(t.filePath)} (${diffLabel(t)})`
                       : t.path.split("/").pop();
@@ -600,8 +601,8 @@ export function Workbench() {
                         : t.path
                       : t.kind === "diff"
                       ? `${t.filePath} · ${diffLabel(t)}`
-                      : t.kind === "chat"
-                      ? `对话 ${t.sessionId}`
+                      : t.kind === "workflow"
+                      ? `Workflow ${t.workflowId}`
                       : "设置";
                   return (
                     <div
@@ -678,17 +679,15 @@ export function Workbench() {
                   settings={settings}
                   onChange={updateSettings}
                   hasProject={!!workspaceId}
-                  workspaceId={workspaceId}
                 />
-              ) : activeTab?.kind === "chat" ? (
+              ) : activeTab?.kind === "workflow" ? (
                 workspaceId ? (
-                  <ChatTab
+                  <WorkflowTab
                     workspaceId={workspaceId}
-                    sessionId={activeTab.sessionId}
-                    settings={settings}
-                    onSettingsChange={updateSettings}
-                    onSessionChanged={bumpAiRefresh}
-                    onOpenSettings={openSettingsTab}
+                    workflowId={activeTab.workflowId}
+                    onWorkflowChanged={bumpAiRefresh}
+                    onFilesChanged={bumpFileTree}
+                    onResumeSession={resumeAgentSession}
                   />
                 ) : (
                   <div className="empty-hint">请先打开工作区</div>
@@ -714,28 +713,13 @@ export function Workbench() {
               <BottomPanel
                 workspaceId={workspaceId}
                 onClose={hardCloseBottom}
+                terminalLaunchRequest={terminalLaunchRequest}
+                onTerminalLaunchHandled={handleTerminalLaunch}
               />
             </div>
           )}
         </div>
 
-        <Resizer
-          axis="x"
-          onResizeStart={onRightStart}
-          onResize={onRightResize}
-        />
-        {!rightCollapsed && (
-          <div className="side side--right" style={{ width: rightWidth }}>
-            <AiPanel
-              workspaceId={workspaceId}
-              onOpenSession={openChatTab}
-              activeSessionId={
-                activeTab?.kind === "chat" ? activeTab.sessionId : null
-              }
-              refreshSignal={aiRefreshSignal}
-            />
-          </div>
-        )}
       </div>
 
       {picking && (
@@ -746,62 +730,6 @@ export function Workbench() {
         />
       )}
     </div>
-  );
-}
-
-function LayoutToggle({
-  active,
-  title,
-  icon,
-  onClick,
-}: {
-  active: boolean;
-  title: string;
-  icon: React.ReactNode;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      className={"icon-btn icon-btn--lg" + (active ? " is-active" : "")}
-      title={title}
-      onClick={onClick}
-    >
-      {icon}
-    </button>
-  );
-}
-
-function PanelBottomIcon() {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      width="16"
-      height="16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.4"
-      strokeLinejoin="round"
-    >
-      <rect x="3" y="4" width="18" height="16" rx="1" />
-      <path d="M3 15h18" />
-    </svg>
-  );
-}
-
-function PanelRightIcon() {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      width="16"
-      height="16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.4"
-      strokeLinejoin="round"
-    >
-      <rect x="3" y="4" width="18" height="16" rx="1" />
-      <path d="M15 4v16" />
-    </svg>
   );
 }
 
