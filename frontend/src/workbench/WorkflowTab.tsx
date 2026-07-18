@@ -64,6 +64,9 @@ interface WorkflowTabProps {
   onWorkflowChanged: () => void;
   onFilesChanged: () => void;
   onResumeSession: (session: { app: AgentSessionApp; id: string; title: string }) => void;
+  onTemplateBinding: (
+    binding: WorkflowRecord["templateBinding"]
+  ) => void;
 }
 
 interface CanvasPoint {
@@ -690,6 +693,7 @@ export function WorkflowTab({
   onWorkflowChanged,
   onFilesChanged,
   onResumeSession,
+  onTemplateBinding,
 }: WorkflowTabProps) {
   const [workflow, setWorkflow] = useState<WorkflowRecord | null>(null);
   const workflowRef = useRef<WorkflowRecord | null>(null);
@@ -757,6 +761,7 @@ export function WorkflowTab({
         localRevisionRef.current = 0;
         workflowRef.current = record;
         setWorkflow(record);
+        onTemplateBinding(record.templateBinding);
         setRunning(workflowIsRunning(record));
         window.requestAnimationFrame(() => {
           if (!cancelled) centerView(record);
@@ -2092,6 +2097,11 @@ export function WorkflowTab({
           >
             README
           </button>
+          {workflow.templateBinding && (
+            <span className="workflow-toolbar__template-binding">
+              {workflow.templateBinding.source} template
+            </span>
+          )}
           <div className={`workflow-toolbar__status is-${toolbarStatus}`}>
             {toolbarStatus === "saving"
               ? "Saving"

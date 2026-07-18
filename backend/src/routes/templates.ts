@@ -1,9 +1,20 @@
 import type { FastifyInstance } from "fastify";
-import { resolveWorkspace } from "../workspace.js";
-import { getWorkflow } from "../workflows.js";
+import { config } from "../config.js";
+import { errors } from "../errors.js";
+import { listWorkspaces, resolveWorkspace } from "../workspace.js";
 import {
-  getWorkflowTemplate,
+  createWorkflow,
+  deleteWorkflow,
+  findWorkflowByTemplateBinding,
+  getWorkflow,
+  listWorkflowIdsByTemplateBinding,
+  saveWorkflow,
+} from "../workflows.js";
+import { stopWorkflowRunAndWait } from "../workflow-runner.js";
+import {
   deleteWorkflowTemplate,
+  getWorkflowTemplate,
+  getWorkflowTemplateIcon,
   listWorkflowTemplates,
   saveWorkflowAsTemplate,
   updateWorkflowTemplateIcon,
@@ -11,11 +22,36 @@ import {
 } from "../templates.js";
 
 function sourceOf(value: string): TemplateSource {
-  return value === "system" ? "system" : "user";
+  if (value === "system" || value === "user") return value;
+  throw errors.invalidPath("template source is invalid");
+}
+
+function assertEditable(source: TemplateSource): void {
+  if (source === "system" && !config.developerMode) {
+    throw errors.invalidPath("system templates can only be edited in developer mode");
+  }
 }
 
 export async function registerTemplateRoutes(app: FastifyInstance) {
+  app.get("/api/templates/capabilities", async () => ({
+    developerMode: config.developerMode,
+  }));
+
   app.get("/api/templates", async () => await listWorkflowTemplates());
+
+  app.get<{ Params: { source: string; tid: string } }>(
+    "/api/templates/:source/:tid/icon",
+    async (req, reply) => {
+      const icon = await getWorkflowTemplateIcon(
+        sourceOf(req.params.source),
+        req.params.tid
+      );
+      return reply
+        .type(icon.mime)
+        .header("cache-control", "no-cache")
+        .send(icon.data);
+    }
+  );
 
   app.get<{ Params: { source: string; tid: string } }>(
     "/api/templates/:source/:tid",
@@ -27,21 +63,84 @@ export async function registerTemplateRoutes(app: FastifyInstance) {
     async (req) => {
       const workspace = await resolveWorkspace(req.params.id);
       const workflow = await getWorkflow(workspace.path, req.params.wid);
-      return await saveWorkflowAsTemplate(workflow);
+      return await saveWorkflowAsTemplate(workflow, "user");
+    }
+  );
+
+  app.post<{ Params: { id: string; wid: string } }>(
+    "/api/workspaces/:id/workflows/:wid/system-template",
+    async (req) => {
+      assertEditable("system");
+      const workspace = await resolveWorkspace(req.params.id);
+      const workflow = await getWorkflow(workspace.path, req.params.wid);
+      return await saveWorkflowAsTemplate(workflow, "system");
+    }
+  );
+
+  app.post<{ Params: { id: string; source: string; tid: string } }>(
+    "/api/workspaces/:id/templates/:source/:tid/edit",
+    async (req) => {
+      const source = sourceOf(req.params.source);
+      assertEditable(source);
+      const workspace = await resolveWorkspace(req.params.id);
+      const template = await getWorkflowTemplate(source, req.params.tid);
+      const existing = await findWorkflowByTemplateBinding(
+        workspace.path,
+        source,
+        req.params.tid
+      );
+      if (existing) {
+        return await saveWorkflow(workspace.path, {
+          ...existing,
+          title: template.title,
+          readme: template.readme,
+          nodes: template.nodes,
+          edges: template.edges,
+          runs: [],
+        });
+      }
+      return await createWorkflow(workspace.path, {
+        title: template.title,
+        readme: template.readme,
+        templateBinding: { source, id: template.id },
+        nodes: template.nodes,
+        edges: template.edges,
+        runs: [],
+      });
     }
   );
 
   app.put<{
-    Params: { tid: string };
+    Params: { source: string; tid: string };
     Body: { icon?: string };
-  }>("/api/templates/user/:tid/icon", async (req) => {
-    return await updateWorkflowTemplateIcon(req.params.tid, req.body?.icon ?? "");
+  }>("/api/templates/:source/:tid/icon", async (req) => {
+    const source = sourceOf(req.params.source);
+    assertEditable(source);
+    return await updateWorkflowTemplateIcon(
+      source,
+      req.params.tid,
+      req.body?.icon ?? ""
+    );
   });
 
-  app.delete<{ Params: { tid: string } }>(
-    "/api/templates/user/:tid",
+  app.delete<{ Params: { source: string; tid: string } }>(
+    "/api/templates/:source/:tid",
     async (req) => {
-      await deleteWorkflowTemplate(req.params.tid);
+      const source = sourceOf(req.params.source);
+      assertEditable(source);
+      const workspaces = await listWorkspaces();
+      for (const workspace of workspaces) {
+        const workflowIds = await listWorkflowIdsByTemplateBinding(
+          workspace.path,
+          source,
+          req.params.tid
+        );
+        for (const workflowId of workflowIds) {
+          await stopWorkflowRunAndWait(workspace.id, workflowId);
+          await deleteWorkflow(workspace.path, workflowId);
+        }
+      }
+      await deleteWorkflowTemplate(source, req.params.tid);
       return { ok: true };
     }
   );

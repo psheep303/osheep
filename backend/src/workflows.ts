@@ -71,6 +71,10 @@ export interface WorkflowRecord {
   id: string;
   title: string;
   readme?: string;
+  templateBinding?: {
+    source: "system" | "user";
+    id: string;
+  };
   createdAt: number;
   updatedAt: number;
   nodes: WorkflowNode[];
@@ -319,11 +323,23 @@ function sanitize(raw: unknown, fallbackId: string): WorkflowRecord {
         .filter((run): run is WorkflowRun => run !== null)
         .slice(-50)
     : [];
+  const templateBinding =
+    r.templateBinding &&
+    typeof r.templateBinding === "object" &&
+    (r.templateBinding.source === "system" || r.templateBinding.source === "user") &&
+    typeof r.templateBinding.id === "string" &&
+    /^tpl_[a-z0-9]{8,32}$/.test(r.templateBinding.id)
+      ? {
+          source: r.templateBinding.source,
+          id: r.templateBinding.id,
+        }
+      : undefined;
   return {
     id,
     title:
       typeof r.title === "string" && r.title.trim() ? r.title : "New workflow",
     readme: typeof r.readme === "string" ? r.readme : "",
+    templateBinding,
     createdAt,
     updatedAt: typeof r.updatedAt === "number" ? r.updatedAt : createdAt,
     nodes: safeNodes,
@@ -357,6 +373,7 @@ export async function listWorkflows(
     try {
       const text = await fs.readFile(path.join(workflowDir(workspaceRoot), entry), "utf-8");
       const record = sanitize(JSON.parse(text), id);
+      if (record.templateBinding) continue;
       out.push({
         id: record.id,
         title: record.title,
@@ -372,6 +389,69 @@ export async function listWorkflows(
   }
   out.sort((a, b) => b.updatedAt - a.updatedAt);
   return out;
+}
+
+export async function findWorkflowByTemplateBinding(
+  workspaceRoot: string,
+  source: "system" | "user",
+  templateId: string
+): Promise<WorkflowRecord | null> {
+  await ensureWorkflowDir(workspaceRoot);
+  const entries = await fs.readdir(workflowDir(workspaceRoot));
+  for (const entry of entries) {
+    if (!entry.endsWith(".json")) continue;
+    const id = entry.slice(0, -5);
+    if (!WORKFLOW_ID_RE.test(id)) continue;
+    try {
+      const record = sanitize(
+        JSON.parse(
+          await fs.readFile(path.join(workflowDir(workspaceRoot), entry), "utf8")
+        ),
+        id
+      );
+      if (
+        record.templateBinding?.source === source &&
+        record.templateBinding.id === templateId
+      ) {
+        return record;
+      }
+    } catch {
+      // Ignore unrelated invalid workflow files.
+    }
+  }
+  return null;
+}
+
+export async function listWorkflowIdsByTemplateBinding(
+  workspaceRoot: string,
+  source: "system" | "user",
+  templateId: string
+): Promise<string[]> {
+  const ids: string[] = [];
+  await ensureWorkflowDir(workspaceRoot);
+  const entries = await fs.readdir(workflowDir(workspaceRoot));
+  for (const entry of entries) {
+    if (!entry.endsWith(".json")) continue;
+    const id = entry.slice(0, -5);
+    if (!WORKFLOW_ID_RE.test(id)) continue;
+    try {
+      const record = sanitize(
+        JSON.parse(
+          await fs.readFile(path.join(workflowDir(workspaceRoot), entry), "utf8")
+        ),
+        id
+      );
+      if (
+        record.templateBinding?.source === source &&
+        record.templateBinding.id === templateId
+      ) {
+        ids.push(record.id);
+      }
+    } catch {
+      // Ignore unrelated invalid workflow files.
+    }
+  }
+  return ids;
 }
 
 export async function getWorkflow(
