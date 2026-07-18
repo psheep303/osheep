@@ -15,6 +15,7 @@ export interface Config {
   systemTemplatesRoot: string;
   developerMode: boolean;
   frontendRoot?: string;
+  allowExternalWorkspacePaths: boolean;
 }
 
 function readEnvInt(key: string, fallback: number): number {
@@ -49,6 +50,9 @@ export const config: Config = {
   frontendRoot: process.env.OSHEEP_FRONTEND_ROOT?.trim()
     ? path.resolve(process.env.OSHEEP_FRONTEND_ROOT)
     : undefined,
+  allowExternalWorkspacePaths: /^(1|true|yes)$/i.test(
+    process.env.OSHEEP_ALLOW_EXTERNAL_WORKSPACE_PATHS ?? ""
+  ),
 };
 
 export const platform: "windows" | "macos" | "linux" =

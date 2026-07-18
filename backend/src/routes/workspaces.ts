@@ -1,5 +1,10 @@
 import type { FastifyInstance } from "fastify";
-import { ensureOsheepLayout, listWorkspaces, resolveWorkspace } from "../workspace.js";
+import {
+  ensureOsheepLayout,
+  listWorkspaces,
+  registerExternalWorkspace,
+  resolveWorkspace,
+} from "../workspace.js";
 import {
   copyEntry,
   createEntry,
@@ -10,11 +15,24 @@ import {
   writeFileText,
 } from "../fs-ops.js";
 import { errors } from "../errors.js";
+import { config } from "../config.js";
 
 export async function registerWorkspaceRoutes(app: FastifyInstance) {
   app.get("/api/workspaces", async () => {
     const list = await listWorkspaces();
     return { workspaces: list.map(({ id, name }) => ({ id, name })) };
+  });
+
+  app.post<{ Body: { path?: string } }>("/api/workspaces/open", async (req) => {
+    if (!config.allowExternalWorkspacePaths) {
+      throw errors.invalidPath("当前服务未启用外部工作区");
+    }
+    if (typeof req.body?.path !== "string" || !req.body.path.trim()) {
+      throw errors.invalidPath("缺少工作区路径");
+    }
+    const workspace = await registerExternalWorkspace(req.body.path.trim());
+    await ensureOsheepLayout(workspace.path);
+    return { id: workspace.id, name: workspace.name };
   });
 
   app.get<{ Params: { id: string } }>(
