@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
+import * as fs from "node:fs/promises";
 import { errors } from "../errors.js";
-import { resolveWorkspace } from "../workspace.js";
+import { resolveWorkspace, resolveWorkspacePath } from "../workspace.js";
 import {
   createEntry,
   deleteEntry,
@@ -11,10 +12,30 @@ import {
 } from "../fs-ops.js";
 import { searchWorkspace } from "../search.js";
 import { execRun } from "../ai-exec.js";
+import {
+  cliModelShortcuts,
+  isCliProviderKind,
+  runCliChat,
+  type CliProviderKind,
+} from "../ai-cli.js";
+import {
+  continueAgentTerminal,
+  finishAgentTerminalSuccess,
+  injectAgentTerminalPrompt,
+  pauseAgentTerminal,
+  runAgentTerminal,
+  setAgentTerminalAutoContinue,
+  setAgentTerminalAutoSuccess,
+  type AgentEffort,
+  type AgentMode,
+  type ClaudePermissionMode,
+  type CodexApproval,
+  type CodexSandbox,
+} from "../ai-terminal.js";
 
-type ProviderKind = "openai" | "anthropic";
+type ProviderKind = CliProviderKind | "unsupported";
 
-type ReasoningEffort = "off" | "minimal" | "low" | "medium" | "high";
+const AI_READ_LIMIT = 256 * 1024;
 
 interface ChatMessageIn {
   role: "system" | "user" | "assistant" | "tool";
@@ -22,159 +43,267 @@ interface ChatMessageIn {
   tool_call_id?: string;
 }
 
-function normalizeBase(baseUrl: string): string {
-  return baseUrl.replace(/\/+$/, "");
+function toPosix(p: string): string {
+  return p.replace(/\\/g, "/");
+}
+
+async function readAiFileText(
+  workspaceRoot: string,
+  relPath: string
+): Promise<{
+  path: string;
+  content: string;
+  size: number;
+  mtime: number;
+  truncated: boolean;
+}> {
+  const abs = resolveWorkspacePath(workspaceRoot, relPath);
+  let stat;
+  try {
+    stat = await fs.stat(abs);
+  } catch {
+    throw errors.notFound();
+  }
+  if (stat.isDirectory()) throw errors.isDirectory();
+
+  const bytesToRead = Math.min(stat.size, AI_READ_LIMIT);
+  if (bytesToRead === 0) {
+    return {
+      path: toPosix(relPath),
+      content: "",
+      size: stat.size,
+      mtime: stat.mtimeMs,
+      truncated: false,
+    };
+  }
+
+  const handle = await fs.open(abs, "r");
+  try {
+    const buffer = Buffer.allocUnsafe(bytesToRead);
+    const { bytesRead } = await handle.read(buffer, 0, bytesToRead, 0);
+    return {
+      path: toPosix(relPath),
+      content: buffer.subarray(0, bytesRead).toString("utf-8"),
+      size: stat.size,
+      mtime: stat.mtimeMs,
+      truncated: stat.size > bytesRead,
+    };
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
+}
+
+function isObviousWritePlaceholder(content: string): boolean {
+  const trimmed = content.trim();
+  return (
+    trimmed === "..." ||
+    trimmed === "…" ||
+    trimmed === "<content>" ||
+    trimmed === "{{content}}" ||
+    trimmed === "[content]"
+  );
+}
+
+function toPositiveInt(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) return null;
+  return value;
+}
+
+function sliceLines(
+  content: string,
+  startLine: number | null,
+  lineCount: number | null
+): {
+  content: string;
+  startLine: number;
+  endLine: number;
+  totalLines: number;
+  truncated: boolean;
+} {
+  const lines = content.split(/\r?\n/);
+  const totalLines = lines.length;
+  if (!startLine && !lineCount) {
+    return {
+      content,
+      startLine: totalLines > 0 ? 1 : 0,
+      endLine: totalLines,
+      totalLines,
+      truncated: false,
+    };
+  }
+  const start = Math.min(Math.max(startLine ?? 1, 1), Math.max(totalLines, 1));
+  const count = Math.max(lineCount ?? 200, 1);
+  const end = Math.min(start + count - 1, totalLines);
+  return {
+    content: lines.slice(start - 1, end).join("\n"),
+    startLine: start,
+    endLine: end,
+    totalLines,
+    truncated: start > 1 || end < totalLines,
+  };
+}
+
+/** 1-based line number of `index` within `text` (0-based char offset). */
+function lineOfIndex(text: string, index: number): number {
+  if (index <= 0) return 1;
+  let n = 1;
+  for (let i = 0; i < index && i < text.length; i += 1) {
+    if (text.charCodeAt(i) === 10 /* \n */) n += 1;
+  }
+  return n;
+}
+
+/** Count `\n` characters in `s`. Useful for "lines spanned by this slice". */
+function countNewlines(s: string): number {
+  let n = 0;
+  for (let i = 0; i < s.length; i += 1) {
+    if (s.charCodeAt(i) === 10) n += 1;
+  }
+  return n;
+}
+
+interface EditDiffPayload {
+  oldString: string;
+  newString: string;
+  startLine: number;
+  endLineBefore: number;
+  endLineAfter: number;
+  added: number;
+  removed: number;
+  before: string;
+  after: string;
+}
+
+function buildEditDiff(
+  before: string,
+  after: string,
+  oldString: string,
+  newString: string
+): EditDiffPayload {
+  // Single match guaranteed by caller (occurrences === 1).
+  const idx = before.indexOf(oldString);
+  const startLine = idx >= 0 ? lineOfIndex(before, idx) : 1;
+  // Newlines that `oldString`/`newString` themselves contain. `+1` so a
+  // single-line slice still spans line N → N.
+  const oldLines = countNewlines(oldString) + 1;
+  const newLines = countNewlines(newString) + 1;
+  return {
+    oldString,
+    newString,
+    startLine,
+    endLineBefore: startLine + oldLines - 1,
+    endLineAfter: startLine + newLines - 1,
+    added: newLines,
+    removed: oldLines,
+    before,
+    after,
+  };
+}
+
+/**
+ * Build a hint message for `edit_file` when `oldString` was not found. Tries
+ * to locate the first non-empty line of `oldString` elsewhere in the file and
+ * appends "可能位置: line A, B, …" with up to 5 candidates.
+ */
+function formatEditMissHint(
+  before: string,
+  oldString: string,
+  pathDisplay: string
+): string {
+  const trimmedSearch = oldString.replace(/^\s+/, "");
+  const firstLineEnd = trimmedSearch.indexOf("\n");
+  const firstLine =
+    firstLineEnd >= 0
+      ? trimmedSearch.slice(0, firstLineEnd).trim()
+      : trimmedSearch.trim();
+  if (!firstLine || firstLine.length < 4) {
+    return `oldString 在 ${pathDisplay} 中未匹配`;
+  }
+  const fileLines = before.split(/\r?\n/);
+  const hits: number[] = [];
+  for (let i = 0; i < fileLines.length && hits.length < 5; i += 1) {
+    if (fileLines[i]!.includes(firstLine)) hits.push(i + 1);
+  }
+  if (hits.length === 0) {
+    return `oldString 在 ${pathDisplay} 中未匹配`;
+  }
+  return `oldString 在 ${pathDisplay} 中未匹配；可能位置: ${hits
+    .map((n) => `line ${n}`)
+    .join(", ")}（基于 oldString 首行）`;
+}
+
+function formatEditAmbiguousHint(
+  before: string,
+  oldString: string,
+  occurrences: number
+): string {
+  const lines: number[] = [];
+  let from = 0;
+  while (lines.length < 8) {
+    const i = before.indexOf(oldString, from);
+    if (i < 0) break;
+    lines.push(lineOfIndex(before, i));
+    from = i + Math.max(1, oldString.length);
+  }
+  const loc = lines.length ? `: ${lines.map((n) => `line ${n}`).join(", ")}` : "";
+  return `oldString 匹配到 ${occurrences} 处${loc}，请提供更多上下文以唯一定位`;
 }
 
 function parseKind(v: unknown): ProviderKind {
-  return v === "anthropic" ? "anthropic" : "openai";
+  if (v === "claude-cli") return "claude-cli";
+  if (v === "codex-cli") return "codex-cli";
+  return "unsupported";
 }
 
-function parseEffort(v: unknown): ReasoningEffort | null {
-  if (typeof v !== "string") return null;
+function parseClaudePermissionMode(v: unknown): ClaudePermissionMode | undefined {
+  if (
+    v === "default" ||
+    v === "acceptEdits" ||
+    v === "auto" ||
+    v === "dontAsk" ||
+    v === "bypassPermissions"
+  ) {
+    return v;
+  }
+  return undefined;
+}
+
+function parseAgentMode(kind: CliProviderKind, v: unknown): AgentMode {
+  if (kind === "codex-cli" && v === "goal") return "goal";
+  if (kind === "claude-cli" && v === "plan") return "plan";
+  return "default";
+}
+
+function parseCodexApproval(v: unknown): CodexApproval | undefined {
+  if (v === "untrusted" || v === "on-request" || v === "never") {
+    return v;
+  }
+  if (v === "auto" || v === "on-failure") return "on-request";
+  if (v === "full-access") return "never";
+  return undefined;
+}
+
+function parseCodexSandbox(v: unknown): CodexSandbox | undefined {
+  if (v === "read-only" || v === "workspace-write" || v === "danger-full-access") {
+    return v;
+  }
+  return undefined;
+}
+
+function parseAgentEffort(v: unknown): AgentEffort | undefined {
   if (
     v === "off" ||
     v === "minimal" ||
     v === "low" ||
     v === "medium" ||
-    v === "high"
+    v === "high" ||
+    v === "xhigh" ||
+    v === "max" ||
+    v === "ultracode"
   ) {
     return v;
   }
-  return null;
-}
-
-/**
- * Returns true if the upstream model name is known to honour reasoning
- * effort (OpenAI) or extended thinking (Anthropic). Anything else has the
- * `reasoning.effort` field silently dropped so we don't surprise an old
- * upstream with an unknown payload key.
- */
-function modelSupportsReasoning(kind: ProviderKind, model: string): boolean {
-  const m = model.toLowerCase();
-  if (kind === "openai") {
-    return (
-      m.startsWith("gpt-5") ||
-      m.startsWith("o1") ||
-      m.startsWith("o3") ||
-      m.startsWith("o4")
-    );
-  }
-  return (
-    m.startsWith("claude-3-7") ||
-    m.startsWith("claude-4") ||
-    m.startsWith("claude-opus-4") ||
-    m.startsWith("claude-sonnet-4") ||
-    m.startsWith("claude-haiku-4")
-  );
-}
-
-/** Anthropic budget tokens per effort level. `off` → no thinking. */
-function anthropicBudget(effort: ReasoningEffort): number | null {
-  switch (effort) {
-    case "off":
-      return null;
-    case "low":
-      return 4096;
-    case "medium":
-      return 16384;
-    case "high":
-      return 32768;
-    case "minimal":
-      return 4096; // anthropic doesn't have a "minimal" — alias to low
-    default:
-      return null;
-  }
-}
-
-/**
- * Some upstreams (older OpenAI-compatible endpoints) don't accept role=tool.
- * Fold those messages into role=user with a [tool_result] prefix so the model
- * still sees the result without the API rejecting the request.
- */
-function downgradeToolMessages(messages: ChatMessageIn[]): {
-  role: "system" | "user" | "assistant";
-  content: string;
-}[] {
-  return messages.map((m) => {
-    if (m.role === "tool") {
-      const tag = m.tool_call_id ? `[tool_result ${m.tool_call_id}]` : "[tool_result]";
-      return { role: "user" as const, content: `${tag}\n${m.content}` };
-    }
-    return { role: m.role, content: m.content };
-  });
-}
-
-/**
- * Convert OpenAI-style messages array into Anthropic Messages payload.
- * Anthropic requires `system` as a top-level string and messages alternating
- * user/assistant. Tool results are folded into user messages with a
- * `[tool_result]` prefix (same shape as the OpenAI downgrade so the model
- * sees a consistent format regardless of the underlying provider).
- */
-function toAnthropicPayload(
-  cleaned: ChatMessageIn[],
-  model: string,
-  stream: boolean,
-  effort: ReasoningEffort | null
-): {
-  model: string;
-  system?: string;
-  messages: { role: "user" | "assistant"; content: string }[];
-  stream: boolean;
-  max_tokens: number;
-  thinking?: { type: "enabled"; budget_tokens: number };
-} {
-  const systemParts: string[] = [];
-  const conv: { role: "user" | "assistant"; content: string }[] = [];
-  for (const m of cleaned) {
-    if (m.role === "system") {
-      systemParts.push(m.content);
-      continue;
-    }
-    if (m.role === "tool") {
-      const tag = m.tool_call_id ? `[tool_result ${m.tool_call_id}]` : "[tool_result]";
-      conv.push({ role: "user", content: `${tag}\n${m.content}` });
-      continue;
-    }
-    conv.push({ role: m.role, content: m.content });
-  }
-  // Anthropic rejects two consecutive same-role messages — merge them.
-  const merged: { role: "user" | "assistant"; content: string }[] = [];
-  for (const m of conv) {
-    const last = merged[merged.length - 1];
-    if (last && last.role === m.role) {
-      last.content = `${last.content}\n\n${m.content}`;
-    } else {
-      merged.push({ ...m });
-    }
-  }
-  if (merged.length === 0 || merged[0]!.role !== "user") {
-    merged.unshift({ role: "user", content: "(continue)" });
-  }
-  const payload: {
-    model: string;
-    system?: string;
-    messages: { role: "user" | "assistant"; content: string }[];
-    stream: boolean;
-    max_tokens: number;
-    thinking?: { type: "enabled"; budget_tokens: number };
-  } = {
-    model,
-    messages: merged,
-    stream,
-    max_tokens: 4096,
-  };
-  if (systemParts.length > 0) payload.system = systemParts.join("\n\n");
-  if (effort && modelSupportsReasoning("anthropic", model)) {
-    const budget = anthropicBudget(effort);
-    if (budget !== null) {
-      payload.thinking = { type: "enabled", budget_tokens: budget };
-      // Extended thinking requires max_tokens > budget_tokens.
-      payload.max_tokens = Math.max(payload.max_tokens, budget + 2048);
-    }
-  }
-  return payload;
+  return undefined;
 }
 
 function sanitizeMessages(messages: unknown): ChatMessageIn[] {
@@ -199,192 +328,61 @@ function sanitizeMessages(messages: unknown): ChatMessageIn[] {
   return cleaned;
 }
 
-function authHeaders(kind: ProviderKind, apiKey: string): Record<string, string> {
-  if (kind === "anthropic") {
-    return {
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-      // Some Anthropic-compatible proxies still expect Authorization too —
-      // sending both is harmless to the official API.
-      authorization: `Bearer ${apiKey}`,
-    };
-  }
-  return { authorization: `Bearer ${apiKey}` };
-}
-
-async function callUpstream(
-  url: string,
-  apiKey: string,
-  kind: ProviderKind,
-  init: RequestInit
-): Promise<unknown> {
-  let res: Response;
-  try {
-    res = await fetch(url, {
-      ...init,
-      headers: {
-        "content-type": "application/json",
-        accept: "application/json",
-        ...authHeaders(kind, apiKey),
-        ...(init.headers ?? {}),
-      },
-    });
-  } catch (e) {
-    throw errors.upstreamFailed(`无法连接到 LLM: ${(e as Error).message}`);
-  }
-  const text = await res.text();
-  let parsed: unknown = null;
-  if (text) {
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      parsed = text;
-    }
-  }
-  if (!res.ok) {
-    const msg =
-      (parsed &&
-        typeof parsed === "object" &&
-        ((parsed as { error?: { message?: string } }).error?.message ??
-          (parsed as { message?: string }).message)) ||
-      (typeof parsed === "string" ? parsed : `HTTP ${res.status}`);
-    throw errors.upstreamFailed(`上游 ${res.status}: ${msg}`);
-  }
-  return parsed;
+function terminalPromptFromMessages(messages: ChatMessageIn[]): string {
+  return messages
+    .map((m) => {
+      const role = m.role === "tool" ? `tool:${m.tool_call_id ?? "result"}` : m.role;
+      return messages.length === 1 && m.role === "user"
+        ? m.content
+        : `### ${role}\n${m.content}`;
+    })
+    .join("\n\n")
+    .trim();
 }
 
 export async function registerAiRoutes(app: FastifyInstance) {
   app.post<{
     Params: { id: string };
-    Body: { baseUrl?: string; apiKey?: string; kind?: ProviderKind };
+    Body: { kind?: ProviderKind };
   }>("/api/workspaces/:id/ai/models", async (req) => {
-    const { baseUrl, apiKey } = req.body ?? {};
     const kind = parseKind(req.body?.kind);
-    if (typeof baseUrl !== "string" || !baseUrl) {
-      throw errors.invalidQuery("缺少 baseUrl");
+    if (isCliProviderKind(kind)) {
+      return { models: cliModelShortcuts(kind) };
     }
-    if (typeof apiKey !== "string" || !apiKey) {
-      throw errors.invalidQuery("缺少 apiKey");
-    }
-    const url = `${normalizeBase(baseUrl)}/models`;
-    const data = (await callUpstream(url, apiKey, kind, { method: "GET" })) as {
-      data?: Array<{ id?: string }>;
-    } | null;
-    const models: string[] = [];
-    if (data && Array.isArray(data.data)) {
-      for (const m of data.data) {
-        if (m && typeof m.id === "string") models.push(m.id);
-      }
-    }
-    models.sort((a, b) => a.localeCompare(b));
-    return { models };
+    throw errors.invalidQuery("osheep code only supports Claude Code CLI or Codex CLI");
   });
 
   app.post<{
     Params: { id: string };
     Body: {
-      baseUrl?: string;
-      apiKey?: string;
       model?: string;
       messages?: ChatMessageIn[];
       kind?: ProviderKind;
-      reasoning?: { effort?: ReasoningEffort };
+      terminalPrompt?: string;
+      autoSuccess?: boolean;
+      claudePermissionMode?: ClaudePermissionMode;
+      mode?: AgentMode;
+      codexApproval?: CodexApproval;
+      codexSandbox?: CodexSandbox;
+      effort?: AgentEffort;
+      alwaysEnter?: boolean;
+      conversationSessionId?: string;
+      resumeConversation?: boolean;
     };
-  }>("/api/workspaces/:id/ai/chat", async (req) => {
-    const { baseUrl, apiKey, model, messages } = req.body ?? {};
+  }>("/api/workspaces/:id/ai/chat/terminal", async (req, reply) => {
+    const { model, messages } = req.body ?? {};
     const kind = parseKind(req.body?.kind);
-    const effort = parseEffort(req.body?.reasoning?.effort);
-    if (typeof baseUrl !== "string" || !baseUrl) {
-      throw errors.invalidQuery("缺少 baseUrl");
+    if (!isCliProviderKind(kind)) {
+      throw errors.invalidQuery("osheep code only supports Claude Code CLI or Codex CLI");
     }
-    if (typeof apiKey !== "string" || !apiKey) {
-      throw errors.invalidQuery("缺少 apiKey");
-    }
-    if (typeof model !== "string" || !model) {
-      throw errors.invalidQuery("缺少 model");
-    }
+    const ws = await resolveWorkspace(req.params.id);
     const cleaned = sanitizeMessages(messages);
+    const prompt =
+      typeof req.body?.terminalPrompt === "string"
+        ? req.body.terminalPrompt
+        : terminalPromptFromMessages(cleaned);
 
-    if (kind === "anthropic") {
-      const url = `${normalizeBase(baseUrl)}/messages`;
-      const payload = toAnthropicPayload(cleaned, model, false, effort);
-      const raw = (await callUpstream(url, apiKey, kind, {
-        method: "POST",
-        body: JSON.stringify(payload),
-      })) as {
-        content?: Array<{ type?: string; text?: string }>;
-      } | null;
-      let content = "";
-      if (raw && Array.isArray(raw.content)) {
-        for (const part of raw.content) {
-          if (part && part.type === "text" && typeof part.text === "string") {
-            content += part.text;
-          }
-        }
-      }
-      return { content, raw };
-    }
-
-    const downgraded = downgradeToolMessages(cleaned);
-    const url = `${normalizeBase(baseUrl)}/chat/completions`;
-    const body: Record<string, unknown> = {
-      model,
-      messages: downgraded,
-      stream: false,
-    };
-    if (effort && effort !== "off" && modelSupportsReasoning("openai", model)) {
-      body.reasoning_effort = effort;
-    }
-    const raw = (await callUpstream(url, apiKey, kind, {
-      method: "POST",
-      body: JSON.stringify(body),
-    })) as {
-      choices?: Array<{ message?: { content?: string } }>;
-    } | null;
-    const content = raw?.choices?.[0]?.message?.content;
-    if (typeof content !== "string") {
-      throw errors.upstreamFailed("上游响应缺少 choices[0].message.content");
-    }
-    return { content, raw };
-  });
-
-  // ── Streaming (SSE) chat ──────────────────────────────────────────────
-  // Server stays the simple transparent proxy: it only emits delta / done /
-  // error events. The osheep code tag protocol (<plan>/<thought>/<tool>/
-  // <verify>) is parsed client-side from the raw delta stream.
-  app.post<{
-    Params: { id: string };
-    Body: {
-      baseUrl?: string;
-      apiKey?: string;
-      model?: string;
-      messages?: ChatMessageIn[];
-      mode?: string;
-      kind?: ProviderKind;
-      reasoning?: { effort?: ReasoningEffort };
-    };
-  }>("/api/workspaces/:id/ai/chat/stream", async (req, reply) => {
-    const { baseUrl, apiKey, model, messages } = req.body ?? {};
-    const kind = parseKind(req.body?.kind);
-    const effort = parseEffort(req.body?.reasoning?.effort);
-    if (typeof baseUrl !== "string" || !baseUrl) {
-      throw errors.invalidQuery("缺少 baseUrl");
-    }
-    if (typeof apiKey !== "string" || !apiKey) {
-      throw errors.invalidQuery("缺少 apiKey");
-    }
-    if (typeof model !== "string" || !model) {
-      throw errors.invalidQuery("缺少 model");
-    }
-    const cleaned = sanitizeMessages(messages);
-
-    // Take ownership of the raw response from Fastify — otherwise Fastify
-    // sees the async handler hasn't called reply.send() and tries to manage
-    // the lifecycle itself, which races with our manual reply.raw.* writes
-    // and triggers req.raw 'close' → AbortController → fetch is aborted
-    // before it even gets a response.
     reply.hijack();
-
     reply.raw.writeHead(200, {
       "content-type": "text/event-stream; charset=utf-8",
       "cache-control": "no-cache, no-transform",
@@ -394,6 +392,7 @@ export async function registerAiRoutes(app: FastifyInstance) {
 
     let doneSent = false;
     const send = (event: string, data: unknown) => {
+      if (reply.raw.destroyed || reply.raw.writableEnded) return;
       if (event === "done") {
         if (doneSent) return;
         doneSent = true;
@@ -403,233 +402,214 @@ export async function registerAiRoutes(app: FastifyInstance) {
     };
 
     const abort = new AbortController();
-    // Only abort upstream when the client *actually* disconnects mid-stream.
-    // req.raw.on('close') is misleading: Node fires it whenever the request
-    // stream ends, including after we hijack the reply and write our own
-    // response — that would abort the very fetch we just kicked off. The
-    // right hook is reply.raw.on('close') *before* we've called end() on it,
-    // which only fires if the socket dies under us.
-    let upstreamDone = false;
+    let runDone = false;
     const onSocketClose = () => {
-      if (!upstreamDone) abort.abort();
+      if (!runDone) abort.abort();
     };
     reply.raw.on("close", onSocketClose);
 
-    const upstreamUrl =
-      kind === "anthropic"
-        ? `${normalizeBase(baseUrl)}/messages`
-        : `${normalizeBase(baseUrl)}/chat/completions`;
-
-    const upstreamBody =
-      kind === "anthropic"
-        ? JSON.stringify(toAnthropicPayload(cleaned, model, true, effort))
-        : JSON.stringify(
-            (() => {
-              const b: Record<string, unknown> = {
-                model,
-                messages: downgradeToolMessages(cleaned),
-                stream: true,
-              };
-              if (
-                effort &&
-                effort !== "off" &&
-                modelSupportsReasoning("openai", model)
-              ) {
-                b.reasoning_effort = effort;
-              }
-              return b;
-            })()
-          );
-
-    let upstream: Response;
     try {
-      upstream = await fetch(upstreamUrl, {
-        method: "POST",
+      const result = await runAgentTerminal({
+        workspace: ws,
+        kind,
+        model: typeof model === "string" && model ? model : "default",
+        prompt,
+        autoSuccess: req.body?.autoSuccess !== false,
+        claudePermissionMode: parseClaudePermissionMode(req.body?.claudePermissionMode),
+        mode: parseAgentMode(kind, req.body?.mode),
+        codexApproval: parseCodexApproval(req.body?.codexApproval),
+        codexSandbox: parseCodexSandbox(req.body?.codexSandbox),
+        effort: parseAgentEffort(req.body?.effort),
+        alwaysEnter: req.body?.alwaysEnter === true,
+        conversationSessionId:
+          typeof req.body?.conversationSessionId === "string"
+            ? req.body.conversationSessionId
+            : undefined,
+        resumeConversation: req.body?.resumeConversation === true,
         signal: abort.signal,
-        headers: {
-          "content-type": "application/json",
-          accept: "text/event-stream",
-          ...authHeaders(kind, apiKey),
+        onFrame: (frame) => {
+          send(frame.type, frame);
         },
-        body: upstreamBody,
       });
-    } catch (e) {
-      if (!abort.signal.aborted) {
-        send("error", { message: `无法连接到 LLM: ${(e as Error).message}` });
-      }
-      send("done", {});
-      reply.raw.end();
-      upstreamDone = true; reply.raw.off("close", onSocketClose);
-      return;
-    }
-
-    if (!upstream.ok || !upstream.body) {
-      const text = await upstream.text().catch(() => "");
-      send("error", {
-        message: `上游 ${upstream.status}: ${text || "无 body"}`,
-      });
-      send("done", {});
-      reply.raw.end();
-      upstreamDone = true; reply.raw.off("close", onSocketClose);
-      return;
-    }
-
-    const ct = upstream.headers.get("content-type") ?? "";
-    if (!ct.includes("event-stream")) {
-      const txt = await upstream.text();
-      try {
-        if (kind === "anthropic") {
-          const json = JSON.parse(txt) as {
-            content?: Array<{ type?: string; text?: string }>;
-            error?: { message?: string; type?: string };
-          };
-          if (json.error && typeof json.error.message === "string") {
-            send("error", { message: `上游错误: ${json.error.message}` });
-            send("done", {});
-            reply.raw.end();
-            upstreamDone = true; reply.raw.off("close", onSocketClose);
-            return;
-          }
-          let content = "";
-          if (Array.isArray(json.content)) {
-            for (const p of json.content) {
-              if (p && p.type === "text" && typeof p.text === "string") {
-                content += p.text;
-              }
-            }
-          }
-          if (content) send("delta", { content });
-        } else {
-          const json = JSON.parse(txt) as {
-            choices?: Array<{ message?: { content?: string } }>;
-            error?: { message?: string; code?: string; type?: string };
-          };
-          if (json.error && typeof json.error.message === "string") {
-            send("error", { message: `上游错误: ${json.error.message}` });
-            send("done", {});
-            reply.raw.end();
-            upstreamDone = true; reply.raw.off("close", onSocketClose);
-            return;
-          }
-          const content = json.choices?.[0]?.message?.content ?? "";
-          if (content) send("delta", { content });
-        }
-      } catch {
-        if (txt) send("delta", { content: txt });
-      }
-      send("done", {});
-      reply.raw.end();
-      upstreamDone = true; reply.raw.off("close", onSocketClose);
-      return;
-    }
-
-    const reader = upstream.body.getReader();
-    const decoder = new TextDecoder("utf-8");
-    let buffer = "";
-    let currentEvent = "";
-
-    try {
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-
-        let nlIdx: number;
-        while ((nlIdx = buffer.indexOf("\n")) !== -1) {
-          const line = buffer.slice(0, nlIdx).replace(/\r$/, "");
-          buffer = buffer.slice(nlIdx + 1);
-          if (!line) {
-            currentEvent = "";
-            continue;
-          }
-          if (line.startsWith(":")) continue; // comment / heartbeat
-          if (line.startsWith("event:")) {
-            currentEvent = line.slice(6).trim();
-            continue;
-          }
-          if (!line.startsWith("data:")) continue;
-          const payload = line.slice(5).trimStart();
-          if (kind === "anthropic") {
-            // Anthropic SSE: event: content_block_delta / message_stop / etc.
-            // Translate to OpenAI-style delta/done so the frontend parser
-            // doesn't need to know the upstream wire format.
-            if (currentEvent === "message_stop" || payload === "[DONE]") {
-              send("done", {});
-              continue;
-            }
-            if (currentEvent === "content_block_delta") {
-              try {
-                const obj = JSON.parse(payload) as {
-                  delta?: { type?: string; text?: string };
-                };
-                const piece = obj.delta?.text;
-                if (typeof piece === "string" && piece.length > 0) {
-                  send("delta", { content: piece });
-                }
-              } catch {
-                /* ignore */
-              }
-              continue;
-            }
-            if (currentEvent === "error" || currentEvent === "message_error") {
-              try {
-                const obj = JSON.parse(payload) as {
-                  error?: { message?: string };
-                };
-                send("error", { message: obj.error?.message ?? "anthropic error" });
-              } catch {
-                send("error", { message: "anthropic error" });
-              }
-              continue;
-            }
-            // Other events (ping, message_start, content_block_start, etc.)
-            // are not forwarded.
-            continue;
-          }
-
-          // OpenAI-style
-          if (payload === "[DONE]") {
-            send("done", {});
-            continue;
-          }
-          try {
-            const obj = JSON.parse(payload) as {
-              choices?: Array<{ delta?: { content?: string } }>;
-              error?: { message?: string; code?: string; type?: string };
-            };
-            // Some OpenAI-compatible proxies (and OpenAI itself for things like
-            // unknown model id) push errors inline as `data: {"error":{...}}`
-            // over a 200/event-stream response instead of failing the HTTP
-            // call. Silently dropping them looks identical to "model returned
-            // nothing", which is exactly the symptom you're seeing.
-            if (obj.error && typeof obj.error.message === "string") {
-              send("error", { message: `上游错误: ${obj.error.message}` });
-              continue;
-            }
-            const piece = obj.choices?.[0]?.delta?.content;
-            if (typeof piece === "string" && piece.length > 0) {
-              send("delta", { content: piece });
-            }
-          } catch {
-            /* ignore */
-          }
-        }
-      }
-      send("done", {});
+      send("result", result);
     } catch (e) {
       if (!abort.signal.aborted) {
         send("error", { message: (e as Error).message });
       }
-      send("done", {});
     } finally {
-      try {
-        await reader.cancel();
-      } catch {
-        /* ignore */
-      }
-      reply.raw.end();
-      upstreamDone = true; reply.raw.off("close", onSocketClose);
+      runDone = true;
+      send("done", {});
+      if (!reply.raw.destroyed && !reply.raw.writableEnded) reply.raw.end();
+      reply.raw.off("close", onSocketClose);
     }
+  });
+
+  app.post<{
+    Params: { id: string; sessionId: string };
+    Body: { submit?: boolean };
+  }>("/api/workspaces/:id/ai/chat/terminal/:sessionId/inject", async (req) => {
+    await resolveWorkspace(req.params.id);
+    await injectAgentTerminalPrompt(req.params.sessionId, {
+      submit: req.body?.submit,
+    });
+    return { ok: true };
+  });
+
+  app.post<{
+    Params: { id: string; sessionId: string };
+    Body: { autoContinue?: boolean };
+  }>("/api/workspaces/:id/ai/chat/terminal/:sessionId/auto-continue", async (req) => {
+    await resolveWorkspace(req.params.id);
+    const result = setAgentTerminalAutoContinue(
+      req.params.sessionId,
+      req.body?.autoContinue !== false
+    );
+    return { ok: true, ...result };
+  });
+
+  app.post<{
+    Params: { id: string; sessionId: string };
+    Body: { autoSuccess?: boolean };
+  }>("/api/workspaces/:id/ai/chat/terminal/:sessionId/auto-success", async (req) => {
+    await resolveWorkspace(req.params.id);
+    const result = setAgentTerminalAutoSuccess(
+      req.params.sessionId,
+      req.body?.autoSuccess !== false
+    );
+    return { ok: true, ...result };
+  });
+
+  app.post<{
+    Params: { id: string; sessionId: string };
+  }>("/api/workspaces/:id/ai/chat/terminal/:sessionId/pause", async (req) => {
+    await resolveWorkspace(req.params.id);
+    pauseAgentTerminal(req.params.sessionId);
+    return { ok: true };
+  });
+
+  app.post<{
+    Params: { id: string; sessionId: string };
+  }>("/api/workspaces/:id/ai/chat/terminal/:sessionId/continue", async (req) => {
+    await resolveWorkspace(req.params.id);
+    continueAgentTerminal(req.params.sessionId);
+    return { ok: true };
+  });
+
+  app.post<{
+    Params: { id: string; sessionId: string };
+  }>("/api/workspaces/:id/ai/chat/terminal/:sessionId/success", async (req) => {
+    await resolveWorkspace(req.params.id);
+    finishAgentTerminalSuccess(req.params.sessionId);
+    return { ok: true };
+  });
+
+  app.post<{
+    Params: { id: string };
+    Body: {
+      model?: string;
+      messages?: ChatMessageIn[];
+      kind?: ProviderKind;
+    };
+  }>("/api/workspaces/:id/ai/chat", async (req) => {
+    const { model, messages } = req.body ?? {};
+    const kind = parseKind(req.body?.kind);
+    if (isCliProviderKind(kind)) {
+      const ws = await resolveWorkspace(req.params.id);
+      const cleaned = sanitizeMessages(messages);
+      const result = await runCliChat({
+        kind,
+        workspaceRoot: ws.path,
+        model: typeof model === "string" && model ? model : "default",
+        messages: cleaned,
+      });
+      return {
+        content: result.content,
+        raw: {
+          stderr: result.stderr,
+          exitCode: result.exitCode,
+          signal: result.signal,
+        },
+      };
+    }
+    throw errors.invalidQuery("osheep code only supports Claude Code CLI or Codex CLI");
+  });
+
+  // ── Streaming (SSE) chat ──────────────────────────────────────────────
+  // Server stays the simple transparent proxy: it only emits delta / done /
+  // error events. The osheep code tag protocol (<tasks>/<thought>/<tool>/
+  // <ask>/<verify>) is parsed client-side from the raw delta stream.
+  app.post<{
+    Params: { id: string };
+    Body: {
+      model?: string;
+      messages?: ChatMessageIn[];
+      mode?: string;
+      kind?: ProviderKind;
+    };
+  }>("/api/workspaces/:id/ai/chat/stream", async (req, reply) => {
+    const { model, messages } = req.body ?? {};
+    const kind = parseKind(req.body?.kind);
+    if (isCliProviderKind(kind)) {
+      const ws = await resolveWorkspace(req.params.id);
+      const cleaned = sanitizeMessages(messages);
+
+      reply.hijack();
+      reply.raw.writeHead(200, {
+        "content-type": "text/event-stream; charset=utf-8",
+        "cache-control": "no-cache, no-transform",
+        connection: "keep-alive",
+        "x-accel-buffering": "no",
+      });
+
+      let doneSent = false;
+      const send = (event: string, data: unknown) => {
+        if (event === "done") {
+          if (doneSent) return;
+          doneSent = true;
+        }
+        reply.raw.write(`event: ${event}\n`);
+        reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
+      };
+
+      const abort = new AbortController();
+      let cliDone = false;
+      const onSocketClose = () => {
+        if (!cliDone) abort.abort();
+      };
+      reply.raw.on("close", onSocketClose);
+
+      try {
+        let emitted = false;
+        const result = await runCliChat({
+          kind,
+          workspaceRoot: ws.path,
+          model: typeof model === "string" && model ? model : "default",
+          messages: cleaned,
+          signal: abort.signal,
+          onDelta: (content) => {
+            emitted = true;
+            send("delta", { content });
+          },
+          onLog: (entry) => {
+            send("log", entry);
+          },
+        });
+        if (!emitted && result.content.trim()) {
+          send("delta", { content: result.content });
+        }
+      } catch (e) {
+        if (!abort.signal.aborted) {
+          send("error", { message: (e as Error).message });
+        }
+      } finally {
+        send("done", {});
+        reply.raw.end();
+        cliDone = true;
+        reply.raw.off("close", onSocketClose);
+      }
+      return;
+    }
+    throw errors.invalidQuery("osheep code only supports Claude Code CLI or Codex CLI");
   });
 
   // ── Tool exec: read ──────────────────────────────────────────────────
@@ -642,27 +622,28 @@ export async function registerAiRoutes(app: FastifyInstance) {
       query?: string;
       include?: string | string[];
       exclude?: string | string[];
+      startLine?: number;
+      lineCount?: number;
     };
   }>("/api/workspaces/:id/ai/exec/read", async (req) => {
     const ws = await resolveWorkspace(req.params.id);
     const body = req.body ?? {};
     if (body.kind === "file") {
       if (typeof body.path !== "string") throw errors.invalidQuery("缺少 path");
-      const f = await readFileText(ws.path, body.path);
-      const MAX_READ = 256 * 1024;
-      let content = f.content;
-      let truncated = false;
-      if (content.length > MAX_READ) {
-        content = content.slice(0, MAX_READ);
-        truncated = true;
-      }
+      const f = await readAiFileText(ws.path, body.path);
+      const startLine = toPositiveInt(body.startLine);
+      const lineCount = toPositiveInt(body.lineCount);
+      const sliced = sliceLines(f.content, startLine, lineCount);
       return {
         kind: "file",
         path: f.path,
-        content,
+        content: sliced.content,
         size: f.size,
         mtime: f.mtime,
-        truncated,
+        truncated: f.truncated || sliced.truncated,
+        startLine: sliced.startLine,
+        endLine: sliced.endLine,
+        totalLines: sliced.totalLines,
       };
     }
     if (body.kind === "list") {
@@ -702,6 +683,7 @@ export async function registerAiRoutes(app: FastifyInstance) {
         | "write_file"
         | "append_file"
         | "edit_file"
+        | "multi_edit"
         | "move"
         | "delete"
         | "create";
@@ -710,6 +692,7 @@ export async function registerAiRoutes(app: FastifyInstance) {
       createParents?: boolean;
       oldString?: string;
       newString?: string;
+      edits?: Array<{ oldString?: unknown; newString?: unknown }>;
       from?: string;
       to?: string;
       recursive?: boolean;
@@ -721,6 +704,11 @@ export async function registerAiRoutes(app: FastifyInstance) {
     if (b.kind === "write_file") {
       if (typeof b.path !== "string") throw errors.invalidQuery("缺少 path");
       if (typeof b.content !== "string") throw errors.invalidQuery("缺少 content");
+      if (isObviousWritePlaceholder(b.content)) {
+        throw errors.invalidQuery(
+          "write_file content 看起来是占位符；请先读取文件并提供完整内容，或改用 edit_file"
+        );
+      }
       const out = await writeFileText(ws.path, b.path, b.content, b.createParents !== false);
       return { ok: true, kind: "write_file", ...out };
     }
@@ -742,18 +730,101 @@ export async function registerAiRoutes(app: FastifyInstance) {
       if (typeof b.oldString !== "string") throw errors.invalidQuery("缺少 oldString");
       if (typeof b.newString !== "string") throw errors.invalidQuery("缺少 newString");
       const f = await readFileText(ws.path, b.path);
-      const occurrences = f.content.split(b.oldString).length - 1;
+      const before = f.content;
+      const occurrences = before.split(b.oldString).length - 1;
       if (occurrences === 0) {
-        throw errors.invalidQuery("oldString 在文件中未找到");
+        throw errors.invalidQuery(formatEditMissHint(before, b.oldString, toPosix(b.path)));
       }
       if (occurrences > 1) {
-        throw errors.invalidQuery(
-          `oldString 匹配到 ${occurrences} 处，请提供更多上下文以唯一定位`
-        );
+        throw errors.invalidQuery(formatEditAmbiguousHint(before, b.oldString, occurrences));
       }
-      const next = f.content.replace(b.oldString, b.newString);
-      const out = await writeFileText(ws.path, b.path, next, false);
-      return { ok: true, kind: "edit_file", ...out, replacements: 1 };
+      const after = before.replace(b.oldString, b.newString);
+      const out = await writeFileText(ws.path, b.path, after, false);
+      const diff = buildEditDiff(before, after, b.oldString, b.newString);
+      return {
+        ok: true,
+        kind: "edit_file",
+        ...out,
+        replacements: 1,
+        diff,
+      };
+    }
+    if (b.kind === "multi_edit") {
+      if (typeof b.path !== "string") throw errors.invalidQuery("缺少 path");
+      if (!Array.isArray(b.edits) || b.edits.length === 0) {
+        throw errors.invalidQuery("multi_edit 需要非空 edits 数组");
+      }
+      const edits: Array<{ oldString: string; newString: string }> = [];
+      for (let i = 0; i < b.edits.length; i += 1) {
+        const e = b.edits[i] as { oldString?: unknown; newString?: unknown };
+        if (typeof e?.oldString !== "string" || !e.oldString) {
+          throw errors.invalidQuery(`multi_edit edits[${i}]: oldString 必须为非空字符串`);
+        }
+        if (typeof e?.newString !== "string") {
+          throw errors.invalidQuery(`multi_edit edits[${i}]: newString 必须为字符串`);
+        }
+        edits.push({ oldString: e.oldString, newString: e.newString });
+      }
+      const f = await readFileText(ws.path, b.path);
+      const before = f.content;
+      const pathDisplay = toPosix(b.path);
+      // Apply edits in order against the running state. Compute each edit's
+      // diff metadata against the file *as it stood just before that edit* so
+      // startLine numbers are meaningful even when earlier edits shifted text.
+      let current = before;
+      const perEditDiffs: Array<{
+        oldString: string;
+        newString: string;
+        startLine: number;
+        endLineBefore: number;
+        endLineAfter: number;
+        added: number;
+        removed: number;
+      }> = [];
+      let totalAdded = 0;
+      let totalRemoved = 0;
+      for (let i = 0; i < edits.length; i += 1) {
+        const { oldString, newString } = edits[i]!;
+        const occurrences = current.split(oldString).length - 1;
+        if (occurrences === 0) {
+          throw errors.invalidQuery(
+            `multi_edit edits[${i}] 失败：${formatEditMissHint(current, oldString, pathDisplay)}`
+          );
+        }
+        if (occurrences > 1) {
+          throw errors.invalidQuery(
+            `multi_edit edits[${i}] 失败：${formatEditAmbiguousHint(current, oldString, occurrences)}`
+          );
+        }
+        const next = current.replace(oldString, newString);
+        const diff = buildEditDiff(current, next, oldString, newString);
+        perEditDiffs.push({
+          oldString: diff.oldString,
+          newString: diff.newString,
+          startLine: diff.startLine,
+          endLineBefore: diff.endLineBefore,
+          endLineAfter: diff.endLineAfter,
+          added: diff.added,
+          removed: diff.removed,
+        });
+        totalAdded += diff.added;
+        totalRemoved += diff.removed;
+        current = next;
+      }
+      const out = await writeFileText(ws.path, b.path, current, false);
+      return {
+        ok: true,
+        kind: "multi_edit",
+        ...out,
+        replacements: edits.length,
+        diff: {
+          edits: perEditDiffs,
+          added: totalAdded,
+          removed: totalRemoved,
+          before,
+          after: current,
+        },
+      };
     }
     if (b.kind === "move") {
       if (typeof b.from !== "string" || typeof b.to !== "string") {
@@ -799,5 +870,73 @@ export async function registerAiRoutes(app: FastifyInstance) {
       typeof b.shell === "string" ? b.shell : undefined
     );
     return result;
+  });
+
+  app.post<{
+    Params: { id: string };
+    Body: {
+      command?: string;
+      cwd?: string;
+      shell?: string;
+      timeoutMs?: number;
+    };
+  }>("/api/workspaces/:id/ai/exec/run/stream", async (req, reply) => {
+    const ws = await resolveWorkspace(req.params.id);
+    const b = req.body ?? {};
+    if (typeof b.command !== "string" || !b.command.trim()) {
+      throw errors.invalidQuery("缂哄皯 command");
+    }
+
+    reply.hijack();
+    reply.raw.writeHead(200, {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-cache, no-transform",
+      connection: "keep-alive",
+      "x-accel-buffering": "no",
+    });
+
+    let doneSent = false;
+    const send = (event: string, data: unknown) => {
+      if (reply.raw.destroyed || reply.raw.writableEnded) return;
+      if (event === "done") {
+        if (doneSent) return;
+        doneSent = true;
+      }
+      reply.raw.write(`event: ${event}\n`);
+      reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
+    };
+
+    const abort = new AbortController();
+    let runDone = false;
+    const onSocketClose = () => {
+      if (!runDone) abort.abort();
+    };
+    reply.raw.on("close", onSocketClose);
+
+    try {
+      const result = await execRun(
+        ws.path,
+        b.command,
+        typeof b.cwd === "string" ? b.cwd : "",
+        typeof b.timeoutMs === "number" ? b.timeoutMs : 60_000,
+        typeof b.shell === "string" ? b.shell : undefined,
+        {
+          signal: abort.signal,
+          onLog: (entry) => {
+            send("log", entry);
+          },
+        }
+      );
+      send("result", result);
+    } catch (e) {
+      if (!abort.signal.aborted) {
+        send("error", { message: (e as Error).message });
+      }
+    } finally {
+      runDone = true;
+      send("done", {});
+      if (!reply.raw.destroyed && !reply.raw.writableEnded) reply.raw.end();
+      reply.raw.off("close", onSocketClose);
+    }
   });
 }

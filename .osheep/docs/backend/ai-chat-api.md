@@ -92,62 +92,52 @@
 
 **主要路径**。请求体与 `/ai/chat` 完全相同。响应是 SSE。
 
-osheep code 的协议**不**让模型自己输出结构化 JSON——后端在转发上游 token 时，根据**特殊标记**把原始字符流切成不同语义事件转发给前端。
+后端在这里保持透明代理：OpenAI / Anthropic 的上游流被翻译为统一的 `delta` / `done` / `error` 事件。osheep code 的 `<tasks>` / `<thought>` / `<tool>` / `<ask>` / `<verify>` 标记由前端 `TagStreamParser` 从 `delta.content` 中解析；后端不维护 osheep code 标记状态机。
 
 ### 标记约定（注入到 system prompt 末尾）
 
 osheep code 在系统提示里告诉模型用下面这套**轻量标记**来组织输出（详见 `ai/osheep-code-prompt.md`）：
 
 ```
-<plan>
+<tasks>
 1. 步骤 1
 2. 步骤 2
-</plan>
+</tasks>
 
 <thought>让我先读一下这个文件。</thought>
 
 <tool name="read">
-{"path":"src/api.ts"}
+{"kind":"file","path":"src/api.ts"}
 </tool>
 
 <thought>看到了……</thought>
 
+<ask>
+{"question":"接下来我应该重写还是只删除？","options":["重写为更小的函数","只删除冗余分支"]}
+</ask>
+
 <verify>所有 console.log 已删除。</verify>
 ```
 
-不被标记包围的纯文本视为「助手自然语言段落」，作为 `text_delta` 转发，也会一并落到 `assistant.content`。
+> `<tasks>` 是新名字；旧的 `<plan>` 仍被 parser 当作同义别名接受（兼容历史会话与正在迁移中的模型权重），但生成提示词时只输出 `<tasks>`。`<ask>` 由前端在 composer 上方的「审批框位置」渲染为按钮组 + 「其他」（手动输入）入口，详见 `frontend/ai-panel.md`。
+
+不被标记包围的纯文本视为「助手自然语言段落」，由前端从 `delta` 中解析为普通文本 step。
 
 ### 事件流
 
-后端边读上游 token 边维护一个标记状态机，按下列方式转 SSE：
+后端只输出统一后的基础 SSE：
 
 ```
-event: plan
-data: {"items":["- [ ] 读文件","- [ ] 替换","- [ ] 验证"]}
-
-event: thought
-data: {"id":"t1","text":""}
-
-event: thought_delta
-data: {"id":"t1","content":"让我先"}
-
-event: thought_delta
-data: {"id":"t1","content":"读一下这个文件。"}
-
-event: tool_call
-data: {"id":"tc_1","tool":"read","args":{"path":"src/api.ts"}}
-
-event: text_delta
-data: {"content":"已经修改完成。"}
-
-event: verify
-data: {"text":"所有 console.log 已删除。"}
+event: delta
+data: {"content":"<tasks>\n- [ ] 读文件\n- [ ] 修改\n</tasks>"}
 
 event: done
 data: {}
 ```
 
-> Plan 字段格式约定：`items` 数组中的每一项保留**完整的 markdown checkbox 前缀**（`- [ ] 任务` / `- [~] 任务` / `- [x] 任务`），不再剥离 `- ` 与 `[ ]`。前端将它们用 `\n` 连接后直接交给 marked 渲染，由 GFM task-list 解析。如果上游模型出现不带 `- ` 前缀的纯文本行（兼容旧实现），前端会在渲染前把它当作未做项补齐成 `- [ ] 文本`。
+前端 parser 将 `delta.content` 里的标记转换为 timeline step：`plan`（兼容名，UI 显示为 `Tasks`）/ `thought` / `tool_call` / `ask` / `verify` / 普通文本。Tasks 字段格式约定：`items` 数组中的每一项保留**完整的 markdown checkbox 前缀**（`- [ ] 任务` / `- [~] 任务` / `- [x] 任务`），不再剥离 `- ` 与 `[ ]`。
+
+Ask 字段格式约定：`{ question: string, options: string[] }`；前端会自动追加 `「其他」` 手动输入入口，模型在 `options` 里**不应**预留 `其他`。
 
 错误：
 ```
@@ -155,7 +145,7 @@ event: error
 data: {"message":"..."}
 ```
 
-> 兼容性：标记解析仅在 system prompt 注入的「osheep code 模式」时生效。前端通过 `mode=osheepcode` 请求体字段开启。普通模式下，后端仍然像现在一样只发 `delta` 事件，前端按纯文本流式渲染。
+> 兼容性：后端不区分普通模式和 osheep code 模式，始终只发 `delta` / `done` / `error`。是否启用 osheep code 标记解析由前端调用 `aiChatStreamOsheepCode` 决定。
 
 ### 请求体新增字段
 
@@ -164,7 +154,6 @@ data: {"message":"..."}
   "baseUrl": "...",
   "apiKey": "...",
   "model": "gpt-4o-mini",
-  "mode": "osheepcode",          // 可选；为 "osheepcode" 时启用标记解析
   "messages": [ ... ],
   "reasoning": {
     "effort": "minimal" | "low" | "medium" | "high" | "off"
@@ -172,8 +161,6 @@ data: {"message":"..."}
 }
 ```
 
-- `mode` 缺省 / 任意其它值 → 走原始透传逻辑（仅 `delta` / `done` / `error`）
-- `mode: "osheepcode"` → 启用标记切分
 - `reasoning.effort` 可选；为已知 reasoning 模型时透传给上游：
   - OpenAI 协议 → 在请求体中加 `reasoning_effort`（值 = `effort`，`off` 等价于不发送，`minimal` 透传为 `minimal`）
   - Anthropic 协议 → 在请求体中加 `thinking: { type: "enabled", budget_tokens: N }`
@@ -201,27 +188,29 @@ Connection: keep-alive
 X-Accel-Buffering: no
 ```
 
-前端用 `AbortController` 主动断开时，后端检测到 `req.raw.aborted` 立即关闭上游 fetch。
+前端用 `AbortController` 主动断开时，后端在响应 socket 关闭且上游未结束时关闭上游 fetch。
 
 ### 工具调用并不在 SSE 内执行
 
-`tool_call` 只是**告知前端模型希望调用什么**。具体执行由前端拿到事件后选择性调用 `/ai/exec/*`（参见后续段落），并把结果作为下一轮 messages 重新发起 `/ai/chat/stream`。
+前端解析出的 `tool_call` 只是**告知 runtime 模型希望调用什么**。具体执行由前端拿到事件后选择性调用 `/ai/exec/*`（参见后续段落），并把结果作为下一轮 messages 重新发起 `/ai/chat/stream`。
 
 这意味着 osheep code 的一次「用户轮次」可能对应多次 SSE：
 
 ```
 用户发送
   ↓
-SSE 1：plan / thought / tool_call(read)  → done
-  ↓ 前端 fetch /ai/exec/read，拼回 messages
-SSE 2：thought / tool_call(write)        → done
-  ↓ 前端 fetch /ai/exec/write，拼回 messages
-SSE 3：thought / verify / text           → done   ← 没有 tool_call 视为结束轮
+SSE 1：delta(raw: tasks / thought / tool(read))  → done
+  ↓ 前端解析第一条 tool，fetch /ai/exec/read，把 assistant 原文片段 + tool result 追加进 modelTranscript
+SSE 2：delta(raw: thought / tool(write))         → done
+  ↓ 前端解析第一条 tool，fetch /ai/exec/write，把 assistant 原文片段 + tool result 追加进 modelTranscript
+SSE 3：delta(raw: verify / text 或 ask)          → done   ← 没有 accepted tool 视为结束轮
 ```
 
-前端循环直到收到的 SSE 中**没有任何 tool_call** 为止，那一次的 `verify` / `text` 即最终回复。
+前端 runtime 按 Claude Code 式节奏执行：**每个 SSE 响应最多接受第一条 tool**。如果模型同一段里继续输出第二条 `<tool>` 或后续步骤，这些内容不会进入 UI，也不会执行；写回 `modelTranscript` 的 assistant 原文会截断到第一条 accepted tool 结束处，再追加对应 tool result。这样下一轮模型只会基于真实发生过的「思考 → 动作 → 结果」继续，避免把宿主未执行的内容当成事实。
 
-最大循环次数硬限制 **8**，避免模型陷入死循环。超过后注入一条 `system` 提醒并强制停止。
+前端循环直到本轮没有 accepted tool 为止，那一次的 `verify` / `ask` / `text` 即最终回复。runtime 必须维护 `modelTranscript`、`TasksState` 与 `<recent-tool-calls-this-turn>` 摘要，避免模型重复 tasks / read / write。
+
+最大工具循环次数硬限制 **40**。此外连续 3 轮没有任何真实工具执行（全部被 tasks gate 拒绝 / 用户拒绝 / 参数无效 / cached）时，runtime 会停止本轮并在 timeline 末尾追加合成 `text` step 说明原因。
 
 ---
 
@@ -244,14 +233,14 @@ SSE 3：thought / verify / text           → done   ← 没有 tool_call 视为
 #### 返回
 ```json
 // file
-{ "kind": "file", "path": "src/api.ts", "content": "...", "size": 1234, "mtime": 1715... }
+{ "kind": "file", "path": "src/api.ts", "content": "...", "size": 1234, "mtime": 1715..., "truncated": false }
 // list
 { "kind": "list", "path": "src/", "entries": [ {"name":"a.ts","kind":"file"} ... ] }
 // search
 { "kind": "search", "matches": [ {"path":"...","lines":[...]} ], "truncated": false }
 ```
 
-`read` 接口对单文件 size 上限 256KB，超出截断并附 `truncated: true`。
+AI `read.file` 使用专用读取逻辑：只读取文件开头最多 256KB 并返回 `truncated: true`，不会先被编辑器文件大小上限拦截。模型看到 `truncated=true` 时不得假设未读取部分的内容，应继续用 `read.search` 或更小范围的读写策略。
 
 ### `POST /api/workspaces/:id/ai/exec/write`
 
@@ -263,6 +252,11 @@ SSE 3：thought / verify / text           → done   ← 没有 tool_call 视为
 { "kind": "append_file", "path": "src/foo.ts", "content": "..." }
 // 文本片段替换（精确匹配 oldString，必须唯一；不唯一返回 400）
 { "kind": "edit_file", "path": "src/foo.ts", "oldString": "...", "newString": "..." }
+// 同文件批量替换（按顺序应用，每一步 oldString 在当前文件状态里必须唯一；任意一步失败整批回滚）
+{ "kind": "multi_edit", "path": "src/foo.ts", "edits": [
+  { "oldString": "...", "newString": "..." },
+  { "oldString": "...", "newString": "..." }
+] }
 // 重命名 / 移动
 { "kind": "move", "from": "src/foo.ts", "to": "src/bar.ts" }
 // 删除
@@ -270,11 +264,110 @@ SSE 3：thought / verify / text           → done   ← 没有 tool_call 视为
 ```
 
 #### 返回
+
+**通用形态**：
+
 ```json
-{ "ok": true, "path": "src/foo.ts", "size": 1234, "mtime": 1715..., "diffSummary": "+12 / -3" }
+{ "ok": true, "kind": "write_file", "path": "src/foo.ts", "size": 1234, "mtime": 1715... }
 ```
 
-写入路径必须在 workspace 内；否则 `403 OUT_OF_WORKSPACE`。
+**edit_file 专属**：除通用字段外，附带 `diff` 结构体，供前端渲染缩略 diff 与「在新标签打开完整 diff」入口。
+
+```json
+{
+  "ok": true,
+  "kind": "edit_file",
+  "path": "src/foo.ts",
+  "size": 1234,
+  "mtime": 1715...,
+  "replacements": 1,
+  "diff": {
+    "oldString": "<原片段>",
+    "newString": "<新片段>",
+    "startLine": 12,
+    "endLineBefore": 15,
+    "endLineAfter": 17,
+    "added": 5,
+    "removed": 3,
+    "before": "<整文件原内容>",
+    "after": "<整文件新内容>"
+  }
+}
+```
+
+约定：
+
+- `startLine` / `endLineBefore` / `endLineAfter` 全部 **1-based**，方便前端直接定位
+- `added` / `removed` 是 `newString` / `oldString` 各自的换行计数（含尾行），用于显示「+N / -M」
+- `before` / `after` 是整文件内容；前端用它喂给 Monaco DiffEditor 渲染完整 diff Tab
+- chat-runtime 把这份 result 落回给模型前会**剥掉** `diff.before` / `diff.after`（避免再次发回整文件 token），只保留 `oldString` / `newString` / 行号 / 计数
+
+写入路径必须在 workspace 内；否则 `403 OUT_OF_WORKSPACE`。`write_file` 只用于创建新文件或完整内容已知的整文件覆盖；明显占位符内容（例如仅 `...`）会被拒绝，防止误覆盖。局部修改优先使用 `edit_file`，且 `oldString` 必须精确且唯一。
+
+#### `edit_file` 失败诊断
+
+`edit_file` 在 `oldString` 不存在或匹配多处时返回 `400 INVALID_QUERY`，message 中**附带候选行号**让模型自纠错。错误体形态：
+
+```json
+{
+  "error": {
+    "code": "INVALID_QUERY",
+    "message": "oldString 在 src/foo.ts 中未匹配；可能位置: line 42, 87 (基于 oldString 首行)"
+  }
+}
+```
+
+规则：
+
+- `matchCount=0` 时：如果 `oldString` 的首个非空行能在文件里找到，把命中行号（最多前 5 个）拼到 message 末尾：`...; 可能位置: line A, B, …(基于 oldString 首行)`；找不到则只说「未匹配」
+- `matchCount>1` 时：把全部命中行号拼到 message 末尾：`oldString 匹配到 N 处: line A, B, …，请提供更多上下文以唯一定位`
+
+这套 hint 让模型不需要再 `read` 整文件就能 narrow 下一次 `edit_file` 的 `oldString`，减少一轮无谓的工具调用。错误响应仍然是现有的 `{ error: { code, message } }` 二字段格式，前端无需新增类型即可解析。
+
+#### `multi_edit` 专属响应
+
+`multi_edit` 把同文件 N 处修改打包成**一次** tool call。语义：
+
+- 按 `edits` 数组顺序应用，每一步在当前文件状态（即前面 edits 已经生效之后的状态）里 `oldString` 必须恰好出现 1 次
+- 任意一步失败 → 整批回滚，**不写盘**，抛 `INVALID_QUERY`，message 形如 `multi_edit edits[2] 失败：oldString 在 src/foo.ts 中未匹配；可能位置: line A, B, …`
+- 全部成功 → 一次 `writeFileText`，返回如下结构：
+
+```json
+{
+  "ok": true,
+  "kind": "multi_edit",
+  "path": "src/foo.ts",
+  "size": 1234,
+  "mtime": 1715...,
+  "replacements": 3,
+  "diff": {
+    "edits": [
+      {
+        "oldString": "<原片段>",
+        "newString": "<新片段>",
+        "startLine": 12,
+        "endLineBefore": 15,
+        "endLineAfter": 17,
+        "added": 5,
+        "removed": 3
+      },
+      ...
+    ],
+    "added": 15,
+    "removed": 9,
+    "before": "<整文件原内容>",
+    "after": "<整文件最终内容>"
+  }
+}
+```
+
+约定：
+
+- `replacements = edits.length`（与 `edit_file` 的 1 对应）
+- `diff.edits[i]` 的 `startLine` 等行号是相对**当时文件状态**计算的，方便前端在缩略 diff 卡里独立展示每一段
+- `diff.added` / `diff.removed` 是所有 edit 行数变化的总和
+- `diff.before` / `diff.after` 是整文件的开始 / 结束内容，供 Monaco DiffEditor 渲染「完整 diff →」Tab
+- chat-runtime 在把 result 落回给模型前会**剥掉** `diff.before` / `diff.after`，避免 token 浪费
 
 ### `POST /api/workspaces/:id/ai/exec/run`
 
@@ -309,7 +402,7 @@ SSE 3：thought / verify / text           → done   ← 没有 tool_call 视为
 }
 ```
 
-`stdout` + `stderr` 总长度上限 256KB，超出截断。超时则 `exitCode=null`、`signal="SIGTERM"`、`truncated=true`。
+`stdout` + `stderr` 总长度上限 256KB，超出截断。超时则 `exitCode=null`、`signal="SIGTERM"`、`truncated=true`。HTTP 200 只表示命令完成；`exitCode !== 0` 在 osheep code runtime 中视为工具失败，并把 stdout/stderr 作为下一轮上下文回传给模型。
 
 不支持长驻 / 交互命令——那是终端面板的职责，AI 不应在这里 spawn `npm run dev` 之类的常驻进程。
 

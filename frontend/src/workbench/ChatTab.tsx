@@ -1,28 +1,29 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   getSession as apiGetSession,
   saveSession as apiSaveSession,
   type ChatMessage,
   type ChatStep,
+  type EditFileDiff,
+  type MultiEditDiff,
+  type MultiEditEntry,
   type SessionRecord,
   type ToolKind,
 } from "./api";
 import { ChatMarkdown } from "./ChatMarkdown";
 import { chatRuntime, useChatTurn } from "./chat-runtime";
+import { buildUnifiedDiff, type DiffRowType } from "./file-diff";
 import type {
   AiAutoAllow,
-  AiProvider,
   OsheepSettings,
   ReasoningEffort,
 } from "./settings";
 import {
   DEFAULT_AUTO_ALLOW,
-  detectReasoningKind,
-  effortKey,
-  effortLevels,
-  resolveDefaultProviderModel,
-  resolveEffort,
+  DEFAULT_CLI_PROVIDER,
 } from "./settings";
+
+const SCROLL_STICKY_PX = 24;
 
 interface ChatTabProps {
   workspaceId: string;
@@ -30,7 +31,26 @@ interface ChatTabProps {
   settings: OsheepSettings;
   onSettingsChange: (next: OsheepSettings) => void;
   onSessionChanged: () => void;
+  /**
+   * Fired after osheep code mutates the workspace (a successful `write` tool
+   * of any kind, or any `run` command — shell commands may create/delete
+   * files). The workbench uses this to refresh the file explorer and git
+   * decorations without the user clicking "刷新".
+   */
+  onFilesChanged: () => void;
   onOpenSettings: () => void;
+  /**
+   * Open a Monaco diff Tab populated from an `edit_file` step's
+   * `before`/`after` payload. Called when the user clicks "open full diff"
+   * on a thumbnail diff rendered in a tool step.
+   */
+  onOpenAiDiff: (input: {
+    sessionId: string;
+    stepId: string;
+    filePath: string;
+    leftContent: string;
+    rightContent: string;
+  }) => void;
 }
 
 export function ChatTab({
@@ -39,7 +59,9 @@ export function ChatTab({
   settings,
   onSettingsChange,
   onSessionChanged,
+  onFilesChanged,
   onOpenSettings,
+  onOpenAiDiff,
 }: ChatTabProps) {
   const [session, setSession] = useState<SessionRecord | null>(null);
   const [input, setInput] = useState("");
@@ -49,43 +71,31 @@ export function ChatTab({
   const view = useChatTurn(sessionId);
   const sending = view.status === "running" || view.status === "awaiting-confirm";
 
-  const { providerId, model } = useMemo(
-    () => resolveDefaultProviderModel(settings),
-    [settings]
-  );
-
-  const provider: AiProvider | null = useMemo(
-    () => settings.ai.providers.find((p) => p.id === providerId) ?? null,
-    [providerId, settings.ai.providers]
-  );
-
-  const effort = useMemo<ReasoningEffort | null>(() => {
-    if (!provider || !model) return null;
-    return resolveEffort(settings, provider.id, model, provider.kind);
-  }, [provider, model, settings]);
+  const provider = DEFAULT_CLI_PROVIDER;
+  const model = DEFAULT_CLI_PROVIDER.models[0] ?? "default";
+  const effort: ReasoningEffort | null = null;
 
   const autoAllow: AiAutoAllow = settings.ai.autoAllow ?? DEFAULT_AUTO_ALLOW;
 
   const [slashOpen, setSlashOpen] = useState(false);
-  const [slashSection, setSlashSection] = useState<"root" | "model">("root");
   const [autoAllowOpen, setAutoAllowOpen] = useState(false);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-  // Tracks whether the user is currently pinned to the bottom of the
-  // conversation. We only auto-scroll on new content if they are — so
-  // reading older messages mid-stream isn't yanked back to the bottom.
+  // Tracks whether the user is exactly at (or within a tiny epsilon of) the
+  // bottom. New osheep-code state follows only in that case; arbitrary layout
+  // resizes never pull the user away from history.
   const stickToBottomRef = useRef(true);
-  // Set by handleSend so the next render forces a scroll-to-bottom even if
-  // the user wasn't pinned (sending a new message should always reveal the
-  // assistant reply that's about to appear).
-  const forceScrollToBottomRef = useRef(false);
 
   // Load the session record on mount / session-switch.
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setLoadError(null);
+    // Loading / switching sessions is not a "new runtime status" event; do
+    // not force the scroll position. The scroll listener will mark pinned once
+    // the user actually reaches the bottom.
+    stickToBottomRef.current = false;
     apiGetSession(workspaceId, sessionId)
       .then((s) => {
         if (cancelled) return;
@@ -112,6 +122,8 @@ export function ChatTab({
   onSettingsChangeRef.current = onSettingsChange;
   const onSessionChangedRef = useRef(onSessionChanged);
   onSessionChangedRef.current = onSessionChanged;
+  const onFilesChangedRef = useRef(onFilesChanged);
+  onFilesChangedRef.current = onFilesChanged;
 
   useEffect(() => {
     chatRuntime.setCallbacks(sessionId, {
@@ -123,6 +135,9 @@ export function ChatTab({
       },
       onSessionChanged: () => {
         onSessionChangedRef.current();
+      },
+      onFilesChanged: () => {
+        onFilesChangedRef.current();
       },
       getSession: () => sessionRef.current,
       setSession: (next) => {
@@ -142,47 +157,45 @@ export function ChatTab({
     ta.style.height = next + "px";
   }, [input]);
 
-  // Auto-scroll: only if the user is "stuck to the bottom", or if we just
-  // sent a new user message (forceScrollToBottomRef). User scrolling up to
-  // read history will unstick the view; scrolling back near the bottom
-  // re-sticks it.
-  useEffect(() => {
+  const scrollStateSignature = useMemo(
+    () => buildScrollStateSignature(session, view.status, view.pendingConfirm?.call.id, view.pendingSteps),
+    [session, view.status, view.pendingConfirm, view.pendingSteps]
+  );
+
+  useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    if (forceScrollToBottomRef.current || stickToBottomRef.current) {
+    if (stickToBottomRef.current) {
       el.scrollTop = el.scrollHeight;
-      forceScrollToBottomRef.current = false;
       stickToBottomRef.current = true;
+      const first = window.requestAnimationFrame(() => {
+        if (!stickToBottomRef.current || !scrollRef.current) return;
+        scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+        window.requestAnimationFrame(() => {
+          if (!stickToBottomRef.current || !scrollRef.current) return;
+          scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+        });
+      });
+      return () => window.cancelAnimationFrame(first);
+    } else {
+      stickToBottomRef.current = isAtScrollBottom(el);
     }
-  }, [
-    session?.messages.length,
-    sending,
-    view.pendingSteps.length,
-    view.pendingText,
-  ]);
+  }, [scrollStateSignature]);
 
   // Update the "is near bottom" tracker as the user scrolls.
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
     const onScroll = () => {
-      const slack = el.scrollHeight - el.scrollTop - el.clientHeight;
-      stickToBottomRef.current = slack < 80;
+      stickToBottomRef.current = isAtScrollBottom(el);
     };
     el.addEventListener("scroll", onScroll, { passive: true });
     return () => el.removeEventListener("scroll", onScroll);
   }, []);
 
-  const readyToSend =
-    !!provider && !!provider.baseUrl && !!provider.apiKey && !!model;
+  const readyToSend = true;
 
-  const sendBlockReason = !provider
-    ? "请先在「设置」中选择默认 Provider"
-    : !provider.baseUrl || !provider.apiKey
-    ? "默认 Provider 缺少 Base URL 或 API Key（请在设置中填写）"
-    : !model
-    ? "请先在「设置」中选择默认 Model"
-    : "";
+  const sendBlockReason = "";
 
   const stopStream = () => {
     chatRuntime.stop(sessionId);
@@ -195,35 +208,14 @@ export function ChatTab({
     });
   };
 
-  const setDefaultModel = (pid: string, m: string) => {
-    onSettingsChange({
-      ...settings,
-      ai: {
-        ...settings.ai,
-        defaultProviderId: pid,
-        defaultModel: m,
-      },
-    });
-  };
-
-  const setEffort = (next: ReasoningEffort | null) => {
-    if (!provider || !model || !next) return;
-    const map = { ...(settings.ai.reasoningEffort ?? {}) };
-    map[effortKey(provider.id, model)] = next;
-    onSettingsChange({
-      ...settings,
-      ai: { ...settings.ai, reasoningEffort: map },
-    });
-  };
-
   const clearConversation = async () => {
     if (!session) return;
     if (!window.confirm("清空当前对话的所有消息？")) return;
     const next: SessionRecord = {
       ...session,
       messages: [],
-      providerId: provider?.id ?? session.providerId,
-      model: model || session.model,
+      providerId: provider.id,
+      model,
     };
     try {
       const saved = await apiSaveSession(workspaceId, next);
@@ -234,17 +226,16 @@ export function ChatTab({
     }
   };
 
-  const handleSend = () => {
+  const sendMessage = (rawText: string) => {
     if (!session) return;
-    const text = input.trim();
+    const text = rawText.trim();
     if (!text) return;
-    if (!readyToSend || !provider) return;
+    if (!readyToSend) return;
 
     // chatRuntime.send handles the "queue on top of a running turn" case
     // internally — it aborts the current upstream stream, resolves any
     // pending tool-confirm as deny, and reruns with the new payload once
     // the previous loop unwinds.
-    forceScrollToBottomRef.current = true;
     setInput("");
     chatRuntime.send({
       workspaceId,
@@ -259,6 +250,7 @@ export function ChatTab({
             ai: { ...settings.ai, autoAllow: next },
           }),
         onSessionChanged,
+        onFilesChanged,
         getSession: () => sessionRef.current,
         setSession: (s) => {
           sessionRef.current = s;
@@ -268,6 +260,47 @@ export function ChatTab({
       },
     });
   };
+
+  const handleSend = () => sendMessage(input);
+
+  const handleAskAnswer = async (answer: string) => {
+    if (!session) return;
+    const last = session.messages[session.messages.length - 1];
+    if (!last || last.role !== "assistant") return;
+    const steps = last.steps ?? [];
+    const lastStep = steps[steps.length - 1];
+    if (lastStep?.kind !== "ask") return;
+
+    // Update the ask step with the answer
+    const updatedSteps = steps.map((s, i) =>
+      i === steps.length - 1 && s.kind === "ask" ? { ...s, answer } : s
+    );
+    const updatedMessage = { ...last, steps: updatedSteps };
+    const updatedMessages = [
+      ...session.messages.slice(0, -1),
+      updatedMessage,
+    ];
+    const updatedSession = { ...session, messages: updatedMessages };
+
+    try {
+      await apiSaveSession(workspaceId, updatedSession);
+      setSession(updatedSession);
+      // Now send the answer as a new user message to continue the conversation
+      sendMessage(answer);
+    } catch (e) {
+      setLoadError((e as Error).message);
+    }
+  };
+
+  const pendingAsk = useMemo(() => {
+    if (!session || sending) return null;
+    const last = session.messages[session.messages.length - 1];
+    if (!last || last.role !== "assistant") return null;
+    const steps = last.steps ?? [];
+    const lastStep = steps[steps.length - 1];
+    if (lastStep?.kind === "ask" && !lastStep.answer) return lastStep;
+    return null;
+  }, [session, sending]);
 
   if (loading) return <div className="empty-hint">加载中…</div>;
   if (!session)
@@ -285,7 +318,6 @@ export function ChatTab({
       stopStream();
     } else if (e.key === "/" && input === "") {
       setSlashOpen(true);
-      setSlashSection("root");
     }
   };
 
@@ -306,13 +338,19 @@ export function ChatTab({
             </div>
           )}
           {session.messages.map((m, i) => (
-            <MessageBlock key={i} message={m} />
+            <MessageBlock
+              key={i}
+              message={m}
+              sessionId={sessionId}
+              onOpenAiDiff={onOpenAiDiff}
+            />
           ))}
           {sending && (
             <PendingAssistant
               steps={view.pendingSteps}
-              text={view.pendingText}
               status={view.status}
+              sessionId={sessionId}
+              onOpenAiDiff={onOpenAiDiff}
             />
           )}
         </div>
@@ -334,13 +372,23 @@ export function ChatTab({
         </div>
       )}
 
-      {view.pendingConfirm && (
+      {view.pendingConfirm ? (
         <ToolConfirmBar
           call={view.pendingConfirm.call}
           categoryLabel={view.pendingConfirm.category.label}
-          onAlways={() => chatRuntime.resolveConfirm(sessionId, "always")}
-          onOnce={() => chatRuntime.resolveConfirm(sessionId, "once")}
+          onAllow={() => chatRuntime.resolveConfirm(sessionId, "allow")}
           onDeny={() => chatRuntime.resolveConfirm(sessionId, "deny")}
+          onFeedback={(text) =>
+            chatRuntime.resolveConfirm(sessionId, { kind: "feedback", text })
+          }
+        />
+      ) : null}
+
+      {pendingAsk && (
+        <AskPromptDialog
+          ask={pendingAsk}
+          disabled={!readyToSend}
+          onAnswer={handleAskAnswer}
         />
       )}
 
@@ -388,23 +436,12 @@ export function ChatTab({
                 title="斜杠菜单"
                 onClick={() => {
                   setSlashOpen((v) => !v);
-                  setSlashSection("root");
                 }}
               >
                 <SlashIcon />
               </button>
               {slashOpen && (
                 <SlashMenu
-                  section={slashSection}
-                  setSection={setSlashSection}
-                  providers={settings.ai.providers}
-                  providerId={providerId}
-                  model={model}
-                  effort={effort}
-                  onPickModel={(pid, m) => {
-                    setDefaultModel(pid, m);
-                  }}
-                  onPickEffort={(e) => setEffort(e)}
                   onClose={() => setSlashOpen(false)}
                   onClear={() => {
                     setSlashOpen(false);
@@ -420,16 +457,6 @@ export function ChatTab({
                   }}
                 />
               )}
-
-              <ComposerModelChip
-                provider={provider}
-                model={model}
-                effort={effort}
-                onClick={() => {
-                  setSlashOpen(true);
-                  setSlashSection("model");
-                }}
-              />
             </div>
             <div className="chat-composer__row-right">
               {sending && !input.trim() ? (
@@ -468,7 +495,17 @@ export function ChatTab({
 
 // ───────────────── Sub-components ─────────────────
 
-function MessageBlock({ message }: { message: ChatMessage }) {
+type OpenAiDiff = ChatTabProps["onOpenAiDiff"];
+
+function MessageBlock({
+  message,
+  sessionId,
+  onOpenAiDiff,
+}: {
+  message: ChatMessage;
+  sessionId: string;
+  onOpenAiDiff: OpenAiDiff;
+}) {
   if (message.role === "tool") {
     return null;
   }
@@ -486,6 +523,14 @@ function MessageBlock({ message }: { message: ChatMessage }) {
     );
   }
   const steps = message.steps ?? [];
+  // Check if content is already in a text step to avoid duplication
+  // Use strict comparison with trimmed content
+  const hasTextStep = steps.some(
+    s => s.kind === "text" && s.text && message.content &&
+    s.text.trim() === message.content.trim()
+  );
+  // Also check if the content is empty or whitespace-only
+  const hasContent = message.content && message.content.trim().length > 0;
   return (
     <div className="chat-msg chat-msg--assistant">
       <div className="chat-msg__chip">
@@ -494,9 +539,15 @@ function MessageBlock({ message }: { message: ChatMessage }) {
       </div>
       <div className="chat-msg__timeline">
         {steps.map((s, i) => (
-          <StepRow key={i} step={s} streaming={false} />
+          <StepRow
+            key={i}
+            step={s}
+            streaming={false}
+            sessionId={sessionId}
+            onOpenAiDiff={onOpenAiDiff}
+          />
         ))}
-        {steps.length === 0 && message.content && (
+        {hasContent && !hasTextStep && (
           <div className="chat-step chat-step--text">
             <span className="chat-step__icon chat-step__icon--text" />
             <div className="chat-step__body">
@@ -509,19 +560,75 @@ function MessageBlock({ message }: { message: ChatMessage }) {
   );
 }
 
+function isAtScrollBottom(el: HTMLElement): boolean {
+  const slack = el.scrollHeight - el.scrollTop - el.clientHeight;
+  return slack <= SCROLL_STICKY_PX;
+}
+
+function buildScrollStateSignature(
+  session: SessionRecord | null,
+  status: string,
+  confirmId: string | undefined,
+  pendingSteps: ChatStep[]
+): string {
+  const last = session?.messages[session.messages.length - 1];
+  const lastStep = last?.steps?.[last.steps.length - 1];
+  return [
+    session?.id ?? "",
+    session?.messages.length ?? 0,
+    last?.role ?? "",
+    last?.timestamp ?? 0,
+    last?.content.length ?? 0,
+    last?.steps?.length ?? 0,
+    lastStep ? stepSignature(lastStep) : "",
+    status,
+    confirmId ?? "",
+    pendingSteps.map(stepSignature).join("|"),
+  ].join("::");
+}
+
+function stepSignature(step: ChatStep): string {
+  if (step.kind === "plan") return `plan:${step.items.join("\n")}`;
+  if (step.kind === "thought") {
+    return `thought:${step.id}:${step.text.length}:${step.endedAt ?? ""}`;
+  }
+  if (step.kind === "tool") {
+    return [
+      "tool",
+      step.id,
+      step.status,
+      step.error ?? "",
+      valueSignature(step.result),
+    ].join(":");
+  }
+  if (step.kind === "ask") {
+    return `ask:${step.id ?? ""}:${step.question}:${step.options.join("\n")}`;
+  }
+  if (step.kind === "verify") return `verify:${step.text.length}:${step.text.slice(-32)}`;
+  return `text:${step.text.length}:${step.text.slice(-32)}`;
+}
+
+function valueSignature(value: unknown): string {
+  if (value === undefined) return "";
+  try {
+    const json = JSON.stringify(value);
+    return `${json.length}:${json.slice(0, 128)}:${json.slice(-128)}`;
+  } catch {
+    return String(value);
+  }
+}
+
 function PendingAssistant({
   steps,
-  text,
   status,
+  sessionId,
+  onOpenAiDiff,
 }: {
   steps: ChatStep[];
-  text: string;
   status: string;
+  sessionId: string;
+  onOpenAiDiff: OpenAiDiff;
 }) {
-  // Treat the last step as "streaming" (gets shimmer / icon pulse). If the
-  // model emits free text after the last tagged block, the floating text
-  // bubble at the bottom is the streaming one instead.
-  const lastIdx = text ? -1 : steps.length - 1;
   return (
     <div className="chat-msg chat-msg--assistant is-pending">
       <div className="chat-msg__chip">
@@ -533,22 +640,70 @@ function PendingAssistant({
       </div>
       <div className="chat-msg__timeline">
         {steps.map((s, i) => (
-          <StepRow key={i} step={s} streaming={i === lastIdx} />
+          <StepRow
+            key={i}
+            step={s}
+            streaming={isStreamingStep(s, status, i === steps.length - 1)}
+            sessionId={sessionId}
+            onOpenAiDiff={onOpenAiDiff}
+          />
         ))}
-        {text && (
+        {steps.length === 0 ? (
           <div className="chat-step chat-step--text is-streaming">
             <span className="chat-step__icon chat-step__icon--text" />
             <div className="chat-step__body">
-              <ChatMarkdown source={text} caret />
+              <SheepCoding />
             </div>
           </div>
-        )}
+        ) : null}
       </div>
     </div>
   );
 }
 
-function StepRow({ step, streaming }: { step: ChatStep; streaming: boolean }) {
+function isStreamingStep(
+  step: ChatStep,
+  status: string,
+  isLast: boolean
+): boolean {
+  if (status === "awaiting-confirm") return false;
+  if (step.kind === "thought") return step.endedAt === undefined;
+  if (step.kind === "tool") return step.status === "running";
+  if (step.kind === "text") return isLast && status === "running";
+  return false;
+}
+
+function SheepCoding() {
+  return (
+    <span className="sheep-coding" aria-hidden>
+      <span className="sheep-coding__track">
+        <span className="sheep-coding__sheep">Ꮚ</span>
+        <span className="sheep-coding__dust sheep-coding__dust--one" />
+        <span className="sheep-coding__dust sheep-coding__dust--two" />
+      </span>
+      <span className="sheep-coding__text">coding...</span>
+    </span>
+  );
+}
+
+function formatThoughtDuration(step: Extract<ChatStep, { kind: "thought" }>): string {
+  if (typeof step.startedAt !== "number") return "";
+  const end = typeof step.endedAt === "number" ? step.endedAt : Date.now();
+  const seconds = Math.max(0, Math.round((end - step.startedAt) / 1000));
+  return `for ${seconds}s`;
+}
+
+function StepRow({
+  step,
+  streaming,
+  sessionId,
+  onOpenAiDiff,
+}: {
+  step: ChatStep;
+  streaming: boolean;
+  sessionId: string;
+  onOpenAiDiff: OpenAiDiff;
+}) {
   if (step.kind === "plan") {
     // Each plan item should be a complete markdown checkbox line. The
     // parser now preserves the `- [ ]` / `- [~]` / `- [x]` prefix verbatim,
@@ -569,10 +724,50 @@ function StepRow({ step, streaming }: { step: ChatStep; streaming: boolean }) {
       .join("\n");
     return (
       <div className={"chat-step chat-step--plan" + (streaming ? " is-streaming" : "")}>
-        <span className="chat-step__icon chat-step__icon--text" />
+        <span className="chat-step__icon chat-step__icon--plan" />
         <div className="chat-step__body">
-          <div className="chat-step__label">Plan</div>
+          <div className="chat-step__label">Tasks</div>
+          {streaming && <SheepCoding />}
           <ChatMarkdown source={md} compact />
+        </div>
+      </div>
+    );
+  }
+  if (step.kind === "ask") {
+    // Don't render ask steps in the timeline if they haven't been answered yet
+    // (the AskPromptDialog will handle the UI for pending asks)
+    if (!step.answer && !streaming) {
+      return null;
+    }
+    return (
+      <div className={"chat-step chat-step--ask" + (streaming ? " is-streaming" : "")}>
+        <span className="chat-step__icon chat-step__icon--ask" />
+        <div className="chat-step__body">
+          <span className="chat-step__label">Ask</span>
+          {streaming && <SheepCoding />}
+          {step.answer ? (
+            <div className="ask-step__io">
+              <div className="ask-step__in">
+                <span className="ask-step__io-label">in</span>
+                <span className="ask-step__question">{step.question}</span>
+              </div>
+              <div className="ask-step__out">
+                <span className="ask-step__io-label">out</span>
+                <span className="ask-step__answer">{step.answer}</span>
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="ask-step__question">{step.question}</div>
+              <div className="ask-step__options">
+                {step.options.map((option, idx) => (
+                  <span key={idx} className="ask-step__option">
+                    {String.fromCharCode(65 + idx)}. {option}
+                  </span>
+                ))}
+              </div>
+            </>
+          )}
         </div>
       </div>
     );
@@ -580,10 +775,12 @@ function StepRow({ step, streaming }: { step: ChatStep; streaming: boolean }) {
   if (step.kind === "thought") {
     return (
       <div className={"chat-step chat-step--thought" + (streaming ? " is-streaming" : "")}>
-        <span className="chat-step__icon chat-step__icon--text" />
+        <span className="chat-step__icon chat-step__icon--thought" />
         <div className="chat-step__body">
           <span className="chat-step__label">Thought</span>
-          <ChatMarkdown source={step.text} compact />
+          <span className="chat-step__duration">{formatThoughtDuration(step)}</span>
+          {streaming && <SheepCoding />}
+          <ChatMarkdown source={step.text || "正在思考下一步…"} compact />
         </div>
       </div>
     );
@@ -591,9 +788,12 @@ function StepRow({ step, streaming }: { step: ChatStep; streaming: boolean }) {
   if (step.kind === "verify") {
     return (
       <div className={"chat-step chat-step--verify" + (streaming ? " is-streaming" : "")}>
-        <span className="chat-step__icon chat-step__icon--text" />
+        <span className="chat-step__icon chat-step__icon--verify">
+          <CheckIcon />
+        </span>
         <div className="chat-step__body">
           <span className="chat-step__label">Verify</span>
+          {streaming && <SheepCoding />}
           <ChatMarkdown source={step.text} compact />
         </div>
       </div>
@@ -616,45 +816,191 @@ function StepRow({ step, streaming }: { step: ChatStep; streaming: boolean }) {
       ? "chat-step__icon--err"
       : step.status === "denied"
       ? "chat-step__icon--err"
+      : step.status === "cached"
+      ? "chat-step__icon--cached"
+      : step.status === "queued"
+      ? "chat-step__icon--queued"
       : "chat-step__icon--running";
-  return <ToolStepRow step={step} iconClass={iconClass} streaming={streaming} />;
+  return (
+    <ToolStepRow
+      step={step}
+      iconClass={iconClass}
+      streaming={streaming}
+      sessionId={sessionId}
+      onOpenAiDiff={onOpenAiDiff}
+    />
+  );
 }
 
 function ToolStepRow({
   step,
   iconClass,
   streaming,
+  sessionId,
+  onOpenAiDiff,
 }: {
   step: Extract<ChatStep, { kind: "tool" }>;
   iconClass: string;
   streaming: boolean;
+  sessionId: string;
+  onOpenAiDiff: OpenAiDiff;
 }) {
+  // edit_file / multi_edit render as ONE whole-file thumbnail diff (computed
+  // from the backend's before/after), mirroring how Claude Code shows a file
+  // change — not a stack of per-edit snippets. `run` renders an in/out card
+  // (command + stdout/stderr). Both default to showing inline; read / search /
+  // list keep the click-to-expand raw output.
+  const isDone = step.status === "ok" || step.status === "cached";
+  const fileDiff = isDone ? extractFileDiff(step) : null;
+  const runIo =
+    step.tool === "run" && (isDone || step.status === "err")
+      ? extractRunIo(step)
+      : null;
+  // While a write/run is queued or mid-execution we have no backend result
+  // yet — preview the proposed change/command from the model's tool args so
+  // the user sees it inline (not only in the approval bar).
+  const isPending = step.status === "queued" || step.status === "running";
+  const editPreview =
+    isPending && step.tool === "write" && !fileDiff
+      ? extractEditConfirmPreview(step.args)
+      : null;
+  const multiEditPreview =
+    isPending && step.tool === "write" && !fileDiff && !editPreview
+      ? extractMultiEditConfirmPreview(step.args)
+      : null;
+  // write_file / append_file have no diff (whole-file write), so we preview
+  // the written content both before AND after the call lands.
+  const writePreview =
+    step.tool === "write" && !fileDiff && !editPreview && !multiEditPreview
+      ? extractWriteContentPreview(step.args)
+      : null;
+  const runPreview =
+    isPending && step.tool === "run" ? extractRunPreview(step.args) : null;
   const [expanded, setExpanded] = useState(false);
-  const label = labelForTool(step.tool);
-  const summary = summarizeTool(step.tool, step.args);
+  const [diffCollapsed, setDiffCollapsed] = useState(false);
+  const label = labelForTool(step.tool, step.args);
+  const summaryBase = summarizeTool(step.tool, step.args);
+  const summary = step.status === "cached" ? `${summaryBase} (cached)` : summaryBase;
+  const lineMeta = toolLineMeta(step, fileDiff);
   const resultText = step.result
     ? prettyToolResult(step.tool, step.result)
     : step.error
     ? step.error
     : "";
+  const openFullDiff = () => {
+    if (!fileDiff) return;
+    onOpenAiDiff({
+      sessionId,
+      stepId: step.id,
+      filePath: extractEditPath(step.args) ?? "(unknown)",
+      leftContent: fileDiff.before,
+      rightContent: fileDiff.after,
+    });
+  };
+  const hasInlineCard =
+    !!fileDiff ||
+    !!editPreview ||
+    !!multiEditPreview ||
+    !!writePreview ||
+    !!runIo ||
+    !!runPreview;
   return (
     <div className={"chat-step chat-step--tool" + (streaming ? " is-streaming" : "")}>
       <span className={"chat-step__icon " + iconClass}>
         {step.status === "ok" && <CheckIcon />}
         {(step.status === "err" || step.status === "denied") && <CrossIcon />}
-        {step.status === "running" && (
+        {step.status === "cached" && <CachedIcon />}
+        {(step.status === "queued" || step.status === "running") && (
           <span className="chat-step__icon-dot" aria-hidden />
         )}
       </span>
       <div className="chat-step__body">
         <button
           className="chat-step__tool-head"
-          onClick={() => setExpanded((v) => !v)}
+          onClick={() => {
+            // With an inline card (diff / run-io / preview) the head click
+            // toggles the card; otherwise it toggles the raw-output <pre>.
+            if (hasInlineCard) setDiffCollapsed((v) => !v);
+            else setExpanded((v) => !v);
+          }}
         >
           <span className="chat-step__label">{label}</span>
+          {streaming && <SheepCoding />}
           <span className="chat-step__inline">{summary}</span>
+          {lineMeta && <span className="chat-step__line-meta">{lineMeta}</span>}
+          {fileDiff && (
+            <span className="chat-step__diff-summary">
+              +{fileDiff.added} / -{fileDiff.removed}
+            </span>
+          )}
+          {runIo && (
+            <span
+              className={
+                "chat-step__diff-summary chat-step__exit" +
+                (runIo.errorMessage || (runIo.exitCode ?? 1) !== 0
+                  ? " chat-step__exit--bad"
+                  : "")
+              }
+            >
+              {runIo.errorMessage ? "失败" : `exit ${runIo.exitCode ?? "?"}`}
+            </span>
+          )}
+          {(editPreview || multiEditPreview || writePreview || runPreview) &&
+            !fileDiff &&
+            !runIo && (
+              <span className="chat-step__diff-summary chat-step__diff-summary--pending">
+                {step.status === "queued"
+                  ? "排队中"
+                  : step.status === "running"
+                  ? "处理中"
+                  : isDone
+                  ? "已写入"
+                  : "预览"}
+              </span>
+            )}
         </button>
-        {expanded && resultText && (
+        {fileDiff && !diffCollapsed && (
+          <FileDiffThumbnail
+            diff={fileDiff}
+            filePath={extractEditPath(step.args) ?? "(unknown)"}
+            onOpenFull={openFullDiff}
+            onCollapse={() => setDiffCollapsed(true)}
+          />
+        )}
+        {runIo && !diffCollapsed && (
+          <RunIoCard io={runIo} onCollapse={() => setDiffCollapsed(true)} />
+        )}
+        {runPreview && !runIo && !diffCollapsed && (
+          <RunPreviewCard
+            preview={runPreview}
+            status={step.status}
+            onCollapse={() => setDiffCollapsed(true)}
+          />
+        )}
+        {editPreview && !fileDiff && !diffCollapsed && (
+          <EditPreviewCard
+            preview={editPreview}
+            onCollapse={() => setDiffCollapsed(true)}
+          />
+        )}
+        {multiEditPreview && !fileDiff && !editPreview && !diffCollapsed && (
+          <MultiEditPreviewCard
+            preview={multiEditPreview}
+            onCollapse={() => setDiffCollapsed(true)}
+          />
+        )}
+        {writePreview &&
+          !fileDiff &&
+          !editPreview &&
+          !multiEditPreview &&
+          !diffCollapsed && (
+            <WritePreviewCard
+              preview={writePreview}
+              done={isDone}
+              onCollapse={() => setDiffCollapsed(true)}
+            />
+          )}
+        {expanded && !hasInlineCard && resultText && (
           <pre className="chat-step__tool-output">{resultText}</pre>
         )}
       </div>
@@ -662,195 +1008,709 @@ function ToolStepRow({
   );
 }
 
+/**
+ * Whole-file thumbnail diff for a completed `edit_file` / `multi_edit`. Mirrors
+ * how Claude Code shows a file change in its terminal: one card per file with a
+ * single unified diff (real line numbers, a few lines of context, long
+ * unchanged runs collapsed to `⋯`). The exact, full diff opens in a Monaco tab
+ * via "完整 diff →". Computed entirely from the backend's `before` / `after`.
+ */
+function FileDiffThumbnail({
+  diff,
+  filePath,
+  onOpenFull,
+  onCollapse,
+}: {
+  diff: FileDiff;
+  filePath: string;
+  onOpenFull: () => void;
+  onCollapse?: () => void;
+}) {
+  const unified = useMemo(
+    () => buildUnifiedDiff(diff.before, diff.after, { context: 3, maxRows: 60 }),
+    [diff.before, diff.after]
+  );
+  const meta =
+    diff.kind === "multi_edit"
+      ? `${diff.editsCount} edits`
+      : typeof diff.startLine === "number"
+      ? `:${diff.startLine}`
+      : "";
+  return (
+    <div className="edit-diff">
+      <div className="edit-diff__head">
+        <span className="edit-diff__path">
+          {filePath}
+          {meta && <span className="edit-diff__line"> {meta}</span>}
+          <span className="edit-diff__line"> +{diff.added} / -{diff.removed}</span>
+        </span>
+        <div className="edit-diff__head-actions">
+          <button
+            className="edit-diff__open"
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpenFull();
+            }}
+            title="在新标签页打开完整 diff"
+          >
+            完整 diff →
+          </button>
+          {onCollapse && (
+            <button
+              className="edit-diff__collapse"
+              onClick={(e) => {
+                e.stopPropagation();
+                onCollapse();
+              }}
+              title="折叠 diff（仍可点击工具行重新展开）"
+              aria-label="折叠 diff"
+            >
+              ▾
+            </button>
+          )}
+        </div>
+      </div>
+      <div className="edit-diff__body">
+        {unified.rows.map((row, i) => (
+          <div key={i} className={"edit-diff__row " + diffRowClass(row.type)}>
+            <span className="edit-diff__num">{row.type === "gap" ? "" : row.num}</span>
+            <span className="edit-diff__sign">
+              {row.type === "add" ? "+" : row.type === "del" ? "-" : ""}
+            </span>
+            <span className="edit-diff__text">
+              {row.type === "gap" ? row.text : row.text || " "}
+            </span>
+          </div>
+        ))}
+        {unified.truncated && (
+          <div className="edit-diff__row edit-diff__row--ellipsis">
+            <span className="edit-diff__num" />
+            <span className="edit-diff__sign" />
+            <span className="edit-diff__text">… diff 较大已截断，点「完整 diff →」查看全部</span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function diffRowClass(t: DiffRowType): string {
+  if (t === "add") return "edit-diff__row--add";
+  if (t === "del") return "edit-diff__row--del";
+  if (t === "gap") return "edit-diff__row--ellipsis";
+  return "edit-diff__row--ctx";
+}
+
+/**
+ * In/out card for a completed `run` step — the terminal-command analogue of
+ * the diff card. Head shows the command (in) + exit badge + duration; body
+ * shows stdout/stderr (out), capped and scrollable. Click the tool head to
+ * collapse it.
+ */
+function RunIoCard({ io, onCollapse }: { io: RunIo; onCollapse?: () => void }) {
+  const MAX_LINES = 200;
+  const outLines = io.stdout.replace(/\n$/, "") ? io.stdout.replace(/\n$/, "").split("\n") : [];
+  const errLines = io.stderr.replace(/\n$/, "") ? io.stderr.replace(/\n$/, "").split("\n") : [];
+  const shownOut = outLines.slice(0, MAX_LINES);
+  const shownErr = errLines.slice(0, Math.max(0, MAX_LINES - shownOut.length));
+  const outClipped = outLines.length - shownOut.length;
+  const errClipped = errLines.length - shownErr.length;
+  const bad = !!io.errorMessage || (io.exitCode ?? 1) !== 0;
+  const dur = typeof io.durationMs === "number" ? formatDuration(io.durationMs) : "";
+  const empty = !io.errorMessage && outLines.length === 0 && errLines.length === 0;
+  return (
+    <div className="run-io">
+      <div className="run-io__head">
+        <span className="run-io__prompt" aria-hidden>$</span>
+        <span className="run-io__cmd">{io.command || "(command)"}</span>
+        <div className="run-io__head-actions">
+          {dur && <span className="run-io__dur">{dur}</span>}
+          <span className={"run-io__exit" + (bad ? " run-io__exit--bad" : "")}>
+            {io.errorMessage ? "失败" : `exit ${io.exitCode ?? "?"}`}
+          </span>
+          {onCollapse && (
+            <button
+              className="edit-diff__collapse"
+              onClick={(e) => {
+                e.stopPropagation();
+                onCollapse();
+              }}
+              title="折叠输出（仍可点击工具行重新展开）"
+              aria-label="折叠输出"
+            >
+              ▾
+            </button>
+          )}
+        </div>
+      </div>
+      <div className="run-io__body">
+        {io.cwd && <div className="run-io__meta">cwd: {io.cwd}</div>}
+        {io.errorMessage && (
+          <div className="run-io__line run-io__line--err">{io.errorMessage}</div>
+        )}
+        {shownOut.map((ln, i) => (
+          <div key={"o" + i} className="run-io__line">{ln || " "}</div>
+        ))}
+        {outClipped > 0 && (
+          <div className="run-io__line run-io__more">… 还有 {outClipped} 行 stdout</div>
+        )}
+        {shownErr.length > 0 && <div className="run-io__stream-label">stderr</div>}
+        {shownErr.map((ln, i) => (
+          <div key={"e" + i} className="run-io__line run-io__line--err">{ln || " "}</div>
+        ))}
+        {errClipped > 0 && (
+          <div className="run-io__line run-io__more">… 还有 {errClipped} 行 stderr</div>
+        )}
+        {empty && <div className="run-io__line run-io__more">（无输出）</div>}
+      </div>
+    </div>
+  );
+}
+
+/** Pre-execution preview for a `run` step — just the command (in), no output yet. */
+function RunPreviewCard({
+  preview,
+  status,
+  onCollapse,
+}: {
+  preview: { command: string; cwd?: string };
+  status: string;
+  onCollapse?: () => void;
+}) {
+  return (
+    <div className="run-io run-io--pending">
+      <div className="run-io__head">
+        <span className="run-io__prompt" aria-hidden>$</span>
+        <span className="run-io__cmd">{preview.command}</span>
+        <div className="run-io__head-actions">
+          <span className="run-io__exit run-io__exit--pending">
+            {status === "running" ? "运行中…" : "待执行"}
+          </span>
+          {onCollapse && (
+            <button
+              className="edit-diff__collapse"
+              onClick={(e) => {
+                e.stopPropagation();
+                onCollapse();
+              }}
+              title="折叠"
+              aria-label="折叠"
+            >
+              ▾
+            </button>
+          )}
+        </div>
+      </div>
+      {preview.cwd && (
+        <div className="run-io__body">
+          <div className="run-io__meta">cwd: {preview.cwd}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)}s`;
+}
+
+/**
+ * Inline pre-approval / pre-execution diff card. Mirrors the visual style of
+ * EditDiffThumbnail but uses oldString / newString from the model's tool
+ * args (no backend response yet, so no startLine / before / after).
+ */
+function EditPreviewCard({
+  preview,
+  onCollapse,
+}: {
+  preview: EditConfirmPreviewData;
+  onCollapse?: () => void;
+}) {
+  const oldLines = preview.oldString.replace(/\n$/, "").split("\n");
+  const newLines = preview.newString.replace(/\n$/, "").split("\n");
+  const MAX = 14;
+  const showOld = oldLines.slice(0, MAX);
+  const showNew = newLines.slice(0, MAX);
+  const oldClipped = oldLines.length - showOld.length;
+  const newClipped = newLines.length - showNew.length;
+  return (
+    <div className="edit-diff edit-diff--pending">
+      <div className="edit-diff__head">
+        <span className="edit-diff__path">
+          {preview.path}
+          <span className="edit-diff__hint">即将修改（等待审批/执行）</span>
+        </span>
+        {onCollapse && (
+          <div className="edit-diff__head-actions">
+            <button
+              className="edit-diff__collapse"
+              onClick={(e) => {
+                e.stopPropagation();
+                onCollapse();
+              }}
+              title="折叠预览"
+              aria-label="折叠预览"
+            >
+              ▾
+            </button>
+          </div>
+        )}
+      </div>
+      <div className="edit-diff__body">
+        {showOld.map((ln, i) => (
+          <div key={"o" + i} className="edit-diff__row edit-diff__row--del">
+            <span className="edit-diff__sign">-</span>
+            <span className="edit-diff__text">{ln}</span>
+          </div>
+        ))}
+        {oldClipped > 0 && (
+          <div className="edit-diff__row edit-diff__row--ellipsis">
+            <span className="edit-diff__sign" />
+            <span className="edit-diff__text">… (-{oldClipped} 行未显示)</span>
+          </div>
+        )}
+        {showNew.map((ln, i) => (
+          <div key={"n" + i} className="edit-diff__row edit-diff__row--add">
+            <span className="edit-diff__sign">+</span>
+            <span className="edit-diff__text">{ln}</span>
+          </div>
+        ))}
+        {newClipped > 0 && (
+          <div className="edit-diff__row edit-diff__row--ellipsis">
+            <span className="edit-diff__sign" />
+            <span className="edit-diff__text">… (+{newClipped} 行未显示)</span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Combined diff card for a `multi_edit` step: one path header, then a stack
+ * of mini -/+ blocks (one per edit in the batch). The "完整 diff →" button
+ * opens a single Monaco DiffEditor covering before → after of the whole file
+ * after all edits applied, mirroring how Claude Code's MultiEdit summary works.
+ */
+/**
+ * Pre-approval / pre-execution card for `multi_edit`. No `startLine` /
+ * `added` / `removed` are known yet — only the raw `oldString` / `newString`
+ * pairs from the model's tool args.
+ */
+function MultiEditPreviewCard({
+  preview,
+  onCollapse,
+}: {
+  preview: { path: string; edits: Array<{ oldString: string; newString: string }> };
+  onCollapse?: () => void;
+}) {
+  return (
+    <div className="edit-diff edit-diff--pending">
+      <div className="edit-diff__head">
+        <span className="edit-diff__path">
+          {preview.path}
+          <span className="edit-diff__hint">
+            即将修改 {preview.edits.length} 处（等待审批/执行）
+          </span>
+        </span>
+        {onCollapse && (
+          <div className="edit-diff__head-actions">
+            <button
+              className="edit-diff__collapse"
+              onClick={(e) => {
+                e.stopPropagation();
+                onCollapse();
+              }}
+              title="折叠预览"
+              aria-label="折叠预览"
+            >
+              ▾
+            </button>
+          </div>
+        )}
+      </div>
+      <div className="edit-diff__body edit-diff__body--multi">
+        {preview.edits.map((entry, idx) => (
+          <MultiEditPreviewBlock key={idx} entry={entry} index={idx} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function MultiEditPreviewBlock({
+  entry,
+  index,
+}: {
+  entry: { oldString: string; newString: string };
+  index: number;
+}) {
+  const oldLines = entry.oldString.replace(/\n$/, "").split("\n");
+  const newLines = entry.newString.replace(/\n$/, "").split("\n");
+  const MAX = 10;
+  const showOld = oldLines.slice(0, MAX);
+  const showNew = newLines.slice(0, MAX);
+  const oldClipped = oldLines.length - showOld.length;
+  const newClipped = newLines.length - showNew.length;
+  return (
+    <div className="edit-diff__entry">
+      <div className="edit-diff__entry-head">
+        <span className="edit-diff__entry-num">#{index + 1}</span>
+      </div>
+      {showOld.map((ln, i) => (
+        <div key={"o" + i} className="edit-diff__row edit-diff__row--del">
+          <span className="edit-diff__sign">-</span>
+          <span className="edit-diff__text">{ln}</span>
+        </div>
+      ))}
+      {oldClipped > 0 && (
+        <div className="edit-diff__row edit-diff__row--ellipsis">
+          <span className="edit-diff__sign" />
+          <span className="edit-diff__text">… (-{oldClipped} 行未显示)</span>
+        </div>
+      )}
+      {showNew.map((ln, i) => (
+        <div key={"n" + i} className="edit-diff__row edit-diff__row--add">
+          <span className="edit-diff__sign">+</span>
+          <span className="edit-diff__text">{ln}</span>
+        </div>
+      ))}
+      {newClipped > 0 && (
+        <div className="edit-diff__row edit-diff__row--ellipsis">
+          <span className="edit-diff__sign" />
+          <span className="edit-diff__text">… (+{newClipped} 行未显示)</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function WritePreviewCard({
+  preview,
+  done,
+  onCollapse,
+}: {
+  preview: { kind: "write_file" | "append_file"; path: string; content: string };
+  done?: boolean;
+  onCollapse?: () => void;
+}) {
+  const lines = preview.content.replace(/\n$/, "").split("\n");
+  const MAX = 18;
+  const shown = lines.slice(0, MAX);
+  const clipped = lines.length - shown.length;
+  const verb = preview.kind === "append_file"
+    ? done
+      ? "已追加"
+      : "即将追加"
+    : done
+    ? "已写入"
+    : "即将写入";
+  return (
+    <div className={"edit-diff write-preview" + (done ? "" : " edit-diff--pending")}>
+      <div className="edit-diff__head">
+        <span className="edit-diff__path">
+          {preview.path}
+          <span className="edit-diff__hint">
+            {verb} · {preview.content.length} chars
+          </span>
+        </span>
+        {onCollapse && (
+          <div className="edit-diff__head-actions">
+            <button
+              className="edit-diff__collapse"
+              onClick={(e) => {
+                e.stopPropagation();
+                onCollapse();
+              }}
+              title="折叠预览"
+              aria-label="折叠预览"
+            >
+              ▾
+            </button>
+          </div>
+        )}
+      </div>
+      <div className="edit-diff__body">
+        {shown.map((ln, i) => (
+          <div key={i} className="edit-diff__row edit-diff__row--add write-preview__row">
+            <span className="edit-diff__sign">+</span>
+            <span className="edit-diff__text">{ln}</span>
+          </div>
+        ))}
+        {clipped > 0 && (
+          <div className="edit-diff__row edit-diff__row--ellipsis write-preview__row">
+            <span className="edit-diff__sign" />
+            <span className="edit-diff__text">… (+{clipped} 行未显示)</span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Unified, render-ready view of a completed file change for the thumbnail
+ * diff. Both `edit_file` and `multi_edit` collapse to the same shape: the full
+ * before/after file contents (the visible diff is computed client-side by
+ * `buildUnifiedDiff`), the aggregate +/- counts, and a representative start
+ * line for the gray `edit line N` meta.
+ */
+interface FileDiff {
+  kind: "edit_file" | "multi_edit";
+  before: string;
+  after: string;
+  added: number;
+  removed: number;
+  startLine?: number;
+  editsCount: number;
+}
+
+/** Normalized terminal-command result backing the run in/out card. */
+interface RunIo {
+  command: string;
+  cwd?: string;
+  exitCode: number | null;
+  signal?: string | null;
+  durationMs?: number;
+  stdout: string;
+  stderr: string;
+  /** Set when the run failed to launch / threw, as opposed to a nonzero exit. */
+  errorMessage?: string;
+}
+
+/** Cached tool calls wrap the real payload in `{ cached, previous }`. */
+function unwrapToolResult(result: unknown): unknown {
+  if (isCachedToolResult(result) && result.previous !== undefined) return result.previous;
+  return result;
+}
+
+/**
+ * Reduce a completed `write` step (edit_file / multi_edit) to a single
+ * `FileDiff`. Returns null for whole-file writes (write_file / append_file),
+ * moves, deletes, etc. — those have no before/after pair to diff.
+ */
+function extractFileDiff(step: Extract<ChatStep, { kind: "tool" }>): FileDiff | null {
+  if (step.tool !== "write") return null;
+  const result = unwrapToolResult(step.result);
+  const edit = extractEditDiff(result);
+  if (edit) {
+    return {
+      kind: "edit_file",
+      before: edit.before,
+      after: edit.after,
+      added: edit.added,
+      removed: edit.removed,
+      startLine: edit.startLine,
+      editsCount: 1,
+    };
+  }
+  const multi = extractMultiEditDiff(result);
+  if (multi) {
+    return {
+      kind: "multi_edit",
+      before: multi.before,
+      after: multi.after,
+      added: multi.added,
+      removed: multi.removed,
+      startLine: multi.edits[0]?.startLine,
+      editsCount: multi.edits.length,
+    };
+  }
+  return null;
+}
+
+/** Command + cwd from a `run` step's tool args (used for both preview and io). */
+function extractRunPreview(args: unknown): { command: string; cwd?: string } | null {
+  if (!args || typeof args !== "object") return null;
+  const a = args as { command?: unknown; cwd?: unknown };
+  if (typeof a.command !== "string") return null;
+  return {
+    command: a.command,
+    cwd: typeof a.cwd === "string" && a.cwd ? a.cwd : undefined,
+  };
+}
+
+/** Normalize a completed/failed `run` step into a `RunIo` for the in/out card. */
+function extractRunIo(step: Extract<ChatStep, { kind: "tool" }>): RunIo | null {
+  if (step.tool !== "run") return null;
+  const preview = extractRunPreview(step.args);
+  const command = preview?.command ?? "";
+  const cwd = preview?.cwd;
+  const result = unwrapToolResult(step.result);
+  if (result && typeof result === "object") {
+    const r = result as {
+      ok?: unknown;
+      message?: unknown;
+      stdout?: unknown;
+      stderr?: unknown;
+      exitCode?: unknown;
+      signal?: unknown;
+      durationMs?: unknown;
+    };
+    // Backend error payload: { ok: false, message }.
+    if (r.ok === false && typeof r.message === "string") {
+      return { command, cwd, exitCode: null, stdout: "", stderr: "", errorMessage: r.message };
+    }
+    return {
+      command,
+      cwd,
+      exitCode: typeof r.exitCode === "number" ? r.exitCode : null,
+      signal: typeof r.signal === "string" ? r.signal : null,
+      durationMs: typeof r.durationMs === "number" ? r.durationMs : undefined,
+      stdout: typeof r.stdout === "string" ? r.stdout : "",
+      stderr: typeof r.stderr === "string" ? r.stderr : "",
+    };
+  }
+  // No result object — surface the step error (e.g. denied / launch failure).
+  if (step.error) {
+    return { command, cwd, exitCode: null, stdout: "", stderr: "", errorMessage: step.error };
+  }
+  return null;
+}
+
+function extractEditDiff(result: unknown): EditFileDiff | null {
+  if (!result || typeof result !== "object") return null;
+  const r = result as { kind?: unknown; diff?: unknown };
+  if (r.kind !== "edit_file") return null;
+  const d = r.diff;
+  if (!d || typeof d !== "object") return null;
+  const x = d as Partial<EditFileDiff>;
+  if (
+    typeof x.oldString !== "string" ||
+    typeof x.newString !== "string" ||
+    typeof x.before !== "string" ||
+    typeof x.after !== "string" ||
+    typeof x.startLine !== "number" ||
+    typeof x.added !== "number" ||
+    typeof x.removed !== "number"
+  ) {
+    return null;
+  }
+  return {
+    oldString: x.oldString,
+    newString: x.newString,
+    startLine: x.startLine,
+    endLineBefore: typeof x.endLineBefore === "number" ? x.endLineBefore : x.startLine,
+    endLineAfter: typeof x.endLineAfter === "number" ? x.endLineAfter : x.startLine,
+    added: x.added,
+    removed: x.removed,
+    before: x.before,
+    after: x.after,
+  };
+}
+
+function extractMultiEditDiff(result: unknown): MultiEditDiff | null {
+  if (!result || typeof result !== "object") return null;
+  const r = result as { kind?: unknown; diff?: unknown };
+  if (r.kind !== "multi_edit") return null;
+  const d = r.diff;
+  if (!d || typeof d !== "object") return null;
+  const x = d as Partial<MultiEditDiff>;
+  if (
+    !Array.isArray(x.edits) ||
+    typeof x.before !== "string" ||
+    typeof x.after !== "string" ||
+    typeof x.added !== "number" ||
+    typeof x.removed !== "number"
+  ) {
+    return null;
+  }
+  const edits: MultiEditEntry[] = [];
+  for (const e of x.edits) {
+    if (!e || typeof e !== "object") return null;
+    const y = e as Partial<MultiEditEntry>;
+    if (
+      typeof y.oldString !== "string" ||
+      typeof y.newString !== "string" ||
+      typeof y.startLine !== "number" ||
+      typeof y.added !== "number" ||
+      typeof y.removed !== "number"
+    ) {
+      return null;
+    }
+    edits.push({
+      oldString: y.oldString,
+      newString: y.newString,
+      startLine: y.startLine,
+      endLineBefore:
+        typeof y.endLineBefore === "number" ? y.endLineBefore : y.startLine,
+      endLineAfter:
+        typeof y.endLineAfter === "number" ? y.endLineAfter : y.startLine,
+      added: y.added,
+      removed: y.removed,
+    });
+  }
+  return {
+    edits,
+    added: x.added,
+    removed: x.removed,
+    before: x.before,
+    after: x.after,
+  };
+}
+
+function extractEditPath(args: unknown): string | null {
+  if (!args || typeof args !== "object") return null;
+  const a = args as { path?: unknown };
+  return typeof a.path === "string" ? a.path : null;
+}
+
 // ─── Slash menu (with Model picker as first section) ───
 
 function SlashMenu({
-  section,
-  setSection,
-  providers,
-  providerId,
-  model,
-  effort,
-  onPickModel,
-  onPickEffort,
   onClose,
   onClear,
   onOpenSettings,
   onAutoAllow,
 }: {
-  section: "root" | "model";
-  setSection: (s: "root" | "model") => void;
-  providers: AiProvider[];
-  providerId: string;
-  model: string;
-  effort: ReasoningEffort | null;
-  onPickModel: (pid: string, m: string) => void;
-  onPickEffort: (e: ReasoningEffort) => void;
   onClose: () => void;
   onClear: () => void;
   onOpenSettings: () => void;
   onAutoAllow: () => void;
 }) {
-  const currentProvider = providers.find((p) => p.id === providerId);
-  const reasoningKind =
-    currentProvider && model
-      ? detectReasoningKind(currentProvider.kind, model)
-      : null;
-
   return (
     <>
       <div className="chat-composer__slash-backdrop" onClick={onClose} />
       <div className="chat-composer__slash">
-        {section === "model" && (
-          <>
-            <div className="chat-composer__slash-section chat-composer__slash-section--with-back">
-              <button
-                className="chat-composer__slash-back"
-                onClick={() => setSection("root")}
-                title="返回"
-              >
-                ←
-              </button>
-              <span>Model</span>
-            </div>
-            <div className="slash-model-list">
-              {providers.length === 0 ? (
-                <div className="chat-composer__provider-empty">
-                  尚未配置任何 Provider
-                </div>
-              ) : (
-                providers.flatMap((p) =>
-                  p.models.map((m) => {
-                    const isActive = p.id === providerId && m === model;
-                    return (
-                      <button
-                        key={p.id + "::" + m}
-                        className="slash-model-row"
-                        onClick={() => {
-                          onPickModel(p.id, m);
-                        }}
-                      >
-                        <span className="slash-model-row__kind">{p.kind}</span>
-                        <span className="slash-model-row__provider">
-                          {p.name || p.id}
-                        </span>
-                        <span className="slash-model-row__provider">/</span>
-                        <span className="slash-model-row__model">{m}</span>
-                        {isActive && (
-                          <span className="slash-model-row__check">✓</span>
-                        )}
-                      </button>
-                    );
-                  })
-                )
-              )}
-            </div>
-            {reasoningKind && (
-              <div className="slash-effort">
-                <span className="slash-effort__label">Effort</span>
-                {effortLevels(reasoningKind).map((lvl) => (
-                  <button
-                    key={lvl}
-                    className={
-                      "slash-effort__seg" +
-                      (lvl === effort ? " is-active" : "")
-                    }
-                    onClick={() => onPickEffort(lvl)}
-                  >
-                    {lvl}
-                  </button>
-                ))}
-              </div>
-            )}
-          </>
-        )}
-
-        {section === "root" && (
-          <>
-            <div className="chat-composer__slash-section">Model</div>
-            <button
-              className="chat-composer__slash-item"
-              onClick={() => setSection("model")}
-            >
-              <span>
-                {currentProvider
-                  ? `${currentProvider.name || currentProvider.id} / ${model || "(未选择)"}`
-                  : "(未选择 Provider)"}
-                {effort && effort !== "off" && (
-                  <span className="chat-composer__slash-hint">{effort}</span>
-                )}
-              </span>
-              <span className="chat-composer__slash-hint">切换 ▸</span>
-            </button>
-            <div className="chat-composer__slash-section">Context</div>
-            <button className="chat-composer__slash-item is-disabled" disabled>
-              Attach file… <span className="chat-composer__slash-hint">敬请期待</span>
-            </button>
-            <button className="chat-composer__slash-item is-disabled" disabled>
-              Mention file from this project…{" "}
-              <span className="chat-composer__slash-hint">敬请期待</span>
-            </button>
-            <button className="chat-composer__slash-item" onClick={onClear}>
-              Clear conversation
-            </button>
-            <button className="chat-composer__slash-item is-disabled" disabled>
-              Rewind <span className="chat-composer__slash-hint">敬请期待</span>
-            </button>
-            <div className="chat-composer__slash-section">Tools</div>
-            <button className="chat-composer__slash-item" onClick={onAutoAllow}>
-              Auto-allow commands…
-            </button>
-            <button className="chat-composer__slash-item is-disabled" disabled>
-              Add MCP server…{" "}
-              <span className="chat-composer__slash-hint">敬请期待</span>
-            </button>
-            <div className="chat-composer__slash-section">Settings</div>
-            <button
-              className="chat-composer__slash-item"
-              onClick={onOpenSettings}
-            >
-              Open settings…
-              <span className="chat-composer__slash-hint">
-                Provider / API Key / 主题
-              </span>
-            </button>
-          </>
-        )}
+        <div className="chat-composer__slash-section">Context</div>
+        <button className="chat-composer__slash-item is-disabled" disabled>
+          Attach file
+          <span className="chat-composer__slash-hint">敬请期待</span>
+        </button>
+        <button className="chat-composer__slash-item is-disabled" disabled>
+          Mention file from this project
+          <span className="chat-composer__slash-hint">敬请期待</span>
+        </button>
+        <button className="chat-composer__slash-item" onClick={onClear}>
+          Clear conversation
+        </button>
+        <button className="chat-composer__slash-item is-disabled" disabled>
+          Rewind <span className="chat-composer__slash-hint">敬请期待</span>
+        </button>
+        <div className="chat-composer__slash-section">Tools</div>
+        <button className="chat-composer__slash-item" onClick={onAutoAllow}>
+          Auto-allow commands
+        </button>
+        <button className="chat-composer__slash-item is-disabled" disabled>
+          Add MCP server
+          <span className="chat-composer__slash-hint">敬请期待</span>
+        </button>
+        <div className="chat-composer__slash-section">Settings</div>
+        <button
+          className="chat-composer__slash-item"
+          onClick={onOpenSettings}
+        >
+          Open settings
+          <span className="chat-composer__slash-hint">编辑器 / CLI 说明</span>
+        </button>
       </div>
     </>
   );
+
 }
 
-function ComposerModelChip({
-  provider,
-  model,
-  effort,
-  onClick,
-}: {
-  provider: AiProvider | null;
-  model: string;
-  effort: ReasoningEffort | null;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      className="composer-model-chip"
-      onClick={onClick}
-      title="切换 Provider / Model / 推理强度"
-    >
-      <span className="composer-model-chip__provider">
-        {provider ? provider.name || provider.id : "未选择"}
-      </span>
-      <span className="composer-model-chip__provider">/</span>
-      <span className="composer-model-chip__model">{model || "—"}</span>
-      {effort && effort !== "off" && (
-        <span className="composer-model-chip__effort">{effort}</span>
-      )}
-    </button>
-  );
-}
-
-// ─── Auto-allow panel (redesigned) ───
+// Auto-allow panel (redesigned)
 
 interface AutoAllowEntry {
   key: keyof AiAutoAllow;
@@ -974,42 +1834,283 @@ function AutoAllowPanel({
 function ToolConfirmBar({
   call,
   categoryLabel,
-  onAlways,
-  onOnce,
+  onAllow,
   onDeny,
+  onFeedback,
 }: {
   call: { id: string; tool: ToolKind; args: unknown };
   categoryLabel: string;
-  onAlways: () => void;
-  onOnce: () => void;
+  onAllow: () => void;
   onDeny: () => void;
+  onFeedback: (text: string) => void;
 }) {
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [feedbackText, setFeedbackText] = useState("");
   const summary = summarizeTool(call.tool, call.args);
+  const submitFeedback = () => {
+    const text = feedbackText.trim();
+    if (!text) return;
+    onFeedback(text);
+  };
   return (
-    <div className="tool-confirm">
-      <div className="tool-confirm__icon">⚠</div>
+    <div className="tool-confirm tool-confirm--compact">
       <div className="tool-confirm__body">
         <div className="tool-confirm__title">
-          osheep code 想要 {labelForTool(call.tool)}（{categoryLabel}）：
+          osheep code 想要 {labelForTool(call.tool, call.args)}（{categoryLabel}）
         </div>
         <pre className="tool-confirm__detail">{summary}</pre>
+        {feedbackOpen && (
+          <div className="tool-confirm__feedback">
+            <input
+              className="tool-confirm__feedback-input"
+              value={feedbackText}
+              placeholder="手动输入给 AI 的指示…"
+              autoFocus
+              onChange={(e) => setFeedbackText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") submitFeedback();
+                if (e.key === "Escape") setFeedbackOpen(false);
+              }}
+            />
+            <button
+              className="tool-confirm__button"
+              onClick={submitFeedback}
+              disabled={!feedbackText.trim()}
+            >
+              发送
+            </button>
+          </div>
+        )}
       </div>
       <div className="tool-confirm__actions">
-        <button className="primary-btn" onClick={onAlways}>
-          始终允许 {categoryLabel}
+        <button className="tool-confirm__button" onClick={onAllow}>是</button>
+        <button className="tool-confirm__button" onClick={onDeny}>否</button>
+        <button
+          className="tool-confirm__button"
+          onClick={() => setFeedbackOpen((v) => !v)}
+        >
+          其他
         </button>
-        <button className="ghost-btn" onClick={onOnce}>仅这一次</button>
-        <button className="danger-btn" onClick={onDeny}>拒绝</button>
       </div>
     </div>
   );
 }
 
+function AskPromptDialog({
+  ask,
+  disabled,
+  onAnswer,
+}: {
+  ask: Extract<ChatStep, { kind: "ask" }>;
+  disabled: boolean;
+  onAnswer: (text: string) => void;
+}) {
+  const [selected, setSelected] = useState(0);
+  const [manualText, setManualText] = useState("");
+  const otherIndex = ask.options.length;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        onAnswer("取消：请根据现有信息继续，或提出更具体的问题。");
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onAnswer]);
+  const submit = () => {
+    if (selected === otherIndex) {
+      const text = manualText.trim();
+      if (text) onAnswer(text);
+      return;
+    }
+    const option = ask.options[selected];
+    if (option) onAnswer(option);
+  };
+  return (
+    <div className="ask-dialog__backdrop" role="presentation">
+      <div className="ask-dialog" role="dialog" aria-modal="true" aria-label="osheep code question">
+        <div className="ask-dialog__head">
+          <div className="ask-dialog__tabs">
+            <span className="ask-dialog__tab is-active">Ask</span>
+          </div>
+          <button
+            className="ask-dialog__close"
+            onClick={() => onAnswer("取消：请根据现有信息继续，或提出更具体的问题。")}
+            disabled={disabled}
+            aria-label="关闭询问框"
+            title="关闭"
+          >
+            ×
+          </button>
+        </div>
+        <div className="ask-dialog__question">{ask.question}</div>
+        <div className="ask-dialog__options">
+          {ask.options.map((option, idx) => (
+            <label key={idx} className="ask-dialog__option">
+              <input
+                type="radio"
+                name={ask.id ?? "ask"}
+                checked={selected === idx}
+                onChange={() => setSelected(idx)}
+                disabled={disabled}
+              />
+              <span className="ask-dialog__option-body">
+                <span className="ask-dialog__option-title">{option}</span>
+              </span>
+            </label>
+          ))}
+          <label className="ask-dialog__option ask-dialog__option--other">
+            <input
+              type="radio"
+              name={ask.id ?? "ask"}
+              checked={selected === otherIndex}
+              onChange={() => setSelected(otherIndex)}
+              disabled={disabled}
+            />
+            <span className="ask-dialog__option-body">
+              <span className="ask-dialog__option-title">Other</span>
+              <input
+                className="ask-dialog__other-input"
+                value={manualText}
+                placeholder="Type your answer..."
+                disabled={disabled || selected !== otherIndex}
+                onFocus={() => setSelected(otherIndex)}
+                onChange={(e) => setManualText(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") submit();
+                }}
+              />
+            </span>
+          </label>
+        </div>
+        <button
+          className="ask-dialog__submit"
+          onClick={submit}
+          disabled={disabled || (selected === otherIndex && !manualText.trim())}
+        >
+          1&nbsp; Submit answers
+        </button>
+        <div className="ask-dialog__esc">Esc to cancel</div>
+      </div>
+    </div>
+  );
+}
+
+interface EditConfirmPreviewData {
+  path: string;
+  oldString: string;
+  newString: string;
+}
+
+interface MultiEditConfirmPreviewData {
+  path: string;
+  edits: Array<{ oldString: string; newString: string }>;
+}
+
+function extractEditConfirmPreview(args: unknown): EditConfirmPreviewData | null {
+  if (!args || typeof args !== "object") return null;
+  const a = args as {
+    kind?: unknown;
+    path?: unknown;
+    oldString?: unknown;
+    newString?: unknown;
+  };
+  if (a.kind !== "edit_file") return null;
+  if (
+    typeof a.path !== "string" ||
+    typeof a.oldString !== "string" ||
+    typeof a.newString !== "string"
+  ) {
+    return null;
+  }
+  return { path: a.path, oldString: a.oldString, newString: a.newString };
+}
+
+function extractWriteContentPreview(
+  args: unknown
+): { kind: "write_file" | "append_file"; path: string; content: string } | null {
+  if (!args || typeof args !== "object") return null;
+  const a = args as { kind?: unknown; path?: unknown; content?: unknown };
+  if (a.kind !== "write_file" && a.kind !== "append_file") return null;
+  if (typeof a.path !== "string" || typeof a.content !== "string") return null;
+  return { kind: a.kind, path: a.path, content: a.content };
+}
+
+function extractMultiEditConfirmPreview(
+  args: unknown
+): MultiEditConfirmPreviewData | null {
+  if (!args || typeof args !== "object") return null;
+  const a = args as {
+    kind?: unknown;
+    path?: unknown;
+    edits?: unknown;
+  };
+  if (a.kind !== "multi_edit") return null;
+  if (typeof a.path !== "string" || !Array.isArray(a.edits) || a.edits.length === 0) {
+    return null;
+  }
+  const edits: Array<{ oldString: string; newString: string }> = [];
+  for (const e of a.edits) {
+    if (!e || typeof e !== "object") return null;
+    const o = (e as { oldString?: unknown }).oldString;
+    const n = (e as { newString?: unknown }).newString;
+    if (typeof o !== "string" || typeof n !== "string") return null;
+    edits.push({ oldString: o, newString: n });
+  }
+  return { path: a.path, edits };
+}
+
 // ───────────────── Helpers ─────────────────
 
-function labelForTool(t: ToolKind): string {
-  if (t === "read") return "Read";
-  if (t === "write") return "Write";
+function toolLineMeta(
+  step: Extract<ChatStep, { kind: "tool" }>,
+  fileDiff: FileDiff | null
+): string {
+  if (step.tool === "read" && step.args && typeof step.args === "object") {
+    const a = step.args as { kind?: unknown; startLine?: unknown; lineCount?: unknown };
+    if (a.kind === "file" && typeof a.startLine === "number") {
+      const end =
+        typeof a.lineCount === "number"
+          ? a.startLine + Math.max(1, a.lineCount) - 1
+          : null;
+      return end ? `read line ${a.startLine}-${end}` : `read line ${a.startLine}`;
+    }
+  }
+  if (step.tool === "write" && step.args && typeof step.args === "object") {
+    const a = step.args as { kind?: unknown };
+    if (
+      (a.kind === "edit_file" || a.kind === "multi_edit") &&
+      fileDiff &&
+      typeof fileDiff.startLine === "number"
+    ) {
+      return `edit line ${fileDiff.startLine}`;
+    }
+    if (a.kind === "write_file" || a.kind === "append_file") return "write line 1";
+  }
+  return "";
+}
+
+function labelForTool(t: ToolKind, args?: unknown): string {
+  if (t === "read") {
+    if (args && typeof args === "object") {
+      const a = args as { kind?: unknown };
+      if (a.kind === "list") return "List";
+      if (a.kind === "search") return "Search";
+    }
+    return "Read";
+  }
+  if (t === "write") {
+    if (args && typeof args === "object") {
+      const a = args as { kind?: unknown };
+      if (a.kind === "edit_file") return "Edit";
+      if (a.kind === "multi_edit") return "Edit";
+      if (a.kind === "append_file") return "Append";
+      if (a.kind === "move") return "Move";
+      if (a.kind === "delete") return "Delete";
+      if (a.kind === "create") return "Create";
+    }
+    return "Write";
+  }
   return "Run";
 }
 
@@ -1028,9 +2129,11 @@ function summarizeTool(t: ToolKind, args: unknown): string {
       return `search "${a.query}"`;
     return JSON.stringify(a);
   }
-  // write — emit `kind path [+N bytes]`. We deliberately suppress the
-  // `content` / `newString` payload (which can be tens of KB) so the
-  // timeline row and the confirm sheet stay readable.
+  // write — emit `path` plus a kind-specific tail. We deliberately suppress
+  // the `content` / `newString` payload (which can be tens of KB) so the
+  // timeline row and the confirm sheet stay readable. For `edit_file` the
+  // dedicated +N/-M counter and the thumbnail-diff card cover what the user
+  // needs to see, so we keep the inline summary to just the path.
   const kind = typeof a.kind === "string" ? a.kind : "";
   const path =
     typeof a.path === "string"
@@ -1038,18 +2141,37 @@ function summarizeTool(t: ToolKind, args: unknown): string {
       : typeof a.to === "string"
       ? a.to
       : "";
+  if (kind === "edit_file") return path;
+  if (kind === "multi_edit") {
+    const editsLen = Array.isArray(a.edits) ? a.edits.length : 0;
+    return `${path} (${editsLen} edit${editsLen === 1 ? "" : "s"})`;
+  }
+  if (kind === "move" && typeof a.from === "string") {
+    return `${a.from} → ${a.to ?? ""}`;
+  }
+  if (kind === "delete") return path + (a.recursive ? " (recursive)" : "");
+  if (kind === "create") {
+    const ek = typeof a.entryKind === "string" ? a.entryKind : "file";
+    return `${ek} ${path}`;
+  }
   const sizeHint =
-    typeof a.content === "string"
-      ? ` (+${a.content.length} chars)`
-      : typeof a.newString === "string"
-      ? ` (edit ${a.newString.length} chars)`
-      : "";
-  return `${kind || "write"} ${path}${sizeHint}`.trim();
+    typeof a.content === "string" ? ` (+${a.content.length} chars)` : "";
+  return `${path}${sizeHint}`.trim() || kind || "write";
 }
 
 function prettyToolResult(t: ToolKind, result: unknown): string {
+  if (isCachedToolResult(result)) {
+    const parts: string[] = [];
+    parts.push(result.message || "Duplicate tool call skipped; reused cached result.");
+    if (result.previousError) parts.push("previous error: " + result.previousError);
+    if (result.previous !== undefined) {
+      parts.push("--- previous result ---\n" + prettyUnknown(result.previous));
+    }
+    return parts.join("\n");
+  }
   if (t === "run") {
     const r = result as {
+      shell?: string;
       stdout?: string;
       stderr?: string;
       exitCode?: number | null;
@@ -1058,7 +2180,7 @@ function prettyToolResult(t: ToolKind, result: unknown): string {
     };
     const parts: string[] = [];
     parts.push(
-      `exit=${r.exitCode ?? "null"}${r.signal ? `, signal=${r.signal}` : ""}, ${r.durationMs ?? 0}ms`
+      `exit=${r.exitCode ?? "null"}${r.signal ? `, signal=${r.signal}` : ""}, ${r.durationMs ?? 0}ms${r.shell ? `, shell=${r.shell}` : ""}`
     );
     if (r.stdout) parts.push("--- stdout ---\n" + r.stdout);
     if (r.stderr) parts.push("--- stderr ---\n" + r.stderr);
@@ -1078,8 +2200,21 @@ function prettyToolResult(t: ToolKind, result: unknown): string {
   return JSON.stringify(result, null, 2);
 }
 
+function isCachedToolResult(result: unknown): result is {
+  cached: true;
+  message?: string;
+  previous?: unknown;
+  previousError?: string;
+} {
+  return !!result && typeof result === "object" && (result as { cached?: unknown }).cached === true;
+}
+
+function prettyUnknown(value: unknown): string {
+  if (typeof value === "string") return value;
+  return JSON.stringify(value, null, 2);
+}
+
 // Unused — kept to preserve API for callers that might import it.
-export { resolveDefaultProviderModel };
 
 // ─── Icons ───
 
@@ -1167,6 +2302,29 @@ function CrossIcon() {
         stroke="currentColor"
         strokeWidth="2"
         strokeLinecap="round"
+        fill="none"
+      />
+    </svg>
+  );
+}
+
+function CachedIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="10" height="10" aria-hidden>
+      <path
+        d="M4.5 7a3.5 3.5 0 015.9-2.5L12 6M11.5 9a3.5 3.5 0 01-5.9 2.5L4 10"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        fill="none"
+      />
+      <path
+        d="M12 3.5V6H9.5M4 12.5V10h2.5"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
         fill="none"
       />
     </svg>

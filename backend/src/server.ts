@@ -10,7 +10,13 @@ import { registerSearchRoutes } from "./routes/search.js";
 import { registerGitRoutes } from "./routes/git.js";
 import { registerAgentRoutes } from "./routes/agents.js";
 import { registerSessionRoutes } from "./routes/sessions.js";
+import { registerWorkflowRoutes } from "./routes/workflows.js";
 import { registerAiRoutes } from "./routes/ai.js";
+import { registerAiSettingsRoutes } from "./routes/ai-settings.js";
+import { registerMcpRoutes } from "./routes/mcp.js";
+import { registerClaudePluginRoutes } from "./routes/claude-plugins.js";
+import { registerCodexPluginRoutes } from "./routes/codex-plugins.js";
+import { registerAgentSessionRoutes } from "./routes/agent-sessions.js";
 
 export async function buildServer() {
   const app = Fastify({
@@ -56,7 +62,13 @@ export async function buildServer() {
   await registerGitRoutes(app);
   await registerAgentRoutes(app);
   await registerSessionRoutes(app);
+  await registerWorkflowRoutes(app);
   await registerAiRoutes(app);
+  await registerAiSettingsRoutes(app);
+  await registerMcpRoutes(app);
+  await registerClaudePluginRoutes(app);
+  await registerCodexPluginRoutes(app);
+  await registerAgentSessionRoutes(app);
 
   await ensureWorkspacesRoot();
   return app;

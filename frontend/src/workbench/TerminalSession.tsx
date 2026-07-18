@@ -3,15 +3,22 @@ import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import {
+  createAgentSessionTerminal,
   createTerminal,
   killTerminal,
   openTerminalSocket,
+  type AgentSessionApp,
   type ShellProfile,
 } from "./api";
 
 interface TerminalSessionProps {
-  workspaceId: string;
+  workspaceId: string | null;
   profile: ShellProfile;
+  agentSession?: {
+    app: AgentSessionApp;
+    sessionId: string;
+    workspaceId: string;
+  };
   active: boolean;
   onClose: () => void;
 }
@@ -21,6 +28,7 @@ type Status = "connecting" | "open" | "closed";
 export function TerminalSession({
   workspaceId,
   profile,
+  agentSession,
   active,
   onClose,
 }: TerminalSessionProps) {
@@ -105,12 +113,21 @@ export function TerminalSession({
     (async () => {
       let session;
       try {
-        session = await createTerminal({
-          workspaceId,
-          shell: profile.id,
-          cols: term.cols || 80,
-          rows: term.rows || 24,
-        });
+        session = agentSession
+          ? await createAgentSessionTerminal({
+              app: agentSession.app,
+              sessionId: agentSession.sessionId,
+              workspaceId: agentSession.workspaceId,
+              shell: profile.id,
+              cols: term.cols || 80,
+              rows: term.rows || 24,
+            })
+          : await createTerminal({
+              workspaceId: workspaceId as string,
+              shell: profile.id,
+              cols: term.cols || 80,
+              rows: term.rows || 24,
+            });
       } catch (e) {
         if (cancelled) return;
         setStatus("closed");
@@ -215,7 +232,7 @@ export function TerminalSession({
       xtermRef.current = null;
       fitRef.current = null;
     };
-  }, [workspaceId, profile]);
+  }, [workspaceId, profile, agentSession]);
 
   // When this session becomes visible, force a fit + focus.
   useEffect(() => {
