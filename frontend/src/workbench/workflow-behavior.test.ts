@@ -31,6 +31,14 @@ test("unrun Claude output keeps known values and typed empty values", async () =
   });
 });
 
+test("workflow agent durations use hours minutes and seconds", async () => {
+  const behavior = await loadBehavior();
+  assert.ok(behavior, "workflow behavior module should exist");
+  assert.equal(behavior.formatWorkflowDuration(0), "0h0m0s");
+  assert.equal(behavior.formatWorkflowDuration(1_211_156), "0h20m11s");
+  assert.equal(behavior.formatWorkflowDuration(3_661_000), "1h1m1s");
+});
+
 test("every workflow kind has a standard empty output", async () => {
   const behavior = await loadBehavior();
   assert.ok(behavior, "workflow behavior module should exist");

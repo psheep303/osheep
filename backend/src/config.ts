@@ -9,6 +9,7 @@ export interface Config {
   maxFileSizeBytes: number;
   maxTerminalSessions: number;
   terminalIdleTimeoutMs: number;
+  agentStallTimeoutMs: number;
   corsOrigin: string;
   templatesRoot: string;
   systemTemplatesRoot: string;
@@ -33,7 +34,8 @@ export const config: Config = {
   workspacesRoot: resolveWorkspacesRoot(process.env.WORKSPACES_ROOT),
   maxFileSizeBytes: readEnvInt("MAX_FILE_SIZE_BYTES", 5 * 1024 * 1024),
   maxTerminalSessions: readEnvInt("MAX_TERMINAL_SESSIONS", 16),
-  terminalIdleTimeoutMs: readEnvInt("TERMINAL_IDLE_TIMEOUT_MS", 30 * 60 * 1000),
+  terminalIdleTimeoutMs: readEnvInt("TERMINAL_IDLE_TIMEOUT_MS", 0),
+  agentStallTimeoutMs: readEnvInt("AGENT_STALL_TIMEOUT_MS", 30 * 60 * 1000),
   corsOrigin: process.env.CORS_ORIGIN ?? "*",
   templatesRoot: path.resolve(
     process.env.OSHEEP_TEMPLATES_ROOT ?? path.join(os.homedir(), ".osheep", "templates")

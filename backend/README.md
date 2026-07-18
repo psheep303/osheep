@@ -20,7 +20,8 @@ npm start          # 生产：node dist/index.js
 | `WORKSPACES_ROOT` | 工作区父目录（绝对路径或相对 cwd） | `./workspaces` |
 | `MAX_FILE_SIZE_BYTES` | 单文件读写上限 | `5242880` (5 MB) |
 | `MAX_TERMINAL_SESSIONS` | 并发 PTY 上限 | `16` |
-| `TERMINAL_IDLE_TIMEOUT_MS` | 终端无活动超时 | `1800000` (30 分钟) |
+| `TERMINAL_IDLE_TIMEOUT_MS` | 终端无活动超时；`0` 表示禁用 | `0` (禁用) |
+| `AGENT_STALL_TIMEOUT_MS` | Claude/Codex 连续无终端输出时判定卡住；不限制总运行时长，`0` 表示禁用 | `1800000` (30 分钟) |
 | `CORS_ORIGIN` | 允许的前端来源 | `*` |
 
 `WORKSPACES_ROOT` 下每个一级子目录就是一个 workspace，目录名为 `workspaceId`。

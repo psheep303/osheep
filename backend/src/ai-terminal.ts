@@ -1,4 +1,4 @@
-import { platform } from "./config.js";
+import { config, platform } from "./config.js";
 import {
   addTap,
   createSession,
@@ -26,6 +26,7 @@ import {
   extractAgentRunMetadata,
   extractLastClaudeAnswer,
   extractLastStructuredClaudeAnswer,
+  readCodexSessionFinalAnswer,
   readClaudeSessionConversation,
 } from "./terminal-conversation.js";
 
@@ -110,7 +111,6 @@ const READY_TIMEOUT_MS = 8_000;
 const QUIET_READY_MS = 700;
 const RESPONSE_MIN_MS = 2_400;
 const RESPONSE_IDLE_MS = 6_000;
-const RESPONSE_MAX_MS = 20 * 60_000;
 const MAX_AGENT_TRANSCRIPT_CHARS = 512 * 1024;
 const BRACKETED_PASTE_MIN_LENGTH = 512;
 const PASTE_CHUNK_SIZE = 2048;
@@ -249,19 +249,32 @@ export async function runAgentTerminal(
       opts.kind,
       () => exited,
       () => transcript,
+      () => lastOutputAt,
       () => extractTerminalContent(transcript, opts.prompt, opts.kind),
       (status) => opts.onFrame?.({ type: "status", status }),
       opts.signal
     );
     if (
       completion === "idle" ||
-      completion === "timeout" ||
+      completion === "stalled" ||
       completion === "manual-success" ||
       completion === "terminal-error"
     ) {
-      const structuredConversation = await structuredAgentConversation(opts);
+      const conversationSessionId = await resolveConversationSessionId(
+        opts,
+        conversationBaseline
+      );
+      const structuredConversation = await structuredAgentConversation(
+        opts,
+        conversationSessionId
+      );
+      const structuredAnswer = await structuredAgentFinalAnswer(
+        opts,
+        conversationSessionId,
+        structuredConversation
+      );
       const content =
-        extractLastStructuredClaudeAnswer(structuredConversation) ||
+        structuredAnswer ||
         extractTerminalContent(transcript, opts.prompt, opts.kind);
       const cleanTranscript =
         structuredConversation ||
@@ -273,7 +286,7 @@ export async function runAgentTerminal(
         status:
           completion === "manual-success"
             ? "manual-success"
-            : completion === "terminal-error"
+            : completion === "terminal-error" || completion === "stalled"
               ? "auto-error"
               : "auto-finished",
       });
@@ -282,10 +295,6 @@ export async function runAgentTerminal(
       } catch {
         /* already closed */
       }
-      const conversationSessionId = await resolveConversationSessionId(
-        opts,
-        conversationBaseline
-      );
       if (conversationSessionId) {
         opts.onFrame?.({ type: "conversation", sessionId: conversationSessionId });
       }
@@ -299,8 +308,8 @@ export async function runAgentTerminal(
         verification: metadata.verification,
         exitCode: 0,
         signal:
-          completion === "timeout"
-            ? "auto-timeout"
+          completion === "stalled"
+            ? "agent-stalled"
             : completion === "manual-success"
               ? "manual-success"
               : completion === "terminal-error"
@@ -309,16 +318,24 @@ export async function runAgentTerminal(
       };
     }
     opts.onFrame?.({ type: "status", status: "exited" });
-    const structuredConversation = await structuredAgentConversation(opts);
+    const conversationSessionId = await resolveConversationSessionId(
+      opts,
+      conversationBaseline
+    );
+    const structuredConversation = await structuredAgentConversation(
+      opts,
+      conversationSessionId
+    );
+    const structuredAnswer = await structuredAgentFinalAnswer(
+      opts,
+      conversationSessionId,
+      structuredConversation
+    );
     const cleanTranscript =
       structuredConversation ||
       conversation.value() ||
       cleanTerminalTranscript(transcript, opts.prompt);
     const metadata = await agentRunMetadata(cleanTranscript, opts, workspaceBaseline);
-    const conversationSessionId = await resolveConversationSessionId(
-      opts,
-      conversationBaseline
-    );
     if (conversationSessionId) {
       opts.onFrame?.({ type: "conversation", sessionId: conversationSessionId });
     }
@@ -326,7 +343,7 @@ export async function runAgentTerminal(
       sessionId: session.id,
       conversationSessionId,
       content:
-        extractLastStructuredClaudeAnswer(structuredConversation) ||
+        structuredAnswer ||
         extractTerminalContent(transcript, opts.prompt, opts.kind),
       transcript: cleanTranscript,
       changedFiles: metadata.changedFiles,
@@ -436,13 +453,35 @@ async function agentRunMetadata(
   };
 }
 
-async function structuredAgentConversation(opts: AgentTerminalOptions): Promise<string> {
-  if (opts.kind !== "claude-cli" || !opts.conversationSessionId) return "";
+async function structuredAgentConversation(
+  opts: AgentTerminalOptions,
+  conversationSessionId?: string
+): Promise<string> {
+  if (opts.kind !== "claude-cli" || !conversationSessionId) return "";
   let latest = "";
   for (let attempt = 0; attempt < 4; attempt += 1) {
-    const conversation = await readClaudeSessionConversation(opts.conversationSessionId);
+    const conversation = await readClaudeSessionConversation(conversationSessionId);
     if (conversation && conversation === latest) return conversation;
     if (conversation) latest = conversation;
+    if (attempt < 3) await new Promise<void>((resolve) => setTimeout(resolve, 75));
+  }
+  return latest;
+}
+
+async function structuredAgentFinalAnswer(
+  opts: AgentTerminalOptions,
+  conversationSessionId: string | undefined,
+  structuredConversation: string
+): Promise<string> {
+  if (opts.kind === "claude-cli") {
+    return extractLastStructuredClaudeAnswer(structuredConversation);
+  }
+  if (!conversationSessionId) return "";
+  let latest = "";
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const answer = await readCodexSessionFinalAnswer(conversationSessionId);
+    if (answer && answer === latest) return answer;
+    if (answer) latest = answer;
     if (attempt < 3) await new Promise<void>((resolve) => setTimeout(resolve, 75));
   }
   return latest;
@@ -894,16 +933,25 @@ function compactPromptEchoText(text: string): string {
 
 function extractCodexFinalAnswer(clean: string): string {
   const lines = clean.split("\n").map((line) => line.trimEnd());
-  for (let i = lines.length - 1; i >= 0; i -= 1) {
+  const footer = findLastIndex(lines, (line) => isCodexCompletionFooterLine(line.trim()));
+  const end = footer >= 0 ? footer : lines.length;
+  for (let i = end - 1; i >= 0; i -= 1) {
     const trimmed = lines[i]!.trim();
+    if (isCodexToolActivityLine(trimmed)) return "";
     if (!isCodexAssistantLine(trimmed)) continue;
     const out = [trimmed.replace(/^[•●]\s*/, "")];
-    for (let j = i + 1; j < lines.length; j += 1) {
+    for (let j = i + 1; j < end; j += 1) {
       const next = lines[j]!;
       const nextTrimmed = next.trim();
       if (!nextTrimmed) continue;
       if (isTerminalPromptLine(nextTrimmed) || isTerminalChromeLine(nextTrimmed)) break;
-      if (isCodexAssistantLine(nextTrimmed)) break;
+      if (
+        isCodexAssistantLine(nextTrimmed) ||
+        isCodexToolActivityLine(nextTrimmed) ||
+        isCodexCollapsedOutputLine(nextTrimmed)
+      ) {
+        break;
+      }
       out.push(next.replace(/^\s{2,}/, ""));
     }
     return out.join("\n").trim();
@@ -932,7 +980,22 @@ function findLastIndex<T>(items: T[], predicate: (item: T) => boolean): number {
 }
 
 function isCodexAssistantLine(trimmed: string): boolean {
-  return /^[•●]\s+\S/.test(trimmed);
+  return /^[•●]\s+\S/.test(trimmed) && !isCodexToolActivityLine(trimmed);
+}
+
+function isCodexToolActivityLine(trimmed: string): boolean {
+  const content = trimmed.replace(/^[•●]\s*/, "").trim();
+  return /^(?:Ran|Running|Explored|Searched|Read|Edited|Updated|Wrote|Deleted|Moved|Copied|Listed|Opened|Called|Checked|Viewed|Inspected)\b/i.test(
+    content
+  );
+}
+
+function isCodexCompletionFooterLine(trimmed: string): boolean {
+  return /^[─━═_\-\s]*Worked for\s+\d/i.test(trimmed);
+}
+
+function isCodexCollapsedOutputLine(trimmed: string): boolean {
+  return /^(?:[│┃]\s*)?…\s*\+\d+\s+lines\b/i.test(trimmed);
 }
 
 function isTerminalChromeOnly(text: string): boolean {
@@ -952,6 +1015,8 @@ function isAgentTerminalPromptLine(trimmed: string): boolean {
 
 function isAgentTerminalChromeLine(trimmed: string): boolean {
   if (isTerminalChromeLine(trimmed)) return true;
+  if (isCodexCompletionFooterLine(trimmed)) return true;
+  if (isCodexCollapsedOutputLine(trimmed)) return true;
   if (/\(shift\+tab to cycle\)/i.test(trimmed)) return true;
   if (/^[\u2500-\u257f\s]+$/.test(trimmed)) return true;
   return false;
@@ -1205,11 +1270,12 @@ function waitForAgentCompletion(
   kind: CliProviderKind,
   done: () => boolean,
   rawTranscript: () => string,
+  lastOutputAt: () => number,
   content: () => string,
   onStatus: (status: AgentTerminalStatus) => void,
   signal?: AbortSignal
 ): Promise<
-  "exited" | "idle" | "timeout" | "aborted" | "manual-success" | "terminal-error"
+  "exited" | "idle" | "stalled" | "aborted" | "manual-success" | "terminal-error"
 > {
   if (done()) return Promise.resolve("exited");
   if (signal?.aborted) return Promise.resolve("aborted");
@@ -1304,9 +1370,16 @@ function waitForAgentCompletion(
       } else if (state !== control.lastCompletionState && state !== "ready-for-success") {
         control.lastCompletionState = state;
       }
-      if (sinceSubmit >= RESPONSE_MAX_MS && control.autoSuccess) {
+      // Total runtime is intentionally unbounded. Only a continuous period
+      // without terminal output is treated as a stalled agent.
+      if (hasAgentTerminalStalled(
+        now,
+        control.promptSubmittedAt,
+        lastOutputAt(),
+        config.agentStallTimeoutMs
+      )) {
         clearInterval(timer);
-        resolve("timeout");
+        resolve("stalled");
         return;
       }
       if (
@@ -1327,6 +1400,25 @@ function waitForAgentCompletion(
       }
     }, 500);
   });
+}
+
+function hasAgentTerminalStalled(
+  now: number,
+  promptSubmittedAt: number,
+  lastOutputAt: number,
+  timeoutMs: number
+): boolean {
+  if (timeoutMs <= 0) return false;
+  return now - Math.max(promptSubmittedAt, lastOutputAt) >= timeoutMs;
+}
+
+export function agentTerminalStalledForTest(
+  now: number,
+  promptSubmittedAt: number,
+  lastOutputAt: number,
+  timeoutMs: number
+): boolean {
+  return hasAgentTerminalStalled(now, promptSubmittedAt, lastOutputAt, timeoutMs);
 }
 
 function hasAgentTerminalFailure(rawTranscript: string): boolean {
@@ -1393,7 +1485,14 @@ function isAgentTerminalReadyForAutoFinish(
     if (!isClaudeIdlePromptVisible(screen)) return false;
     return !isClaudeChoicePromptVisible(screen);
   }
-  return state === "ready-for-success" && isCodexIdlePromptVisible(screen);
+  if (!isCodexIdlePromptVisible(screen)) return false;
+  return state === "ready-for-success" || isCodexCompletionFooterVisible(screen);
+}
+
+function isCodexCompletionFooterVisible(screen: string): boolean {
+  return terminalTail(screen, 12)
+    .split("\n")
+    .some((line) => isCodexCompletionFooterLine(line.trim()));
 }
 
 function hasActiveClaudeBackgroundAgent(screen: string): boolean {
