@@ -30,6 +30,7 @@ backend/workspaces/
 .DS_Store
 Thumbs.db
 
-cc-switch/
-n8n/
 docs/bugs/
+
+# other files
+other/
