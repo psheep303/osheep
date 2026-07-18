@@ -6,11 +6,10 @@ import {
   listAgents as apiListAgents,
   updateAgent as apiUpdateAgent,
 } from "./api";
-import type { OsheepSettings } from "./settings";
+import { DEFAULT_CLI_PROVIDER } from "./settings";
 
 interface AgentViewProps {
   workspaceId: string | null;
-  settings: OsheepSettings;
 }
 
 interface AgentDraft extends AgentRecord {
@@ -36,8 +35,8 @@ function newDraft(): AgentDraft {
   return {
     name: "新 Agent",
     prompt: "",
-    providerId: "",
-    model: "",
+    providerId: DEFAULT_CLI_PROVIDER.id,
+    model: DEFAULT_CLI_PROVIDER.models[0] ?? "default",
     originalName: "",
     dirty: true,
     isNew: true,
@@ -46,7 +45,7 @@ function newDraft(): AgentDraft {
   };
 }
 
-export function AgentView({ workspaceId, settings }: AgentViewProps) {
+export function AgentView({ workspaceId }: AgentViewProps) {
   const [drafts, setDrafts] = useState<AgentDraft[]>([]);
   const [loading, setLoading] = useState(false);
   const [topError, setTopError] = useState<string | null>(null);
@@ -71,8 +70,6 @@ export function AgentView({ workspaceId, settings }: AgentViewProps) {
   useEffect(() => {
     void reload();
   }, [reload]);
-
-  const providers = settings.ai.providers;
 
   const updateDraft = (idx: number, patch: Partial<AgentDraft>) => {
     setDrafts((prev) =>
@@ -107,8 +104,8 @@ export function AgentView({ workspaceId, settings }: AgentViewProps) {
       const record: AgentRecord = {
         name: draft.name,
         prompt: draft.prompt,
-        providerId: draft.providerId,
-        model: draft.model,
+        providerId: DEFAULT_CLI_PROVIDER.id,
+        model: DEFAULT_CLI_PROVIDER.models[0] ?? "default",
       };
       if (draft.isNew) {
         await apiCreateAgent(workspaceId, record);
@@ -190,7 +187,6 @@ export function AgentView({ workspaceId, settings }: AgentViewProps) {
           <AgentCard
             key={(d.originalName || "__new__") + ":" + idx}
             draft={d}
-            providers={providers}
             disabled={!workspaceId}
             onChange={(patch) => updateDraft(idx, patch)}
             onSave={() => void handleSave(idx)}
@@ -213,7 +209,6 @@ export function AgentView({ workspaceId, settings }: AgentViewProps) {
 
 interface AgentCardProps {
   draft: AgentDraft;
-  providers: OsheepSettings["ai"]["providers"];
   disabled: boolean;
   onChange: (patch: Partial<AgentDraft>) => void;
   onSave: () => void;
@@ -222,15 +217,11 @@ interface AgentCardProps {
 
 function AgentCard({
   draft,
-  providers,
   disabled,
   onChange,
   onSave,
   onDelete,
 }: AgentCardProps) {
-  const provider = providers.find((p) => p.id === draft.providerId) ?? null;
-  const availableModels = provider ? provider.models : [];
-
   return (
     <div className="agent-card">
       <div className="agent-card__row">
@@ -252,45 +243,6 @@ function AgentCard({
         </button>
       </div>
 
-      <div className="agent-card__row">
-        <label className="agent-card__label">Provider</label>
-        <select
-          className="agent-card__select"
-          value={draft.providerId}
-          disabled={disabled || draft.saving}
-          onChange={(e) =>
-            onChange({ providerId: e.target.value, model: "" })
-          }
-        >
-          <option value="">— 未选择 —</option>
-          {providers.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name || p.id}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      <div className="agent-card__row">
-        <label className="agent-card__label">模型</label>
-        <select
-          className="agent-card__select"
-          value={draft.model}
-          disabled={disabled || draft.saving || !provider}
-          onChange={(e) => onChange({ model: e.target.value })}
-        >
-          <option value="">— 未选择 —</option>
-          {availableModels.map((m) => (
-            <option key={m} value={m}>
-              {m}
-            </option>
-          ))}
-          {draft.model && !availableModels.includes(draft.model) && (
-            <option value={draft.model}>{draft.model}（已失效）</option>
-          )}
-        </select>
-      </div>
-
       <div className="agent-card__row agent-card__row--top">
         <label className="agent-card__label">提示词</label>
         <textarea
@@ -309,7 +261,7 @@ function AgentCard({
           }
         >
           {draft.saving
-            ? "保存中…"
+            ? "保存中..."
             : draft.error
             ? draft.error
             : draft.isNew

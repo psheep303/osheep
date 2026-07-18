@@ -6,10 +6,13 @@
 
 osheep code 不是「单轮问答助手」。它在收到一条用户消息后，会像 Claude Code 一样：
 
-1. 先输出 **计划（plan）**——把任务拆成 Markdown 复选框列表
+1. 先输出 **任务清单（tasks）**——把任务拆成 Markdown 复选框列表
 2. 然后进入 **多轮思考（thought）+ 工具调用（tool-call）** 循环
-3. 每完成一个 todo 重新发出 `<plan>`，把状态从 `- [ ]` 推进到 `- [~]` / `- [x]`
-4. 最后输出 **总结 / 验证（verify）**——确认是否达成目标，列出未完成项
+3. 每完成一个 todo 重新发出 `<tasks>`，把状态从 `- [ ]` 推进到 `- [~]` / `- [x]`
+4. 需求模糊时输出 `<ask>` 询问用户——前端在 composer 上方的「审批框位置」渲染按钮组 + 「其他」（手动输入）；用户点选后该文本变成新一轮用户消息
+5. 最后输出 **总结 / 验证（verify）**——确认是否达成目标，列出未完成项
+
+> 「任务清单」对应的内部 step 名称是 `kind: "plan"`，仅保留作为数据持久化字段名以兼容旧 session 文件。**UI、提示词、文档**一律使用「Tasks / 任务清单」名称。
 
 每一轮思考在对话流里呈现为一个独立的「步骤行」，**步骤之间用 1px 灰色细线衔接**，表示这是一段连续的思考过程；最末步骤在生成时配有「shimmer 思考动画」。工具调用紧跟其后并带状态图标。
 
@@ -72,12 +75,14 @@ osheep code 的对话由一个**模块级单例 runtime**（`chat-runtime.ts`）
   interface TurnState {
     sessionId: string;
     workspaceId: string;
-    steps: ChatStep[];
-    pendingText: string;
-    status: "running" | "awaiting-confirm" | "idle";
-    pendingConfirm?: { call: ToolCall; resolve: (d) => void };
-    abort: AbortController;
+    pendingSteps: ChatStep[];
+    status: "idle" | "running" | "awaiting-confirm" | "error";
+    pendingConfirm: PendingToolConfirm | null;
+    error: string | null;
+    abortRef: AbortController | null;
+    busy: boolean;
     listeners: Set<() => void>;
+    queued: SendPayload | null;
   }
   ```
 - React 组件通过 `useSyncExternalStore`（或自定义 `useChatTurn(sessionId)`) 订阅
@@ -145,12 +150,12 @@ osheep code 的对话由一个**模块级单例 runtime**（`chat-runtime.ts`）
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│  你                                                       │
+│  you                                                       │
 │  把 frontend/src/workbench/api.ts 里的所有 console.log     │
 │  删掉                                                     │
 │                                                          │
 │  osheep code                                              │
-│  ● Plan                                                  │
+│  ● Tasks                                                 │
 │    ☐ 读取目标文件                                          │
 │    ☑ 检查所有 console.log 出现位置                          │
 │    ◐ 删除并保存                                            │
@@ -179,20 +184,84 @@ osheep code 的对话由一个**模块级单例 runtime**（`chat-runtime.ts`）
 | 状态图标 | 用法 |
 |---------|------|
 | ● 灰色实心点 | 普通文本（thought / verify / 助手自然语言段落） |
-| ☐ 浅描边 / ☑ 绿色对勾 / ◐ 蓝色脉动点 | Plan 的 checkbox（未做 / 已完成 / 进行中） |
+| ☐ 浅描边 / ☑ 绿色对勾 / ◐ 蓝色脉动点 | Tasks 的 checkbox（未做 / 已完成 / 进行中） |
 | ✓ 绿色对勾（`#3fb950`） | 工具调用成功（read/write/run 等返回 0 / 非错误） |
-| ✗ 黄色叉（`#d29922`） | 工具调用失败 / 越权拒绝 / 同轮重复调用被去重 |
+| ✗ 黄色叉（`#d29922`） | 工具调用失败 / 越权拒绝 |
+| ↻ 中性描边（`var(--fg-muted)`） | 旧 session 回放时的同轮重复工具调用缓存命中标记（新对话不会产生） |
 | ● 蓝色脉动点（`#58a6ff`） | 工具调用进行中（loading） |
+| ◇ 描边菱形（`var(--accent)`） | 模型发起的结构化询问（`<ask>`，前端在底部渲染选项面板） |
 | shimmer 渐变 | 当前流式生成中的最后一个 step |
 
 类型标签（紧跟图标，单词 + 等宽小字）：
 
-- `Plan`：本轮任务清单；body 按 Markdown 渲染，`- [ ]` / `- [~]` / `- [x]` 行变成可视 checkbox
+- `Tasks`：本轮任务清单；body 按 Markdown 渲染，`- [ ]` / `- [~]` / `- [x]` 行变成可视 checkbox（内部数据字段仍叫 `plan`，UI 一律显示 `Tasks`）
 - `Thought`：一次自然语言思考片段，body 按 Markdown 渲染
 - `Read` / `Edit` / `Write` / `Run` / `Search`：工具调用，后面接对象描述与摘要
+- `Ask`：模型抛给用户的结构化问题；body 渲染问题文案，底部还会显示一个固定的选项面板（与审批框同位置）
 - `Verify`：最后的验证结论，body 按 Markdown 渲染
 
-工具调用行**可折叠**——默认折叠成单行摘要（路径 / 命令 / 行数 / 退出码），点击展开查看 stdout / stderr / diff。
+为了避免 `Tasks` / `Thought` / `Verify` 三类纯文本步骤视觉趋同（同一个圆点），它们在图标侧使用不同形态：
+
+| 类型 | 图标形态 | 颜色 |
+|---|---|---|
+| Tasks | 实心圆点（最大） | `var(--accent)` |
+| Thought | 小圆点 | `var(--fg-muted)` |
+| Ask | 描边菱形 | `var(--accent)` |
+| Verify | 描边对勾 | `#3fb950` |
+
+这与 Claude Code「计划 → 思考 → 验证」三段式的视觉节奏保持一致，用户扫一眼就能区分阶段。
+
+工具调用行**可折叠**——默认折叠成单行摘要（路径 / 命令 / 行数 / 退出码），点击展开查看 stdout / stderr / 通用 result。
+
+##### `edit_file` / `multi_edit` 工具行：单张完整文件 diff + 完整 diff Tab
+
+`Edit` 这一类工具行不再渲染原始 JSON，也不再堆叠多个局部 diff 块，改为「单张完整文件 unified diff + 跳转完整 diff」复合形态，参照 Claude Code 在终端里展示文件改动的方式。**diff 在审批前后都直接渲染在 timeline 里**，让用户在审批条按下「允许」之前就能先看清改动内容：
+
+| 状态 | 卡片来源 | 视觉 | 标签 |
+|---|---|---|---|
+| `running`（等待审批 / 执行中）| 从 `args.oldString` / `args.newString`（`edit_file`）或 `args.edits`（`multi_edit`） | 虚线描边 | `待审批` |
+| `ok`（执行成功） | 后端 `diff.{ oldString, newString, startLine, added, removed, before, after }`（`edit_file`）或 `diff.{ edits[], added, removed, before, after }`（`multi_edit`） | 实线描边 | `+N / -M` |
+| `cached`（旧 session 回放） | 与 `ok` 同 | 实线 + 中性图标 | `cached` |
+| `err` / `denied` | 不渲染 diff 卡 | 仅工具头红/黄状态 | — |
+
+> 新的对话**不会再生成 cached 步骤**，详见后面「轮次上限与重复调用熔断」段落。`cached` 这一行仅在打开旧 session 文件时出现。
+
+- **缩略 diff 默认展开**——不需要再点击工具头才能看到
+- 卡片右上角有一个折叠按钮 `▾`，用户嫌噪音的时候可以单独折掉某个 step
+- `edit_file` / `multi_edit` 顶部一行 `path` + `:startLine`（若有）+ `(N edits)`（multi_edit）+ `+总和/-总和` + 「完整 diff →」按钮
+- 紧接一块**单张 unified diff 卡片**——显示整个文件的改动（真实行号 + 上下文行 + 长段未改动区域折叠为 `⋯ N 行未改动`），而非多个局部 `-/+` 片段堆叠
+- 卡片高度被限制（默认最多 60 行），超出滚动；不在这里塞整文件 diff
+- 点击「完整 diff →」 → 在中央编辑区新增一个 **AI Diff Tab**（`__ai-diff__:<sessionId>:<stepId>`），左侧 `diff.before`、右侧 `diff.after`（`multi_edit` 显示的是整批 edits 应用后的最终内容）
+
+实现要点：
+
+- 后端在 `edit_file` 的成功响应里附带 `diff.{ oldString, newString, startLine, endLineBefore, endLineAfter, added, removed, before, after }`；`multi_edit` 附带 `diff.{ edits[], added, removed, before, after }`（详见 [`backend/ai-chat-api.md`](../backend/ai-chat-api.md)）
+- 前端 chat-runtime 把这份结构原样塞进 `step.result`；回发给模型前剥掉 `diff.before` / `diff.after`，避免 token 浪费
+- 工具行的展开 UI 与 AI Diff Tab 都直接从 `step.result.diff` 取数据，不再 fetch 后端
+- pending 状态的 preview 卡片由前端 `EditPreviewCard` / `MultiEditPreviewCard` 渲染，数据只来自 tool args，不依赖任何后端响应
+- 旧会话（没有 `diff` 字段）退化为原来的 JSON 文本展示
+- unified diff 算法在 `frontend/src/workbench/file-diff.ts`：LCS 行级 diff + 前后缀公共段裁剪 + 上下文折叠（默认保留改动行前后各 3 行，其余折叠为 gap 行）+ 最多 60 行截断
+
+##### `Run` 工具行：in/out 卡片（命令 + stdout/stderr）
+
+`Run` 工具行不再仅展示原始 JSON，改为「in/out 卡片」形态，参照 Claude Code 在终端里展示命令执行的方式：
+
+| 状态 | 卡片来源 | 视觉 |
+|---|---|---|
+| `running`（等待审批 / 执行中）| 从 `args.command` / `args.cwd` | 虚线描边 + `运行中…` / `待执行` 标签 |
+| `ok` / `err`（执行完成） | 后端 `{ stdout, stderr, exitCode, signal, durationMs }` 或 `{ ok: false, message }` | 实线描边 + exit badge（绿色 `exit 0` / 红色 `exit N` / `失败`） |
+
+- **in/out 卡片默认展开**——不需要再点击工具头才能看到
+- 卡片右上角有一个折叠按钮 `▾`
+- head 显示 `$ command` + duration（如 `1.2s`）+ exit badge
+- body 显示 cwd（若有）+ stdout + stderr（stderr 单独标注 `stderr` label，红色文字）
+- stdout/stderr 各自最多显示 200 行，超出显示 `… 还有 N 行`
+- 无输出时显示 `（无输出）`
+- pending 状态由 `RunPreviewCard` 渲染，仅显示 `$ command` + cwd + `运行中…` / `待执行` 标签
+
+##### `Read` / `Search` 工具行仍保留点击展开
+
+它们的展示密度本来就低（一行摘要 + 一段输出），保留 click-to-expand 即可。只有 `edit_file` / `multi_edit` / `run` 走默认展开，因为「改动」和「命令执行」对用户的关注度远高于「读取」。
 
 #### 时间线视觉
 
@@ -208,19 +277,19 @@ osheep code 的对话由一个**模块级单例 runtime**（`chat-runtime.ts`）
 
 osheep code 的所有自然语言步骤都按 GitHub-flavored Markdown 渲染：
 
-- Plan / Thought / Verify / 自由 text 共用 `<ChatMarkdown>` 组件
+- Tasks / Thought / Verify / Ask / 自由 text 共用 `<ChatMarkdown>` 组件
 - 内部使用 `marked` + `DOMPurify`，与 `MarkdownPreview` 共享配置
 - 代码块自动等宽字体；行内代码使用浅色背景小 chip
 - todo checkbox 使用样式 hook：`.markdown-todo[data-state="done"|"doing"|"todo"]`
 - 工具调用的输出仍走原始 `<pre>` 等宽块，不走 Markdown
 
-#### Plan 块的渲染规则（重要）
+#### Tasks 块的渲染规则（重要）
 
-后端 SSE 解析 `<plan>` 块时，**每行都按完整的 markdown checkbox 形态保留**（包括前导 `- ` 和 `[ ]` / `[~] ` / `[x] `），传给前端的 `items` 数组里**不再做任何前缀剥离**。这是因为：
+后端 SSE 解析 `<tasks>` 块时，**每行都按完整的 markdown checkbox 形态保留**（包括前导 `- ` 和 `[ ]` / `[~] ` / `[x] `），传给前端的 `items` 数组里**不再做任何前缀剥离**。这是因为：
 
 - 旧实现会把 `- [ ] 任务` 剥成 `[ ] 任务`，再在前端拼回 `- [ ] [ ] 任务` 给 marked，导致页面上同时出现一个真实的 checkbox **和**一段字面量 `[ ]` 文本
 - 新实现：parser 只过滤空行；前端 `StepRow` 直接把 items 用 `\n` 连接交给 `ChatMarkdown`，由 marked 的 GFM task-list 解析渲染
-- 兼容：如果模型偶尔送来不带 `- ` 前缀的纯文本行，前端按「未做」补全成 `- [ ] 文本`
+- 兼容：parser 同时识别 `<tasks>` 与 `<plan>`，前缀剥离的旧 session 文件也会被前端按「未做」补全成 `- [ ] 文本`
 
 ### Composer（底部输入卡片）
 
@@ -241,9 +310,11 @@ osheep code 的所有自然语言步骤都按 GitHub-flavored Markdown 渲染：
 
 ### 时间线自动滚动
 
-- 默认行为：**仅当用户当前已经位于时间线底部附近时**才随新内容自动滚到底（容差 ≈ 80px），用户向上滚阅读历史时不会被拉回
-- 强制滚动场景：用户**点击发送按钮**或按 `Enter` 发送新消息时，强制滚动到底，保证看到最新的回复起点
-- 切换 Tab 或重新打开会话时不强制滚动，保留用户上次的位置
+- 默认行为：**仅当用户当前确实位于时间线底部**才随新 osheep-code 状态自动滚到底（容差 ≈ 8px）；用户向上滚阅读历史时不会被拉回
+- 触发条件是「对话状态签名」变化：session 消息数量 / 最后一条消息 / pending step 内容或状态 / pending confirm 变化。单纯布局变化、diff 展开折叠、确认条高度变化不会触发自动滚动
+- 发送时不设置特殊贴底规则：用户如果在历史中发出新消息，视图不会被拉到底；只有用户自己回到底部后才重新跟随
+- 为了处理 Markdown / diff 异步渲染导致的高度晚到，自动滚动会在同一个状态事件后延迟 1-2 帧再次贴底；若用户期间向上滚动，后续帧不会继续拉回
+- 切换 Tab 或重新打开会话时不自动贴底；滚动状态由用户实际位置决定
 
 ### Provider · Model 选择（斜杠菜单 + chip）
 
@@ -362,61 +433,148 @@ osheep code 默认对每个工具调用都会**弹窗征求用户同意**。用�
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│  osheep code 想要 运行命令（Network）                       │
+│  osheep code 想要 运行命令（Network）                     │
 │  $ curl https://api.example.com/health                   │
-│                                                          │
-│   [ 始终允许 Network ]   [ 仅这一次 ]   [ 拒绝 ]            │
+│                                          [ 是 ] [ 否 ] [ 其他 ] │
 └──────────────────────────────────────────────────────────┘
 ```
 
-视觉规范：
+按钮语义（**与 v1 不同**：去掉了「始终允许 X」与红色「拒绝」按钮，按钮颜色统一收敛到中性灰）：
 
-- 不使用红色背景与红色边框——避免和真正的错误条混淆
+| 按钮 | 行为 |
+|---|---|
+| **是** | 允许这次工具调用，继续本轮工具循环。**不会**写回 autoAllow——"始终允许"只能在斜杠菜单的 `Auto-allow commands…` 面板里配置 |
+| **否** | 拒绝这次调用，AI 收到 `[denied by user]` 信号 |
+| **其他** | 把按钮组就地替换为单行 textbox + 「发送」按钮；用户输入文字后，AI 收到 `[denied by user: <用户输入>]`，相当于带反馈的否决——告诉模型「按这个方向重新做」，不需要打断当前 turn |
+
+视觉规范（**配色基线刷新**）：
+
+- 不使用红色背景与红色边框，也不使用任何高饱和度强调色——确认条**整体灰阶**，避免与真正的错误条混淆，也避免在密集对话中视觉抢眼
 - 背景使用 `var(--bg-shell)`，顶部一条 1px `var(--border-edge)`，圆角 6px
-- 不显示 ⚠ 大图标，标题左侧最多一个小图标（与按钮同色）
-- 命令 / 参数摘要使用等宽字体浅灰背景的 `<pre>`，限制最大高度 + `overflow-x: auto`，避免一次性把巨大的 `content` 字段全展开
-- 按钮顺序固定：「始终允许 X」（主按钮，`primary-btn`）→「仅这一次」（`ghost-btn`）→「拒绝」（`ghost-btn`，文字 `var(--fg-error)`）
-
-- `始终允许 X`：把对应**分类键**加入 `ai.autoAllow`，继续执行
-- `仅这一次`：本次允许，不修改设置
-- `拒绝`：放弃这次工具调用，AI 收到 `[denied by user]` 信号，自行决定是否换思路
+- 三个按钮（是 / 否 / 其他）统一使用中性描边样式 `tool-confirm__button`（透明底 + `var(--border-edge)` 描边 + `var(--fg-default)` 文字，hover 浅灰）——不再用 `primary-btn` 实心填充或 `danger-btn` 红色，确认条没有任何按钮带强调色或危险色
+- **`tool-confirm--compact` 变体**：当工具是 `edit_file` 或其它高密度调用时，diff / 详细信息已经在对话 timeline 内联渲染，确认条采用**横向布局**——左侧标题 + 一行 args 摘要，右侧按钮组，整体高度更低，不重复展示 diff
+- 命令 / 参数摘要使用等宽字体浅灰背景的 `<pre>`，限制最大高度 + `overflow-x: auto`
+- 对 `edit_file` 工具，**diff 不再渲染到确认条里**，而是渲染到上方 timeline 的 tool step 里（参见前述 `edit_file 工具行` 段落，pending 状态用虚线 + `待审批` 标签）
 
 用户没回应前消息流冻结；超过 5 分钟无响应视为拒绝。因为 runtime 在后台跑，**确认条状态归属 runtime**——即使关闭再打开 Tab，确认条还在原位。
+
+### Ask 选项面板（结构化询问）
+
+当模型输出 `<ask>{"question":"...","options":["A","B"]}</ask>` 后没有继续调用工具，runtime 会把本轮收尾保存到 session，并在 composer 上方渲染一个与「工具确认弹窗」同位置同尺寸的选项面板（组件 `AskPromptBar`）：
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  你偏好哪种主题风格？                                       │
+│                                                          │
+│  [ A. 暗黑（VS Code Dark Modern） ]                       │
+│  [ B. 经典（GitHub Light） ]                              │
+│  [ 其他 ]                                                 │
+└──────────────────────────────────────────────────────────┘
+```
+
+行为：
+
+- 问题文案作为标题渲染；选项按钮使用与确认条一致的中性 `tool-confirm__button` 样式（外加 `tool-confirm__choice` 限宽省略），带序号前缀 `A. / B. / C. / D.`，最多 4 个
+- 点击某个选项 → 立刻把该选项文本作为**新一轮用户消息**调用 `chatRuntime.send()`，`AskPromptBar` 随之消失
+- 点击 **「其他」** → 标题下方就地展开 textbox + 「发送」按钮，用户输入文字按 `Enter` / 点「发送」即作为新一轮用户消息发送（手动输入对 AI 的指示）
+- 模型在 `options` 里**不应**预留 `其他`——前端 UI 自动追加；`options` 不足 2 个时 parser 视为无效，退化为普通文本段落
+- 与工具确认条共享同一个位置，但两者不会同时出现：模型要么发起 ask 等待用户选择（turn 已结束、无 pending tool），要么处于工具审批中（turn 仍在进行）
+
+判定：前端读取 session 的最后一条 assistant 消息——若其 `steps[]` 数组的**最后一个**有效步骤是 `kind: "ask"`，且后续没有用户消息，则渲染 `AskPromptBar`。一旦用户响应（任何方式），新消息追加进 messages，`AskPromptBar` 隐藏。
 
 ---
 
 ## 流式协议
 
-LLM 回复采用 **SSE（Server-Sent Events）** 流式推送。osheep code 的协议在原 `delta` 之上扩展了若干事件类型，详见后端文档 `ai-chat-api.md`。
+LLM 回复采用 **SSE（Server-Sent Events）** 流式推送。后端只透明转发上游的 `delta` / `done` / `error`；osheep code 的 `<tasks>` / `<thought>` / `<tool>` / `<ask>` / `<verify>` 标记由前端 runtime 从原始 delta 流里解析，详见后端文档 `ai-chat-api.md`。
 
-前端在事件循环里维护当前会话的 `steps[]`（与 `messages[]` 并列）：
+前端在 parser 回调里维护当前会话的 `steps[]`（与 `messages[]` 并列）：
 
-- 收到 `event: plan` → 新增一个 `step: { kind: "plan", items: [...] }`，body 中的复选框结构由 markdown 解析
-- 收到 `event: thought` → 新增 `step: { kind: "thought", text }`，后续 `event: thought_delta` 追加到末项
-- 收到 `event: tool_call` → 新增 `step: { kind: "tool", tool, args, status: "running" }`
-  - 收到 `tool_result` → 更新该 step `status: "ok" | "err"`，附带 stdout / err
-- 收到 `event: verify` → 新增 `step: { kind: "verify", text }`
-- 收到 `event: text_delta` → 追加到最后一条 assistant 文本气泡
-- 收到 `event: done` → 关闭整个 turn
+- 解析到 `<tasks>` / `<plan>`（旧名兼容） → 更新本轮唯一 `step: { kind: "plan", items: [...] }`，body 中的复选框结构由 markdown 解析；UI 标签显示 `Tasks`
+- 解析到 `<thought>` → 新增 `step: { kind: "thought", text }`，**整个 thought 节点原子渲染**（parser 缓冲完整 `<thought>...</thought>` 内容，在闭合标签或下一个标签开始时一次性输出，不做 token 级流式追加）
+- 解析到 `<tool>` → 新增 `step: { kind: "tool", tool, args, status: "queued" }`
+  - 未授权时保持 `queued` 并切到 `awaiting-confirm`；用户允许后、真正调用后端工具前才改为 `running`
+  - 工具返回后 → 更新该 step `status: "ok" | "err" | "denied"`（`cached` 状态仍保留在类型联合里以兼容旧会话回放；新对话里的重复调用会被静默移除）
+- 解析到 `<ask>` → 新增 `step: { kind: "ask", question, options }`；后续在 composer 上方渲染 `AskPromptBar`
+- 解析到 `<verify>` → 新增 `step: { kind: "verify", text }`
+- 未标记 delta → 追加 / 合并为 timeline 内的 `step: { kind: "text" }`，不再存在独立的底部文本气泡；所有可见内容都按步骤顺序进入同一条 timeline
+- 收到后端 `event: done` → 关闭当前 SSE；若本轮解析到 tool，则执行工具并继续下一次 SSE；若解析到 `<ask>` 而无 tool，则按「正常结束」收尾（不算 earlyGiveUp）
+
+**Thought 原子渲染的实现**：
+
+- `TagStreamParser` 在 `feed(chunk)` 开头调用 `flushReasoning()`，把上一轮缓冲的 reasoning 块（如果有）通过 `onThought(id, fullText)` 一次性输出
+- `feedReasoning(chunk)` 仅累积 reasoning delta 到 `accReasoning`，不触发任何回调
+- `onInTagChunk()` 对 `<thought>` 标签内的内容仅累积到 `accInTag`，不再流式调用 `onThoughtDelta`
+- `finish()` 在流结束时调用 `flushReasoning()` 并处理未闭合的 `<thought>` 标签
+- 结果：每个 thought 节点在 UI 上「瞬间出现」（等待完整内容，然后一次性渲染），而非逐字符流式显示；自由文本（未标记 delta）仍保持流式（在 `<` 边界处输出）
 
 ### 工具调用的执行回路
 
 osheep code 的工具调用走的是**前端代理 + 后端执行**模式：
 
-1. 模型在流里输出 `tool_call`（工具名 + 参数）
-2. runtime 检查 `autoAllow`（按 run-classify 的分类键），未授权则把状态切到 `awaiting-confirm` 并广播
-3. 同意后 runtime 调用对应后端 API（`/api/workspaces/:id/ai/exec/read|write|run`）
-4. 拿到结果后，runtime 通过**第二次** `POST /ai/chat/stream` 把 `tool_result` 作为新的角色 `tool` 追加进 messages，继续流
+1. 模型在流里输出 `<tool>`（工具名 + 参数），前端 parser 转成 tool call
+2. Claude Code 式节奏：**每个 SSE 响应最多接受一个 tool**。模型若在同一段输出里继续写第二个 `<tool>` 或后续步骤，UI 与执行层都会忽略，下一步必须等工具结果回来后由下一轮决定
+3. runtime 检查 `autoAllow`（按 run-classify 的分类键），未授权则把状态切到 `awaiting-confirm` 并广播；此时 tool step 仍是 `queued`，不显示 running 动画
+4. 同意后 runtime 调用对应后端 API（`/api/workspaces/:id/ai/exec/read|write|run`），调用开始前才把该 step 改为 `running`
+5. 拿到结果后，runtime 把本次模型原始输出追加进 `modelTranscript`，再追加 `tool_result`，并通过**第二次** `POST /ai/chat/stream` 继续流
+   - 若本轮包含 tool，追加进 `modelTranscript` 的 assistant 原文会被截断到**第一条 accepted tool 结束处**；同一响应里第一条 tool 后面的未执行内容不会进入下一轮上下文
 5. 模型基于结果决定下一步：再思考、再调工具、或输出 verify+done
 
 详细协议见 `.osheep/docs/backend/ai-chat-api.md`。
 
+### TasksState 与 modelTranscript（执行约束）
+
+runtime 不能只把 tool result 塞回模型上下文；它必须保留本轮模型自己的原始输出，否则模型下一轮看不到刚刚发过的 tasks / tool call，会重复 tasks 和重复 read。当前执行回路维护三份状态：
+
+- `modelTranscript`：本轮真实发送给模型的上下文。初始化为历史消息 + 本次 user；每次 SSE 结束后追加 assistant 原文，再追加 tool result。若本轮有 accepted tool，assistant 原文会截断在第一条 tool 结束处，避免模型在下一轮「记住」同一响应里未执行的后续 tool / 文本。
+- `TasksState`（运行时维护当前 tasks 状态的接口，源码已统一改名为 `TasksState`；只有持久化到 session 的 step 字段名 `kind: "plan"` 因兼容旧会话保留）：本轮最新 tasks 的规范化快照。非平凡任务必须先有有效 tasks；没有有效 tasks 时出现 tool call，runtime 直接拒绝执行并回传合成 tool result（`[tasks_required]`），要求模型先输出 `<tasks>`。
+- `executedTools`：本轮实际执行、拒绝、或缓存短路的工具序列。第 2 轮起作为 `<recent-tool-calls-this-turn>` system 摘要追加给模型，降低重复调用率。
+
+Tasks 渲染上保留状态变化快照：相同 tasks 被忽略；状态变化时追加新的 tasks step，让用户像 Claude Code 一样看到 todo 从 `- [ ]` 推进到 `- [~]` / `- [x]` 的过程。最新 tasks 仍是执行约束里的权威快照。
+
+### 轮次上限与重复调用熔断
+
+`MAX_TOOL_LOOPS = 40`。模型耗尽上限、或提前给出 tasks 但没有 verify / ask 时，runtime **不再静默退场**，而是给 timeline 追加一条合成 `text` step。runtime 维护两个状态变量来分类：
+
+- `loopsRun`：本轮已经执行的 SSE 循环数（每进入一次 `for (loop ...)` 就 +1）
+- `NO_PROGRESS_LIMIT = 3`：连续 N 轮没有任何真实工具执行（全部被 tasks gate 拒绝 / 用户拒绝 / 参数无效 / 重复 cached）时自动停止并追加说明；`earlyGiveUp` 只表示模型本轮无 tool 且无 verify / ask / text
+
+判定顺序（在 `runTurn` 的 try 块尾部）：
+
+1. `userAborted` → 不追加 exit note（用户主动停的）
+2. 当前 `pendingSteps` 已经包含 `verify` 或 `ask`，或已有非空 `text` step → 不追加 exit note（这是正常结束）
+3. 否则按下表分支：
+
+| 触发条件 | 末尾 step 文案（示例） |
+|---|---|
+| `earlyGiveUp === true`（优先） | 「**osheep code 提前结束本轮：** 模型这一轮只发出了 tasks / thought / 文本，既没有继续调用工具也没有给出 `<verify>` / `<ask>`。如果任务还没完成，请发送『继续』或下达更具体的指令。」 |
+| `loopsRun >= MAX_TOOL_LOOPS` | 「**已达本轮工具调用上限 (40)。** osheep code 跑完 40 轮工具循环仍未给出 `<verify>`。继续请发送『继续』或下达更具体的下一步指令。」 |
+| 兜底（不应触发，防御性） | 「**本轮提前结束。** osheep code 跑了 N 轮但没有 `<verify>`。请检查上方的步骤，再下达更具体的下一步指令。」 |
+
+**判定顺序很关键**：`earlyGiveUp` 必须**优先于** `loopsRun >= MAX_TOOL_LOOPS`。原因：循环最后一次迭代如果模型刚好「give up」，`loopsRun` 也会等于 40，但真正应该展示的原因是「模型自己停的」，不是「跑满了 40 轮」。
+
+合成 `text` step 与正常的助手段落同一形态渲染，不弹错误条，也不需要用户去关闭。它本质上是 osheep code 自己对自己的「补丁注释」，不是错误。
+
+> **旧版本的「同一签名 cached 命中 ≥ 2 次硬停」已经移除。** cached 不再触发 turn abort，也不再在 UI 上出现，详见下面「工具失败的根因治理」。
+
+### 工具失败的根因治理
+
+read / write / run 的失败优先按根因处理，而不是仅展示错误：
+
+- read 文件大于 AI 读取上限时返回截断内容和 `truncated=true`，不再因为编辑器文件大小上限直接失败。
+- write 的 `write_file` 仅用于完整内容已知的创建 / 覆盖；明显占位符内容（如仅 `...`）会被拒绝，避免误覆盖。
+- **同文件多处修改优先用 `multi_edit`**（一次 tool call、一张 diff 卡、原子）；保留 `edit_file` 只用于单点修改。
+- 同参 read / write / run 调用会被静默回放上一次结果（UI **不显示**，模型仍收到 cached payload 继续往下做）；不再因 cached 计数硬停。模型下一轮会在 apiMessages 末尾看到 `<recent-tool-calls-this-turn>` 摘要，提示「这些已经做过，不要再调」，从源头避免重复。
+- `edit_file` / `multi_edit` 失败后，同参调用同样走静默回放；模型必须先重新 read/search 或扩大 oldString 上下文。
+- 搜索验证优先使用 `read.search`，避免 Windows / macOS / Linux shell 命令差异导致 `grep` / `findstr` 失败。
+- run 只用于测试、构建或用户明确要求的项目命令；`exitCode !== 0` 在 timeline 中标记为失败，并把 stdout/stderr 回传给模型继续处理。
+
 ### 视觉效果
 
 - 助手区域顶部出现一个跳动的小圆点表示「正在生成」
-- 当前正在生成的 step 行有**linear shimmer**（1.2s 循环），生成结束后自动消失
+- 当前真正运行中的 step 行有**linear shimmer**（未结束的 thought、`status:"running"` 的 tool、或最后一个正在追加的 text step）；`queued` / `awaiting-confirm` 不显示运行态
 - 步骤之间的连接线是 1px `var(--border)` 灰色实线
-- 工具调用从蓝色脉动点（running）→ `✓` 绿（ok）/ `✗` 黄（err / denied / 同轮重复调用被去重）切换
+- 工具调用从蓝色脉动点（running）→ `✓` 绿（ok）/ `✗` 黄（err / denied）切换；cached 状态对新对话静默（既不渲染工具步，也不切换图标）
 - 输入框右下的发送按钮在流式期间替换为 ■（停止）按钮
 - 发生网络错误时，错误显示在对话顶部，已生成的部分保留
 - **AI 一轮结束后若既无步骤也无文本**，前端**不会保存空助手消息**，转而在错误条显示「上游未返回任何内容，请检查模型 ID 与 Base URL」
@@ -465,6 +623,7 @@ osheep code 使用**统一系统提示词**（不再使用 Agent 自定义 promp
           "status": "ok",
           "result": "..."
         },
+        { "kind": "ask", "question": "继续删 console.error 吗？", "options": ["删", "保留"] },
         { "kind": "verify", "text": "完成" }
       ]
     }
@@ -472,7 +631,8 @@ osheep code 使用**统一系统提示词**（不再使用 Agent 自定义 promp
 }
 ```
 
-- `plan.items` 现在是 markdown checkbox 字符串数组（保留前缀以便回放时直接 markdown 渲染）；旧会话只有纯字符串数组，渲染端兼容
+- `plan.items` 现在是 markdown checkbox 字符串数组（保留前缀以便回放时直接 markdown 渲染）；旧会话只有纯字符串数组，渲染端兼容。字段名 `plan` 是数据持久化历史名，UI 一律渲染为 `Tasks`
+- `ask.options` 至少 2 项；前端额外在 UI 追加「其他（手动输入）」入口，模型**不**写到 `options` 里
 - `steps` 仅在 `assistant` 消息上出现
 - `messages` 不包含 `system`；system 由 osheep code 实时注入
 

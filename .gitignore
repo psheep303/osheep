@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Build outputs and caches
+dist/
+**/dist/
+dist-ssr/
+**/dist-ssr/
+.vite/
+**/.vite/
+*.tsbuildinfo
+
+# Local environment and tool state
+.env
+.env.*
+!.env.example
+*.local
+.claude/
+
+# Logs and captured sessions
+*.log
+*.jsonl
+logs/
+
+# Runtime workspaces
+backend/workspaces/
+
+# OS and editor noise
+.DS_Store
+Thumbs.db
+
+cc-switch/
+n8n/
+docs/bugs/

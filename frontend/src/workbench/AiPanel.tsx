@@ -1,46 +1,53 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ContextMenu, type CtxMenuSection } from "./ContextMenu";
 import {
-  createSession as apiCreateSession,
-  deleteSession as apiDeleteSession,
-  listSessions as apiListSessions,
-  type SessionSummary,
+  createWorkflow as apiCreateWorkflow,
+  deleteWorkflow as apiDeleteWorkflow,
+  getWorkflow as apiGetWorkflow,
+  listWorkflows as apiListWorkflows,
+  saveWorkflow as apiSaveWorkflow,
+  type WorkflowRecord,
+  type WorkflowSummary,
 } from "./api";
-import { useActiveSessions } from "./chat-runtime";
 
 interface AiPanelProps {
   workspaceId: string | null;
-  onOpenSession: (sessionId: string) => void;
-  activeSessionId: string | null;
-  /** bumped externally when a session was changed so the list re-fetches */
+  onOpenWorkflow: (workflowId: string) => void;
+  activeWorkflowId: string | null;
   refreshSignal: number;
 }
 
-type PanelTab = "osheepcode" | "maintain";
-
 export function AiPanel({
   workspaceId,
-  onOpenSession,
-  activeSessionId,
+  onOpenWorkflow,
+  activeWorkflowId,
   refreshSignal,
 }: AiPanelProps) {
-  const [activeTab, setActiveTab] = useState<PanelTab>("osheepcode");
-  const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const [workflows, setWorkflows] = useState<WorkflowSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [searchText, setSearchText] = useState("");
-
-  const activeRuntimeSessions = useActiveSessions();
+  const [copiedWorkflow, setCopiedWorkflow] = useState<WorkflowRecord | null>(null);
+  const [workflowMenu, setWorkflowMenu] = useState<{
+    x: number;
+    y: number;
+    workflowId: string;
+  } | null>(null);
+  const [panelMenu, setPanelMenu] = useState<{ x: number; y: number } | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  const renameCommitRef = useRef<string | null>(null);
 
   const reload = useCallback(async () => {
     if (!workspaceId) {
-      setSessions([]);
+      setWorkflows([]);
       return;
     }
     setLoading(true);
     setError(null);
     try {
-      const list = await apiListSessions(workspaceId);
-      setSessions(list);
+      const list = await apiListWorkflows(workspaceId);
+      setWorkflows(list);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -52,18 +59,35 @@ export function AiPanel({
     void reload();
   }, [reload, refreshSignal]);
 
+  useEffect(() => {
+    setCopiedWorkflow(null);
+    setWorkflowMenu(null);
+    setPanelMenu(null);
+    setRenamingId(null);
+  }, [workspaceId]);
+
+  useEffect(() => {
+    if (!workspaceId) return;
+    const timer = window.setInterval(() => {
+      void reload();
+    }, 2500);
+    return () => window.clearInterval(timer);
+  }, [workspaceId, reload]);
+
   const filtered = useMemo(() => {
-    if (!searchText.trim()) return sessions;
+    if (!searchText.trim()) return workflows;
     const q = searchText.trim().toLowerCase();
-    return sessions.filter((s) => s.title.toLowerCase().includes(q));
-  }, [sessions, searchText]);
+    return workflows.filter((workflow) =>
+      workflow.title.toLowerCase().includes(q)
+    );
+  }, [workflows, searchText]);
 
   const handleNew = async () => {
     if (!workspaceId) return;
     try {
-      const s = await apiCreateSession(workspaceId, {});
+      const workflow = await apiCreateWorkflow(workspaceId, {});
       await reload();
-      onOpenSession(s.id);
+      onOpenWorkflow(workflow.id);
     } catch (e) {
       setError((e as Error).message);
     }
@@ -71,136 +95,269 @@ export function AiPanel({
 
   const handleDelete = async (id: string, title: string) => {
     if (!workspaceId) return;
-    if (!window.confirm(`确定删除对话「${title}」？`)) return;
+    if (!window.confirm(`Delete workflow "${title}"?`)) return;
     try {
-      await apiDeleteSession(workspaceId, id);
+      await apiDeleteWorkflow(workspaceId, id);
       await reload();
     } catch (e) {
       setError((e as Error).message);
     }
   };
 
-  return (
-    <div className="ai-panel">
-      <div className="ai-panel__brand">osheep</div>
+  const handleCopy = async (id: string) => {
+    if (!workspaceId) return;
+    try {
+      setCopiedWorkflow(await apiGetWorkflow(workspaceId, id));
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
 
-      <div className="ai-panel__tabs">
-        <button
-          className={
-            "ai-panel__tab" + (activeTab === "osheepcode" ? " is-active" : "")
-          }
-          onClick={() => setActiveTab("osheepcode")}
-        >
-          osheep code
-        </button>
-        <button
-          className={
-            "ai-panel__tab" + (activeTab === "maintain" ? " is-active" : "")
-          }
-          onClick={() => setActiveTab("maintain")}
-        >
-          维护
-        </button>
+  const handlePaste = async () => {
+    if (!workspaceId || !copiedWorkflow) return;
+    try {
+      const workflow = await apiCreateWorkflow(
+        workspaceId,
+        workflowCopy(copiedWorkflow, workflows)
+      );
+      await reload();
+      onOpenWorkflow(workflow.id);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  const beginRename = (workflow: WorkflowSummary) => {
+    setRenamingId(workflow.id);
+    setRenameDraft(workflow.title || "New workflow");
+  };
+
+  const commitRename = async (id: string) => {
+    if (!workspaceId || renameCommitRef.current === id) return;
+    const title = renameDraft.trim();
+    const current = workflows.find((workflow) => workflow.id === id);
+    setRenamingId(null);
+    if (!title || title === current?.title) return;
+    renameCommitRef.current = id;
+    try {
+      const workflow = await apiGetWorkflow(workspaceId, id);
+      await apiSaveWorkflow(workspaceId, { ...workflow, title });
+      await reload();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      renameCommitRef.current = null;
+    }
+  };
+
+  const menuWorkflow = workflowMenu
+    ? workflows.find((workflow) => workflow.id === workflowMenu.workflowId) ?? null
+    : null;
+  const workflowMenuSections: CtxMenuSection[] = menuWorkflow
+    ? [
+        {
+          items: [
+            {
+              label: "复制",
+              onSelect: () => void handleCopy(menuWorkflow.id),
+            },
+            {
+              label: "重命名",
+              disabled: menuWorkflow.status === "running",
+              onSelect: () => beginRename(menuWorkflow),
+            },
+          ],
+        },
+        {
+          items: [
+            {
+              label: "删除",
+              danger: true,
+              onSelect: () => void handleDelete(menuWorkflow.id, menuWorkflow.title),
+            },
+          ],
+        },
+      ]
+    : [];
+  const panelMenuSections: CtxMenuSection[] = [
+    {
+      items: [
+        {
+          label: "粘贴",
+          disabled: !workspaceId || !copiedWorkflow,
+          onSelect: () => void handlePaste(),
+        },
+      ],
+    },
+  ];
+
+  return (
+    <div
+      className="ai-panel"
+      onContextMenu={(event) => {
+        const target = event.target as HTMLElement;
+        if (target.closest(".ai-panel__item") || target.closest(".ctx-menu")) return;
+        event.preventDefault();
+        setWorkflowMenu(null);
+        setPanelMenu({ x: event.clientX, y: event.clientY });
+      }}
+    >
+      <div className="ai-panel__brand">osheep workflows</div>
+
+      <button
+        className="ai-panel__new"
+        disabled={!workspaceId}
+        onClick={() => void handleNew()}
+        title="New workflow"
+      >
+        <PlusIcon />
+        <span>New workflow</span>
+      </button>
+
+      <div className="ai-panel__search">
+        <SearchIcon />
+        <input
+          className="ai-panel__search-input"
+          value={searchText}
+          placeholder="Search workflows..."
+          onChange={(e) => setSearchText(e.target.value)}
+        />
       </div>
 
-      {activeTab === "maintain" ? (
-        <div className="ai-panel__maintain">
-          <div className="ai-panel__maintain-title">维护功能正在筹备中</div>
-          <div className="ai-panel__maintain-hint">未来阶段将提供：</div>
-          <ul className="ai-panel__maintain-list">
-            <li>长期会话与记忆库</li>
-            <li>规则 / 工作流模板</li>
-            <li>自动化任务（计划运行）</li>
-          </ul>
-        </div>
-      ) : (
-        <>
-          <button
-            className="ai-panel__new"
-            disabled={!workspaceId}
-            onClick={() => void handleNew()}
-            title="新建对话"
-          >
-            <PlusIcon />
-            <span>New session</span>
+      {error && (
+        <div className="ai-panel__error">
+          <span>{error}</span>
+          <button onClick={() => setError(null)} aria-label="Close error">
+            x
           </button>
+        </div>
+      )}
 
-          <div className="ai-panel__search">
-            <SearchIcon />
-            <input
-              className="ai-panel__search-input"
-              value={searchText}
-              placeholder="Search sessions…"
-              onChange={(e) => setSearchText(e.target.value)}
-            />
-          </div>
+      {!workspaceId && (
+        <div className="ai-panel__empty">Open a workspace first</div>
+      )}
 
-          {error && (
-            <div className="ai-panel__error">
-              <span>{error}</span>
-              <button onClick={() => setError(null)} aria-label="关闭错误提示">
-                ×
-              </button>
-            </div>
-          )}
+      {workspaceId && loading && workflows.length === 0 && (
+        <div className="ai-panel__empty">Loading...</div>
+      )}
 
-          {!workspaceId && (
-            <div className="ai-panel__empty">请先打开工作区</div>
-          )}
+      {workspaceId && !loading && filtered.length === 0 && (
+        <div className="ai-panel__empty">
+          {searchText ? "No matching workflows" : "No workflows yet"}
+        </div>
+      )}
 
-          {workspaceId && loading && sessions.length === 0 && (
-            <div className="ai-panel__empty">加载中…</div>
-          )}
+      <div className="ai-panel__list">
+        {filtered.map((workflow) => (
+          <WorkflowItem
+            key={workflow.id}
+            workflow={workflow}
+            active={workflow.id === activeWorkflowId}
+            running={workflow.status === "running"}
+            renaming={workflow.id === renamingId}
+            renameDraft={renameDraft}
+            onOpen={() => onOpenWorkflow(workflow.id)}
+            onDelete={() => void handleDelete(workflow.id, workflow.title)}
+            onContextMenu={(x, y) => {
+              setPanelMenu(null);
+              setWorkflowMenu({ x, y, workflowId: workflow.id });
+            }}
+            onRenameChange={setRenameDraft}
+            onRenameCommit={() => void commitRename(workflow.id)}
+            onRenameCancel={() => setRenamingId(null)}
+          />
+        ))}
+      </div>
 
-          {workspaceId && !loading && filtered.length === 0 && (
-            <div className="ai-panel__empty">
-              {searchText ? "未匹配到对话" : "尚未创建任何对话"}
-            </div>
-          )}
-
-          <div className="ai-panel__list">
-            {filtered.map((s) => (
-              <SessionItem
-                key={s.id}
-                session={s}
-                active={s.id === activeSessionId}
-                running={activeRuntimeSessions.has(s.id)}
-                onOpen={() => onOpenSession(s.id)}
-                onDelete={() => void handleDelete(s.id, s.title)}
-              />
-            ))}
-          </div>
-        </>
+      {workflowMenu && menuWorkflow && (
+        <ContextMenu
+          x={workflowMenu.x}
+          y={workflowMenu.y}
+          sections={workflowMenuSections}
+          onClose={() => setWorkflowMenu(null)}
+        />
+      )}
+      {panelMenu && (
+        <ContextMenu
+          x={panelMenu.x}
+          y={panelMenu.y}
+          sections={panelMenuSections}
+          onClose={() => setPanelMenu(null)}
+        />
       )}
     </div>
   );
 }
 
-interface SessionItemProps {
-  session: SessionSummary;
+interface WorkflowItemProps {
+  workflow: WorkflowSummary;
   active: boolean;
   running: boolean;
+  renaming: boolean;
+  renameDraft: string;
   onOpen: () => void;
   onDelete: () => void;
+  onContextMenu: (x: number, y: number) => void;
+  onRenameChange: (value: string) => void;
+  onRenameCommit: () => void;
+  onRenameCancel: () => void;
 }
 
-function SessionItem({ session, active, running, onOpen, onDelete }: SessionItemProps) {
+function WorkflowItem({
+  workflow,
+  active,
+  running,
+  renaming,
+  renameDraft,
+  onOpen,
+  onDelete,
+  onContextMenu,
+  onRenameChange,
+  onRenameCommit,
+  onRenameCancel,
+}: WorkflowItemProps) {
   return (
     <div
       className={"ai-panel__item" + (active ? " is-active" : "")}
-      onClick={onOpen}
-      title={
-        running
-          ? `${session.title}（后台运行中）`
-          : session.title
-      }
+      onClick={() => {
+        if (!renaming) onOpen();
+      }}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onContextMenu(event.clientX, event.clientY);
+      }}
+      title={renaming ? undefined : running ? `${workflow.title} (running)` : workflow.title}
     >
-      {running && <span className="ai-panel__item-active-dot" aria-hidden />}
-      <span className="ai-panel__item-title">
-        {session.title || "新对话"}
-      </span>
+      <span
+        className={"ai-panel__item-status" + (running ? " is-running" : "")}
+        aria-hidden
+      />
+      {renaming ? (
+        <input
+          className="ai-panel__item-rename"
+          value={renameDraft}
+          autoFocus
+          onClick={(event) => event.stopPropagation()}
+          onChange={(event) => onRenameChange(event.target.value)}
+          onBlur={onRenameCommit}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              event.currentTarget.blur();
+            } else if (event.key === "Escape") {
+              event.preventDefault();
+              onRenameCancel();
+            }
+          }}
+        />
+      ) : (
+        <span className="ai-panel__item-title">
+          {workflow.title || "New workflow"}
+        </span>
+      )}
       <span className="ai-panel__item-time">
-        {formatRelative(session.updatedAt)}
+        {running ? "RUNNING" : formatRelative(workflow.updatedAt)}
       </span>
       <button
         className="ai-panel__item-del"
@@ -208,7 +365,7 @@ function SessionItem({ session, active, running, onOpen, onDelete }: SessionItem
           e.stopPropagation();
           onDelete();
         }}
-        title="删除"
+        title="Delete"
       >
         <TrashIcon />
       </button>
@@ -216,10 +373,44 @@ function SessionItem({ session, active, running, onOpen, onDelete }: SessionItem
   );
 }
 
+function workflowCopy(
+  source: WorkflowRecord,
+  workflows: WorkflowSummary[]
+): Partial<WorkflowRecord> {
+  const title = nextCopyTitle(source.title || "Workflow", workflows);
+  return {
+    title,
+    nodes: source.nodes.map((node) => {
+      const { runDetails: _runDetails, ...config } = node.config ?? {};
+      return {
+        ...node,
+        status: "idle" as const,
+        summary: "",
+        rawOutput: "",
+        error: "",
+        startedAt: undefined,
+        completedAt: undefined,
+        config,
+      };
+    }),
+    edges: source.edges.map((edge) => ({ ...edge })),
+    runs: [],
+  };
+}
+
+function nextCopyTitle(title: string, workflows: WorkflowSummary[]): string {
+  const existing = new Set(workflows.map((workflow) => workflow.title));
+  const base = `${title} copy`;
+  if (!existing.has(base)) return base;
+  let suffix = 2;
+  while (existing.has(`${base} ${suffix}`)) suffix += 1;
+  return `${base} ${suffix}`;
+}
+
 function formatRelative(ts: number): string {
   const diff = Math.max(0, Date.now() - ts);
   const m = Math.floor(diff / 60_000);
-  if (m < 1) return "刚刚";
+  if (m < 1) return "now";
   if (m < 60) return `${m}m`;
   const h = Math.floor(m / 60);
   if (h < 24) return `${h}h`;
