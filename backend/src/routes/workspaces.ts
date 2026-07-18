@@ -1,9 +1,10 @@
 import type { FastifyInstance } from "fastify";
 import {
   ensureOsheepLayout,
+  createWorkspace,
   listWorkspaces,
-  registerExternalWorkspace,
   resolveWorkspace,
+  setWorkspacesRoot,
 } from "../workspace.js";
 import {
   copyEntry,
@@ -23,15 +24,25 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
     return { workspaces: list.map(({ id, name }) => ({ id, name })) };
   });
 
-  app.post<{ Body: { path?: string } }>("/api/workspaces/open", async (req) => {
+  app.get("/api/workspaces/root", async () => {
+    return { path: config.workspacesRoot };
+  });
+
+  app.post<{ Body: { path?: string } }>("/api/workspaces/root", async (req) => {
     if (!config.allowExternalWorkspacePaths) {
       throw errors.invalidPath("当前服务未启用外部工作区");
     }
     if (typeof req.body?.path !== "string" || !req.body.path.trim()) {
       throw errors.invalidPath("缺少工作区路径");
     }
-    const workspace = await registerExternalWorkspace(req.body.path.trim());
-    await ensureOsheepLayout(workspace.path);
+    return { path: await setWorkspacesRoot(req.body.path.trim()) };
+  });
+
+  app.post<{ Body: { name?: string } }>("/api/workspaces", async (req) => {
+    if (typeof req.body?.name !== "string" || !req.body.name.trim()) {
+      throw errors.invalidPath("缺少工作区名称");
+    }
+    const workspace = await createWorkspace(req.body.name);
     return { id: workspace.id, name: workspace.name };
   });
 

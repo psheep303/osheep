@@ -55,9 +55,10 @@ The Windows application uses a Tauri/WebView2 shell and keeps the existing Node
 backend as a bundled sidecar. It does not bundle Chromium, Codex, Claude Code,
 Git, or Docker.
 
-The desktop workspace picker can open any local folder. Selected folders are
-registered by the local sidecar and continue to use the same HTTP/WebSocket
-workspace APIs as managed and remote workspaces.
+The desktop workspace picker selects a local `workspaces` root. Each direct
+child folder is a workspace, and the `+` action creates a new child folder in
+that root. The selected root is persisted by the local sidecar and continues
+to use the same HTTP/WebSocket workspace APIs as remote deployments.
 
 After installing Rust and Visual Studio 2022 Build Tools with the C++ desktop
 workload, run:

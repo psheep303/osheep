@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-pick-workspace-folder"
+description = "Allows the main osheep window to open the native workspaces folder picker."
+commands.allow = ["pick_workspace_folder"]
