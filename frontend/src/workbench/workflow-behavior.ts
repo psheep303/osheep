@@ -2,6 +2,15 @@ import type { WorkflowNode, WorkflowNodeKind } from "./api";
 
 export type WorkflowBlockOutput = Record<string, unknown>;
 
+export function formatWorkflowDuration(ms: number): string {
+  const safeMs = Number.isFinite(ms) ? Math.max(0, ms) : 0;
+  const totalSeconds = Math.floor(safeMs / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  return `${hours}h${minutes}m${seconds}s`;
+}
+
 function blockId(node: WorkflowNode): number | null {
   return typeof node.blockId === "number" && Number.isInteger(node.blockId) && node.blockId > 0
     ? node.blockId

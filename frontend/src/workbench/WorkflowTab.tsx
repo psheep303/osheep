@@ -54,6 +54,7 @@ import { ClaudeLogo, OpenAILogo } from "./BrandIcons";
 import {
   blockOutputText,
   canApplyWorkflowRefresh,
+  formatWorkflowDuration,
   type WorkflowBlockOutput,
 } from "./workflow-behavior";
 import { cleanAgentTerminalConversation } from "./terminal-conversation";
@@ -3083,7 +3084,13 @@ function WorkflowDetailsPanel({
       </div>
       <div className="workflow-run-details__meta">
         <span>{title}</span>
-        {snapshot?.durationMs !== undefined && <span>{snapshot.durationMs}ms</span>}
+        {snapshot?.durationMs !== undefined && (
+          <span>
+            {snapshot.kind === "agent"
+              ? formatWorkflowDuration(snapshot.durationMs)
+              : `${snapshot.durationMs}ms`}
+          </span>
+        )}
         {snapshot?.exitCode !== undefined && <span>exit {snapshot.exitCode ?? "signal"}</span>}
       </div>
       {snapshot?.kind === "agent" && snapshot.conversationSessionId && (

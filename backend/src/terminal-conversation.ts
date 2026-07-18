@@ -7,6 +7,7 @@ const ANSI_SEQUENCE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const CONVERSATION_WINDOW_CHARS = 96 * 1024;
 const CONVERSATION_OVERLAP_CHARS = 16 * 1024;
 const CONVERSATION_MAX_CHARS = 512 * 1024;
+const CODEX_SESSION_TAIL_BYTES = 4 * 1024 * 1024;
 
 export type AgentTerminalConversationKind = "claude-cli" | "codex-cli";
 
@@ -236,6 +237,105 @@ export async function readClaudeSessionConversation(sessionId: string): Promise<
     }
   }
   return "";
+}
+
+export async function readCodexSessionFinalAnswer(sessionId: string): Promise<string> {
+  if (!/^[a-z0-9_-]{8,128}$/i.test(sessionId)) return "";
+  const home = os.homedir() || ".";
+  const codexHome = path.resolve(
+    process.env.OSHEEP_CODEX_CONFIG_DIR ||
+      process.env.CODEX_HOME ||
+      path.join(home, ".codex")
+  );
+  const filePath = await findCodexSessionFile(path.join(codexHome, "sessions"), sessionId);
+  if (!filePath) return "";
+  return extractLastCodexAnswerFromJsonl(await readFileTail(filePath, CODEX_SESSION_TAIL_BYTES));
+}
+
+async function findCodexSessionFile(root: string, sessionId: string): Promise<string> {
+  const pending = [root];
+  const suffix = `${sessionId}.jsonl`.toLowerCase();
+  while (pending.length > 0) {
+    const dir = pending.pop();
+    if (!dir) break;
+    let entries;
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw error;
+    }
+    entries.sort((a, b) => b.name.localeCompare(a.name));
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) pending.push(fullPath);
+      else if (entry.isFile() && entry.name.toLowerCase().endsWith(suffix)) return fullPath;
+    }
+  }
+  return "";
+}
+
+async function readFileTail(filePath: string, maxBytes: number): Promise<string> {
+  const handle = await fs.open(filePath, "r");
+  try {
+    const stat = await handle.stat();
+    const length = Math.min(stat.size, maxBytes);
+    const start = Math.max(0, stat.size - length);
+    const buffer = Buffer.alloc(length);
+    await handle.read(buffer, 0, length, start);
+    const text = buffer.toString("utf8");
+    if (start === 0) return text;
+    const firstLineEnd = text.indexOf("\n");
+    return firstLineEnd >= 0 ? text.slice(firstLineEnd + 1) : "";
+  } finally {
+    await handle.close();
+  }
+}
+
+function extractLastCodexAnswerFromJsonl(jsonl: string): string {
+  const values = jsonl
+    .split(/\r?\n/)
+    .map((line) => {
+      if (!line.trim()) return null;
+      try {
+        const value = JSON.parse(line) as unknown;
+        return value && typeof value === "object" && !Array.isArray(value)
+          ? (value as Record<string, unknown>)
+          : null;
+      } catch {
+        return null;
+      }
+    })
+    .filter((value): value is Record<string, unknown> => !!value);
+
+  for (let index = values.length - 1; index >= 0; index -= 1) {
+    const value = values[index]!;
+    const payload = objectValue(value.payload);
+    if (
+      stringValue(value.type) === "event_msg" &&
+      stringValue(payload.type) === "task_complete"
+    ) {
+      const answer = cleanStructuredText(stringValue(payload.last_agent_message));
+      if (answer) return answer;
+    }
+  }
+  for (let index = values.length - 1; index >= 0; index -= 1) {
+    const value = values[index]!;
+    const payload = objectValue(value.payload);
+    if (
+      stringValue(value.type) === "response_item" &&
+      stringValue(payload.type) === "message" &&
+      stringValue(payload.role) === "assistant"
+    ) {
+      const answer = contentText(payload.content);
+      if (answer) return answer;
+    }
+  }
+  return "";
+}
+
+export function extractLastCodexAnswerFromJsonlForTest(jsonl: string): string {
+  return extractLastCodexAnswerFromJsonl(jsonl);
 }
 
 function formatClaudeJsonlConversation(jsonl: string): string {
