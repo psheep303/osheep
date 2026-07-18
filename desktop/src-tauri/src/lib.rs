@@ -1,3 +1,4 @@
+use rfd::FileDialog;
 use std::{
     env,
     fs::{self, File},
@@ -12,6 +13,18 @@ use std::{
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
 struct BackendProcess(Mutex<Option<Child>>);
+
+#[tauri::command]
+async fn pick_workspace_folder() -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        FileDialog::new()
+            .set_title("选择工作区文件夹")
+            .pick_folder()
+            .map(|path| path.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|error| format!("文件夹选择器失败: {error}"))
+}
 
 impl BackendProcess {
     fn stop(&self) {
@@ -157,6 +170,7 @@ fn spawn_local_backend(app: &tauri::App, port: u16) -> io::Result<Child> {
         .env("NODE_ENV", "production")
         .env("OSHEEP_HOST", "127.0.0.1")
         .env("OSHEEP_PORT", port.to_string())
+        .env("OSHEEP_ALLOW_EXTERNAL_WORKSPACE_PATHS", "1")
         .env(
             "OSHEEP_FRONTEND_ROOT",
             frontend_root.to_string_lossy().as_ref(),
@@ -216,6 +230,7 @@ fn remote_url() -> io::Result<Option<tauri::Url>> {
 
 pub fn run() {
     let app_result = tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![pick_workspace_folder])
         .setup(|app| {
             let (url, backend) = if let Some(url) = remote_url()? {
                 (url, None)

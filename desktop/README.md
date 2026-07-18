@@ -47,6 +47,37 @@ The remote URL must serve the osheep frontend and `/api` from the same origin.
 
 ## Windows Installer
 
+After finishing a code change, use this sequence from the repository root:
+
+```powershell
+# 1. Verify both TypeScript projects
+cd backend
+npm.cmd run build
+npm.cmd test
+cd ..\frontend
+npm.cmd run build
+cd ..
+
+# 2. Verify the desktop shell interactively
+.\desktop-dev.cmd
+
+# 3. Produce the Windows installer
+.\desktop-build.cmd
+```
+
+`desktop-build.cmd` performs the frontend/backend production builds, creates a
+production-only Node sidecar stage, compiles the Tauri release executable, and
+runs NSIS. Project caches are kept under `.cache/`; Rust output and the local
+NSIS tool cache stay under `desktop/src-tauri/target/`.
+
+Before publishing a new release, keep these three version fields in sync:
+
+- `desktop/package.json`
+- `desktop/src-tauri/Cargo.toml`
+- `desktop/src-tauri/tauri.conf.json`
+
+Then run:
+
 ```powershell
 .\desktop-build.cmd
 ```
@@ -60,6 +91,9 @@ The release preparation hook:
 
 The installer is written under `desktop/src-tauri/target/release/bundle/nsis/`.
 `desktop/stage` and Rust build outputs are ignored by Git.
+
+If testing a replacement installer with the same version number, uninstall the
+existing osheep installation first so Windows does not retain old resources.
 
 Use a supported LTS Node release when producing official installers. The Node
 binary is copied from `Get-Command node`; `prepare-release.ps1 -NodeBinary PATH`
