@@ -12,9 +12,7 @@ export interface WorkspaceInfo {
 const WORKSPACE_ID_RE = /^[a-zA-Z0-9._-]{1,64}$/;
 
 function isValidWorkspaceId(name: string): boolean {
-  if (!name) return false;
-  if (name.startsWith(".")) return false;
-  return WORKSPACE_ID_RE.test(name);
+  return Boolean(name) && !name.startsWith(".") && WORKSPACE_ID_RE.test(name);
 }
 
 export async function ensureWorkspacesRoot(): Promise<void> {
@@ -23,99 +21,117 @@ export async function ensureWorkspacesRoot(): Promise<void> {
 
 export async function listWorkspaces(): Promise<WorkspaceInfo[]> {
   await ensureWorkspacesRoot();
-  const entries = await fs.readdir(config.workspacesRoot, {
-    withFileTypes: true,
-  });
-  const out: WorkspaceInfo[] = [];
-  for (const e of entries) {
-    if (!e.isDirectory()) continue;
-    if (!isValidWorkspaceId(e.name)) continue;
-    out.push({
-      id: e.name,
-      name: e.name,
-      path: path.join(config.workspacesRoot, e.name),
-    });
-  }
-  out.sort((a, b) => a.id.localeCompare(b.id));
-  return out;
+  const entries = await fs.readdir(config.workspacesRoot, { withFileTypes: true });
+  return entries
+    .filter((entry) => entry.isDirectory() && isValidWorkspaceId(entry.name))
+    .map((entry) => ({
+      id: entry.name,
+      name: entry.name,
+      path: path.join(config.workspacesRoot, entry.name),
+    }))
+    .sort((a, b) => a.id.localeCompare(b.id));
 }
 
 export async function resolveWorkspace(id: string): Promise<WorkspaceInfo> {
   if (!isValidWorkspaceId(id)) throw errors.workspaceNotFound(id);
-  const abs = path.join(config.workspacesRoot, id);
-  let stat;
+  const workspacePath = path.join(config.workspacesRoot, id);
   try {
-    stat = await fs.stat(abs);
-  } catch {
+    if (!(await fs.stat(workspacePath)).isDirectory()) {
+      throw errors.workspaceNotFound(id);
+    }
+  } catch (error) {
+    if (error instanceof Error && "statusCode" in error) throw error;
     throw errors.workspaceNotFound(id);
   }
-  if (!stat.isDirectory()) throw errors.workspaceNotFound(id);
-  return { id, name: id, path: abs };
+  return { id, name: id, path: workspacePath };
 }
 
-/**
- * Resolve a workspace-relative POSIX-style path to an absolute filesystem
- * path, refusing anything that would escape the workspace root.
- *
- * Acceptable input: "", "src", "src/main.ts", "src/sub/dir"
- * Rejected: "/abs", "C:\\x", "..", "src/../../etc", paths with NUL byte
- */
-export function resolveWorkspacePath(
-  workspaceRoot: string,
-  rel: string
-): string {
-  if (rel === undefined || rel === null) throw errors.invalidPath();
-  if (typeof rel !== "string") throw errors.invalidPath();
-  if (rel.includes("\0")) throw errors.invalidPath("路径含 NUL");
+export async function setWorkspacesRoot(rawPath: string): Promise<string> {
+  if (!path.isAbsolute(rawPath)) {
+    throw errors.invalidPath("workspaces 根目录必须是绝对路径");
+  }
+  const candidate = path.resolve(rawPath);
+  let stat;
+  try {
+    stat = await fs.stat(candidate);
+  } catch {
+    throw errors.invalidPath("workspaces 根目录不存在");
+  }
+  if (!stat.isDirectory()) throw errors.invalidPath("workspaces 根目录不是目录");
 
-  // Normalize separators to POSIX style for validation
+  config.workspacesRoot = await fs.realpath(candidate);
+  await ensureWorkspacesRoot();
+  if (config.workspaceRootConfigFile) {
+    await fs.mkdir(path.dirname(config.workspaceRootConfigFile), { recursive: true });
+    await fs.writeFile(
+      config.workspaceRootConfigFile,
+      JSON.stringify({ root: config.workspacesRoot }, null, 2),
+      "utf8"
+    );
+  }
+  return config.workspacesRoot;
+}
+
+export async function createWorkspace(name: string): Promise<WorkspaceInfo> {
+  const id = name.trim();
+  if (!isValidWorkspaceId(id)) {
+    throw errors.invalidPath("工作区名称只能包含字母、数字、点、下划线和短横线");
+  }
+  await ensureWorkspacesRoot();
+  const workspacePath = path.join(config.workspacesRoot, id);
+  try {
+    await fs.mkdir(workspacePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      throw errors.entryExists();
+    }
+    throw error;
+  }
+  await ensureOsheepLayout(workspacePath);
+  return { id, name: id, path: workspacePath };
+}
+
+/** Resolve a workspace-relative path without allowing it to escape the root. */
+export function resolveWorkspacePath(workspaceRoot: string, rel: string): string {
+  if (rel === undefined || rel === null || typeof rel !== "string") {
+    throw errors.invalidPath();
+  }
+  if (rel.includes("\0")) throw errors.invalidPath("路径包含 NUL");
+
   const unified = rel.replace(/\\/g, "/").trim();
   if (unified === "" || unified === ".") return workspaceRoot;
-
-  // Reject absolute paths in any form
   if (unified.startsWith("/")) throw errors.invalidPath("不允许绝对路径");
-  if (/^[a-zA-Z]:/.test(unified)) throw errors.invalidPath("不允许盘符");
+  if (/^[a-zA-Z]:/.test(unified)) throw errors.invalidPath("不允许盘符路径");
 
-  // Reject explicit `..` segments
-  const segments = unified.split("/").filter((s) => s !== "");
-  for (const seg of segments) {
-    if (seg === "..") throw errors.pathOutside();
-    if (seg === ".") continue;
-    if (seg.includes("\0")) throw errors.invalidPath("路径含 NUL");
+  const segments = unified.split("/").filter(Boolean);
+  for (const segment of segments) {
+    if (segment === "..") throw errors.pathOutside();
+    if (segment === "." || segment.includes("\0")) continue;
   }
 
   const joined = path.resolve(workspaceRoot, ...segments);
   const rootResolved = path.resolve(workspaceRoot);
-
-  // On case-insensitive filesystems (Windows / macOS default), compare
-  // case-insensitively. We still go through path.resolve so symlinks at
-  // the workspace root are not followed beyond it.
-  const sep = path.sep;
-  const rootWithSep = rootResolved.endsWith(sep)
+  const rootWithSep = rootResolved.endsWith(path.sep)
     ? rootResolved
-    : rootResolved + sep;
+    : rootResolved + path.sep;
   if (joined !== rootResolved && !joined.startsWith(rootWithSep)) {
     throw errors.pathOutside();
   }
   return joined;
 }
 
-/**
- * Ensure the workspace's `.osheep/` skeleton exists. Idempotent.
- */
 export async function ensureOsheepLayout(workspaceRoot: string): Promise<void> {
-  const oshroot = path.join(workspaceRoot, ".osheep");
-  await fs.mkdir(oshroot, { recursive: true });
-  await fs.mkdir(path.join(oshroot, "docs"), { recursive: true });
-  await fs.mkdir(path.join(oshroot, "plan"), { recursive: true });
-  const settingsPath = path.join(oshroot, "settings.json");
+  const osheepRoot = path.join(workspaceRoot, ".osheep");
+  await fs.mkdir(path.join(osheepRoot, "docs"), { recursive: true });
+  await fs.mkdir(path.join(osheepRoot, "plan"), { recursive: true });
+  const settingsPath = path.join(osheepRoot, "settings.json");
   try {
     await fs.access(settingsPath);
   } catch {
     await fs.writeFile(
       settingsPath,
       JSON.stringify({ editor: { fontSize: 14, tabSize: 2 } }, null, 2),
-      "utf-8"
+      "utf8"
     );
   }
 }

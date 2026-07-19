@@ -1,0 +1,4 @@
+node_modules/
+stage/
+src-tauri/target/
+.cache/

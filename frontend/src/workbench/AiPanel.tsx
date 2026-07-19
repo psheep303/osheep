@@ -289,7 +289,7 @@ export function AiPanel({
         setPanelMenu({ x: event.clientX, y: event.clientY });
       }}
     >
-      <div className="ai-panel__brand">osheep workflows</div>
+      <div className="ai-panel__brand">Osheep workflows</div>
 
       <button
         className="ai-panel__new"
