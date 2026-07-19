@@ -93,6 +93,7 @@ const SIDE_MAX = 600;
 
 export function Workbench() {
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
+  const [workspaceName, setWorkspaceName] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [activePath, setActivePath] = useState<string | null>(null);
@@ -188,9 +189,10 @@ export function Workbench() {
     [workspaceId]
   );
 
-  const onChooseWorkspace = useCallback((id: string) => {
+  const onChooseWorkspace = useCallback((workspace: { id: string; name: string }) => {
     setError(null);
-    setWorkspaceId(id);
+    setWorkspaceId(workspace.id);
+    setWorkspaceName(workspace.name);
     setTabs([]);
     setActivePath(null);
     setSelectedTreePath(null);
@@ -572,7 +574,7 @@ export function Workbench() {
   return (
     <div className="workbench">
       <div className="titlebar">
-        <span className="titlebar__brand">osheep</span>
+        <span className="titlebar__brand">Osheep</span>
         {developerMode && <span className="titlebar__dev-badge">DEVELOPER</span>}
         <span className="titlebar__sep">·</span>
         <button
@@ -580,7 +582,7 @@ export function Workbench() {
           onClick={() => setPicking(true)}
           title={workspaceId ? "切换工作区" : "选择工作区"}
         >
-          {workspaceId ?? "选择工作区"}
+          {workspaceName ?? "选择工作区"}
         </button>
         <div className="titlebar__actions">
           <button
@@ -650,7 +652,7 @@ export function Workbench() {
               (workspaceId ? (
                 <FileTree
                   workspaceId={workspaceId}
-                  workspaceName={workspaceId}
+                  workspaceName={workspaceName ?? workspaceId}
                   selectedPath={selectedTreePath}
                   onSelect={setSelectedTreePath}
                   onOpenFile={openFile}

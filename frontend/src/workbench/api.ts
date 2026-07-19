@@ -593,6 +593,20 @@ export interface GitLog {
   currentRemoteRef: string | null;
 }
 
+export async function getWorkspacesRoot(): Promise<string> {
+  const result = await http.get<{ path: string }>("/api/workspaces/root");
+  return result.path;
+}
+
+export async function setWorkspacesRoot(path: string): Promise<string> {
+  const result = await http.post<{ path: string }>("/api/workspaces/root", { path });
+  return result.path;
+}
+
+export async function createWorkspace(name: string): Promise<Workspace> {
+  return await http.post<Workspace>("/api/workspaces", { name });
+}
+
 export async function getGitLog(
   workspaceId: string,
   limit = 200,
