@@ -1,4 +1,8 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
+
+export function isDesktopShell(): boolean {
+  return isTauri();
+}
 
 export async function pickWorkspaceFolder(initialPath?: string | null): Promise<string | null> {
   try {
