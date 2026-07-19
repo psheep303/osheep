@@ -255,7 +255,7 @@ pub fn run() {
 
             app.manage(BackendProcess(Mutex::new(backend)));
             WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
-                .title("osheep")
+                .title("Osheep")
                 .inner_size(1440.0, 900.0)
                 .min_inner_size(960.0, 640.0)
                 .build()?;
