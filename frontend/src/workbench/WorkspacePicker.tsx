@@ -6,7 +6,7 @@ import {
   setWorkspacesRoot as setWorkspaceRootApi,
   type Workspace,
 } from "./api";
-import { pickWorkspaceFolder } from "./desktop-folder-picker";
+import { isDesktopShell, pickWorkspaceFolder } from "./desktop-folder-picker";
 
 interface Props {
   currentId: string | null;
@@ -15,6 +15,7 @@ interface Props {
 }
 
 export function WorkspacePicker({ currentId, onChoose, onCancel }: Props) {
+  const desktopShell = isDesktopShell();
   const [items, setItems] = useState<Workspace[] | null>(null);
   const [rootPath, setRootPath] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -102,14 +103,16 @@ export function WorkspacePicker({ currentId, onChoose, onCancel }: Props) {
           >
             +
           </button>
-          <button
-            type="button"
-            className="tb-btn workspace-picker__open"
-            onClick={() => void chooseRootFolder()}
-            disabled={opening || creating}
-          >
-            {opening ? "打开中..." : "选择 workspaces 文件夹"}
-          </button>
+          {desktopShell && (
+            <button
+              type="button"
+              className="tb-btn workspace-picker__open"
+              onClick={() => void chooseRootFolder()}
+              disabled={opening || creating}
+            >
+              {opening ? "打开中..." : "选择 workspaces 文件夹"}
+            </button>
+          )}
           <button className="icon-btn" onClick={onCancel} title="关闭">
             ×
           </button>
