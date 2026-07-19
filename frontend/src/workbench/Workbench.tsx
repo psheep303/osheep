@@ -574,7 +574,7 @@ export function Workbench() {
   return (
     <div className="workbench">
       <div className="titlebar">
-        <span className="titlebar__brand">osheep</span>
+        <span className="titlebar__brand">Osheep</span>
         {developerMode && <span className="titlebar__dev-badge">DEVELOPER</span>}
         <span className="titlebar__sep">·</span>
         <button
