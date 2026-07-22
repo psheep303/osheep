@@ -12,27 +12,68 @@ dist-ssr/
 *.tsbuildinfo
 .cache/
 .tools/
+.tmp/
+tmp/
+temp/
+output/
+coverage/
+desktop/stage/
+desktop/src-tauri/target/
 
-# Local environment and tool state
+# Local environment and application state
 .env
 .env.*
-!.env.example
+**/.env
+**/.env.*
+!**/.env.example
 *.local
+backend/.osheep/
+backend/workspaces/
+.agents/
 .claude/
+.codex/
 
-# Logs and captured sessions
+# Credentials, private keys, and signing material
+credentials.json
+credentials.*.json
+secrets.json
+secrets.*.json
+secrets.yaml
+secrets.yml
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.kdbx
+*.mobileprovision
+*.cer
+*.crt
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+
+# Logs, databases, and captured sessions
 *.log
 *.jsonl
+*.sqlite
+*.sqlite3
+*.db
 logs/
 
-# Runtime workspaces
-backend/workspaces/
-
-# OS and editor noise
+# Editors and operating systems
+.idea/
+.vscode/
+*.code-workspace
+*.swp
+*.swo
+*~
 .DS_Store
 Thumbs.db
+Desktop.ini
 
+# Local reports and scratch material
 docs/bugs/
-
-# other files
 other/
