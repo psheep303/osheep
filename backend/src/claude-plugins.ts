@@ -821,6 +821,30 @@ export async function disableClaudePlugin(
   return { output };
 }
 
+/**
+ * Apply a workflow block's enabled set without installing or uninstalling
+ * anything. Only plugins reported as installed by Claude Code are eligible.
+ */
+export async function applyClaudePluginSelection(
+  selectedSelectors: string[],
+  options: ClaudePluginServiceOptions = {}
+): Promise<ClaudePluginSnapshot> {
+  const snapshot = await getClaudePluginSnapshot(options);
+  const selected = new Set(
+    selectedSelectors
+      .filter((selector): selector is string => typeof selector === "string")
+      .map(validatePluginSelector)
+  );
+  for (const plugin of snapshot.plugins) {
+    if (!plugin.status.installed) continue;
+    const shouldEnable = selected.has(plugin.selector);
+    if (plugin.status.enabled === shouldEnable) continue;
+    if (shouldEnable) await enableClaudePlugin(plugin.selector, options);
+    else await disableClaudePlugin(plugin.selector, options);
+  }
+  return await getClaudePluginSnapshot(options);
+}
+
 export async function addClaudeMarketplace(
   source: string,
   options: ClaudePluginServiceOptions = {}

@@ -5,7 +5,7 @@
   "description": "Claude 设计高价值测试策略，Codex 编写并运行测试。",
   "readme": "# 测试补全\n\n用于给现有实现补充单元测试、集成测试或回归测试。Claude Code 先理解行为与风险，筛选真正有价值的用例；Codex 再按照项目现有测试风格快速落地并执行。\n\n## 输入建议\n\n请提供目标文件或模块、应保证的行为、已知缺陷、测试范围和禁止事项。例如：\n\n```text\n为 backend/src/token.ts 补充单元测试，覆盖过期、时钟偏差和签名错误。复用现有测试工具，不引入新依赖，不修改生产行为。\n```\n\n## 效率原则\n\n测试策略必须优先覆盖风险和行为，不追求无意义的行覆盖率。Codex 会先阅读现有测试约定，只运行相关测试；必要时再扩大验证范围。",
   "createdAt": 107,
-  "updatedAt": 1784359478824,
+  "updatedAt": 1784717002042,
   "nodes": [
     {
       "id": "node_testrun",
@@ -15,8 +15,8 @@
       "providerKind": "codex-cli",
       "model": "default",
       "prompt": "",
-      "x": 139,
-      "y": 212,
+      "x": 204,
+      "y": 75,
       "status": "idle",
       "summary": "",
       "rawOutput": "",

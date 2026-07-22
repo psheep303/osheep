@@ -22,6 +22,8 @@ import {
   execRunStream,
   finishAiTerminalSuccess,
   getWorkflow as apiGetWorkflow,
+  getClaudePlugins,
+  getCodexPlugins,
   listAgentSessions,
   openTerminalSocket,
   pauseAiTerminal,
@@ -38,6 +40,8 @@ import {
   type AiTerminalEffort,
   type AiTerminalMode,
   type AiTerminalResult,
+  type ClaudePluginSnapshot,
+  type CodexPluginSnapshot,
   type AgentSessionApp,
   type RunResult,
   type RemoteMcpTool,
@@ -321,6 +325,8 @@ const CONFIGURED_LOCAL_KINDS = new Set<WorkflowNodeKind>([
   "cron",
   "manual-trigger",
   "webhook-trigger",
+  "codex-plugin",
+  "claude-plugin",
 ]);
 const HTTP_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
 const HTTP_RESPONSE_TYPES = ["auto", "json", "text"] as const;
@@ -551,6 +557,22 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
       codexApproval: "on-request",
       codexSandbox: "workspace-write",
     },
+  },
+  {
+    category: "ai",
+    label: "Codex plugins",
+    title: "Codex plugins",
+    kind: "codex-plugin",
+    icon: "codex",
+    config: { pluginSelectors: [] },
+  },
+  {
+    category: "ai",
+    label: "Claude plugins",
+    title: "Claude plugins",
+    kind: "claude-plugin",
+    icon: "claude",
+    config: { pluginSelectors: [] },
   },
   {
     category: "network",
@@ -3451,6 +3473,8 @@ function WorkflowNodeInspector({
   const isCron = kind === "cron";
   const isWebhookTrigger = kind === "webhook-trigger";
   const isAgent = kind === "agent";
+  const isCodexPlugin = kind === "codex-plugin";
+  const isClaudePlugin = kind === "claude-plugin";
   const isFileWrite = kind === "file-write";
   const isMcp = kind === "mcp";
   const isMarkdown = kind === "markdown";
@@ -3472,6 +3496,10 @@ function WorkflowNodeInspector({
   const loopConfig = loopItemsConfig(node);
   const waitConfig = waitNodeConfig(node);
   const jsonConfig = jsonNodeConfig(node);
+  const [pluginSnapshot, setPluginSnapshot] = useState<
+    CodexPluginSnapshot | ClaudePluginSnapshot | null
+  >(null);
+  const [pluginSearch, setPluginSearch] = useState("");
   const showOutput = kind !== "markdown";
   const runDetails = runDetailsSnapshot(node);
   const waitingForChoice =
@@ -3479,6 +3507,42 @@ function WorkflowNodeInspector({
   const waitingAgentLabel = node.providerKind === "claude-cli" ? "Claude Code" : "Codex";
   const updateConfig = (patch: Record<string, unknown>) =>
     onUpdate({ config: { ...(node.config ?? {}), ...patch } });
+
+  useEffect(() => {
+    let active = true;
+    if (!isCodexPlugin && !isClaudePlugin) {
+      setPluginSnapshot(null);
+      setPluginSearch("");
+      return () => {
+        active = false;
+      };
+    }
+    setPluginSnapshot(null);
+    setPluginSearch("");
+    void (isCodexPlugin ? getCodexPlugins() : getClaudePlugins())
+      .then((snapshot) => {
+        if (active) setPluginSnapshot(snapshot);
+      })
+      .catch(() => {
+        if (active) setPluginSnapshot(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [isCodexPlugin, isClaudePlugin]);
+
+  const selectedPluginSelectors = pluginSelectorsForNode(node);
+  const pluginOptions = pluginSnapshot?.plugins.filter(
+    (plugin) => isCodexPlugin || plugin.status.installed
+  ) ?? [];
+  const normalizedPluginSearch = pluginSearch.trim().toLowerCase();
+  const visiblePluginOptions = normalizedPluginSearch
+    ? pluginOptions.filter((plugin) =>
+        `${plugin.displayName} ${plugin.selector} ${plugin.description ?? ""}`
+          .toLowerCase()
+          .includes(normalizedPluginSearch)
+      )
+    : pluginOptions;
 
   return (
     <aside className="workflow-inspector">
@@ -3527,6 +3591,19 @@ function WorkflowNodeInspector({
           autoFocus={autoFocusName}
         />
       </label>
+
+      {supportsFailover(kind) && (
+        <label className="workflow-inspector__check workflow-inspector__check--danger">
+          <input
+            type="checkbox"
+            checked={nodeFailover(node)}
+            onChange={(event) => updateConfig({ failover: event.target.checked })}
+            disabled={running}
+          />
+          <span>Failover</span>
+          <small>Warning</small>
+        </label>
+      )}
 
       {isAgent && (
         <>
@@ -3634,6 +3711,62 @@ function WorkflowNodeInspector({
             <small>Warning</small>
           </label>
         </>
+      )}
+
+      {(isCodexPlugin || isClaudePlugin) && (
+        <div className="workflow-inspector__section">
+          <div className="workflow-inspector__section-title">
+            {isCodexPlugin ? "Codex plugins to enable" : "Installed Claude plugins to enable"}
+          </div>
+          <input
+            className="workflow-inspector__plugin-search"
+            type="search"
+            value={pluginSearch}
+            onChange={(event) => setPluginSearch(event.target.value)}
+            placeholder="Search plugins"
+            aria-label="Search plugins"
+            disabled={!pluginSnapshot}
+          />
+          <div className="workflow-inspector__plugin-list">
+            {!pluginSnapshot && <div className="workflow-inspector__muted">Loading plugins...</div>}
+            {pluginSnapshot && pluginOptions.length === 0 && (
+              <div className="workflow-inspector__muted">
+                {isCodexPlugin ? "No Codex plugins found." : "No installed Claude plugins found."}
+              </div>
+            )}
+            {pluginSnapshot && pluginOptions.length > 0 && visiblePluginOptions.length === 0 && (
+              <div className="workflow-inspector__muted">No matching plugins.</div>
+            )}
+            {visiblePluginOptions.map((plugin) => {
+              const checked = selectedPluginSelectors.includes(plugin.selector);
+              return (
+                <label
+                  key={plugin.selector}
+                  className="workflow-inspector__check"
+                  title={plugin.selector}
+                >
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={(event) => {
+                      const next = new Set(selectedPluginSelectors);
+                      if (event.target.checked) next.add(plugin.selector);
+                      else next.delete(plugin.selector);
+                      updateConfig({ pluginSelectors: [...next] });
+                    }}
+                    disabled={running}
+                  />
+                  <span>{plugin.displayName}</span>
+                </label>
+              );
+            })}
+          </div>
+          <div className="workflow-inspector__section-title">
+            {isCodexPlugin
+              ? "Selected plugins are enabled; all other discovered Codex plugins are disabled."
+              : "Selected installed plugins are enabled; other installed plugins are disabled."}
+          </div>
+        </div>
       )}
 
       {isManualTrigger ? (
@@ -3975,7 +4108,7 @@ function WorkflowNodeInspector({
             />
           </label>
         </>
-      ) : !isTrigger && (
+      ) : !isTrigger && !isCodexPlugin && !isClaudePlugin && (
         <label className="workflow-inspector__field">
           <span>{inputLabelForKind(kind)}</span>
           <TemplateTextarea
@@ -5304,6 +5437,25 @@ function agentRetryCount(node: WorkflowNode): number {
   return clamp(value, 0, 5);
 }
 
+function nodeFailover(node: WorkflowNode): boolean {
+  return supportsFailover(nodeKind(node)) && node.config?.failover === true;
+}
+
+function supportsFailover(kind: WorkflowNodeKind): boolean {
+  return (
+    kind === "agent" ||
+    kind === "command" ||
+    kind === "code" ||
+    kind === "web" ||
+    kind === "http-request" ||
+    kind === "file-read" ||
+    kind === "file-write" ||
+    kind === "mcp" ||
+    kind === "codex-plugin" ||
+    kind === "claude-plugin"
+  );
+}
+
 function agentRetryForever(node: WorkflowNode): boolean {
   return node.config?.retryForever === true;
 }
@@ -6254,6 +6406,7 @@ function blockEyebrow(kind: WorkflowNodeKind): string {
   if (kind === "file-read" || kind === "file-write") return "File";
   if (kind === "markdown" || kind === "set" || kind === "merge" || kind === "json") return "Data";
   if (kind === "mcp") return "MCP";
+  if (kind === "codex-plugin" || kind === "claude-plugin") return "Plugins";
   return "AI";
 }
 
@@ -6273,6 +6426,7 @@ function inputLabelForKind(kind: WorkflowNodeKind): string {
   if (kind === "file-write") return "Path / content";
   if (kind === "markdown") return "Markdown";
   if (kind === "mcp") return "MCP";
+  if (kind === "codex-plugin" || kind === "claude-plugin") return "Plugins";
   return "Prompt";
 }
 
@@ -6297,6 +6451,8 @@ function nodeKind(node: WorkflowNode): WorkflowNodeKind {
     node.kind === "file-write" ||
     node.kind === "markdown" ||
     node.kind === "mcp"
+    || node.kind === "codex-plugin"
+    || node.kind === "claude-plugin"
   ) {
     return node.kind;
   }
@@ -6327,7 +6483,11 @@ function nodeFromTemplate(
     providerKind: template.providerKind ?? "codex-cli",
     model: template.model ?? "default",
     prompt: template.prompt ?? "",
-    config: { ...(template.config ?? {}), icon: template.icon },
+    config: {
+      ...(supportsFailover(template.kind) ? { failover: false } : {}),
+      ...(template.config ?? {}),
+      icon: template.icon,
+    },
     x,
     y,
     status: "idle",
@@ -6357,6 +6517,8 @@ function nodeIconName(node: WorkflowNode): WorkflowIconName {
   if (kind === "file-write") return "write";
   if (kind === "markdown") return "markdown";
   if (kind === "mcp") return "mcp";
+  if (kind === "codex-plugin") return "codex";
+  if (kind === "claude-plugin") return "claude";
   return node.providerKind === "claude-cli" ? "claude" : "codex";
 }
 
@@ -6714,6 +6876,13 @@ function jsonNodeConfig(node: WorkflowNode): JsonNodeConfig {
     source: typeof config.source === "string" ? config.source : "",
     path: typeof config.path === "string" ? config.path : "",
   };
+}
+
+function pluginSelectorsForNode(node: WorkflowNode): string[] {
+  const value = node.config?.pluginSelectors;
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
 }
 
 function mcpNodeConfig(node: WorkflowNode): McpNodeConfig {

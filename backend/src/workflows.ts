@@ -28,7 +28,9 @@ export type WorkflowNodeKind =
   | "file-read"
   | "file-write"
   | "markdown"
-  | "mcp";
+  | "mcp"
+  | "codex-plugin"
+  | "claude-plugin";
 export type WorkflowNodeStatus = "idle" | "running" | "success" | "error";
 export type WorkflowRunStatus = "idle" | "running" | "success" | "error" | "stopped";
 
@@ -155,7 +157,9 @@ function asNodeKind(value: unknown): WorkflowNodeKind {
     value === "file-read" ||
     value === "file-write" ||
     value === "markdown" ||
-    value === "mcp"
+    value === "mcp" ||
+    value === "codex-plugin" ||
+    value === "claude-plugin"
   ) {
     return value;
   }

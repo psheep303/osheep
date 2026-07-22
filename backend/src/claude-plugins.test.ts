@@ -5,6 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import {
   addClaudeMarketplace,
+  applyClaudePluginSelection,
   disableClaudePlugin,
   enableClaudePlugin,
   getClaudePluginSnapshot,
@@ -543,4 +544,34 @@ test("Claude plugin actions reject unsafe selectors before invoking the CLI", as
   );
 
   assert.equal(calls, 0);
+});
+
+test("workflow Claude plugin selection only toggles installed plugins", async () => {
+  const calls: string[][] = [];
+  const enabled = new Set(["alpha@official", "beta@official"]);
+  const runCli = async (args: string[]) => {
+    calls.push(args);
+    if (args.join(" ") === "plugin list --available --json") {
+      return JSON.stringify({
+        installed: [
+          { id: "alpha@official", enabled: enabled.has("alpha@official") },
+          { id: "beta@official", enabled: enabled.has("beta@official") },
+        ],
+        available: [{ pluginId: "not-installed@official" }],
+      });
+    }
+    if (args.join(" ") === "plugin marketplace list --json") return "[]";
+    if (args[0] === "plugin" && args[1] === "disable") enabled.delete(args[2]!);
+    if (args[0] === "plugin" && args[1] === "enable") enabled.add(args[2]!);
+    return "{}";
+  };
+
+  const snapshot = await applyClaudePluginSelection(["alpha@official"], { runCli });
+  assert.equal(snapshot.plugins.find((plugin) => plugin.selector === "alpha@official")?.status.enabled, true);
+  assert.equal(snapshot.plugins.find((plugin) => plugin.selector === "beta@official")?.status.enabled, false);
+  assert.deepEqual(
+    calls.filter((args) => args[0] === "plugin" && (args[1] === "enable" || args[1] === "disable")),
+    [["plugin", "disable", "beta@official"]]
+  );
+  assert.equal(calls.some((args) => args[2] === "not-installed@official"), false);
 });
