@@ -1065,7 +1065,9 @@ export type WorkflowNodeKind =
   | "file-read"
   | "file-write"
   | "markdown"
-  | "mcp";
+  | "mcp"
+  | "codex-plugin"
+  | "claude-plugin";
 export type WorkflowNodeStatus = "idle" | "running" | "success" | "error";
 export type WorkflowRunStatus =
   | "idle"

@@ -7,6 +7,7 @@ import * as path from "node:path";
 import { promisify } from "node:util";
 import {
   addCodexMarketplace,
+  applyCodexPluginSelection,
   createLocalCodexPlugin,
   getCodexPluginSnapshot,
   importLocalCodexPlugin,
@@ -699,4 +700,38 @@ test("route helpers parse required strings and deleteSource flags", () => {
   assert.equal(parseDeleteSourceFlag({ deleteSource: "true" }), true);
   assert.equal(parseDeleteSourceFlag({ deleteSource: "false" }), false);
   assert.throws(() => parseRequiredStringField({}, "selector"), /selector is required/);
+});
+
+test("workflow Codex plugin selection updates enabled state without installing plugins", async () => {
+  const paths = await makeFixturePaths();
+  await fs.mkdir(path.dirname(paths.codexConfig), { recursive: true });
+  await fs.writeFile(
+    paths.codexConfig,
+    '[plugins."alpha@market"]\nenabled = true\n\n[plugins."beta@market"]\nenabled = false\n',
+    "utf8"
+  );
+  const calls: string[][] = [];
+  const runCli = async (args: string[]) => {
+    calls.push(args);
+    if (args.join(" ") === "plugin list --available --json") {
+      return JSON.stringify({
+        installed: [
+          { selector: "alpha@market", name: "alpha", enabled: true },
+          { selector: "beta@market", name: "beta", enabled: false },
+        ],
+        available: [],
+      });
+    }
+    if (args.join(" ") === "plugin marketplace list --json") {
+      return JSON.stringify({ marketplaces: [] });
+    }
+    throw new Error(`unexpected CLI call: ${args.join(" ")}`);
+  };
+
+  const snapshot = await applyCodexPluginSelection(["beta@market"], { paths, runCli });
+  assert.ok(snapshot.plugins.some((plugin) => plugin.selector === "alpha@market"));
+  assert.equal(calls.filter((args) => args[0] === "plugin" && args[1] === "add").length, 0);
+  const config = await fs.readFile(paths.codexConfig, "utf8");
+  assert.match(config, /\[plugins\."alpha@market"\][\s\S]*?enabled\s*=\s*false/);
+  assert.match(config, /\[plugins\."beta@market"\][\s\S]*?enabled\s*=\s*true/);
 });

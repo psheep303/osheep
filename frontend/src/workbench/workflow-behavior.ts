@@ -189,6 +189,15 @@ export function emptyBlockOutput(node: WorkflowNode): WorkflowBlockOutput {
         response: {},
         text: "",
       };
+    case "codex-plugin":
+    case "claude-plugin":
+      return {
+        type: kind,
+        status: "",
+        selected: [],
+        enabled: [],
+        text: "",
+      };
   }
 }
 

@@ -3,7 +3,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { parse as parseToml } from "smol-toml";
+import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
+import type { TomlTable } from "smol-toml";
 import { ApiError, errors } from "./errors.js";
 
 const execFileAsync = promisify(execFile);
@@ -883,6 +884,16 @@ async function writeJsonAtomic(filePath: string, value: unknown): Promise<void> 
   await fs.rename(temp, filePath);
 }
 
+async function writeTextAtomic(filePath: string, text: string): Promise<void> {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  const temp = path.join(
+    path.dirname(filePath),
+    `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`
+  );
+  await fs.writeFile(temp, text, "utf8");
+  await fs.rename(temp, filePath);
+}
+
 async function upsertPersonalMarketplaceEntry(
   paths: CodexPluginPaths,
   pluginName: string,
@@ -1083,4 +1094,41 @@ export async function getCodexPluginSnapshot(
     warnings,
     paths,
   };
+}
+
+/**
+ * Set the Codex plugin enabled state for the plugins visible to osheep.
+ * Codex stores this as [plugins."selector"].enabled in config.toml; changing
+ * the config lets the next CLI process observe the workflow block's state.
+ */
+export async function applyCodexPluginSelection(
+  selectedSelectors: string[],
+  options: CodexPluginServiceOptions = {}
+): Promise<CodexPluginSnapshot> {
+  const paths = resolveCodexPluginPaths(options.paths);
+  const snapshot = await getCodexPluginSnapshot(options);
+  const known = new Set(snapshot.plugins.map((plugin) => plugin.selector));
+  const selected = new Set(
+    selectedSelectors
+      .filter((selector): selector is string => typeof selector === "string")
+      .map(validatePluginSelector)
+      .filter((selector) => known.has(selector))
+  );
+
+  let parsed: TomlTable = {};
+  try {
+    const text = await fs.readFile(paths.codexConfig, "utf8");
+    if (text.trim()) parsed = parseToml(text) as TomlTable;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  const plugins = objectValue(parsed.plugins) ?? {};
+  for (const plugin of snapshot.plugins) {
+    const existing = objectValue(plugins[plugin.selector]) ?? {};
+    existing.enabled = selected.has(plugin.selector);
+    plugins[plugin.selector] = existing;
+  }
+  parsed.plugins = plugins as unknown as TomlTable;
+  await writeTextAtomic(paths.codexConfig, `${stringifyToml(parsed)}\n`);
+  return await getCodexPluginSnapshot(options);
 }

@@ -13,6 +13,8 @@ import {
 import { callRemoteMcp, discoverRemoteMcp, type RemoteMcpTool } from "./remote-mcp.js";
 import { readFileText, writeFileText } from "./fs-ops.js";
 import { resolveWorkspace, type WorkspaceInfo } from "./workspace.js";
+import { applyClaudePluginSelection } from "./claude-plugins.js";
+import { applyCodexPluginSelection } from "./codex-plugins.js";
 import {
   getWorkflow,
   updateWorkflow,
@@ -136,6 +138,8 @@ const CONFIGURED_LOCAL_KINDS = new Set<WorkflowNodeKind>([
   "cron",
   "manual-trigger",
   "webhook-trigger",
+  "codex-plugin",
+  "claude-plugin",
 ]);
 
 const DEFAULT_MCP_HEADERS_JSON = JSON.stringify(
@@ -544,15 +548,39 @@ async function runWorkflowInBackground(
 
       record = await getWorkflow(workspace.path, workflowId);
       const currentNode = record.nodes.find((item) => item.id === nodeId) ?? node;
-      const result =
-        kind === "agent"
-          ? await executeAgentNode(workspace, record, currentNode, startedAt, abort)
-          : kind === "command"
-            ? await executeCommandNode(workspace.path, record, currentNode, startedAt, abort)
-            : await executeLocalNode(workspace.path, record, currentNode, {
-                allowMcpToolCall: nodeIds.length === 1,
-                signal: abort.signal,
-              });
+      let result: LocalNodeResult;
+      try {
+        result =
+          kind === "agent"
+            ? await executeAgentNode(workspace, record, currentNode, startedAt, abort)
+            : kind === "command"
+              ? await executeCommandNode(workspace.path, record, currentNode, startedAt, abort)
+              : await executeLocalNode(workspace.path, record, currentNode, {
+                  allowMcpToolCall: nodeIds.length === 1,
+                  signal: abort.signal,
+                });
+      } catch (error) {
+        const message = (error as Error).message || `${currentNode.title} failed.`;
+        if (abort.signal.aborted || message === "Stopped" || !nodeFailover(currentNode)) {
+          throw error;
+        }
+        const outputText = stringifyBlockOutput({
+          type: kind,
+          status: "failed",
+          error: message,
+          failover: true,
+          text: message,
+        });
+        await patchWorkflowNode(workspace.path, workflowId, nodeId, {
+          status: "error",
+          rawOutput: outputText,
+          summary: outputText,
+          error: message,
+          completedAt: Date.now(),
+          config: finalizeRunDetailsOnError(currentNode, message),
+        });
+        continue;
+      }
       const outputText = stringifyBlockOutput(result.output);
       await patchWorkflowNode(workspace.path, workflowId, nodeId, {
         ...(result.nodePatch ?? {}),
@@ -562,7 +590,7 @@ async function runWorkflowInBackground(
         error: result.error ?? "",
         completedAt: Date.now(),
       });
-      if (result.error) throw new Error(result.error);
+      if (result.error && !nodeFailover(currentNode)) throw new Error(result.error);
     }
     await finishRun(workspace.path, workflowId, run.id, "success");
   } catch (e) {
@@ -1074,6 +1102,40 @@ async function executeLocalNode(
         value,
         data: value,
         text: textFromAny(value),
+      },
+    };
+  }
+
+  if (kind === "codex-plugin") {
+    const selected = pluginSelectors(node);
+    const snapshot = await applyCodexPluginSelection(selected);
+    const enabled = snapshot.plugins
+      .filter((plugin) => plugin.status.enabled)
+      .map((plugin) => plugin.selector);
+    return {
+      output: {
+        type: "codex-plugin",
+        status: "success",
+        selected,
+        enabled,
+        text: `Codex plugins updated: ${enabled.length} enabled.`,
+      },
+    };
+  }
+
+  if (kind === "claude-plugin") {
+    const selected = pluginSelectors(node);
+    const snapshot = await applyClaudePluginSelection(selected);
+    const enabled = snapshot.plugins
+      .filter((plugin) => plugin.status.installed && plugin.status.enabled)
+      .map((plugin) => plugin.selector);
+    return {
+      output: {
+        type: "claude-plugin",
+        status: "success",
+        selected,
+        enabled,
+        text: `Claude plugins updated: ${enabled.length} enabled.`,
       },
     };
   }
@@ -1937,6 +1999,13 @@ function jsonNodeConfig(node: WorkflowNode): { source: string; path: string } {
   };
 }
 
+function pluginSelectors(node: WorkflowNode): string[] {
+  const value = node.config?.pluginSelectors;
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
+}
+
 function mcpNodeConfig(node: WorkflowNode): McpNodeConfig {
   const config = node.config ?? {};
   const tools = Array.isArray(config.tools)
@@ -2345,6 +2414,25 @@ function displayBlockId(node: WorkflowNode): number {
 
 function nodeKind(node: WorkflowNode): WorkflowNodeKind {
   return node.kind ?? "agent";
+}
+
+function nodeFailover(node: WorkflowNode): boolean {
+  return supportsFailover(nodeKind(node)) && node.config?.failover === true;
+}
+
+function supportsFailover(kind: WorkflowNodeKind): boolean {
+  return (
+    kind === "agent" ||
+    kind === "command" ||
+    kind === "code" ||
+    kind === "web" ||
+    kind === "http-request" ||
+    kind === "file-read" ||
+    kind === "file-write" ||
+    kind === "mcp" ||
+    kind === "codex-plugin" ||
+    kind === "claude-plugin"
+  );
 }
 
 function chunk<T>(items: T[], size: number): T[][] {

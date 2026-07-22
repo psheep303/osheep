@@ -2428,6 +2428,55 @@
   gap: 6px;
 }
 
+.workflow-inspector__plugin-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 260px;
+  overflow: auto;
+}
+
+.workflow-inspector__plugin-search {
+  width: 100%;
+  min-height: 30px;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  border: 1px solid var(--wf-border);
+  border-radius: 5px;
+  background: rgba(9, 9, 11, 0.72);
+  color: var(--wf-text);
+  font: inherit;
+  font-size: 12px;
+}
+
+.workflow-inspector__plugin-search:focus {
+  outline: none;
+  border-color: rgba(96, 165, 250, 0.7);
+  box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.22);
+}
+
+.workflow-inspector__plugin-search:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.workflow-inspector__plugin-list .workflow-inspector__check {
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.workflow-inspector__plugin-list .workflow-inspector__check span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.workflow-inspector__muted {
+  color: var(--fg-muted);
+  font-size: 12px;
+  padding: 4px 0;
+}
+
 .workflow-inspector__section--grow {
   flex: 1 1 auto;
   min-height: 150px;
