@@ -43,8 +43,8 @@ const checks = [
     name: "titlebar project label opens the workspace picker",
     pass:
       /className="titlebar__project-btn"/.test(workbench) &&
-      /onClick=\{\(\) => setPicking\(true\)\}/.test(workbench) &&
-      /\{workspaceId \?\? "选择工作区"\}/.test(workbench),
+      /onClick=\{\(\)\s*=>\s*setPicking\(true\)\}/.test(workbench) &&
+      /\{workspaceName\s+\?\?\s+"[^"]+"\}/.test(workbench),
   },
   {
     name: "titlebar actions only keep save",

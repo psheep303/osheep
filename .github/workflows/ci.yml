@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: backend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install
+        run: npm.cmd ci
+
+      - name: Typecheck
+        run: npm.cmd run typecheck
+
+      - name: Test
+        run: npm.cmd test
+
+  frontend:
+    name: Frontend
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install
+        run: npm.cmd ci
+
+      - name: Typecheck
+        run: npx.cmd tsc --noEmit
+
+      - name: Behavior test
+        run: npm.cmd run test:workflow-behavior
+
+      - name: Agent navigation check
+        run: npm.cmd run check:agent-navigation
+
+      - name: Left sidebar check
+        run: npm.cmd run check:workflow-left-sidebar
+
+      - name: Workflow CSS check
+        run: npm.cmd run check:workflow-css
+
+      - name: Build
+        run: npx.cmd vite build
