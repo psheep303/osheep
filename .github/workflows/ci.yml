@@ -30,6 +30,9 @@ jobs:
       - name: Install
         run: npm.cmd ci
 
+      - name: Lint
+        run: npm.cmd run lint
+
       - name: Typecheck
         run: npm.cmd run typecheck
 
@@ -57,11 +60,17 @@ jobs:
       - name: Install
         run: npm.cmd ci
 
+      - name: Lint
+        run: npm.cmd run lint
+
       - name: Typecheck
         run: npx.cmd tsc --noEmit
 
       - name: Behavior test
         run: npm.cmd run test:workflow-behavior
+
+      - name: Terminal conversation test
+        run: npm.cmd run test:terminal-conversation
 
       - name: Agent navigation check
         run: npm.cmd run check:agent-navigation
