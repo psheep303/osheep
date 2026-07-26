@@ -2,6 +2,10 @@
 
 感谢你参与 Osheep。项目仍在快速迭代，较大的功能改动建议先创建 Issue，说明使用场景、行为边界和实现方向，避免重复工作。
 
+## 行为准则
+
+参与本项目即表示你同意遵守 [行为准则](CODE_OF_CONDUCT.md)。请在互动中保持尊重与善意。
+
 ## 开发环境
 
 需要 Node.js 20+、npm 和 Git。Windows 桌面版还需要 Rust、Visual Studio C++ Build Tools 与 WebView2 Runtime。
@@ -32,6 +36,7 @@ Web 开发可从仓库根目录运行 `./dev.ps1`。具体启动方式和端口�
 
 ```powershell
 cd backend
+npm run lint
 npm run build
 npm test
 ```
@@ -40,6 +45,7 @@ npm test
 
 ```powershell
 cd frontend
+npm run lint
 npm run build
 npm run test:workflow-behavior
 ```

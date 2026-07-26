@@ -1,5 +1,10 @@
 # Osheep
 
+[![CI](https://github.com/psheep303/osheep/actions/workflows/ci.yml/badge.svg)](https://github.com/psheep303/osheep/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+[English](README.en.md) | 简体中文
+
 Osheep 是一个以 AI 工作流为中心的本地开发工作台。它把代码编辑、终端、搜索、Git、工作流模板以及 Codex / Claude Code 集成放进同一个界面，支持以 Web 应用或 Windows 桌面应用运行。
 
 > 项目仍处于早期开发阶段，接口、配置格式和交互可能发生不兼容变更。当前优先支持单机、单用户场景，请勿直接将后端暴露到不可信网络。
