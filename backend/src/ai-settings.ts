@@ -1,8 +1,8 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import type { TomlTable } from "smol-toml";
+import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import { errors } from "./errors.js";
 
 export type AiSettingsApp = "claude" | "codex";
@@ -95,9 +95,7 @@ function normalizeState(raw: unknown): AiSettingsState {
       }
     }
     const current =
-      typeof manager?.current === "string" && nextProviders[manager.current]
-        ? manager.current
-        : "";
+      typeof manager?.current === "string" && nextProviders[manager.current] ? manager.current : "";
     state.apps[app] = { providers: nextProviders, current };
   }
   return state;
@@ -133,7 +131,7 @@ export async function readAiSettings(): Promise<AiSettingsState> {
 
 export async function writeAiSettings(state: AiSettingsState): Promise<void> {
   const normalized = normalizeState(state);
-  await atomicWriteText(STORE_PATH, JSON.stringify(normalized, null, 2) + "\n");
+  await atomicWriteText(STORE_PATH, `${JSON.stringify(normalized, null, 2)}\n`);
 }
 
 export async function snapshotAiSettings(): Promise<AiSettingsSnapshot> {
@@ -162,7 +160,7 @@ export async function upsertAiProvider(
   app: AiSettingsApp,
   provider: AiProvider,
   originalId?: string,
-  apply = false
+  apply = false,
 ): Promise<AiSettingsSnapshot> {
   const state = await readAiSettings();
   const normalized = normalizeProvider(provider);
@@ -184,7 +182,7 @@ export async function upsertAiProvider(
 
 export async function deleteAiProvider(
   app: AiSettingsApp,
-  id: string
+  id: string,
 ): Promise<AiSettingsSnapshot> {
   const state = await readAiSettings();
   const manager = state.apps[app];
@@ -198,7 +196,7 @@ export async function deleteAiProvider(
 
 export async function switchAiProvider(
   app: AiSettingsApp,
-  id: string
+  id: string,
 ): Promise<AiSettingsSnapshot> {
   const state = await readAiSettings();
   const manager = state.apps[app];
@@ -219,7 +217,7 @@ export async function switchAiProvider(
 export async function importLiveProvider(
   app: AiSettingsApp,
   id = "default",
-  name = app === "claude" ? "Claude live" : "Codex live"
+  name = app === "claude" ? "Claude live" : "Codex live",
 ): Promise<AiSettingsSnapshot> {
   const settingsConfig = normalizeImportedLiveSettings(app, await readLiveSettings(app));
   const provider: AiProvider = {
@@ -266,7 +264,7 @@ async function writeProviderToLive(app: AiSettingsApp, provider: AiProvider): Pr
 async function backfillCurrentProviderFromLive(
   state: AiSettingsState,
   app: AiSettingsApp,
-  currentId: string
+  currentId: string,
 ): Promise<void> {
   const currentProvider = state.apps[app].providers[currentId];
   if (!currentProvider) return;
@@ -275,7 +273,7 @@ async function backfillCurrentProviderFromLive(
     const liveSettings = normalizeBackfilledLiveSettings(
       app,
       await readLiveSettings(app),
-      currentProvider
+      currentProvider,
     );
     currentProvider.settingsConfig = liveSettings;
   } catch {
@@ -293,7 +291,7 @@ function normalizeImportedLiveSettings(app: AiSettingsApp, settingsConfig: unkno
 function normalizeBackfilledLiveSettings(
   app: AiSettingsApp,
   liveSettings: unknown,
-  templateProvider: AiProvider
+  templateProvider: AiProvider,
 ): unknown {
   if (app === "claude") return normalizeImportedLiveSettings(app, liveSettings);
   return restoreCodexSettingsForBackfill(liveSettings, templateProvider);
@@ -352,16 +350,13 @@ async function writeCodexLive(provider: AiProvider): Promise<void> {
   await atomicWriteText(getCodexConfigPath(), liveConfig);
 }
 
-function prepareCodexProviderLiveConfig(
-  auth: Record<string, unknown>,
-  configText: string
-): string {
+function prepareCodexProviderLiveConfig(auth: Record<string, unknown>, configText: string): string {
   const authToken = stringValue(auth.OPENAI_API_KEY);
   const token = authToken || extractCodexExperimentalBearerToken(configText);
   if (!token) return configText;
   if (!configText.trim()) {
     throw errors.invalidQuery(
-      "Codex third-party provider needs config.toml before an API key can be projected"
+      "Codex third-party provider needs config.toml before an API key can be projected",
     );
   }
   return setCodexExperimentalBearerToken(configText, token);
@@ -369,7 +364,7 @@ function prepareCodexProviderLiveConfig(
 
 function restoreCodexSettingsForBackfill(
   liveSettings: unknown,
-  templateProvider: AiProvider
+  templateProvider: AiProvider,
 ): unknown {
   const settings = structuredClone(asObject(liveSettings) ?? {});
   const configText = typeof settings.config === "string" ? settings.config : "";
@@ -399,7 +394,7 @@ function shouldRestoreCodexProviderTokenForBackfill(provider: AiProvider): boole
 
 function extractCodexApiKey(
   auth: Record<string, unknown> | null | undefined,
-  configText: string
+  configText: string,
 ): string {
   return stringValue(auth?.OPENAI_API_KEY) || extractCodexExperimentalBearerToken(configText);
 }
@@ -434,9 +429,9 @@ function setCodexExperimentalBearerToken(configText: string, token: string): str
     }
 
     return stringifyToml(parsed);
-  } catch (e) {
+  } catch (_e) {
     // If parsing fails, append token at the end
-    return configText + `\nexperimental_bearer_token = "${token}"\n`;
+    return `${configText}\nexperimental_bearer_token = "${token}"\n`;
   }
 }
 
@@ -571,7 +566,7 @@ async function readJson(filePath: string): Promise<unknown> {
 }
 
 async function writeJson(filePath: string, value: unknown): Promise<void> {
-  await atomicWriteText(filePath, JSON.stringify(sortJson(value), null, 2) + "\n");
+  await atomicWriteText(filePath, `${JSON.stringify(sortJson(value), null, 2)}\n`);
 }
 
 async function atomicWriteText(filePath: string, text: string): Promise<void> {
@@ -589,7 +584,7 @@ function sortJson(value: unknown): unknown {
   return Object.fromEntries(
     Object.keys(obj)
       .sort()
-      .map((key) => [key, sortJson(obj[key])])
+      .map((key) => [key, sortJson(obj[key])]),
   );
 }
 
@@ -598,9 +593,11 @@ function stringValue(value: unknown): string {
 }
 
 function uniqueProviderId(seed: string): string {
-  return seed
-    .trim()
-    .replace(/[^A-Za-z0-9_.-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .toLowerCase() || "default";
+  return (
+    seed
+      .trim()
+      .replace(/[^A-Za-z0-9_.-]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .toLowerCase() || "default"
+  );
 }

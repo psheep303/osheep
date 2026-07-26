@@ -4,11 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
 import { config } from "./config.js";
-import {
-  createWorkspace,
-  listWorkspaces,
-  setWorkspacesRoot,
-} from "./workspace.js";
+import { createWorkspace, listWorkspaces, setWorkspacesRoot } from "./workspace.js";
 
 test("selected workspaces root persists and owns newly created workspaces", async () => {
   const sandbox = await mkdtemp(path.join(os.tmpdir(), "osheep-workspaces-"));
@@ -29,7 +25,7 @@ test("selected workspaces root persists and owns newly created workspaces", asyn
     assert.equal((await stat(workspace.path)).isDirectory(), true);
     assert.deepEqual(
       (await listWorkspaces()).map(({ id }) => id),
-      ["project-a"]
+      ["project-a"],
     );
 
     const saved = JSON.parse(await readFile(configFile, "utf8")) as { root: string };

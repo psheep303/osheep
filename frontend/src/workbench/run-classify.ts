@@ -1,23 +1,13 @@
 // Classify a shell command into one of several auto-allow buckets.
 // The chat-runtime uses this to decide which `autoAllow` key gates the call.
 
-export type RunCategory =
-  | "network"
-  | "install"
-  | "git"
-  | "test"
-  | "other";
+export type RunCategory = "network" | "install" | "git" | "test" | "other";
 
 export interface CategoryDescriptor {
   key: RunCategory;
   label: string;
   hint: string;
-  autoAllowKey:
-    | "runNetwork"
-    | "runInstall"
-    | "runGit"
-    | "runTest"
-    | "runOther";
+  autoAllowKey: "runNetwork" | "runInstall" | "runGit" | "runTest" | "runOther";
 }
 
 export const RUN_CATEGORIES: Record<RunCategory, CategoryDescriptor> = {
@@ -172,8 +162,10 @@ export function classifyCommand(command: string): RunCategory {
   }
 
   // npm run test / npm test patterns.
-  if ((head === "npm" || head === "pnpm" || head === "yarn" || head === "bun") &&
-      (arg === "test" || arg === "run")) {
+  if (
+    (head === "npm" || head === "pnpm" || head === "yarn" || head === "bun") &&
+    (arg === "test" || arg === "run")
+  ) {
     return "test";
   }
 

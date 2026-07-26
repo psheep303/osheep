@@ -1,24 +1,24 @@
-import Fastify from "fastify";
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
+import Fastify from "fastify";
 import { config } from "./config.js";
 import { ApiError } from "./errors.js";
-import { ensureWorkspacesRoot } from "./workspace.js";
-import { registerWorkspaceRoutes } from "./routes/workspaces.js";
-import { registerTerminalRoutes } from "./routes/terminals.js";
-import { registerSearchRoutes } from "./routes/search.js";
-import { registerGitRoutes } from "./routes/git.js";
+import { registerAgentSessionRoutes } from "./routes/agent-sessions.js";
 import { registerAgentRoutes } from "./routes/agents.js";
-import { registerSessionRoutes } from "./routes/sessions.js";
-import { registerWorkflowRoutes } from "./routes/workflows.js";
 import { registerAiRoutes } from "./routes/ai.js";
 import { registerAiSettingsRoutes } from "./routes/ai-settings.js";
-import { registerMcpRoutes } from "./routes/mcp.js";
 import { registerClaudePluginRoutes } from "./routes/claude-plugins.js";
 import { registerCodexPluginRoutes } from "./routes/codex-plugins.js";
-import { registerAgentSessionRoutes } from "./routes/agent-sessions.js";
+import { registerGitRoutes } from "./routes/git.js";
+import { registerMcpRoutes } from "./routes/mcp.js";
+import { registerSearchRoutes } from "./routes/search.js";
+import { registerSessionRoutes } from "./routes/sessions.js";
 import { registerTemplateRoutes } from "./routes/templates.js";
+import { registerTerminalRoutes } from "./routes/terminals.js";
+import { registerWorkflowRoutes } from "./routes/workflows.js";
+import { registerWorkspaceRoutes } from "./routes/workspaces.js";
 import { registerStaticSite } from "./static-site.js";
+import { ensureWorkspacesRoot } from "./workspace.js";
 
 export async function buildServer() {
   const app = Fastify({

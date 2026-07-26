@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { PlanView } from "./PlanView";
-import { Terminal, type AgentTerminalLaunchRequest } from "./Terminal";
+import { type AgentTerminalLaunchRequest, Terminal } from "./Terminal";
 
 type BottomTab = "terminal" | "log" | "plan";
 
@@ -27,21 +27,19 @@ export function BottomPanel({
     <div className="bottom-panel">
       <div className="bottom-panel__tabs">
         <div
-          className={
-            "bottom-panel__tab" + (tab === "terminal" ? " is-active" : "")
-          }
+          className={`bottom-panel__tab${tab === "terminal" ? " is-active" : ""}`}
           onClick={() => setTab("terminal")}
         >
           终端
         </div>
         <div
-          className={"bottom-panel__tab" + (tab === "log" ? " is-active" : "")}
+          className={`bottom-panel__tab${tab === "log" ? " is-active" : ""}`}
           onClick={() => setTab("log")}
         >
           日志
         </div>
         <div
-          className={"bottom-panel__tab" + (tab === "plan" ? " is-active" : "")}
+          className={`bottom-panel__tab${tab === "plan" ? " is-active" : ""}`}
           onClick={() => setTab("plan")}
         >
           计划

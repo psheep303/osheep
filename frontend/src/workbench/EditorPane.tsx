@@ -1,6 +1,6 @@
 import Editor, { type BeforeMount, type OnMount } from "@monaco-editor/react";
-import { useEffect, useRef } from "react";
 import type * as Monaco from "monaco-editor";
+import { useEffect, useRef } from "react";
 import { languageFromPath } from "./language";
 
 export interface GotoTarget {
@@ -74,10 +74,7 @@ export function EditorPane({
 
   const handleMount: OnMount = (editor, monaco) => {
     editorRef.current = editor;
-    editor.addCommand(
-      monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS,
-      () => onSaveRef.current()
-    );
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => onSaveRef.current());
     if (goto && appliedNonceRef.current !== goto.nonce) {
       // Defer until next tick so the model is fully attached.
       window.setTimeout(() => applyGoto(goto), 0);
@@ -89,7 +86,7 @@ export function EditorPane({
     if (appliedNonceRef.current === goto.nonce) return;
     if (!editorRef.current) return;
     applyGoto(goto);
-  }, [goto]);
+  }, [goto, applyGoto]);
 
   return (
     <Editor

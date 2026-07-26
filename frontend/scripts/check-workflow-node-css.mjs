@@ -81,24 +81,24 @@ const templateEditorFocusMetrics = finalDeclarations(".workflow-template-editor:
 const templateMirrorMetrics = finalDeclarations(".workflow-template-editor__mirror");
 const templateControlMetrics = finalDeclarations(".workflow-template-editor__control");
 const templateNativeControlMetrics = finalDeclarations(
-  ".workflow-template-editor .workflow-template-editor__control"
+  ".workflow-template-editor .workflow-template-editor__control",
 );
 const templateTokenMetrics = finalDeclarations(".workflow-template-token");
 const templateControlFocusMetrics = finalDeclarations(
-  ".workflow-template-editor .workflow-template-editor__control:focus"
+  ".workflow-template-editor .workflow-template-editor__control:focus",
 );
 const toolbarMetrics = finalDeclarations(".workflow-toolbar");
 
 assert(
   css.includes("/* Workflow Shadcn Graph Surface */"),
-  "workflow CSS must use the single shadcn graph surface block"
+  "workflow CSS must use the single shadcn graph surface block",
 );
 
 assert(
   styles.includes("color-scheme: dark") &&
     /scrollbar-color:\s*#[0-9a-f]{6}\s+#[0-9a-f]{6}/i.test(styles) &&
     styles.includes("::-webkit-scrollbar-thumb"),
-  "global scrollbars must use a dark cross-browser color scheme"
+  "global scrollbars must use a dark cross-browser color scheme",
 );
 
 assert(
@@ -106,15 +106,15 @@ assert(
     toolbarMetrics["overflow-y"] === "hidden" &&
     toolbarMetrics["scrollbar-width"] === "none" &&
     css.includes(".workflow-toolbar::-webkit-scrollbar"),
-  "workflow toolbar must keep horizontal overflow without a visible scrollbar"
+  "workflow toolbar must keep horizontal overflow without a visible scrollbar",
 );
 
 assert(
   Boolean(packageJson.dependencies?.["@vscode/codicons"]) &&
-    main.includes('@vscode/codicons/dist/codicon.css') &&
+    main.includes("@vscode/codicons/dist/codicon.css") &&
     workflowTab.includes("codicon codicon-") &&
     workflowTab.includes("WORKFLOW_CODICONS"),
-  "ordinary workflow icons must use official VS Code Codicons"
+  "ordinary workflow icons must use official VS Code Codicons",
 );
 
 assert(
@@ -126,45 +126,44 @@ assert(
     workflowTab.includes('name === "codex"') &&
     !workflowTab.includes("M12 4.2 14.2 9l5 .8") &&
     !workflowTab.includes('case "codex"'),
-  "workflow Claude and Codex blocks must use shared official brand marks"
+  "workflow Claude and Codex blocks must use shared official brand marks",
 );
 
 assert(
   !css.includes("Workflow Pro Glass refinement") &&
     !css.includes("Workflow Coder Compact correction"),
-  "old workflow visual override blocks must be removed"
+  "old workflow visual override blocks must be removed",
 );
 
 assert(
-  main.includes('@fontsource/geist-sans/latin-400.css') &&
-    main.includes('@fontsource/geist-sans/latin-500.css') &&
-    main.includes('@fontsource/geist-sans/latin-600.css') &&
-    main.includes('@fontsource/geist-sans/latin-700.css') &&
-    main.includes('@fontsource/geist-mono/latin-400.css') &&
-    main.includes('@fontsource/geist-mono/latin-500.css') &&
-    main.includes('@fontsource/geist-mono/latin-600.css'),
-  "workflow latin font files must be loaded from Fontsource Geist"
+  main.includes("@fontsource/geist-sans/latin-400.css") &&
+    main.includes("@fontsource/geist-sans/latin-500.css") &&
+    main.includes("@fontsource/geist-sans/latin-600.css") &&
+    main.includes("@fontsource/geist-sans/latin-700.css") &&
+    main.includes("@fontsource/geist-mono/latin-400.css") &&
+    main.includes("@fontsource/geist-mono/latin-500.css") &&
+    main.includes("@fontsource/geist-mono/latin-600.css"),
+  "workflow latin font files must be loaded from Fontsource Geist",
 );
 
 assert(
-  css.includes('--wf-font-sans: "Geist Sans"') &&
-    css.includes('--wf-font-mono: "Geist Mono"'),
-  "workflow CSS must define Geist Sans and Geist Mono font variables"
+  css.includes('--wf-font-sans: "Geist Sans"') && css.includes('--wf-font-mono: "Geist Mono"'),
+  "workflow CSS must define Geist Sans and Geist Mono font variables",
 );
 
 assert(
   declaration(tab, "font-family") === "var(--wf-font-sans)",
-  "workflow tab should use the Geist Sans font variable"
+  "workflow tab should use the Geist Sans font variable",
 );
 
 assert(
   declaration(name, "font-family") === "var(--wf-font-sans)",
-  "workflow node titles should use the Geist Sans font variable"
+  "workflow node titles should use the Geist Sans font variable",
 );
 
 assert(
   declaration(output, "font-family") === "var(--wf-font-mono)",
-  "workflow output panels should use the Geist Mono font variable"
+  "workflow output panels should use the Geist Mono font variable",
 );
 
 assert(
@@ -172,7 +171,7 @@ assert(
     templateMirrorMetrics.color === "transparent" &&
     templateMirrorMetrics.background === "transparent" &&
     templateMirrorMetrics["border-color"] === "transparent",
-  "workflow template mirror must paint only transparent glyph geometry behind the native control"
+  "workflow template mirror must paint only transparent glyph geometry behind the native control",
 );
 
 assert(
@@ -212,14 +211,14 @@ assert(
     templateControlMetrics["font-variant-ligatures"] === "none" &&
     templateControlMetrics["font-synthesis"] === "none" &&
     templateControlMetrics["tab-size"] === "2",
-  "workflow template native input must keep stable editor text metrics"
+  "workflow template native input must keep stable editor text metrics",
 );
 
 assert(
   hasDeclaration(templateEditor, "font-family", "var(--wf-font-mono)") &&
     hasDeclaration(templateEditor, "font-size", "12px") &&
     hasDeclaration(templateEditor, "line-height", "1.45"),
-  "workflow template editor host must pin the same text metrics used by its overlay layers"
+  "workflow template editor host must pin the same text metrics used by its overlay layers",
 );
 
 assert(
@@ -232,7 +231,7 @@ assert(
     templateNativeControlMetrics["-webkit-text-fill-color"] === "currentColor" &&
     !/transparent/.test(templateNativeControlMetrics.color) &&
     !/transparent/.test(templateNativeControlMetrics["-webkit-text-fill-color"]),
-  "workflow template input must render its own text so the native caret aligns"
+  "workflow template input must render its own text so the native caret aligns",
 );
 
 assert(
@@ -244,47 +243,47 @@ assert(
     templateTokenMetrics.color === "transparent" &&
     templateTokenMetrics.background === "rgba(37, 99, 235, 0.22)" &&
     templateTokenMetrics["box-shadow"] === "inset 0 0 0 1px rgba(96, 165, 250, 0.32)",
-  "workflow template host and mirror must render token backgrounds without replacing native text"
+  "workflow template host and mirror must render token backgrounds without replacing native text",
 );
 
 assert(
   templateControlFocusMetrics.outline === "none" &&
     templateControlFocusMetrics["box-shadow"] === "none" &&
     Boolean(templateEditorFocusMetrics["box-shadow"]),
-  "workflow template host should own the focus ring without duplicating it on the native input"
+  "workflow template host should own the focus ring without duplicating it on the native input",
 );
 
 assert(
   !workflowTab.includes("normalizeTemplateSpacing") &&
     (workflowTab.match(/onChange=\{\(e\) => onChange\(e\.target\.value\)\}/g)?.length ?? 0) === 2 &&
     workflowTab.includes("{match[0]}"),
-  "workflow template mirror and native controls must preserve the exact input string"
+  "workflow template mirror and native controls must preserve the exact input string",
 );
 
 assert(
   !workflowTab.includes('onUpdate({ model: value || "default" })') &&
     workflowTab.includes("onUpdate({ model: value })"),
-  "workflow model editor must allow the model field to be cleared without immediately restoring default"
+  "workflow model editor must allow the model field to be cleared without immediately restoring default",
 );
 
 assert(
   workflowTab.includes("Geist Mono, SFMono-Regular, Cascadia Mono"),
-  "workflow xterm should prefer Geist Mono for terminal output"
+  "workflow xterm should prefer Geist Mono for terminal output",
 );
 
 assert(
   Number(declaration(name, "line-height")) >= 1.22,
-  "workflow node text needs enough line-height so descenders like g are not clipped"
+  "workflow node text needs enough line-height so descenders like g are not clipped",
 );
 
 assert(
   px(declaration(icon, "width")) >= 22 && px(declaration(icon, "height")) >= 22,
-  "workflow node icon box must be at least 22px for the shadcn-style icon slot"
+  "workflow node icon box must be at least 22px for the shadcn-style icon slot",
 );
 
 assert(
   /translateY\(1px\)/.test(declaration(icon, "transform")),
-  "workflow node icon needs a 1px optical downward offset to align with text glyphs"
+  "workflow node icon needs a 1px optical downward offset to align with text glyphs",
 );
 
 assert(
@@ -292,12 +291,12 @@ assert(
     !declaration(icon, "border-radius") &&
     !declaration(icon, "background") &&
     !declaration(icon, "box-shadow"),
-  "workflow node icon should render without a decorative frame"
+  "workflow node icon should render without a decorative frame",
 );
 
 assert(
   !declaration(selectedIcon, "border-color") && !declaration(selectedIcon, "background"),
-  "selected workflow node icon should stay frameless and only change icon color"
+  "selected workflow node icon should stay frameless and only change icon color",
 );
 
 assert(
@@ -305,32 +304,32 @@ assert(
     !declaration(pickerItemIcon, "border-radius") &&
     !declaration(pickerItemIcon, "background") &&
     !declaration(pickerItemIcon, "box-shadow"),
-  "workflow block picker item icon should render without a decorative frame"
+  "workflow block picker item icon should render without a decorative frame",
 );
 
 assert(
   px(declaration(iconSvg, "width")) >= 18 && px(declaration(iconSvg, "height")) >= 18,
-  "workflow node SVG must be at least 18px so zoomed icons do not look low resolution"
+  "workflow node SVG must be at least 18px so zoomed icons do not look low resolution",
 );
 
 assert(
   /22px\s+minmax\(0,\s*1fr\)/.test(declaration(node, "grid-template-columns")),
-  "workflow node grid should reserve a 22px icon slot aligned with the text"
+  "workflow node grid should reserve a 22px icon slot aligned with the text",
 );
 
 assert(
   /0\s+25px\s+0\s+16px/.test(declaration(node, "padding")),
-  "workflow node padding must reserve room for the right status dot and left rail"
+  "workflow node padding must reserve room for the right status dot and left rail",
 );
 
 assert(
   px(declaration(node, "border-radius")) <= 7,
-  "workflow nodes should keep shadcn-like low radius"
+  "workflow nodes should keep shadcn-like low radius",
 );
 
 assert(
   declaration(iconSvgParts, "vector-effect") !== "non-scaling-stroke",
-  "workflow node icon strokes should scale as vectors when the workflow canvas zooms"
+  "workflow node icon strokes should scale as vectors when the workflow canvas zooms",
 );
 
 console.log("workflow node CSS checks passed");

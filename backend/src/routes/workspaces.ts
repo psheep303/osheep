@@ -1,11 +1,6 @@
 import type { FastifyInstance } from "fastify";
-import {
-  ensureOsheepLayout,
-  createWorkspace,
-  listWorkspaces,
-  resolveWorkspace,
-  setWorkspacesRoot,
-} from "../workspace.js";
+import { config } from "../config.js";
+import { errors } from "../errors.js";
 import {
   copyEntry,
   createEntry,
@@ -15,8 +10,13 @@ import {
   readFileText,
   writeFileText,
 } from "../fs-ops.js";
-import { errors } from "../errors.js";
-import { config } from "../config.js";
+import {
+  createWorkspace,
+  ensureOsheepLayout,
+  listWorkspaces,
+  resolveWorkspace,
+  setWorkspacesRoot,
+} from "../workspace.js";
 
 export async function registerWorkspaceRoutes(app: FastifyInstance) {
   app.get("/api/workspaces", async () => {
@@ -46,14 +46,11 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
     return { id: workspace.id, name: workspace.name };
   });
 
-  app.get<{ Params: { id: string } }>(
-    "/api/workspaces/:id",
-    async (req) => {
-      const ws = await resolveWorkspace(req.params.id);
-      await ensureOsheepLayout(ws.path);
-      return { id: ws.id, name: ws.name };
-    }
-  );
+  app.get<{ Params: { id: string } }>("/api/workspaces/:id", async (req) => {
+    const ws = await resolveWorkspace(req.params.id);
+    await ensureOsheepLayout(ws.path);
+    return { id: ws.id, name: ws.name };
+  });
 
   // ─── File API: /api/workspaces/:id/fs/* ───
 
@@ -73,8 +70,7 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
     Querystring: { path?: string };
   }>("/api/workspaces/:id/fs/file", async (req) => {
     const ws = await resolveWorkspace(req.params.id);
-    if (req.query.path === undefined)
-      throw errors.invalidPath("缺少 path 参数");
+    if (req.query.path === undefined) throw errors.invalidPath("缺少 path 参数");
     return await readFileText(ws.path, req.query.path);
   });
 
@@ -85,14 +81,8 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
     const ws = await resolveWorkspace(req.params.id);
     const body = req.body ?? {};
     if (typeof body.path !== "string") throw errors.invalidPath("缺少 path");
-    if (typeof body.content !== "string")
-      throw errors.invalidPath("缺少 content");
-    return await writeFileText(
-      ws.path,
-      body.path,
-      body.content,
-      body.createParents !== false
-    );
+    if (typeof body.content !== "string") throw errors.invalidPath("缺少 content");
+    return await writeFileText(ws.path, body.path, body.content, body.createParents !== false);
   });
 
   app.post<{
@@ -134,30 +124,23 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
     Querystring: { path?: string; recursive?: string };
   }>("/api/workspaces/:id/fs/entry", async (req) => {
     const ws = await resolveWorkspace(req.params.id);
-    if (req.query.path === undefined)
-      throw errors.invalidPath("缺少 path 参数");
+    if (req.query.path === undefined) throw errors.invalidPath("缺少 path 参数");
     const recursive = req.query.recursive === "true";
     return await deleteEntry(ws.path, req.query.path, recursive);
   });
 
   // ─── Settings convenience ───
 
-  app.get<{ Params: { id: string } }>(
-    "/api/workspaces/:id/settings",
-    async (req) => {
-      const ws = await resolveWorkspace(req.params.id);
-      await ensureOsheepLayout(ws.path);
-      const { content } = await readFileText(
-        ws.path,
-        ".osheep/settings.json"
-      );
-      try {
-        return JSON.parse(content);
-      } catch {
-        return { editor: { fontSize: 14, tabSize: 2 } };
-      }
+  app.get<{ Params: { id: string } }>("/api/workspaces/:id/settings", async (req) => {
+    const ws = await resolveWorkspace(req.params.id);
+    await ensureOsheepLayout(ws.path);
+    const { content } = await readFileText(ws.path, ".osheep/settings.json");
+    try {
+      return JSON.parse(content);
+    } catch {
+      return { editor: { fontSize: 14, tabSize: 2 } };
     }
-  );
+  });
 
   app.put<{ Params: { id: string }; Body: unknown }>(
     "/api/workspaces/:id/settings",
@@ -165,13 +148,8 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
       const ws = await resolveWorkspace(req.params.id);
       await ensureOsheepLayout(ws.path);
       const text = JSON.stringify(req.body, null, 2);
-      await writeFileText(
-        ws.path,
-        ".osheep/settings.json",
-        text,
-        true
-      );
+      await writeFileText(ws.path, ".osheep/settings.json", text, true);
       return { ok: true };
-    }
+    },
   );
 }

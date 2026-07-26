@@ -1,5 +1,4 @@
 import type { FastifyInstance } from "fastify";
-import { errors } from "../errors.js";
 import {
   addCodexMarketplace,
   createLocalCodexPlugin,
@@ -9,11 +8,13 @@ import {
   removeLocalCodexPlugin,
   uninstallCodexPlugin,
 } from "../codex-plugins.js";
+import { errors } from "../errors.js";
 
 export function parseRequiredStringField(body: unknown, field: string): string {
-  const obj = body && typeof body === "object" && !Array.isArray(body)
-    ? (body as Record<string, unknown>)
-    : {};
+  const obj =
+    body && typeof body === "object" && !Array.isArray(body)
+      ? (body as Record<string, unknown>)
+      : {};
   const value = obj[field];
   if (typeof value !== "string" || !value.trim()) {
     throw errors.invalidQuery(`${field} is required`);
@@ -22,9 +23,10 @@ export function parseRequiredStringField(body: unknown, field: string): string {
 }
 
 export function parseDeleteSourceFlag(query: unknown): boolean {
-  const obj = query && typeof query === "object" && !Array.isArray(query)
-    ? (query as Record<string, unknown>)
-    : {};
+  const obj =
+    query && typeof query === "object" && !Array.isArray(query)
+      ? (query as Record<string, unknown>)
+      : {};
   return obj.deleteSource === true || obj.deleteSource === "true";
 }
 
@@ -54,12 +56,8 @@ export async function registerCodexPluginRoutes(app: FastifyInstance) {
   app.post<{ Body: unknown }>("/api/codex-plugins/local", async (req) => {
     const body = objectBody(req.body);
     const name = parseRequiredStringField(body, "name");
-    const displayName = typeof body.displayName === "string"
-      ? body.displayName
-      : undefined;
-    const description = typeof body.description === "string"
-      ? body.description
-      : undefined;
+    const displayName = typeof body.displayName === "string" ? body.displayName : undefined;
+    const description = typeof body.description === "string" ? body.description : undefined;
     return await createLocalCodexPlugin({ name, displayName, description });
   });
 
@@ -72,10 +70,7 @@ export async function registerCodexPluginRoutes(app: FastifyInstance) {
     Params: { name: string };
     Querystring: { deleteSource?: string | boolean };
   }>("/api/codex-plugins/local/:name", async (req) => {
-    return await removeLocalCodexPlugin(
-      req.params.name,
-      parseDeleteSourceFlag(req.query)
-    );
+    return await removeLocalCodexPlugin(req.params.name, parseDeleteSourceFlag(req.query));
   });
 
   app.post<{ Body: unknown }>("/api/codex-plugins/marketplaces", async (req) => {

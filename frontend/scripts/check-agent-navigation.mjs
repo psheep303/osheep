@@ -5,12 +5,8 @@ const workbench = readFileSync("src/workbench/Workbench.tsx", "utf8");
 const aiSettings = readFileSync("src/workbench/AiSettingsView.tsx", "utf8");
 const agentViewPath = "src/workbench/AgentSettingsView.tsx";
 const brandIconsPath = "src/workbench/BrandIcons.tsx";
-const agentView = existsSync(agentViewPath)
-  ? readFileSync(agentViewPath, "utf8")
-  : "";
-const brandIcons = existsSync(brandIconsPath)
-  ? readFileSync(brandIconsPath, "utf8")
-  : "";
+const agentView = existsSync(agentViewPath) ? readFileSync(agentViewPath, "utf8") : "";
+const brandIcons = existsSync(brandIconsPath) ? readFileSync(brandIconsPath, "utf8") : "";
 
 function functionBlock(source, name) {
   const start = source.indexOf(`function ${name}`);
@@ -105,8 +101,7 @@ const checks = [
   {
     name: "Codex agent combines API & Model with Plugins",
     pass:
-      /<AiSettingsView app="codex" \/>/.test(agentView) &&
-      /<CodexPluginsView \/>/.test(agentView),
+      /<AiSettingsView app="codex" \/>/.test(agentView) && /<CodexPluginsView \/>/.test(agentView),
   },
   {
     name: "Claude Code agent exposes API & Model without Codex plugin content",

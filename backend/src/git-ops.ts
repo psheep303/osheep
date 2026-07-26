@@ -70,7 +70,7 @@ async function runGitText(cwd: string, args: string[]): Promise<string> {
   const r = await runGit(cwd, args);
   if (r.code !== 0) {
     throw errors.gitFailed(
-      r.stderr.trim().slice(0, 1000) || `git ${args[0]} 失败 (exit ${r.code})`
+      r.stderr.trim().slice(0, 1000) || `git ${args[0]} 失败 (exit ${r.code})`,
     );
   }
   return r.stdout.toString("utf-8");
@@ -89,12 +89,7 @@ export async function isRepo(workspaceRoot: string): Promise<boolean> {
 // `git init`'d repo with no commits yet, or any state where `rev-parse HEAD`
 // would emit "fatal: ambiguous argument 'HEAD'".
 export async function hasHead(workspaceRoot: string): Promise<boolean> {
-  const r = await runGit(workspaceRoot, [
-    "rev-parse",
-    "--verify",
-    "--quiet",
-    "HEAD",
-  ]);
+  const r = await runGit(workspaceRoot, ["rev-parse", "--verify", "--quiet", "HEAD"]);
   return r.code === 0;
 }
 
@@ -111,12 +106,7 @@ export async function getRepoInfo(workspaceRoot: string): Promise<GitRepoInfo> {
   let branch = "";
   let detached = false;
   try {
-    const r = await runGit(workspaceRoot, [
-      "symbolic-ref",
-      "--quiet",
-      "--short",
-      "HEAD",
-    ]);
+    const r = await runGit(workspaceRoot, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
     if (r.code === 0) {
       branch = r.stdout.toString("utf-8").trim();
     } else {
@@ -207,7 +197,7 @@ export async function getStatus(workspaceRoot: string): Promise<GitStatus> {
     i = j + 1;
 
     let renamedFrom: string | null = null;
-    let filePath = filePart;
+    const filePath = filePart;
     if (indexStatus === "R" || worktreeStatus === "R") {
       // For renames, porcelain -z places ORIG\0NEW; but git puts new path first
       // and old path second. We've already consumed "new", read "old".
@@ -227,24 +217,18 @@ export async function getStatus(workspaceRoot: string): Promise<GitStatus> {
   return { ...info, changes };
 }
 
-export async function stagePaths(
-  workspaceRoot: string,
-  paths: string[]
-): Promise<void> {
+export async function stagePaths(workspaceRoot: string, paths: string[]): Promise<void> {
   if (paths.length === 0) return;
   const validated = paths.map((p) =>
-    path.relative(workspaceRoot, resolveWorkspacePath(workspaceRoot, p))
+    path.relative(workspaceRoot, resolveWorkspacePath(workspaceRoot, p)),
   );
   await runGitText(workspaceRoot, ["add", "--", ...validated]);
 }
 
-export async function unstagePaths(
-  workspaceRoot: string,
-  paths: string[]
-): Promise<void> {
+export async function unstagePaths(workspaceRoot: string, paths: string[]): Promise<void> {
   if (paths.length === 0) return;
   const validated = paths.map((p) =>
-    path.relative(workspaceRoot, resolveWorkspacePath(workspaceRoot, p))
+    path.relative(workspaceRoot, resolveWorkspacePath(workspaceRoot, p)),
   );
   // `git reset HEAD --` works even before the first commit fails; fall back to
   // `git rm --cached` for that case is not needed because the user has nothing
@@ -252,34 +236,20 @@ export async function unstagePaths(
   const r = await runGit(workspaceRoot, ["reset", "HEAD", "--", ...validated]);
   if (r.code !== 0) {
     // Pre-initial-commit: use rm --cached
-    const r2 = await runGit(workspaceRoot, [
-      "rm",
-      "--cached",
-      "-r",
-      "--",
-      ...validated,
-    ]);
+    const r2 = await runGit(workspaceRoot, ["rm", "--cached", "-r", "--", ...validated]);
     if (r2.code !== 0) {
       throw errors.gitFailed(r2.stderr.trim() || r.stderr.trim());
     }
   }
 }
 
-export async function discardPaths(
-  workspaceRoot: string,
-  paths: string[]
-): Promise<string[]> {
+export async function discardPaths(workspaceRoot: string, paths: string[]): Promise<string[]> {
   const out: string[] = [];
   for (const p of paths) {
     const abs = resolveWorkspacePath(workspaceRoot, p);
     const rel = path.relative(workspaceRoot, abs);
     // Check whether file is tracked
-    const tracked = await runGit(workspaceRoot, [
-      "ls-files",
-      "--error-unmatch",
-      "--",
-      rel,
-    ]);
+    const tracked = await runGit(workspaceRoot, ["ls-files", "--error-unmatch", "--", rel]);
     if (tracked.code === 0) {
       await runGitText(workspaceRoot, ["checkout", "--", rel]);
     } else {
@@ -301,16 +271,11 @@ export async function discardPaths(
   return out;
 }
 
-export async function commit(
-  workspaceRoot: string,
-  message: string
-): Promise<string> {
+export async function commit(workspaceRoot: string, message: string): Promise<string> {
   const msg = message.trim();
   if (!msg) throw errors.emptyCommitMessage();
   await runGitText(workspaceRoot, ["commit", "-m", message]);
-  const head = (
-    await runGitText(workspaceRoot, ["rev-parse", "HEAD"])
-  ).trim();
+  const head = (await runGitText(workspaceRoot, ["rev-parse", "HEAD"])).trim();
   return head;
 }
 
@@ -344,15 +309,11 @@ export async function listRemotes(workspaceRoot: string): Promise<GitRemote[]> {
     if (!seen.has(m[1])) seen.set(m[1], m[2]);
   }
   return Array.from(seen, ([name, url]) => ({ name, url })).sort((a, b) =>
-    a.name.localeCompare(b.name)
+    a.name.localeCompare(b.name),
   );
 }
 
-export async function addRemote(
-  workspaceRoot: string,
-  name: string,
-  url: string
-): Promise<void> {
+export async function addRemote(workspaceRoot: string, name: string, url: string): Promise<void> {
   if (!REMOTE_NAME_RE.test(name)) {
     throw errors.invalidPath("远程名称非法");
   }
@@ -365,10 +326,7 @@ export async function addRemote(
   await runGitText(workspaceRoot, ["remote", "add", name, url]);
 }
 
-export async function removeRemote(
-  workspaceRoot: string,
-  name: string
-): Promise<void> {
+export async function removeRemote(workspaceRoot: string, name: string): Promise<void> {
   if (!REMOTE_NAME_RE.test(name)) throw errors.invalidPath("远程名称非法");
   await runGitText(workspaceRoot, ["remote", "remove", name]);
 }
@@ -396,7 +354,7 @@ export async function getLog(
   workspaceRoot: string,
   limit: number,
   offset: number,
-  ref: string
+  ref: string,
 ): Promise<GitLog> {
   const args = [
     "log",
@@ -439,7 +397,7 @@ export async function getLog(
           .filter(Boolean)
           .map((s) => s.replace(/^HEAD -> /, "").replace(/^tag:\s*/, ""))
       : [];
-    if (decoRaw && decoRaw.includes("HEAD")) {
+    if (decoRaw?.includes("HEAD")) {
       // mark HEAD via convention: keep the literal "HEAD" entry too
       if (!refs.includes("HEAD")) refs.push("HEAD");
     }
@@ -480,13 +438,13 @@ export async function getDiff(
   workspaceRoot: string,
   filePath: string,
   base: "HEAD" | "INDEX",
-  head: "INDEX" | "WORKTREE"
+  head: "INDEX" | "WORKTREE",
 ): Promise<GitDiff> {
   const abs = resolveWorkspacePath(workspaceRoot, filePath);
   const rel = path.relative(workspaceRoot, abs).replace(/\\/g, "/");
 
   async function readRef(
-    ref: "HEAD" | "INDEX" | "WORKTREE"
+    ref: "HEAD" | "INDEX" | "WORKTREE",
   ): Promise<{ content: string; missing: boolean; binary: boolean }> {
     if (ref === "WORKTREE") {
       try {
@@ -568,10 +526,10 @@ function validateBranchName(name: string): void {
 }
 
 export async function listBranches(
-  workspaceRoot: string
+  workspaceRoot: string,
 ): Promise<{ current: string | null; detached: boolean; branches: GitBranch[] }> {
   const info = await getRepoInfo(workspaceRoot);
-  const current = info.detached ? null : info.branch ?? null;
+  const current = info.detached ? null : (info.branch ?? null);
   const detached = !!info.detached;
 
   const fmt = "%(refname)%00%(refname:short)%00%(upstream:short)%00%(upstream:track)";
@@ -594,9 +552,7 @@ export async function listBranches(
     if (!line) continue;
     const [fullref, short, upstream, track] = line.split("\0");
     if (!fullref) continue;
-    const kind: "local" | "remote" = fullref.startsWith("refs/remotes/")
-      ? "remote"
-      : "local";
+    const kind: "local" | "remote" = fullref.startsWith("refs/remotes/") ? "remote" : "local";
     if (kind === "remote" && short.endsWith("/HEAD")) continue;
     if (kind === "remote") {
       branches.push({ name: short, isCurrent: false, kind: "remote" });
@@ -658,7 +614,7 @@ function classifyGitError(stderr: string): Error {
 export async function checkoutBranch(
   workspaceRoot: string,
   ref: string,
-  opts: { create?: boolean; fromRef?: string | null } = {}
+  opts: { create?: boolean; fromRef?: string | null } = {},
 ): Promise<void> {
   validateBranchName(ref);
   const args: string[] = ["checkout"];
@@ -689,7 +645,7 @@ function validateRemoteName(name: string): void {
 export async function fetchRemote(
   workspaceRoot: string,
   remote: string | null,
-  prune: boolean
+  prune: boolean,
 ): Promise<void> {
   const args = ["fetch"];
   if (prune) args.push("--prune");
@@ -704,7 +660,7 @@ export async function fetchRemote(
 
 export async function pullCurrent(
   workspaceRoot: string,
-  opts: { remote?: string | null; branch?: string | null; ffOnly?: boolean }
+  opts: { remote?: string | null; branch?: string | null; ffOnly?: boolean },
 ): Promise<void> {
   const args = ["pull"];
   if (opts.ffOnly !== false) args.push("--ff-only");
@@ -724,7 +680,7 @@ export async function pushCurrent(
     branch?: string | null;
     setUpstream?: boolean;
     force?: boolean;
-  }
+  },
 ): Promise<void> {
   const args = ["push"];
   if (opts.force) args.push("--force-with-lease");

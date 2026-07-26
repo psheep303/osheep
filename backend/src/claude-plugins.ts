@@ -95,7 +95,7 @@ interface MergeRecord {
 export function defaultClaudePluginPaths(): ClaudePluginPaths {
   const home = os.homedir() || ".";
   const claudeDir = path.resolve(
-    process.env.OSHEEP_CLAUDE_CONFIG_DIR || path.join(home, ".claude")
+    process.env.OSHEEP_CLAUDE_CONFIG_DIR || path.join(home, ".claude"),
   );
   return {
     claudeDir,
@@ -108,7 +108,7 @@ export function defaultClaudePluginPaths(): ClaudePluginPaths {
 }
 
 export function resolveClaudePluginPaths(
-  overrides: Partial<ClaudePluginPaths> = {}
+  overrides: Partial<ClaudePluginPaths> = {},
 ): ClaudePluginPaths {
   return { ...defaultClaudePluginPaths(), ...overrides };
 }
@@ -190,7 +190,7 @@ function fallbackPluginIcon(name: string): string {
       `<path d="M24 18h16a6 6 0 0 1 6 6v16a6 6 0 0 1-6 6H24a6 6 0 0 1-6-6V24a6 6 0 0 1 6-6Z"/>` +
       `<path d="M28 18v-5M36 18v-5M28 51v-5M36 51v-5M18 28h-5M18 36h-5M51 28h-5M51 36h-5"/>` +
       `<path d="M28 29h8v8h-8z"/>` +
-      `</g></svg>`
+      `</g></svg>`,
   );
 }
 
@@ -222,9 +222,7 @@ function homepageFaviconUrl(value?: string): string | undefined {
   try {
     const url = new URL(value);
     if (url.protocol !== "http:" && url.protocol !== "https:") return undefined;
-    return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(
-      url.hostname
-    )}&sz=64`;
+    return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(url.hostname)}&sz=64`;
   } catch {
     return undefined;
   }
@@ -290,8 +288,7 @@ function mergePlugin(map: Map<string, ClaudePluginRecord>, input: MergeRecord): 
   const selector = selectorFor(name, marketplace);
   const prev = map.get(selector);
   const status = { ...(prev?.status ?? emptyStatus()) };
-  const availableForInstalled =
-    !!prev?.status.installed && !!input.available && !input.installed;
+  const availableForInstalled = !!prev?.status.installed && !!input.available && !input.installed;
   status.installed = status.installed || !!input.installed;
   status.available = status.available || !!input.available;
   status.enabled = input.enabled ?? status.enabled;
@@ -372,10 +369,7 @@ function normalizeAvailablePlugin(value: unknown): MergeRecord | null {
     typeof source === "string" && /^https?:\/\//i.test(source)
       ? source
       : stringValue(objectValue(source)?.url) || undefined;
-  const icon =
-    stringValue(obj.icon) ||
-    stringValue(obj.composerIcon) ||
-    stringValue(obj.logo);
+  const icon = stringValue(obj.icon) || stringValue(obj.composerIcon) || stringValue(obj.logo);
   const author = objectValue(obj.author);
   return {
     name,
@@ -385,10 +379,7 @@ function normalizeAvailablePlugin(value: unknown): MergeRecord | null {
     version: stringValue(obj.version) || undefined,
     description: stringValue(obj.description) || undefined,
     icon: icon ? browserSafeIconUrl(icon) : undefined,
-    iconColor:
-      stringValue(obj.iconColor) ||
-      stringValue(obj.brandColor) ||
-      undefined,
+    iconColor: stringValue(obj.iconColor) || stringValue(obj.brandColor) || undefined,
     homepage: stringValue(obj.homepage) || undefined,
     authorName: stringValue(author?.name) || stringValue(obj.author) || undefined,
     sourceUrl,
@@ -471,7 +462,7 @@ function manifestIconCandidate(manifest: unknown): string {
 
 async function loadManifestIcon(
   manifests: unknown[],
-  pluginRoot: string
+  pluginRoot: string,
 ): Promise<string | undefined> {
   const candidate = manifests.map(manifestIconCandidate).find(Boolean);
   if (!candidate) return undefined;
@@ -497,17 +488,13 @@ async function loadManifestIcon(
 }
 
 async function manifestMetadata(
-  pluginRoot: string
-): Promise<Pick<
-  MergeRecord,
-  | "displayName"
-  | "version"
-  | "description"
-  | "icon"
-  | "iconColor"
-  | "homepage"
-  | "authorName"
->> {
+  pluginRoot: string,
+): Promise<
+  Pick<
+    MergeRecord,
+    "displayName" | "version" | "description" | "icon" | "iconColor" | "homepage" | "authorName"
+  >
+> {
   const manifests = (
     await Promise.all([
       readJsonFile(path.join(pluginRoot, ".claude-plugin", "plugin.json")),
@@ -527,9 +514,7 @@ async function manifestMetadata(
       description: stringValue(obj?.description),
       homepage: stringValue(obj?.homepage),
       authorName: stringValue(author?.name) || stringValue(obj?.author),
-      iconColor:
-        stringValue(ui?.brandColor) ||
-        stringValue(obj?.brandColor),
+      iconColor: stringValue(ui?.brandColor) || stringValue(obj?.brandColor),
     };
   });
 
@@ -563,9 +548,7 @@ async function enrichInstalledRecord(record: MergeRecord): Promise<MergeRecord> 
   };
 }
 
-function marketplaceRootMap(
-  marketplaces: ClaudeMarketplaceRecord[]
-): Map<string, string> {
+function marketplaceRootMap(marketplaces: ClaudeMarketplaceRecord[]): Map<string, string> {
   const roots = new Map<string, string>();
   for (const marketplace of marketplaces) {
     if (marketplace.path) {
@@ -590,10 +573,7 @@ function sourceFields(value: unknown): Pick<MergeRecord, "sourcePath" | "sourceU
   };
 }
 
-function marketplaceEntryMetadata(
-  entry: unknown,
-  marketplaceName: string
-): MergeRecord | null {
+function marketplaceEntryMetadata(entry: unknown, marketplaceName: string): MergeRecord | null {
   const obj = objectValue(entry);
   if (!obj) return null;
   const name = stringValue(obj.name);
@@ -612,19 +592,10 @@ function marketplaceEntryMetadata(
     name,
     marketplace: marketplaceName,
     selector: selectorFor(name, marketplaceName),
-    displayName:
-      stringValue(ui?.displayName) ||
-      stringValue(obj.displayName) ||
-      undefined,
-    description:
-      stringValue(ui?.shortDescription) ||
-      stringValue(obj.description) ||
-      undefined,
+    displayName: stringValue(ui?.displayName) || stringValue(obj.displayName) || undefined,
+    description: stringValue(ui?.shortDescription) || stringValue(obj.description) || undefined,
     icon: icon ? browserSafeIconUrl(icon) : undefined,
-    iconColor:
-      stringValue(ui?.brandColor) ||
-      stringValue(obj.brandColor) ||
-      undefined,
+    iconColor: stringValue(ui?.brandColor) || stringValue(obj.brandColor) || undefined,
     homepage: stringValue(obj.homepage) || undefined,
     authorName: stringValue(author?.name) || stringValue(obj.author) || undefined,
     sourceUrl: source.sourceUrl,
@@ -634,13 +605,13 @@ function marketplaceEntryMetadata(
 }
 
 async function marketplacePluginMetadata(
-  marketplaces: ClaudeMarketplaceRecord[]
+  marketplaces: ClaudeMarketplaceRecord[],
 ): Promise<Map<string, MergeRecord>> {
   const out = new Map<string, MergeRecord>();
   for (const marketplace of marketplaces) {
     if (!marketplace.path) continue;
     const parsed = objectValue(
-      await readJsonFile(path.join(marketplace.path, ".claude-plugin", "marketplace.json"))
+      await readJsonFile(path.join(marketplace.path, ".claude-plugin", "marketplace.json")),
     );
     const entries = Array.isArray(parsed?.plugins) ? parsed.plugins : [];
     for (const entry of entries) {
@@ -669,7 +640,7 @@ function mergeAvailableMetadata(record: MergeRecord, metadata?: MergeRecord): Me
 
 function resolveAvailablePluginRoot(
   record: MergeRecord,
-  marketplaceRoots: Map<string, string>
+  marketplaceRoots: Map<string, string>,
 ): string | undefined {
   if (!record.marketplace || !record.sourcePath) return undefined;
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(record.sourcePath)) return undefined;
@@ -686,7 +657,7 @@ function resolveAvailablePluginRoot(
 
 async function enrichAvailableRecord(
   record: MergeRecord,
-  marketplaceRoots: Map<string, string>
+  marketplaceRoots: Map<string, string>,
 ): Promise<MergeRecord> {
   const pluginRoot = resolveAvailablePluginRoot(record, marketplaceRoots);
   if (!pluginRoot) {
@@ -714,7 +685,7 @@ async function enrichAvailableRecord(
 }
 
 export async function getClaudePluginSnapshot(
-  options: ClaudePluginServiceOptions = {}
+  options: ClaudePluginServiceOptions = {},
 ): Promise<ClaudePluginSnapshot> {
   const paths = resolveClaudePluginPaths(options.paths);
   const runCli = options.runCli ?? runClaudePluginCli;
@@ -725,7 +696,7 @@ export async function getClaudePluginSnapshot(
 
   try {
     const parsed = objectValue(
-      parseClaudeCliJson(await runCli(["plugin", "list", "--available", "--json"]))
+      parseClaudeCliJson(await runCli(["plugin", "list", "--available", "--json"])),
     );
     for (const item of Array.isArray(parsed?.installed) ? parsed.installed : []) {
       const record = normalizeInstalledPlugin(item);
@@ -740,15 +711,13 @@ export async function getClaudePluginSnapshot(
   }
 
   try {
-    const parsed = parseClaudeCliJson(
-      await runCli(["plugin", "marketplace", "list", "--json"])
-    );
+    const parsed = parseClaudeCliJson(await runCli(["plugin", "marketplace", "list", "--json"]));
     const parsedObject = objectValue(parsed);
     const marketplaceItems: unknown[] = Array.isArray(parsed)
       ? parsed
       : Array.isArray(parsedObject?.marketplaces)
-      ? parsedObject.marketplaces
-      : [];
+        ? parsedObject.marketplaces
+        : [];
     for (const item of marketplaceItems) {
       const marketplace = normalizeMarketplace(item);
       if (marketplace) marketplaces.push(marketplace);
@@ -762,27 +731,29 @@ export async function getClaudePluginSnapshot(
   for (const record of availableRecords) {
     const withMetadata = mergeAvailableMetadata(
       record,
-      availableMetadata.get(selectorFor(record.name, record.marketplace))
+      availableMetadata.get(selectorFor(record.name, record.marketplace)),
     );
     mergePlugin(map, await enrichAvailableRecord(withMetadata, marketplaceRoots));
   }
 
-  const plugins = [...map.values()].map((plugin) => ({
-    ...plugin,
-    icon: plugin.icon || fallbackPluginIcon(plugin.name),
-  })).sort((a, b) => {
-    const groupA = a.status.installed ? 0 : 1;
-    const groupB = b.status.installed ? 0 : 1;
-    if (groupA !== groupB) return groupA - groupB;
-    return a.displayName.localeCompare(b.displayName);
-  });
+  const plugins = [...map.values()]
+    .map((plugin) => ({
+      ...plugin,
+      icon: plugin.icon || fallbackPluginIcon(plugin.name),
+    }))
+    .sort((a, b) => {
+      const groupA = a.status.installed ? 0 : 1;
+      const groupB = b.status.installed ? 0 : 1;
+      if (groupA !== groupB) return groupA - groupB;
+      return a.displayName.localeCompare(b.displayName);
+    });
 
   return { plugins, marketplaces, warnings, paths };
 }
 
 export async function installClaudePlugin(
   selector: string,
-  options: ClaudePluginServiceOptions = {}
+  options: ClaudePluginServiceOptions = {},
 ): Promise<unknown> {
   const runCli = options.runCli ?? runClaudePluginCli;
   const output = await runCli(["plugin", "install", validatePluginSelector(selector)]);
@@ -791,21 +762,16 @@ export async function installClaudePlugin(
 
 export async function uninstallClaudePlugin(
   selector: string,
-  options: ClaudePluginServiceOptions = {}
+  options: ClaudePluginServiceOptions = {},
 ): Promise<unknown> {
   const runCli = options.runCli ?? runClaudePluginCli;
-  const output = await runCli([
-    "plugin",
-    "uninstall",
-    validatePluginSelector(selector),
-    "--yes",
-  ]);
+  const output = await runCli(["plugin", "uninstall", validatePluginSelector(selector), "--yes"]);
   return { output };
 }
 
 export async function enableClaudePlugin(
   selector: string,
-  options: ClaudePluginServiceOptions = {}
+  options: ClaudePluginServiceOptions = {},
 ): Promise<unknown> {
   const runCli = options.runCli ?? runClaudePluginCli;
   const output = await runCli(["plugin", "enable", validatePluginSelector(selector)]);
@@ -814,7 +780,7 @@ export async function enableClaudePlugin(
 
 export async function disableClaudePlugin(
   selector: string,
-  options: ClaudePluginServiceOptions = {}
+  options: ClaudePluginServiceOptions = {},
 ): Promise<unknown> {
   const runCli = options.runCli ?? runClaudePluginCli;
   const output = await runCli(["plugin", "disable", validatePluginSelector(selector)]);
@@ -827,13 +793,13 @@ export async function disableClaudePlugin(
  */
 export async function applyClaudePluginSelection(
   selectedSelectors: string[],
-  options: ClaudePluginServiceOptions = {}
+  options: ClaudePluginServiceOptions = {},
 ): Promise<ClaudePluginSnapshot> {
   const snapshot = await getClaudePluginSnapshot(options);
   const selected = new Set(
     selectedSelectors
       .filter((selector): selector is string => typeof selector === "string")
-      .map(validatePluginSelector)
+      .map(validatePluginSelector),
   );
   for (const plugin of snapshot.plugins) {
     if (!plugin.status.installed) continue;
@@ -847,14 +813,9 @@ export async function applyClaudePluginSelection(
 
 export async function addClaudeMarketplace(
   source: string,
-  options: ClaudePluginServiceOptions = {}
+  options: ClaudePluginServiceOptions = {},
 ): Promise<unknown> {
   const runCli = options.runCli ?? runClaudePluginCli;
-  const output = await runCli([
-    "plugin",
-    "marketplace",
-    "add",
-    validateMarketplaceSource(source),
-  ]);
+  const output = await runCli(["plugin", "marketplace", "add", validateMarketplaceSource(source)]);
   return { output };
 }

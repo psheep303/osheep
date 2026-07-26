@@ -1,12 +1,13 @@
-import test from "node:test";
 import assert from "node:assert/strict";
+import test from "node:test";
 import {
-  agentTerminalScreenSignatureForTest,
-  agentTerminalReadyForAutoFinishForTest,
-  agentTerminalReadyForManualSuccessForTest,
-  agentTerminalStalledForTest,
+  type AgentEffort,
   agentTerminalPromptEnterCount,
   agentTerminalPromptSubmitDelayMs,
+  agentTerminalReadyForAutoFinishForTest,
+  agentTerminalReadyForManualSuccessForTest,
+  agentTerminalScreenSignatureForTest,
+  agentTerminalStalledForTest,
   buildAgentTerminalCommand,
   buildAgentTerminalPromptWrites,
   classifyAgentTerminalContent,
@@ -16,10 +17,9 @@ import {
   hasAgentTerminalFailureForTest,
   resolveAgentTerminalContentStateForTest,
   selectConversationSessionIdForTest,
-  shouldFollowUpPastedPromptSubmit,
   shouldAutoEnterChoice,
   shouldExposeWaitingForChoice,
-  type AgentEffort,
+  shouldFollowUpPastedPromptSubmit,
 } from "./ai-terminal.js";
 
 test("agent stall timeout measures inactivity instead of total runtime", () => {
@@ -28,13 +28,10 @@ test("agent stall timeout measures inactivity instead of total runtime", () => {
   const submittedAt = 0;
   const thirtyMinutes = 30 * 60 * 1000;
 
-  assert.equal(
-    agentTerminalStalledForTest(now, submittedAt, now - 60_000, thirtyMinutes),
-    false
-  );
+  assert.equal(agentTerminalStalledForTest(now, submittedAt, now - 60_000, thirtyMinutes), false);
   assert.equal(
     agentTerminalStalledForTest(now, submittedAt, now - thirtyMinutes, thirtyMinutes),
-    true
+    true,
   );
   assert.equal(agentTerminalStalledForTest(now, submittedAt, 0, 0), false);
 });
@@ -42,26 +39,23 @@ test("agent stall timeout measures inactivity instead of total runtime", () => {
 test("terminal failures are detected independently of auto success", () => {
   assert.equal(
     hasAgentTerminalFailureForTest(
-      "● Please run /login · API Error: 403 Image generation is not enabled for this group\n❯"
+      "● Please run /login · API Error: 403 Image generation is not enabled for this group\n❯",
     ),
-    true
+    true,
   );
-  assert.equal(
-    hasAgentTerminalFailureForTest("● 已完成实现。\n验证结果：4 passed\n❯"),
-    false
-  );
+  assert.equal(hasAgentTerminalFailureForTest("● 已完成实现。\n验证结果：4 passed\n❯"), false);
   assert.equal(
     hasAgentTerminalFailureForTest(
-      "● API Error: 529 Overloaded\n● Retrying… (3s)\n● 已恢复并继续执行"
+      "● API Error: 529 Overloaded\n● Retrying… (3s)\n● 已恢复并继续执行",
     ),
-    false
+    false,
   );
 });
 
 test("Claude Code terminal command uses acceptEdits by default", () => {
   assert.equal(
     buildAgentTerminalCommand("claude-cli", "default", {}).command,
-    "claude --permission-mode acceptEdits"
+    "claude --permission-mode acceptEdits",
   );
 });
 
@@ -70,7 +64,7 @@ test("Claude Code terminal command can bypass permissions explicitly", () => {
     buildAgentTerminalCommand("claude-cli", "sonnet", {
       claudePermissionMode: "bypassPermissions",
     }).command,
-    "claude --permission-mode bypassPermissions --model sonnet"
+    "claude --permission-mode bypassPermissions --model sonnet",
   );
 });
 
@@ -79,7 +73,7 @@ test("Claude Code terminal command maps auto permission mode literally", () => {
     buildAgentTerminalCommand("claude-cli", "default", {
       claudePermissionMode: "auto",
     }).command,
-    "claude --permission-mode auto"
+    "claude --permission-mode auto",
   );
 });
 
@@ -88,7 +82,7 @@ test("Codex terminal command does not receive Claude permission flags", () => {
     buildAgentTerminalCommand("codex-cli", "gpt-5.1-codex", {
       claudePermissionMode: "bypassPermissions",
     }).command,
-    "codex --ask-for-approval on-request --sandbox workspace-write --model gpt-5.1-codex"
+    "codex --ask-for-approval on-request --sandbox workspace-write --model gpt-5.1-codex",
   );
 });
 
@@ -97,7 +91,7 @@ test("Claude terminal command can start with the default (manual) permission mod
     buildAgentTerminalCommand("claude-cli", "default", {
       claudePermissionMode: "default",
     }).command,
-    "claude --permission-mode default"
+    "claude --permission-mode default",
   );
 });
 
@@ -106,14 +100,14 @@ test("Codex approval modes map to the official startup flags", () => {
     buildAgentTerminalCommand("codex-cli", "default", {
       codexApproval: "on-request",
     }).command,
-    "codex --ask-for-approval on-request --sandbox workspace-write"
+    "codex --ask-for-approval on-request --sandbox workspace-write",
   );
   assert.equal(
     buildAgentTerminalCommand("codex-cli", "default", {
       codexApproval: "untrusted",
       codexSandbox: "read-only",
     }).command,
-    "codex --ask-for-approval untrusted --sandbox read-only"
+    "codex --ask-for-approval untrusted --sandbox read-only",
   );
   assert.equal(
     buildAgentTerminalCommand("codex-cli", "gpt-5.1-codex", {
@@ -121,7 +115,7 @@ test("Codex approval modes map to the official startup flags", () => {
       codexSandbox: "danger-full-access",
       effort: "high",
     }).command,
-    "codex --ask-for-approval never --sandbox danger-full-access -c 'model_reasoning_effort=\"high\"' --model gpt-5.1-codex"
+    "codex --ask-for-approval never --sandbox danger-full-access -c 'model_reasoning_effort=\"high\"' --model gpt-5.1-codex",
   );
 });
 
@@ -131,7 +125,7 @@ test("Claude terminal command can start in plan mode with effort", () => {
       mode: "plan",
       effort: "high",
     }).command,
-    "claude --permission-mode plan --effort high"
+    "claude --permission-mode plan --effort high",
   );
 });
 
@@ -144,7 +138,7 @@ test("Claude retry resumes the exact conversation session", () => {
       effort: "low",
       conversationSessionId: sessionId,
     }).command,
-    `claude --permission-mode plan --session-id ${sessionId} --effort low --model gpt-5.4`
+    `claude --permission-mode plan --session-id ${sessionId} --effort low --model gpt-5.4`,
   );
   assert.equal(
     buildAgentTerminalCommand("claude-cli", "gpt-5.4", {
@@ -153,7 +147,7 @@ test("Claude retry resumes the exact conversation session", () => {
       conversationSessionId: sessionId,
       resumeConversation: true,
     }).command,
-    `claude --resume ${sessionId} --effort low --model gpt-5.4`
+    `claude --resume ${sessionId} --effort low --model gpt-5.4`,
   );
 });
 
@@ -191,7 +185,7 @@ test("conversation session selection prefers the expected id and newest new Code
 
   assert.equal(
     selectConversationSessionIdForTest(sessions, project, ["session-old"], 2_500),
-    "session-new"
+    "session-new",
   );
   assert.equal(
     selectConversationSessionIdForTest(
@@ -199,9 +193,9 @@ test("conversation session selection prefers the expected id and newest new Code
       project,
       ["session-old", "session-new"],
       2_500,
-      "session-old"
+      "session-old",
     ),
-    "session-old"
+    "session-old",
   );
 });
 
@@ -210,7 +204,7 @@ test("Claude terminal command passes ultracode effort through", () => {
     buildAgentTerminalCommand("claude-cli", "default", {
       effort: "ultracode" as AgentEffort,
     }).command,
-    "claude --permission-mode acceptEdits --effort ultracode"
+    "claude --permission-mode acceptEdits --effort ultracode",
   );
 });
 
@@ -219,7 +213,7 @@ test("Codex terminal command applies reasoning effort without an approval preset
     buildAgentTerminalCommand("codex-cli", "gpt-5.1-codex", {
       effort: "high",
     }).command,
-    "codex --ask-for-approval on-request --sandbox workspace-write -c 'model_reasoning_effort=\"high\"' --model gpt-5.1-codex"
+    "codex --ask-for-approval on-request --sandbox workspace-write -c 'model_reasoning_effort=\"high\"' --model gpt-5.1-codex",
   );
 });
 
@@ -228,7 +222,7 @@ test("Codex terminal command preserves xhigh reasoning effort", () => {
     buildAgentTerminalCommand("codex-cli", "gpt-5.1-codex", {
       effort: "xhigh",
     }).command,
-    "codex --ask-for-approval on-request --sandbox workspace-write -c 'model_reasoning_effort=\"xhigh\"' --model gpt-5.1-codex"
+    "codex --ask-for-approval on-request --sandbox workspace-write -c 'model_reasoning_effort=\"xhigh\"' --model gpt-5.1-codex",
   );
 });
 
@@ -237,7 +231,7 @@ test("Codex legacy on-failure approval is migrated to on-request", () => {
     buildAgentTerminalCommand("codex-cli", "default", {
       codexApproval: "on-failure" as never,
     }).command,
-    "codex --ask-for-approval on-request --sandbox workspace-write"
+    "codex --ask-for-approval on-request --sandbox workspace-write",
   );
 });
 
@@ -248,7 +242,7 @@ test("always enter only presses choice prompts after cooldown", () => {
       state: "waiting-for-choice",
       now: 2_000,
     }),
-    true
+    true,
   );
   assert.equal(
     shouldAutoEnterChoice({
@@ -257,7 +251,7 @@ test("always enter only presses choice prompts after cooldown", () => {
       now: 2_000,
       lastEnterAt: 1_400,
     }),
-    false
+    false,
   );
   assert.equal(
     shouldAutoEnterChoice({
@@ -265,7 +259,7 @@ test("always enter only presses choice prompts after cooldown", () => {
       state: "ready-for-success",
       now: 2_000,
     }),
-    false
+    false,
   );
   assert.equal(shouldExposeWaitingForChoice(true, "waiting-for-choice"), false);
   assert.equal(shouldExposeWaitingForChoice(false, "waiting-for-choice"), true);
@@ -299,16 +293,12 @@ test("ordinary numbered suggestions are not an interactive choice", () => {
   assert.equal(classifyAgentTerminalContent(content), "ready-for-success");
   assert.equal(
     agentTerminalReadyForAutoFinishForTest("claude-cli", content, "ready-for-success"),
-    true
+    true,
   );
 });
 
 test("choice-like text without an enter interaction cue is not waiting", () => {
-  const content = [
-    "\u276f 1. 推荐方案",
-    "  2. 备选方案",
-    "  3. 其他方案",
-  ].join("\n");
+  const content = ["\u276f 1. 推荐方案", "  2. 备选方案", "  3. 其他方案"].join("\n");
 
   assert.equal(classifyAgentTerminalContent(content), "ready-for-success");
 });
@@ -353,19 +343,12 @@ test("Claude raw screen restores a plan choice removed from extracted content", 
     "     shift+tab to approve with this feedback",
   ].join("\n");
   const content = extractAgentTerminalContentForTest(screen, "", "claude-cli");
-  const state = resolveAgentTerminalContentStateForTest(
-    "claude-cli",
-    screen,
-    content
-  );
+  const state = resolveAgentTerminalContentStateForTest("claude-cli", screen, content);
 
   assert.doesNotMatch(content, /\u276f 1\. Yes/);
   assert.equal(classifyAgentTerminalContent(content), "empty");
   assert.equal(state, "waiting-for-choice");
-  assert.equal(
-    shouldAutoEnterChoice({ alwaysEnter: true, state, now: 2_000 }),
-    true
-  );
+  assert.equal(shouldAutoEnterChoice({ alwaysEnter: true, state, now: 2_000 }), true);
   assert.equal(shouldExposeWaitingForChoice(true, state), false);
 });
 
@@ -384,7 +367,7 @@ test("Claude workflow output contains only the last formal answer", () => {
 
   assert.equal(
     extractAgentTerminalContentForTest(transcript, "", "claude-cli"),
-    "已完成极简天气爬虫。\n  - 新增 weather_spider.py\n  - 验证结果：4 passed"
+    "已完成极简天气爬虫。\n  - 新增 weather_spider.py\n  - 验证结果：4 passed",
   );
 });
 
@@ -404,11 +387,11 @@ test("Claude auto finish waits until current work is idle", () => {
 
   assert.equal(
     agentTerminalReadyForAutoFinishForTest("claude-cli", running, "ready-for-success"),
-    false
+    false,
   );
   assert.equal(
     agentTerminalReadyForAutoFinishForTest("claude-cli", idle, "ready-for-success"),
-    true
+    true,
   );
 });
 
@@ -439,7 +422,7 @@ test("Claude plan approval followed by auto mode and final idle output auto fini
   assert.equal(classifyAgentTerminalContent(screen), "ready-for-success");
   assert.equal(
     agentTerminalReadyForAutoFinishForTest("claude-cli", screen, "ready-for-success"),
-    true
+    true,
   );
 });
 
@@ -452,7 +435,7 @@ test("Claude active work in the current terminal tail still blocks auto finish",
 
   assert.equal(
     agentTerminalReadyForAutoFinishForTest("claude-cli", screen, "ready-for-success"),
-    false
+    false,
   );
 });
 
@@ -466,7 +449,7 @@ test("Claude parenthesized activity blocks auto finish without relying on a foot
 
   assert.equal(
     agentTerminalReadyForAutoFinishForTest("claude-cli", screen, "ready-for-success"),
-    false
+    false,
   );
 });
 
@@ -482,11 +465,11 @@ test("Claude stable idle final output succeeds without a word-for-duration foote
   assert.equal(classifyAgentTerminalContent(screen), "ready-for-success");
   assert.equal(
     agentTerminalReadyForAutoFinishForTest("claude-cli", screen, "ready-for-success"),
-    true
+    true,
   );
   assert.equal(
     agentTerminalReadyForManualSuccessForTest("claude-cli", screen, "ready-for-success"),
-    true
+    true,
   );
 });
 
@@ -502,7 +485,7 @@ test("Claude resumed manual-mode footer is recognized as idle", () => {
   assert.equal(classifyAgentTerminalContent(screen), "ready-for-success");
   assert.equal(
     agentTerminalReadyForAutoFinishForTest("claude-cli", screen, "ready-for-success"),
-    true
+    true,
   );
 });
 
@@ -515,12 +498,8 @@ test("Claude current viewport drops stale activity without requiring a duration 
   ].join("");
 
   assert.equal(
-    agentTerminalReadyForAutoFinishForTest(
-      "claude-cli",
-      transcript,
-      "ready-for-success"
-    ),
-    true
+    agentTerminalReadyForAutoFinishForTest("claude-cli", transcript, "ready-for-success"),
+    true,
   );
 });
 
@@ -536,11 +515,11 @@ test("Claude cannot succeed while a background agent is still running", () => {
 
   assert.equal(
     agentTerminalReadyForAutoFinishForTest("claude-cli", screen, "ready-for-success"),
-    false
+    false,
   );
   assert.equal(
     agentTerminalReadyForManualSuccessForTest("claude-cli", screen, "ready-for-success"),
-    false
+    false,
   );
 });
 
@@ -555,7 +534,7 @@ test("Claude can succeed after every background agent becomes idle", () => {
 
   assert.equal(
     agentTerminalReadyForAutoFinishForTest("claude-cli", screen, "ready-for-success"),
-    true
+    true,
   );
 });
 
@@ -569,11 +548,11 @@ test("Claude parenthesized activity remains busy after the idle prompt is redraw
 
   assert.equal(
     agentTerminalReadyForAutoFinishForTest("claude-cli", screen, "ready-for-success"),
-    false
+    false,
   );
   assert.equal(
     agentTerminalReadyForManualSuccessForTest("claude-cli", screen, "ready-for-success"),
-    false
+    false,
   );
 });
 
@@ -587,7 +566,7 @@ test("terminal prompt-only content is classified as empty", () => {
 });
 
 test("long single-line prompt uses bracketed paste and two enters", () => {
-  const prompt = "context=" + "x".repeat(1138);
+  const prompt = `context=${"x".repeat(1138)}`;
   const writes = buildAgentTerminalPromptWrites(prompt, true);
 
   assert.equal(writes[0], "\x1b[200~");
@@ -615,14 +594,14 @@ test("large multiline Codex paste waits for the TUI before pressing enter", () =
   assert.ok(agentTerminalPromptSubmitDelayMs(prompt) >= 800);
   assert.ok(
     agentTerminalPromptSubmitDelayMs(prompt) >
-      agentTerminalPromptSubmitDelayMs("short single-line prompt")
+      agentTerminalPromptSubmitDelayMs("short single-line prompt"),
   );
   assert.equal(agentTerminalPromptEnterCount(prompt), 2);
   assert.equal(agentTerminalPromptEnterCount("short single-line prompt"), 1);
 });
 
 test("pasted prompt follow-up enter only fires while paste is still waiting", () => {
-  const prompt = "context=" + "x".repeat(1_200);
+  const prompt = `context=${"x".repeat(1_200)}`;
   const rawTranscript = "› [Pasted Content 1208 chars]\n";
 
   assert.equal(
@@ -634,18 +613,18 @@ test("pasted prompt follow-up enter only fires while paste is still waiting", ()
       promptSubmittedAt: 1_000,
       enterCount: 0,
     }),
-    true
+    true,
   );
   assert.equal(
     shouldFollowUpPastedPromptSubmit({
       prompt,
-      rawTranscript: rawTranscript + "Working",
+      rawTranscript: `${rawTranscript}Working`,
       state: "empty",
       now: 2_500,
       promptSubmittedAt: 1_000,
       enterCount: 0,
     }),
-    false
+    false,
   );
   assert.equal(
     shouldFollowUpPastedPromptSubmit({
@@ -656,7 +635,7 @@ test("pasted prompt follow-up enter only fires while paste is still waiting", ()
       promptSubmittedAt: 1_000,
       enterCount: 0,
     }),
-    false
+    false,
   );
   assert.equal(
     shouldFollowUpPastedPromptSubmit({
@@ -667,14 +646,14 @@ test("pasted prompt follow-up enter only fires while paste is still waiting", ()
       promptSubmittedAt: 1_000,
       enterCount: 0,
     }),
-    false
+    false,
   );
 });
 
 test("Codex wrapped prompt echo is not extracted as model output", () => {
-  const prompt = "context=" + "x".repeat(180);
+  const prompt = `context=${"x".repeat(180)}`;
   const transcript = [
-    "› " + prompt.slice(0, 80),
+    `› ${prompt.slice(0, 80)}`,
     prompt.slice(80, 140),
     prompt.slice(140),
     "auto mode on (shift+tab to cycle) · ← for agents",
@@ -773,7 +752,7 @@ test("Claude generic word-for-duration footer releases a stale choice prompt", (
   assert.equal(classifyAgentTerminalContent(content), "ready-for-success");
   assert.equal(
     agentTerminalReadyForAutoFinishForTest("claude-cli", content, "ready-for-success"),
-    true
+    true,
   );
 });
 
@@ -786,11 +765,7 @@ test("manual success is allowed even when the previous terminal state was stale 
 });
 
 test("completed-looking assistant output is classified as ready for success", () => {
-  const content = [
-    "已完成。",
-    "验证：npm test 通过。",
-    "下一步：无。",
-  ].join("\n");
+  const content = ["已完成。", "验证：npm test 通过。", "下一步：无。"].join("\n");
 
   assert.equal(classifyAgentTerminalContent(content), "ready-for-success");
 });
@@ -826,12 +801,8 @@ test("Codex final answer removes the terminal footer separator", () => {
   ].join("\n");
 
   assert.equal(
-    extractAgentTerminalContentForTest(
-      transcript,
-      "Implement the weather spider",
-      "codex-cli"
-    ),
-    "已新增 weather_spider.py。\n用法：python weather_spider.py Beijing"
+    extractAgentTerminalContentForTest(transcript, "Implement the weather spider", "codex-cli"),
+    "已新增 weather_spider.py。\n用法：python weather_spider.py Beijing",
   );
 });
 
@@ -850,25 +821,20 @@ test("Codex tool output is never mistaken for the final answer", () => {
   ].join("\n");
 
   assert.equal(extractAgentTerminalContentForTest(transcript, prompt, "codex-cli"), "");
-  assert.equal(
-    agentTerminalReadyForAutoFinishForTest("codex-cli", transcript, "empty"),
-    true
-  );
+  assert.equal(agentTerminalReadyForAutoFinishForTest("codex-cli", transcript, "empty"), true);
 });
 
 test("terminal screen signature ignores cursor-only Codex redraws", () => {
-  const screen = [
-    "• 已完成实现和验证。",
-    "─ Worked for 2m 15s ─",
-    "› Implement {feature}",
-  ].join("\n");
+  const screen = ["• 已完成实现和验证。", "─ Worked for 2m 15s ─", "› Implement {feature}"].join(
+    "\n",
+  );
 
   assert.equal(
     agentTerminalScreenSignatureForTest(`${screen}\x1b[?25l\x1b[?25h`),
-    agentTerminalScreenSignatureForTest(screen)
+    agentTerminalScreenSignatureForTest(screen),
   );
   assert.notEqual(
     agentTerminalScreenSignatureForTest(`${screen}\nnew output`),
-    agentTerminalScreenSignatureForTest(screen)
+    agentTerminalScreenSignatureForTest(screen),
   );
 });

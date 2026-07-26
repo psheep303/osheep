@@ -60,10 +60,7 @@ export async function listAgents(workspaceRoot: string): Promise<AgentRecord[]> 
   return out;
 }
 
-export async function getAgent(
-  workspaceRoot: string,
-  name: string
-): Promise<AgentRecord> {
+export async function getAgent(workspaceRoot: string, name: string): Promise<AgentRecord> {
   validateName(name);
   const abs = agentFile(workspaceRoot, name);
   let text: string;
@@ -86,10 +83,7 @@ export async function getAgent(
   };
 }
 
-export async function saveAgent(
-  workspaceRoot: string,
-  agent: AgentRecord
-): Promise<void> {
+export async function saveAgent(workspaceRoot: string, agent: AgentRecord): Promise<void> {
   validateName(agent.name);
   await ensureAgentDir(workspaceRoot);
   const abs = agentFile(workspaceRoot, agent.name);
@@ -101,9 +95,9 @@ export async function saveAgent(
       model: typeof agent.model === "string" ? agent.model : "",
     },
     null,
-    2
+    2,
   );
-  const tmp = abs + ".osheep.tmp." + Date.now();
+  const tmp = `${abs}.osheep.tmp.${Date.now()}`;
   await fs.writeFile(tmp, body, "utf-8");
   try {
     await fs.rename(tmp, abs);
@@ -116,7 +110,7 @@ export async function saveAgent(
 export async function renameAgent(
   workspaceRoot: string,
   oldName: string,
-  newName: string
+  newName: string,
 ): Promise<void> {
   validateName(oldName);
   validateName(newName);
@@ -150,10 +144,7 @@ export async function renameAgent(
   });
 }
 
-export async function deleteAgent(
-  workspaceRoot: string,
-  name: string
-): Promise<void> {
+export async function deleteAgent(workspaceRoot: string, name: string): Promise<void> {
   validateName(name);
   const abs = agentFile(workspaceRoot, name);
   try {

@@ -1,3 +1,4 @@
+import type { Dirent } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { getStatus } from "./git-ops.js";
@@ -21,7 +22,7 @@ const SKIP_DIRS = new Set([
 const MAX_TRACKED_FILES = 50_000;
 
 export async function captureWorkspaceChanges(
-  workspaceRoot: string
+  workspaceRoot: string,
 ): Promise<WorkspaceChangeBaseline> {
   const status = await getStatus(workspaceRoot);
   if (status.isRepo) {
@@ -35,17 +36,18 @@ export async function captureWorkspaceChanges(
 
 export async function changedWorkspaceFiles(
   workspaceRoot: string,
-  baseline: WorkspaceChangeBaseline
+  baseline: WorkspaceChangeBaseline,
 ): Promise<string[]> {
-  const current = baseline.mode === "git"
-    ? await gitChangeFingerprints(workspaceRoot, (await getStatus(workspaceRoot)).changes)
-    : await fileFingerprints(workspaceRoot);
+  const current =
+    baseline.mode === "git"
+      ? await gitChangeFingerprints(workspaceRoot, (await getStatus(workspaceRoot)).changes)
+      : await fileFingerprints(workspaceRoot);
   return changedFingerprintKeys(baseline.fingerprints, current);
 }
 
 export function changedFingerprintKeys(
   before: Map<string, string>,
-  after: Map<string, string>
+  after: Map<string, string>,
 ): string[] {
   const paths = new Set([...before.keys(), ...after.keys()]);
   return [...paths]
@@ -60,7 +62,7 @@ async function gitChangeFingerprints(
     indexStatus: string;
     worktreeStatus: string;
     renamedFrom: string | null;
-  }>
+  }>,
 ): Promise<Map<string, string>> {
   const result = new Map<string, string>();
   for (const change of changes) {
@@ -68,7 +70,7 @@ async function gitChangeFingerprints(
     const stat = await fileStatFingerprint(path.join(workspaceRoot, change.path));
     result.set(
       filePath,
-      `${change.indexStatus}|${change.worktreeStatus}|${change.renamedFrom ?? ""}|${stat}`
+      `${change.indexStatus}|${change.worktreeStatus}|${change.renamedFrom ?? ""}|${stat}`,
     );
   }
   return result;
@@ -80,7 +82,7 @@ async function fileFingerprints(workspaceRoot: string): Promise<Map<string, stri
   while (pending.length > 0 && result.size < MAX_TRACKED_FILES) {
     const directory = pending.pop();
     if (!directory) break;
-    let entries;
+    let entries: Dirent[];
     try {
       entries = await fs.readdir(directory, { withFileTypes: true });
     } catch {

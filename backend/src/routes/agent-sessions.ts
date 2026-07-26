@@ -2,11 +2,11 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { FastifyInstance } from "fastify";
 import {
+  type AgentSessionApp,
   deleteAgentSessionsInProject,
   getAgentSession,
   isAgentSessionInProject,
   listAgentSessions,
-  type AgentSessionApp,
 } from "../agent-sessions.js";
 import { platform } from "../config.js";
 import { errors } from "../errors.js";
@@ -14,33 +14,29 @@ import { createSession, writeInput } from "../pty.js";
 import { resolveWorkspace } from "../workspace.js";
 
 export async function registerAgentSessionRoutes(app: FastifyInstance) {
-  app.get<{ Querystring: { app?: string; workspaceId?: string } }>("/api/agent-sessions", async (req) => {
-    const sessionApp = parseAgentSessionApp(req.query.app);
-    const workspace = await resolveWorkspace(parseWorkspaceId(req.query.workspaceId));
-    const sessions = (await listAgentSessions(sessionApp)).filter((session) =>
-      isAgentSessionInProject(session, workspace.path)
-    );
-    return { sessions };
-  });
+  app.get<{ Querystring: { app?: string; workspaceId?: string } }>(
+    "/api/agent-sessions",
+    async (req) => {
+      const sessionApp = parseAgentSessionApp(req.query.app);
+      const workspace = await resolveWorkspace(parseWorkspaceId(req.query.workspaceId));
+      const sessions = (await listAgentSessions(sessionApp)).filter((session) =>
+        isAgentSessionInProject(session, workspace.path),
+      );
+      return { sessions };
+    },
+  );
 
   app.delete<{
     Params: { app: string; id: string };
     Querystring: { workspaceId?: string };
-  }>(
-    "/api/agent-sessions/:app/:id",
-    async (req) => {
-      const sessionApp = parseAgentSessionApp(req.params.app);
-      const workspace = await resolveWorkspace(parseWorkspaceId(req.query.workspaceId));
-      const result = await deleteAgentSessionsInProject(
-        sessionApp,
-        [req.params.id],
-        workspace.path
-      );
-      const deleted = result.deleted[0];
-      if (!deleted) throw errors.notFound("Agent session not found in the current project");
-      return { session: deleted };
-    }
-  );
+  }>("/api/agent-sessions/:app/:id", async (req) => {
+    const sessionApp = parseAgentSessionApp(req.params.app);
+    const workspace = await resolveWorkspace(parseWorkspaceId(req.query.workspaceId));
+    const result = await deleteAgentSessionsInProject(sessionApp, [req.params.id], workspace.path);
+    const deleted = result.deleted[0];
+    if (!deleted) throw errors.notFound("Agent session not found in the current project");
+    return { session: deleted };
+  });
 
   app.post<{
     Params: { app: string };

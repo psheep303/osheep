@@ -4,8 +4,8 @@ import {
   AgentTerminalConversationCollector,
   cleanAgentTerminalConversation,
   extractAgentRunMetadata,
-  extractLastCodexAnswerFromJsonlForTest,
   extractLastClaudeAnswer,
+  extractLastCodexAnswerFromJsonlForTest,
   extractLastStructuredClaudeAnswer,
   formatClaudeJsonlConversationForTest,
 } from "./terminal-conversation.js";
@@ -42,11 +42,13 @@ test("Codex JSONL returns task_complete final answer instead of tool output", ()
         last_agent_message: "最终结论：workflow 输出不应从终端工具记录提取。",
       },
     },
-  ].map((value) => JSON.stringify(value)).join("\n");
+  ]
+    .map((value) => JSON.stringify(value))
+    .join("\n");
 
   assert.equal(
     extractLastCodexAnswerFromJsonlForTest(jsonl),
-    "最终结论：workflow 输出不应从终端工具记录提取。"
+    "最终结论：workflow 输出不应从终端工具记录提取。",
   );
 });
 
@@ -75,13 +77,10 @@ test("clean conversation keeps agent history and removes Claude terminal chrome"
   assert.match(conversation, /Bash\(pytest/);
   assert.match(conversation, /4 passed/);
   assert.match(conversation, /已完成极简天气爬虫/);
-  assert.doesNotMatch(
-    conversation,
-    /Thought for|\/btw|auto mode on|Tell Claude|Notepad|Cooked/
-  );
+  assert.doesNotMatch(conversation, /Thought for|\/btw|auto mode on|Tell Claude|Notepad|Cooked/);
   assert.equal(
     extractLastClaudeAnswer(conversation),
-    "已完成极简天气爬虫。\n  - 新增 weather_spider.py\n  - 验证结果：4 passed"
+    "已完成极简天气爬虫。\n  - 新增 weather_spider.py\n  - 验证结果：4 passed",
   );
 });
 
@@ -114,7 +113,7 @@ test("Codex conversation starts at the first real event and removes TUI redraw f
       "• Added weather_spider.py (+16 -0)",
       "  1 +import sys",
       "• 已新增 weather_spider.py。",
-    ].join("\n")
+    ].join("\n"),
   );
 });
 
@@ -183,7 +182,9 @@ test("Claude JSONL produces a complete structured conversation without thinking 
         content: [{ type: "text", text: "已完成，4 个测试通过。" }],
       },
     },
-  ].map((value) => JSON.stringify(value)).join("\n");
+  ]
+    .map((value) => JSON.stringify(value))
+    .join("\n");
 
   const conversation = formatClaudeJsonlConversationForTest(jsonl);
   assert.match(conversation, /User:\n实现天气爬虫/);

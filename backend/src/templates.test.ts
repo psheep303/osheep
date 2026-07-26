@@ -1,17 +1,17 @@
-import test from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { createWorkflow } from "./workflows.js";
+import test from "node:test";
 import {
-  getWorkflowTemplate,
   deleteWorkflowTemplate,
+  getWorkflowTemplate,
   listWorkflowTemplates,
   saveWorkflowAsTemplate,
   updateTemplateFromWorkflow,
   updateWorkflowTemplateIcon,
 } from "./templates.js";
+import { createWorkflow } from "./workflows.js";
 
 test("template library separates built-in and user templates", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-templates-list-"));
@@ -62,7 +62,7 @@ test("user template icons are stored globally with the template", async () => {
   assert.match(updated.icon ?? "", new RegExp(`/api/templates/user/${saved.id}/icon`));
   assert.equal(
     await fs.readFile(path.join(root, "user", saved.id, "icon.png"), "base64"),
-    "iVBORw0KGgo="
+    "iVBORw0KGgo=",
   );
 });
 
@@ -84,7 +84,7 @@ test("developers can replace system templates with editable JSON files", async (
   await fs.writeFile(
     path.join(systemRoot, record.id, "template.json"),
     JSON.stringify(record),
-    "utf8"
+    "utf8",
   );
 
   const library = await listWorkflowTemplates({
@@ -96,7 +96,10 @@ test("developers can replace system templates with editable JSON files", async (
     systemSourceRoot: systemRoot,
   });
 
-  assert.deepEqual(library.system.map((template) => template.id), [record.id]);
+  assert.deepEqual(
+    library.system.map((template) => template.id),
+    [record.id],
+  );
   assert.equal(loaded.title, "Developer template");
 });
 
@@ -116,9 +119,7 @@ test("user templates can be deleted without affecting system templates", async (
 
 test("developer mode saves built-in templates to runtime and source libraries", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-built-in-runtime-"));
-  const systemSourceRoot = await fs.mkdtemp(
-    path.join(os.tmpdir(), "osheep-built-in-source-")
-  );
+  const systemSourceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-built-in-source-"));
   const workflowRoot = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-built-in-flow-"));
   const workflow = await createWorkflow(workflowRoot, {
     title: "Open source built-in",
@@ -130,7 +131,7 @@ test("developer mode saves built-in templates to runtime and source libraries", 
       root,
       systemSourceRoot,
       developerMode: false,
-    })
+    }),
   );
   const saved = await saveWorkflowAsTemplate(workflow, "system", {
     root,
@@ -139,22 +140,14 @@ test("developer mode saves built-in templates to runtime and source libraries", 
   });
 
   assert.equal(
-    JSON.parse(
-      await fs.readFile(
-        path.join(root, "system", saved.id, "template.json"),
-        "utf8"
-      )
-    ).title,
-    "Open source built-in"
+    JSON.parse(await fs.readFile(path.join(root, "system", saved.id, "template.json"), "utf8"))
+      .title,
+    "Open source built-in",
   );
   assert.equal(
-    JSON.parse(
-      await fs.readFile(
-        path.join(systemSourceRoot, saved.id, "template.json"),
-        "utf8"
-      )
-    ).readme,
-    "# Built in"
+    JSON.parse(await fs.readFile(path.join(systemSourceRoot, saved.id, "template.json"), "utf8"))
+      .readme,
+    "# Built in",
   );
 });
 
@@ -179,9 +172,7 @@ test("bound workflow edits are written back to their template", async () => {
 
 test("system template icons are copied into the open-source source library", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-system-icon-runtime-"));
-  const systemSourceRoot = await fs.mkdtemp(
-    path.join(os.tmpdir(), "osheep-system-icon-source-")
-  );
+  const systemSourceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-system-icon-source-"));
   const workflowRoot = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-system-icon-flow-"));
   const workflow = await createWorkflow(workflowRoot, {});
   const opts = { root, systemSourceRoot, developerMode: true };
@@ -191,12 +182,12 @@ test("system template icons are copied into the open-source source library", asy
     "system",
     template.id,
     "data:image/png;base64,iVBORw0KGgo=",
-    opts
+    opts,
   );
 
   assert.equal(
     await fs.readFile(path.join(systemSourceRoot, template.id, "icon.png"), "base64"),
-    "iVBORw0KGgo="
+    "iVBORw0KGgo=",
   );
 });
 
@@ -213,7 +204,7 @@ test("legacy flat user templates and embedded icons migrate into template folder
       nodes: [],
       edges: [],
     }),
-    "utf8"
+    "utf8",
   );
 
   const library = await listWorkflowTemplates({ root });
@@ -221,7 +212,7 @@ test("legacy flat user templates and embedded icons migrate into template folder
   assert.equal(library.user[0]?.id, id);
   assert.equal(
     await fs.readFile(path.join(root, "user", id, "icon.png"), "base64"),
-    "iVBORw0KGgo="
+    "iVBORw0KGgo=",
   );
   await assert.rejects(() => fs.access(path.join(root, `${id}.json`)));
 });

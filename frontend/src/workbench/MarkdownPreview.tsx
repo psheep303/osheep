@@ -29,10 +29,5 @@ export function MarkdownPreview({ source }: MarkdownPreviewProps) {
     };
   }, [source]);
 
-  return (
-    <div
-      className="markdown-preview"
-      dangerouslySetInnerHTML={{ __html: html }}
-    />
-  );
+  return <div className="markdown-preview" dangerouslySetInnerHTML={{ __html: html }} />;
 }

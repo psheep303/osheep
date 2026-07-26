@@ -73,9 +73,7 @@ export function AgentView({ workspaceId }: AgentViewProps) {
 
   const updateDraft = (idx: number, patch: Partial<AgentDraft>) => {
     setDrafts((prev) =>
-      prev.map((d, i) =>
-        i === idx ? { ...d, ...patch, dirty: true, error: null } : d
-      )
+      prev.map((d, i) => (i === idx ? { ...d, ...patch, dirty: true, error: null } : d)),
     );
   };
 
@@ -88,18 +86,10 @@ export function AgentView({ workspaceId }: AgentViewProps) {
     const draft = drafts[idx];
     if (!draft) return;
     if (!draft.name.trim()) {
-      setDrafts((prev) =>
-        prev.map((d, i) =>
-          i === idx ? { ...d, error: "名称不能为空" } : d
-        )
-      );
+      setDrafts((prev) => prev.map((d, i) => (i === idx ? { ...d, error: "名称不能为空" } : d)));
       return;
     }
-    setDrafts((prev) =>
-      prev.map((d, i) =>
-        i === idx ? { ...d, saving: true, error: null } : d
-      )
-    );
+    setDrafts((prev) => prev.map((d, i) => (i === idx ? { ...d, saving: true, error: null } : d)));
     try {
       const record: AgentRecord = {
         name: draft.name,
@@ -123,16 +113,12 @@ export function AgentView({ workspaceId }: AgentViewProps) {
                 saving: false,
                 error: null,
               }
-            : d
-        )
+            : d,
+        ),
       );
     } catch (e) {
       setDrafts((prev) =>
-        prev.map((d, i) =>
-          i === idx
-            ? { ...d, saving: false, error: (e as Error).message }
-            : d
-        )
+        prev.map((d, i) => (i === idx ? { ...d, saving: false, error: (e as Error).message } : d)),
       );
     }
   };
@@ -167,11 +153,7 @@ export function AgentView({ workspaceId }: AgentViewProps) {
         {topError && (
           <div className="banner-error" style={{ marginBottom: 12 }}>
             {topError}
-            <button
-              className="banner-error__close"
-              onClick={() => setTopError(null)}
-              title="关闭"
-            >
+            <button className="banner-error__close" onClick={() => setTopError(null)} title="关闭">
               ×
             </button>
           </div>
@@ -185,7 +167,7 @@ export function AgentView({ workspaceId }: AgentViewProps) {
 
         {drafts.map((d, idx) => (
           <AgentCard
-            key={(d.originalName || "__new__") + ":" + idx}
+            key={`${d.originalName || "__new__"}:${idx}`}
             draft={d}
             disabled={!workspaceId}
             onChange={(patch) => updateDraft(idx, patch)}
@@ -215,13 +197,7 @@ interface AgentCardProps {
   onDelete: () => void;
 }
 
-function AgentCard({
-  draft,
-  disabled,
-  onChange,
-  onSave,
-  onDelete,
-}: AgentCardProps) {
+function AgentCard({ draft, disabled, onChange, onSave, onDelete }: AgentCardProps) {
   return (
     <div className="agent-card">
       <div className="agent-card__row">
@@ -255,20 +231,16 @@ function AgentCard({
       </div>
 
       <div className="agent-card__row">
-        <span
-          className={
-            "agent-card__save" + (draft.dirty ? " is-dirty" : "")
-          }
-        >
+        <span className={`agent-card__save${draft.dirty ? " is-dirty" : ""}`}>
           {draft.saving
             ? "保存中..."
             : draft.error
-            ? draft.error
-            : draft.isNew
-            ? "尚未保存"
-            : draft.dirty
-            ? "有未保存的修改"
-            : "已保存"}
+              ? draft.error
+              : draft.isNew
+                ? "尚未保存"
+                : draft.dirty
+                  ? "有未保存的修改"
+                  : "已保存"}
         </span>
         <button
           type="button"

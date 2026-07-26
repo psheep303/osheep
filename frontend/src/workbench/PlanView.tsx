@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
+import { type FsNode, PLAN_DIR, readDirShallow, readFileText } from "./fs";
 import { MarkdownPreview } from "./MarkdownPreview";
-import { PLAN_DIR, readDirShallow, readFileText, type FsNode } from "./fs";
 
 interface PlanViewProps {
   workspaceId: string | null;
@@ -23,7 +23,7 @@ export function PlanView({ workspaceId }: PlanViewProps) {
     (async () => {
       try {
         const entries = (await readDirShallow(workspaceId, PLAN_DIR)).filter(
-          (n) => n.kind === "file"
+          (n) => n.kind === "file",
         );
         if (cancelled) return;
         setFiles(entries);
@@ -41,7 +41,7 @@ export function PlanView({ workspaceId }: PlanViewProps) {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspaceId]);
+  }, [workspaceId, selectedPath]);
 
   useEffect(() => {
     if (!workspaceId || !selectedPath) {
@@ -63,9 +63,7 @@ export function PlanView({ workspaceId }: PlanViewProps) {
   }, [workspaceId, selectedPath]);
 
   if (!workspaceId) {
-    return (
-      <div className="plan-view plan-view--empty muted">请先选择工作区</div>
-    );
+    return <div className="plan-view plan-view--empty muted">请先选择工作区</div>;
   }
 
   return (
@@ -78,10 +76,7 @@ export function PlanView({ workspaceId }: PlanViewProps) {
           files.map((f) => (
             <div
               key={f.path}
-              className={
-                "plan-view__item" +
-                (f.path === selectedPath ? " is-active" : "")
-              }
+              className={`plan-view__item${f.path === selectedPath ? " is-active" : ""}`}
               onClick={() => setSelectedPath(f.path)}
               title={f.name}
             >

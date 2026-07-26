@@ -5,16 +5,16 @@
 // browser tab is closed.
 
 import {
+  type AiChatMessage,
   ApiClientError,
   aiChatStream,
   aiChatStreamOsheepCode,
+  saveSession as apiSaveSession,
+  type ChatMessage,
+  type ChatStep,
   execRead,
   execRun,
   execWrite,
-  saveSession as apiSaveSession,
-  type AiChatMessage,
-  type ChatMessage,
-  type ChatStep,
   type ReadArgs,
   type RunArgs,
   type RunResult,
@@ -24,17 +24,17 @@ import {
 } from "./api";
 import { buildOsheepCodePrompt, detectPlatform } from "./osheep-code-prompt";
 import {
-  classifyCommand,
-  type RunCategory,
   type CategoryDescriptor,
+  classifyCommand,
   RUN_CATEGORIES,
+  type RunCategory,
 } from "./run-classify";
 import {
-  detectReasoningKind,
   type AiAutoAllow,
   type AiProvider,
-  type ReasoningEffort,
+  detectReasoningKind,
   isCliProviderKind,
+  type ReasoningEffort,
 } from "./settings";
 
 const MAX_TOOL_LOOPS = 40;
@@ -62,10 +62,7 @@ const NO_PROGRESS_LIMIT = 3;
  * simplified to "是 / 否 / 其他". Auto-allow toggles live solely in the
  * Auto-allow panel now.
  */
-export type ConfirmDecision =
-  | "allow"
-  | "deny"
-  | { kind: "feedback"; text: string };
+export type ConfirmDecision = "allow" | "deny" | { kind: "feedback"; text: string };
 
 export interface PendingToolConfirm {
   call: { id: string; tool: ToolKind; args: unknown };
@@ -73,11 +70,7 @@ export interface PendingToolConfirm {
   resolve: (d: ConfirmDecision) => void;
 }
 
-export type TurnStatus =
-  | "idle"
-  | "running"
-  | "awaiting-confirm"
-  | "error";
+export type TurnStatus = "idle" | "running" | "awaiting-confirm" | "error";
 
 export interface TurnView {
   sessionId: string;
@@ -241,7 +234,7 @@ class ChatRuntime {
   /** Resolve a pending tool confirmation. */
   resolveConfirm(sessionId: string, decision: ConfirmDecision): void {
     const t = this.turns.get(sessionId);
-    if (!t || !t.pendingConfirm) return;
+    if (!t?.pendingConfirm) return;
     const pc = t.pendingConfirm;
     t.pendingConfirm = null;
     t.status = t.busy ? "running" : "idle";
@@ -311,7 +304,7 @@ class ChatRuntime {
     provider: AiProvider,
     model: string,
     effort: ReasoningEffort | null,
-    text: string
+    text: string,
   ): Promise<void> {
     const sessionId = t.sessionId;
     const cb = this.cbs.get(sessionId);
@@ -336,9 +329,7 @@ class ChatRuntime {
       timestamp: Date.now(),
     };
     const nextTitle =
-      initial.title === "新对话" || !initial.title
-        ? text.slice(0, 24)
-        : initial.title;
+      initial.title === "新对话" || !initial.title ? text.slice(0, 24) : initial.title;
 
     let working: SessionRecord = {
       ...initial,
@@ -403,9 +394,7 @@ class ChatRuntime {
 
     const upsertThought = (id: string, text: string, ended: boolean) => {
       const now = Date.now();
-      const idx = t.pendingSteps.findIndex(
-        (s) => s.kind === "thought" && s.id === id
-      );
+      const idx = t.pendingSteps.findIndex((s) => s.kind === "thought" && s.id === id);
       if (idx >= 0) {
         const next = t.pendingSteps.slice();
         const prev = next[idx] as Extract<ChatStep, { kind: "thought" }>;
@@ -492,7 +481,7 @@ class ChatRuntime {
             kind: provider.kind,
           },
           appendTextStep,
-          ac.signal
+          ac.signal,
         );
         t.abortRef = null;
         cb.onFilesChanged?.();
@@ -535,9 +524,7 @@ class ChatRuntime {
 
       for (let loop = 0; loop < MAX_TOOL_LOOPS; loop += 1) {
         loopsRun = loop + 1;
-        const apiMessages: AiChatMessage[] = [
-          { role: "system", content: sysPrompt },
-        ];
+        const apiMessages: AiChatMessage[] = [{ role: "system", content: sysPrompt }];
         for (const m of modelTranscript) {
           if (m.role === "tool") {
             apiMessages.push({
@@ -636,14 +623,12 @@ class ChatRuntime {
               commitSteps([...t.pendingSteps, step]);
             },
           },
-          ac.signal
+          ac.signal,
         );
         t.abortRef = null;
 
         const assistantRawForTranscript =
-          toolsThisRound.length > 0
-            ? truncateAssistantRawAfterFirstTool(rawAcc)
-            : rawAcc;
+          toolsThisRound.length > 0 ? truncateAssistantRawAfterFirstTool(rawAcc) : rawAcc;
         if (assistantRawForTranscript.trim()) {
           modelTranscript = [
             ...modelTranscript,
@@ -696,12 +681,12 @@ class ChatRuntime {
             const newSteps = t.pendingSteps.map((s) =>
               s.kind === "tool" && s.id === step.id
                 ? { ...s, status: "denied" as const, error: tasksMsg }
-                : s
+                : s,
             );
             commitSteps(newSteps);
             appendToolResult(
               step.id,
-              `[tasks_required] Tool call was not executed because this turn has no valid <tasks>. Emit a markdown checkbox <tasks> first, then call tools.`
+              `[tasks_required] Tool call was not executed because this turn has no valid <tasks>. Emit a markdown checkbox <tasks> first, then call tools.`,
             );
             continue;
           }
@@ -733,7 +718,7 @@ class ChatRuntime {
             const outcome = invalidToolOutcome(
               step.tool,
               validationError.code,
-              validationError.message
+              validationError.message,
             );
             toolResultCache.set(sig, outcome);
             const newSteps = t.pendingSteps.map((s) =>
@@ -744,7 +729,7 @@ class ChatRuntime {
                     result: outcome.result,
                     error: outcome.error,
                   }
-                : s
+                : s,
             );
             commitSteps(newSteps);
             appendToolResult(step.id, outcome.toolResult);
@@ -760,8 +745,8 @@ class ChatRuntime {
             step.tool === "read"
               ? "read"
               : step.tool === "write"
-              ? "write"
-              : (category.autoAllowKey as keyof AiAutoAllow);
+                ? "write"
+                : (category.autoAllowKey as keyof AiAutoAllow);
           const allowed = !!autoAllow[allowKey];
 
           let decision: ConfirmDecision = allowed ? "allow" : "deny";
@@ -789,22 +774,22 @@ class ChatRuntime {
                     status: "denied" as const,
                     error: feedback ? `user instruction: ${feedback}` : "user denied",
                   }
-                : s
+                : s,
             );
             commitSteps(newSteps);
             appendToolResult(
               step.id,
-              feedback ? `[denied by user: ${feedback}]` : `[denied by user]`
+              feedback ? `[denied by user: ${feedback}]` : `[denied by user]`,
             );
             executedTools.push({ tool: step.tool, args: step.args, status: "denied" });
             continue;
           }
 
-          commitSteps(t.pendingSteps.map((s) =>
-            s.kind === "tool" && s.id === step.id
-              ? { ...s, status: "running" as const }
-              : s
-          ));
+          commitSteps(
+            t.pendingSteps.map((s) =>
+              s.kind === "tool" && s.id === step.id ? { ...s, status: "running" as const } : s,
+            ),
+          );
           const outcome = await executeToolCall(t.workspaceId, step);
           roundExecuted = true;
           toolResultCache.set(sig, outcome);
@@ -816,7 +801,7 @@ class ChatRuntime {
                   result: outcome.result,
                   error: outcome.error,
                 }
-              : s
+              : s,
           );
           commitSteps(newSteps);
           appendToolResult(step.id, outcome.toolResult);
@@ -843,8 +828,7 @@ class ChatRuntime {
           } else {
             noProgressRounds += 1;
             if (noProgressRounds >= NO_PROGRESS_LIMIT) {
-              exitNote =
-                `**osheep code 已连续 ${NO_PROGRESS_LIMIT} 轮没有进展，自动停止本轮。** 这几轮里没有任何工具被真正执行（被拒绝 / 重复调用 / 参数无效）。最常见的原因是模型没有先输出有效的 <tasks> 块——在 <tasks> 之前的工具调用会被宿主拒绝。请补充更明确的指令后发送「继续」；若反复如此，建议更换更强的模型。`;
+              exitNote = `**osheep code 已连续 ${NO_PROGRESS_LIMIT} 轮没有进展，自动停止本轮。** 这几轮里没有任何工具被真正执行（被拒绝 / 重复调用 / 参数无效）。最常见的原因是模型没有先输出有效的 <tasks> 块——在 <tasks> 之前的工具调用会被宿主拒绝。请补充更明确的指令后发送「继续」；若反复如此，建议更换更强的模型。`;
               break;
             }
           }
@@ -868,31 +852,24 @@ class ChatRuntime {
             // Check early-give-up FIRST — loopsRun could coincidentally be at
             // MAX on the final iteration when the model also gave up, but the
             // give-up message is more informative for the user.
-            exitNote =
-              `**osheep code 提前结束本轮：** 模型这一轮只发出了 tasks / thought / 文本，既没有继续调用工具也没有给出 <verify> 或 <ask>。如果任务还没完成，请发送「继续」或下达更具体的指令。`;
+            exitNote = `**osheep code 提前结束本轮：** 模型这一轮只发出了 tasks / thought / 文本，既没有继续调用工具也没有给出 <verify> 或 <ask>。如果任务还没完成，请发送「继续」或下达更具体的指令。`;
           } else if (loopsRun >= MAX_TOOL_LOOPS) {
-            exitNote =
-              `**已达本轮工具调用上限 (${MAX_TOOL_LOOPS})。** osheep code 跑完 ${MAX_TOOL_LOOPS} 轮工具循环仍未给出 <verify>。继续请发送「继续」或下达更具体的下一步指令。`;
+            exitNote = `**已达本轮工具调用上限 (${MAX_TOOL_LOOPS})。** osheep code 跑完 ${MAX_TOOL_LOOPS} 轮工具循环仍未给出 <verify>。继续请发送「继续」或下达更具体的下一步指令。`;
           } else {
             // Defensive catch-all: shouldn't normally happen.
-            exitNote =
-              `**本轮提前结束。** osheep code 跑了 ${loopsRun} 轮但没有 <verify>。请检查上方的步骤，再下达更具体的下一步指令。`;
+            exitNote = `**本轮提前结束。** osheep code 跑了 ${loopsRun} 轮但没有 <verify>。请检查上方的步骤，再下达更具体的下一步指令。`;
           }
         }
       }
 
       if (exitNote) {
-        commitSteps([
-          ...t.pendingSteps,
-          { kind: "text", text: exitNote },
-        ]);
+        commitSteps([...t.pendingSteps, { kind: "text", text: exitNote }]);
       }
 
       const finalText = collapseFinalText(t.pendingSteps);
       const finalSteps = t.pendingSteps;
       if (finalSteps.length === 0 && !finalText.trim() && !userAborted) {
-        t.error =
-          "CLI 未返回任何内容，请检查所选 CLI、模型名称或登录状态。";
+        t.error = "CLI 未返回任何内容，请检查所选 CLI、模型名称或登录状态。";
         // Clear pending state BEFORE we hand control to React so the tab
         // never paints "pending steps + saved message" together.
         t.pendingSteps = [];
@@ -969,13 +946,7 @@ class ChatRuntime {
         t.error = null;
         t.busy = true;
         this.notify(t);
-        void this.runTurn(
-          t,
-          queued.provider,
-          queued.model,
-          queued.effort,
-          queued.text
-        );
+        void this.runTurn(t, queued.provider, queued.model, queued.effort, queued.text);
       }
     }
   }
@@ -1057,7 +1028,7 @@ function normalizeTasksItems(items: string[]): string[] {
     .filter((it) => it.length > 0)
     .map((it) => {
       if (/^[-*+]\s+\[[ x~]\]/i.test(it)) return it;
-      if (/^\[[ x~]\]/i.test(it)) return "- " + it;
+      if (/^\[[ x~]\]/i.test(it)) return `- ${it}`;
       return `- [ ] ${it}`;
     });
 }
@@ -1072,9 +1043,7 @@ function stableStringify(value: unknown): string {
   }
   const obj = value as Record<string, unknown>;
   const keys = Object.keys(obj).sort();
-  return `{${keys
-    .map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`)
-    .join(",")}}`;
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`).join(",")}}`;
 }
 
 function pickCategory(step: Extract<ChatStep, { kind: "tool" }>): CategoryDescriptor {
@@ -1119,10 +1088,7 @@ interface CachedToolPayload {
   previousError?: string;
 }
 
-function makeCachedToolPayload(
-  tool: ToolKind,
-  outcome: ToolOutcome
-): CachedToolPayload {
+function makeCachedToolPayload(tool: ToolKind, outcome: ToolOutcome): CachedToolPayload {
   return {
     cached: true,
     tool,
@@ -1147,7 +1113,7 @@ function parseToolResult(toolResult: string): unknown {
 }
 
 function validateToolCall(
-  step: Extract<ChatStep, { kind: "tool" }>
+  step: Extract<ChatStep, { kind: "tool" }>,
 ): { code: string; message: string } | null {
   const args = step.args;
   if (!isPlainRecord(args)) {
@@ -1182,10 +1148,16 @@ function validateReadArgs(args: Record<string, unknown>) {
       return { code: "MISSING_PATH", message: "read.file requires path." };
     }
     if (args.startLine !== undefined && !isPositiveInteger(args.startLine)) {
-      return { code: "INVALID_START_LINE", message: "read.file startLine must be a positive integer." };
+      return {
+        code: "INVALID_START_LINE",
+        message: "read.file startLine must be a positive integer.",
+      };
     }
     if (args.lineCount !== undefined && !isPositiveInteger(args.lineCount)) {
-      return { code: "INVALID_LINE_COUNT", message: "read.file lineCount must be a positive integer." };
+      return {
+        code: "INVALID_LINE_COUNT",
+        message: "read.file lineCount must be a positive integer.",
+      };
     }
   }
   if (kind === "list" && args.path !== undefined && typeof args.path !== "string") {
@@ -1330,7 +1302,7 @@ function invalidToolOutcome(tool: ToolKind, code: string, message: string): Tool
 
 async function executeToolCall(
   workspaceId: string,
-  step: Extract<ChatStep, { kind: "tool" }>
+  step: Extract<ChatStep, { kind: "tool" }>,
 ): Promise<ToolOutcome> {
   try {
     let resultPayload: unknown;
@@ -1397,7 +1369,7 @@ function toolErrorPayload(e: unknown): {
 
 function stringifyToolError(
   tool: ToolKind,
-  payload: { code: string; status: number; message: string }
+  payload: { code: string; status: number; message: string },
 ): string {
   return JSON.stringify(
     {
@@ -1408,7 +1380,7 @@ function stringifyToolError(
       message: payload.message,
     },
     null,
-    2
+    2,
   );
 }
 
@@ -1438,7 +1410,7 @@ function stringifyToolResult(t: ToolKind, result: unknown): string {
         truncated: r.truncated ?? false,
       },
       null,
-      2
+      2,
     );
   }
   if (t === "read") {
@@ -1453,7 +1425,7 @@ function stringifyToolResult(t: ToolKind, result: unknown): string {
           modelTruncated,
         },
         null,
-        2
+        2,
       );
     }
     return clipText(JSON.stringify(r, null, 2) ?? "null", 64_000);
@@ -1480,7 +1452,7 @@ function stringifyToolResult(t: ToolKind, result: unknown): string {
         edits?: unknown;
       };
     };
-    if (r && r.diff && typeof r.diff === "object") {
+    if (r?.diff && typeof r.diff === "object") {
       const { before: _b, after: _a, ...rest } = r.diff;
       const slimmed = { ...r, diff: rest };
       return clipText(JSON.stringify(slimmed, null, 2) ?? "null", 64_000);
@@ -1492,7 +1464,7 @@ function stringifyToolResult(t: ToolKind, result: unknown): string {
 
 function clipText(s: string, max: number): string {
   if (s.length <= max) return s;
-  return s.slice(0, max) + `\n…[truncated ${s.length - max} chars]`;
+  return `${s.slice(0, max)}\n…[truncated ${s.length - max} chars]`;
 }
 
 function labelTool(t: ToolKind): string {
@@ -1512,7 +1484,7 @@ function summarizeArgsForNote(t: ToolKind, args: unknown): string {
   }
   if (t === "write") {
     const kind = typeof a.kind === "string" ? a.kind : "write";
-    const p = typeof a.path === "string" ? a.path : (a.to as string) ?? "";
+    const p = typeof a.path === "string" ? a.path : ((a.to as string) ?? "");
     if (kind === "multi_edit" && Array.isArray(a.edits)) {
       return `${kind} ${p} (${a.edits.length} edits)`;
     }
@@ -1523,11 +1495,11 @@ function summarizeArgsForNote(t: ToolKind, args: unknown): string {
 
 function truncateForNote(s: string, max: number): string {
   if (s.length <= max) return s;
-  return s.slice(0, max - 1) + "…";
+  return `${s.slice(0, max - 1)}…`;
 }
 
 function buildRecentToolsReminder(
-  executed: Array<{ tool: ToolKind; args: unknown; status: "ok" | "err" | "denied" | "cached" }>
+  executed: Array<{ tool: ToolKind; args: unknown; status: "ok" | "err" | "denied" | "cached" }>,
 ): string {
   // Show the most recent ~20 calls (older ones are already obvious from the
   // transcript); keep the line short enough that the model can skim it.
@@ -1577,22 +1549,22 @@ function findMatchingJsonBrace(s: string, openIdx: number): number {
   if (s[openIdx] !== "{") return -1;
   let depth = 0;
   let inStr = false;
-  let escape = false;
+  let escaping = false;
   for (let i = openIdx; i < s.length; i += 1) {
     const ch = s[i]!;
-    if (escape) {
-      escape = false;
+    if (escaping) {
+      escaping = false;
       continue;
     }
     if (inStr) {
       if (ch === "\\") {
-        escape = true;
-      } else if (ch === "\"") {
+        escaping = true;
+      } else if (ch === '"') {
         inStr = false;
       }
       continue;
     }
-    if (ch === "\"") {
+    if (ch === '"') {
       inStr = true;
     } else if (ch === "{") {
       depth += 1;
@@ -1629,7 +1601,7 @@ export function useChatTurn(sessionId: string): TurnView {
   return useSyncExternalStore(
     (cb) => chatRuntime.subscribe(sessionId, cb),
     () => chatRuntime.getView(sessionId),
-    () => chatRuntime.getView(sessionId)
+    () => chatRuntime.getView(sessionId),
   );
 }
 
@@ -1652,7 +1624,7 @@ export function useActiveSessions(): Set<string> {
   const ids = useSyncExternalStore(
     (cb) => chatRuntime.subscribeActivity(cb),
     getActiveSnapshot,
-    getActiveSnapshot
+    getActiveSnapshot,
   );
   return new Set(ids);
 }

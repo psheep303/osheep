@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { getGitLog, type GitCommit } from "./api";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type GitCommit, getGitLog } from "./api";
 
 interface GitGraphProps {
   workspaceId: string;
@@ -38,7 +38,7 @@ const HISTORY_ITEM_REF_COLOR = "#3794ff";
 const HISTORY_ITEM_REMOTE_REF_COLOR = "#b180d7";
 const GRAPH_COLORS = ["#ffb000", "#dc267f", "#994f00", "#40b0a6", "#b66dff"];
 
-export function GitGraph({ workspaceId, refreshKey }: GitGraphProps) {
+export function GitGraph({ workspaceId, refreshKey: _refreshKey }: GitGraphProps) {
   const [commits, setCommits] = useState<GitCommit[]>([]);
   const [head, setHead] = useState<string | null>(null);
   const [currentRef, setCurrentRef] = useState<string | null>(null);
@@ -69,11 +69,11 @@ export function GitGraph({ workspaceId, refreshKey }: GitGraphProps) {
     return () => {
       cancelled = true;
     };
-  }, [workspaceId, refreshKey]);
+  }, [workspaceId]);
 
   const rows = useMemo(
     () => toHistoryRows(commits, head, currentRef, currentRemoteRef),
-    [commits, head, currentRef, currentRemoteRef]
+    [commits, head, currentRef, currentRemoteRef],
   );
 
   if (!workspaceId) return null;
@@ -111,10 +111,10 @@ function GraphRow({
 
   return (
     <div
-      className={"git-graph__row" + (isHead ? " is-head" : "")}
+      className={`git-graph__row${isHead ? " is-head" : ""}`}
       title={`${row.commit.subject}\n${row.commit.shortSha} · ${row.commit.author}`}
     >
-      <span className={"git-graph__graph-container" + (isHead ? " is-current" : "")}>
+      <span className={`git-graph__graph-container${isHead ? " is-current" : ""}`}>
         <HistoryGraph row={row} />
       </span>
       <span className="git-graph__text">
@@ -137,7 +137,7 @@ function GraphRow({
 function RefBadge({ badge }: { badge: ReferenceBadge }) {
   return (
     <span
-      className={"git-graph__ref" + (badge.showDescription ? "" : " is-icon-only")}
+      className={`git-graph__ref${badge.showDescription ? "" : " is-icon-only"}`}
       style={{ backgroundColor: badge.color }}
       title={shortRef(badge.refName)}
     >
@@ -186,8 +186,8 @@ function HistoryGraph({ row }: { row: HistoryRow }) {
           graphPath(
             `vertical-${index}`,
             `M ${SWIMLANE_WIDTH * (index + 1)} 0 V ${SWIMLANE_HEIGHT}`,
-            inputNode.color
-          )
+            inputNode.color,
+          ),
         );
       } else {
         const d = [
@@ -220,9 +220,7 @@ function HistoryGraph({ row }: { row: HistoryRow }) {
       `M ${SWIMLANE_WIDTH * parentOutputIndex} ${SWIMLANE_HEIGHT / 2}`,
       `H ${SWIMLANE_WIDTH * (circleIndex + 1)}`,
     ].join(" ");
-    elements.push(
-      graphPath(`parent-${index}`, d, outputSwimlanes[parentOutputIndex].color)
-    );
+    elements.push(graphPath(`parent-${index}`, d, outputSwimlanes[parentOutputIndex].color));
   }
 
   if (inputIndex !== -1) {
@@ -230,8 +228,8 @@ function HistoryGraph({ row }: { row: HistoryRow }) {
       graphPath(
         "to-node",
         `M ${SWIMLANE_WIDTH * (circleIndex + 1)} 0 V ${SWIMLANE_HEIGHT / 2}`,
-        inputSwimlanes[inputIndex].color
-      )
+        inputSwimlanes[inputIndex].color,
+      ),
     );
   }
 
@@ -239,11 +237,9 @@ function HistoryGraph({ row }: { row: HistoryRow }) {
     elements.push(
       graphPath(
         "from-node",
-        `M ${SWIMLANE_WIDTH * (circleIndex + 1)} ${SWIMLANE_HEIGHT / 2} V ${
-          SWIMLANE_HEIGHT
-        }`,
-        circleColor
-      )
+        `M ${SWIMLANE_WIDTH * (circleIndex + 1)} ${SWIMLANE_HEIGHT / 2} V ${SWIMLANE_HEIGHT}`,
+        circleColor,
+      ),
     );
   }
 
@@ -258,8 +254,7 @@ function HistoryGraph({ row }: { row: HistoryRow }) {
     elements.push(graphCircle("node", circleX, CIRCLE_RADIUS + 1, 2, circleColor));
   }
 
-  const width =
-    SWIMLANE_WIDTH * (Math.max(inputSwimlanes.length, outputSwimlanes.length, 1) + 1);
+  const width = SWIMLANE_WIDTH * (Math.max(inputSwimlanes.length, outputSwimlanes.length, 1) + 1);
 
   return (
     <svg
@@ -293,7 +288,7 @@ function graphCircle(
   cx: number,
   radius: number,
   strokeWidth: number,
-  color?: string
+  color?: string,
 ): ReactNode {
   return (
     <circle
@@ -312,7 +307,7 @@ function toHistoryRows(
   commits: GitCommit[],
   head: string | null,
   currentRef: string | null,
-  currentRemoteRef: string | null
+  currentRemoteRef: string | null,
 ): HistoryRow[] {
   const colorMap = new Map<string, string>();
   if (currentRef) colorMap.set(currentRef, HISTORY_ITEM_REF_COLOR);
@@ -384,7 +379,7 @@ function getLabelColor(commit: GitCommit, colorMap: Map<string, string>): string
 function getReferenceBadges(
   commit: GitCommit,
   currentRef: string | null,
-  currentRemoteRef: string | null
+  currentRemoteRef: string | null,
 ): ReferenceBadge[] {
   const badges: ReferenceBadge[] = [];
   if (currentRef && commit.refs.includes(currentRef)) {

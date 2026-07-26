@@ -124,12 +124,7 @@ const COL = {
 
 function Wrap({ children }: { children: ReactNode }) {
   return (
-    <svg
-      viewBox="0 0 16 16"
-      width="16"
-      height="16"
-      style={{ display: "block", flexShrink: 0 }}
-    >
+    <svg viewBox="0 0 16 16" width="16" height="16" style={{ display: "block", flexShrink: 0 }}>
       {children}
     </svg>
   );
@@ -147,14 +142,7 @@ function Letters({
   y?: number;
 }) {
   const fs =
-    size ??
-    (text.length === 1
-      ? 9
-      : text.length === 2
-      ? 6
-      : text.length === 3
-      ? 4.6
-      : 3.8);
+    size ?? (text.length === 1 ? 9 : text.length === 2 ? 6 : text.length === 3 ? 4.6 : 3.8);
   return (
     <text
       x="8"
@@ -188,13 +176,7 @@ function GenericPaper({ color = COL.default }: { color?: string }) {
         strokeWidth="1"
         strokeLinejoin="round"
       />
-      <path
-        d="M9.5 1.5V5h3"
-        fill="none"
-        stroke={color}
-        strokeWidth="1"
-        strokeLinejoin="round"
-      />
+      <path d="M9.5 1.5V5h3" fill="none" stroke={color} strokeWidth="1" strokeLinejoin="round" />
     </>
   );
 }
@@ -251,27 +233,14 @@ function Terminal({ color }: { color: string }) {
 function Cylinder({ color }: { color: string }) {
   return (
     <>
-      <ellipse
-        cx="8"
-        cy="4"
-        rx="5"
-        ry="1.5"
-        fill="none"
-        stroke={color}
-        strokeWidth="1.2"
-      />
+      <ellipse cx="8" cy="4" rx="5" ry="1.5" fill="none" stroke={color} strokeWidth="1.2" />
       <path
         d="M3 4v8c0 .9 2.2 1.5 5 1.5s5-.6 5-1.5V4"
         fill="none"
         stroke={color}
         strokeWidth="1.2"
       />
-      <path
-        d="M3 8c0 .9 2.2 1.5 5 1.5s5-.6 5-1.5"
-        fill="none"
-        stroke={color}
-        strokeWidth="1.2"
-      />
+      <path d="M3 8c0 .9 2.2 1.5 5 1.5s5-.6 5-1.5" fill="none" stroke={color} strokeWidth="1.2" />
     </>
   );
 }
@@ -311,12 +280,7 @@ function Box3D({ color }: { color: string }) {
         strokeWidth="1.2"
         strokeLinejoin="round"
       />
-      <path
-        d="M2 5l6 3 6-3M8 8v6"
-        stroke={color}
-        strokeWidth="1.2"
-        fill="none"
-      />
+      <path d="M2 5l6 3 6-3M8 8v6" stroke={color} strokeWidth="1.2" fill="none" />
     </>
   );
 }
@@ -325,12 +289,7 @@ function Padlock({ color }: { color: string }) {
   return (
     <>
       <rect x="3" y="7.5" width="10" height="6.5" rx="1" fill={color} />
-      <path
-        d="M5 7.5V5.5a3 3 0 0 1 6 0v2"
-        fill="none"
-        stroke={color}
-        strokeWidth="1.4"
-      />
+      <path d="M5 7.5V5.5a3 3 0 0 1 6 0v2" fill="none" stroke={color} strokeWidth="1.4" />
     </>
   );
 }
@@ -369,10 +328,7 @@ function FilmReel({ color }: { color: string }) {
         stroke={color}
         strokeWidth="1.2"
       />
-      <path
-        d="M6 6l4 2-4 2z"
-        fill={color}
-      />
+      <path d="M6 6l4 2-4 2z" fill={color} />
     </>
   );
 }
@@ -392,12 +348,7 @@ function Book({ color }: { color: string }) {
         stroke={color}
         strokeWidth="1.2"
       />
-      <path
-        d="M5 6h2M5 8h2M9 6h2M9 8h2"
-        stroke={color}
-        strokeWidth="0.8"
-        strokeLinecap="round"
-      />
+      <path d="M5 6h2M5 8h2M9 6h2M9 8h2" stroke={color} strokeWidth="0.8" strokeLinecap="round" />
     </>
   );
 }
@@ -406,12 +357,7 @@ function Lines({ color }: { color: string }) {
   return (
     <>
       <GenericPaper color={color} />
-      <path
-        d="M5.5 8h5M5.5 10h5M5.5 12h3"
-        stroke={color}
-        strokeWidth="0.8"
-        strokeLinecap="round"
-      />
+      <path d="M5.5 8h5M5.5 10h5M5.5 12h3" stroke={color} strokeWidth="0.8" strokeLinecap="round" />
     </>
   );
 }

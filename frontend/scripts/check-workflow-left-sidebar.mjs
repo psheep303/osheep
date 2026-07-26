@@ -6,9 +6,7 @@ const workbench = readFileSync("src/workbench/Workbench.tsx", "utf8");
 const checks = [
   {
     name: "ActivityBar exposes workflow as a view id",
-    pass:
-      /export type ViewId =/.test(activityBar) &&
-      /\|\s*"workflow"/.test(activityBar),
+    pass: /export type ViewId =/.test(activityBar) && /\|\s*"workflow"/.test(activityBar),
   },
   {
     name: "workflow is the first ActivityBar item",
@@ -50,15 +48,14 @@ const checks = [
     name: "titlebar actions only keep save",
     pass:
       /<div className="titlebar__actions">\s*<button\s+className="tb-btn"\s+onClick=\{saveActive\}/m.test(
-        workbench
+        workbench,
       ) &&
       !/<LayoutToggle/.test(workbench) &&
       !/titlebar__spacer/.test(workbench),
   },
   {
     name: "explorer empty state has no workspace picker button",
-    pass:
-      !/side-view__body--padded[\s\S]*setPicking\(true\)/.test(workbench),
+    pass: !/side-view__body--padded[\s\S]*setPicking\(true\)/.test(workbench),
   },
 ];
 

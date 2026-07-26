@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { errors } from "../errors.js";
-import { resolveWorkspace } from "../workspace.js";
+import { updateTemplateFromWorkflow } from "../templates.js";
+import { startWorkflowRun, stopWorkflowRun, stopWorkflowRunAndWait } from "../workflow-runner.js";
 import {
   createWorkflow,
   deleteWorkflow,
@@ -9,29 +10,21 @@ import {
   saveWorkflow,
   type WorkflowRecord,
 } from "../workflows.js";
-import {
-  startWorkflowRun,
-  stopWorkflowRun,
-  stopWorkflowRunAndWait,
-} from "../workflow-runner.js";
-import { updateTemplateFromWorkflow } from "../templates.js";
+import { resolveWorkspace } from "../workspace.js";
 
 export async function registerWorkflowRoutes(app: FastifyInstance) {
-  app.get<{ Params: { id: string } }>(
-    "/api/workspaces/:id/workflows",
-    async (req) => {
-      const ws = await resolveWorkspace(req.params.id);
-      const workflows = await listWorkflows(ws.path);
-      return { workflows };
-    }
-  );
+  app.get<{ Params: { id: string } }>("/api/workspaces/:id/workflows", async (req) => {
+    const ws = await resolveWorkspace(req.params.id);
+    const workflows = await listWorkflows(ws.path);
+    return { workflows };
+  });
 
   app.get<{ Params: { id: string; wid: string } }>(
     "/api/workspaces/:id/workflows/:wid",
     async (req) => {
       const ws = await resolveWorkspace(req.params.id);
       return await getWorkflow(ws.path, req.params.wid);
-    }
+    },
   );
 
   app.post<{
@@ -72,7 +65,7 @@ export async function registerWorkflowRoutes(app: FastifyInstance) {
     async (req) => {
       const stopped = stopWorkflowRun(req.params.id, req.params.wid);
       return { ok: true, stopped };
-    }
+    },
   );
 
   app.delete<{ Params: { id: string; wid: string } }>(
@@ -82,6 +75,6 @@ export async function registerWorkflowRoutes(app: FastifyInstance) {
       const ws = await resolveWorkspace(req.params.id);
       await deleteWorkflow(ws.path, req.params.wid);
       return { ok: true };
-    }
+    },
   );
 }

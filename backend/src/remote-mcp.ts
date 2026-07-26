@@ -67,7 +67,7 @@ const FORBIDDEN_HEADERS = new Set([
 ]);
 
 export async function discoverRemoteMcp(
-  options: RemoteMcpRequestOptions
+  options: RemoteMcpRequestOptions,
 ): Promise<RemoteMcpDiscovery> {
   return await withRemoteMcpSession(options, async (session) => {
     const response = await session.request({
@@ -92,7 +92,7 @@ export async function callRemoteMcp(
   options: RemoteMcpRequestOptions & {
     name: string;
     arguments?: Record<string, unknown>;
-  }
+  },
 ): Promise<RemoteMcpCallResult> {
   return await withRemoteMcpSession(options, async (session) => {
     const response = await session.request({
@@ -127,7 +127,7 @@ interface RemoteMcpSession {
 class McpTransportError extends Error {
   constructor(
     message: string,
-    readonly status?: number
+    readonly status?: number,
   ) {
     super(message);
   }
@@ -135,7 +135,7 @@ class McpTransportError extends Error {
 
 async function withRemoteMcpSession<T>(
   options: RemoteMcpRequestOptions,
-  fn: (session: RemoteMcpSession) => Promise<T>
+  fn: (session: RemoteMcpSession) => Promise<T>,
 ): Promise<T> {
   const sse = new RemoteMcpSseSession(options);
   try {
@@ -241,7 +241,7 @@ class RemoteMcpSseSession implements RemoteMcpSession {
     if (!response.ok) {
       throw new McpTransportError(
         `MCP SSE connect failed (${response.status}): ${await response.text().catch(() => "")}`,
-        response.status
+        response.status,
       );
     }
     if (!response.body) throw errors.upstreamFailed("MCP SSE response has no body");
@@ -249,7 +249,7 @@ class RemoteMcpSseSession implements RemoteMcpSession {
     this.resolvedPostUrl = await withTimeout(
       this.endpoint.promise,
       this.timeoutMs,
-      "Timed out waiting for MCP endpoint event"
+      "Timed out waiting for MCP endpoint event",
     );
   }
 
@@ -274,7 +274,7 @@ class RemoteMcpSseSession implements RemoteMcpSession {
     if (!response.ok) {
       this.rejectPending(id, `MCP POST failed (${response.status})`);
       throw errors.upstreamFailed(
-        `MCP POST failed (${response.status}): ${await response.text().catch(() => "")}`
+        `MCP POST failed (${response.status}): ${await response.text().catch(() => "")}`,
       );
     }
     const text = await response.text().catch(() => "");
@@ -295,7 +295,7 @@ class RemoteMcpSseSession implements RemoteMcpSession {
     if (!response.ok) {
       throw new McpTransportError(
         `MCP notification failed (${response.status}): ${await response.text().catch(() => "")}`,
-        response.status
+        response.status,
       );
     }
   }
@@ -364,7 +364,6 @@ class RemoteMcpSseSession implements RemoteMcpSession {
           if (line === "") {
             flush();
           } else if (line.startsWith(":")) {
-            continue;
           } else if (line.startsWith("event:")) {
             event = line.slice(6).trim();
           } else if (line.startsWith("data:")) {
@@ -469,7 +468,7 @@ class RemoteMcpHttpSession implements RemoteMcpSession {
     if (!response.ok) {
       throw new McpTransportError(
         `MCP Streamable HTTP request failed (${response.status}): ${await response.text().catch(() => "")}`,
-        response.status
+        response.status,
       );
     }
     this.captureSessionId(response);
@@ -492,7 +491,7 @@ class RemoteMcpHttpSession implements RemoteMcpSession {
     if (!response.ok) {
       throw new McpTransportError(
         `MCP Streamable HTTP notification failed (${response.status}): ${await response.text().catch(() => "")}`,
-        response.status
+        response.status,
       );
     }
     this.captureSessionId(response);
@@ -535,7 +534,7 @@ function normalizeRemoteLink(value: string): string {
 
 function buildAuthHeaders(
   headers: Record<string, string> | undefined,
-  apiKey: string | undefined
+  apiKey: string | undefined,
 ): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [rawKey, rawValue] of Object.entries(headers ?? {})) {
@@ -543,21 +542,17 @@ function buildAuthHeaders(
     if (!key || FORBIDDEN_HEADERS.has(key.toLowerCase())) continue;
     out[key] = rawValue;
   }
-  const hasAuthorization = Object.keys(out).some(
-    (key) => key.toLowerCase() === "authorization"
-  );
+  const hasAuthorization = Object.keys(out).some((key) => key.toLowerCase() === "authorization");
   const token = typeof apiKey === "string" ? apiKey.trim() : "";
   if (token && !hasAuthorization) {
-    out.Authorization = token.toLowerCase().startsWith("bearer ")
-      ? token
-      : `Bearer ${token}`;
+    out.Authorization = token.toLowerCase().startsWith("bearer ") ? token : `Bearer ${token}`;
   }
   return out;
 }
 
 function withDefaults(
   headers: Record<string, string>,
-  defaults: Record<string, string>
+  defaults: Record<string, string>,
 ): Record<string, string> {
   const out = { ...headers };
   const present = new Set(Object.keys(out).map((key) => key.toLowerCase()));
@@ -640,15 +635,8 @@ function parseSseTextPayloads(text: string): unknown[] {
   return payloads;
 }
 
-async function parseRpcResponseBody(
-  response: Response,
-  timeoutMs: number
-): Promise<unknown> {
-  const text = await withTimeout(
-    response.text(),
-    timeoutMs,
-    "Timed out reading MCP HTTP response"
-  );
+async function parseRpcResponseBody(response: Response, timeoutMs: number): Promise<unknown> {
+  const text = await withTimeout(response.text(), timeoutMs, "Timed out reading MCP HTTP response");
   const trimmed = text.trim();
   if (!trimmed) return null;
   if (trimmed.startsWith("event:") || trimmed.startsWith("data:")) {
@@ -700,11 +688,7 @@ function deferred<T>(): {
   return { promise, resolve, reject };
 }
 
-function withTimeout<T>(
-  promise: Promise<T>,
-  ms: number,
-  message: string
-): Promise<T> {
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(message)), ms);
     promise.then(
@@ -715,7 +699,7 @@ function withTimeout<T>(
       (e) => {
         clearTimeout(timer);
         reject(e);
-      }
+      },
     );
   });
 }

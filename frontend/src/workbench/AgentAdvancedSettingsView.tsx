@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  getAiSettings,
-  importAiLiveProvider,
-  saveAiProvider,
   type AiSettingsApp,
   type AiSettingsProvider,
   type AiSettingsSnapshot,
+  getAiSettings,
+  importAiLiveProvider,
+  saveAiProvider,
 } from "./api";
 
 type ClaudeAdvancedSection = "hooks" | "mcp" | "environment";
@@ -26,7 +26,11 @@ type JsonRecord = Record<string, unknown>;
 
 const CODEX_APPROVAL_OPTIONS = [
   { value: "untrusted", label: "Untrusted", hint: "Ask before commands outside the trusted set." },
-  { value: "on-request", label: "On request", hint: "Let the agent decide when approval is needed." },
+  {
+    value: "on-request",
+    label: "On request",
+    hint: "Let the agent decide when approval is needed.",
+  },
   { value: "never", label: "Never", hint: "Do not prompt; failures go back to the agent." },
 ];
 
@@ -42,10 +46,7 @@ const CODEX_ENV_INHERIT_OPTIONS = [
   { value: "none", label: "None" },
 ];
 
-export function AgentAdvancedSettingsView({
-  app,
-  section,
-}: AgentAdvancedSettingsViewProps) {
+export function AgentAdvancedSettingsView({ app, section }: AgentAdvancedSettingsViewProps) {
   const [snapshot, setSnapshot] = useState<AiSettingsSnapshot | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -62,27 +63,21 @@ export function AgentAdvancedSettingsView({
 
   useEffect(() => {
     void refresh();
-  }, []);
+  }, [refresh]);
 
-  const activeProvider = useMemo(
-    () => currentProvider(snapshot, app),
-    [snapshot, app]
-  );
+  const activeProvider = useMemo(() => currentProvider(snapshot, app), [snapshot, app]);
 
-  const provider = useMemo(
-    () => activeProvider ?? defaultProvider(app),
-    [activeProvider, app]
-  );
+  const provider = useMemo(() => activeProvider ?? defaultProvider(app), [activeProvider, app]);
 
   const pathText =
     app === "claude"
-      ? snapshot?.paths.claude.settings ?? "~/.claude/settings.json"
-      : snapshot?.paths.codex.config ?? "~/.codex/config.toml";
+      ? (snapshot?.paths.claude.settings ?? "~/.claude/settings.json")
+      : (snapshot?.paths.codex.config ?? "~/.codex/config.toml");
 
   useEffect(() => {
     if (!snapshot) return;
     resetDraft(provider);
-  }, [snapshot, provider, app, section]);
+  }, [snapshot, provider, resetDraft]);
 
   async function refresh() {
     await run(async () => {
@@ -124,18 +119,24 @@ export function AgentAdvancedSettingsView({
     const nextConfigText = typeof settings.config === "string" ? settings.config : "";
     setConfigText(nextConfigText);
     if (section === "permissions") {
-      setApprovalPolicy(extractTomlTopLevelString(nextConfigText, "approval_policy") || "on-request");
-      setSandboxMode(extractTomlTopLevelString(nextConfigText, "sandbox_mode") || "workspace-write");
-      setSandboxPermissionsText(extractTomlTopLevelArray(nextConfigText, "sandbox_permissions").join("\n"));
+      setApprovalPolicy(
+        extractTomlTopLevelString(nextConfigText, "approval_policy") || "on-request",
+      );
+      setSandboxMode(
+        extractTomlTopLevelString(nextConfigText, "sandbox_mode") || "workspace-write",
+      );
+      setSandboxPermissionsText(
+        extractTomlTopLevelArray(nextConfigText, "sandbox_permissions").join("\n"),
+      );
     } else {
       setEnvInherit(
-        extractTomlSectionString(nextConfigText, "shell_environment_policy", "inherit") || "all"
+        extractTomlSectionString(nextConfigText, "shell_environment_policy", "inherit") || "all",
       );
       setEnvExcludeText(
-        extractTomlSectionArray(nextConfigText, "shell_environment_policy", "exclude").join("\n")
+        extractTomlSectionArray(nextConfigText, "shell_environment_policy", "exclude").join("\n"),
       );
       setCodexEnvRows(
-        rowsFromRecord(extractTomlSectionStringMap(nextConfigText, "shell_environment_policy.set"))
+        rowsFromRecord(extractTomlSectionStringMap(nextConfigText, "shell_environment_policy.set")),
       );
     }
   }
@@ -178,7 +179,11 @@ export function AgentAdvancedSettingsView({
       let next = configText;
       next = setTomlTopLevelString(next, "approval_policy", approvalPolicy);
       next = setTomlTopLevelString(next, "sandbox_mode", sandboxMode);
-      next = setTomlTopLevelArray(next, "sandbox_permissions", listFromText(sandboxPermissionsText));
+      next = setTomlTopLevelArray(
+        next,
+        "sandbox_permissions",
+        listFromText(sandboxPermissionsText),
+      );
       return next;
     }
 
@@ -188,12 +193,12 @@ export function AgentAdvancedSettingsView({
       next,
       "shell_environment_policy",
       "exclude",
-      listFromText(envExcludeText)
+      listFromText(envExcludeText),
     );
     next = setTomlSectionStringMap(
       next,
       "shell_environment_policy.set",
-      recordFromRows(codexEnvRows, "Environment variable")
+      recordFromRows(codexEnvRows, "Environment variable"),
     );
     return next;
   }
@@ -211,21 +216,21 @@ export function AgentAdvancedSettingsView({
   function updateSandboxPermissions(value: string) {
     setSandboxPermissionsText(value);
     setConfigText((current) =>
-      setTomlTopLevelArray(current, "sandbox_permissions", listFromText(value))
+      setTomlTopLevelArray(current, "sandbox_permissions", listFromText(value)),
     );
   }
 
   function updateEnvInherit(value: string) {
     setEnvInherit(value);
     setConfigText((current) =>
-      setTomlSectionString(current, "shell_environment_policy", "inherit", value)
+      setTomlSectionString(current, "shell_environment_policy", "inherit", value),
     );
   }
 
   function updateEnvExclude(value: string) {
     setEnvExcludeText(value);
     setConfigText((current) =>
-      setTomlSectionArray(current, "shell_environment_policy", "exclude", listFromText(value))
+      setTomlSectionArray(current, "shell_environment_policy", "exclude", listFromText(value)),
     );
   }
 
@@ -235,8 +240,8 @@ export function AgentAdvancedSettingsView({
       setTomlSectionStringMap(
         current,
         "shell_environment_policy.set",
-        recordFromRows(rows, "Environment variable")
-      )
+        recordFromRows(rows, "Environment variable"),
+      ),
     );
   }
 
@@ -248,12 +253,14 @@ export function AgentAdvancedSettingsView({
       setSandboxPermissionsText(extractTomlTopLevelArray(value, "sandbox_permissions").join("\n"));
     } else {
       setEnvInherit(
-        extractTomlSectionString(value, "shell_environment_policy", "inherit") || envInherit
+        extractTomlSectionString(value, "shell_environment_policy", "inherit") || envInherit,
       );
       setEnvExcludeText(
-        extractTomlSectionArray(value, "shell_environment_policy", "exclude").join("\n")
+        extractTomlSectionArray(value, "shell_environment_policy", "exclude").join("\n"),
       );
-      setCodexEnvRows(rowsFromRecord(extractTomlSectionStringMap(value, "shell_environment_policy.set")));
+      setCodexEnvRows(
+        rowsFromRecord(extractTomlSectionStringMap(value, "shell_environment_policy.set")),
+      );
     }
   }
 
@@ -261,12 +268,7 @@ export function AgentAdvancedSettingsView({
     <div className="agent-config side-view">
       <div className="side-view__header agent-config__header">
         <span className="side-view__title">{titleFor(app, section)}</span>
-        <button
-          className="icon-btn"
-          title="Refresh"
-          onClick={() => void refresh()}
-          disabled={busy}
-        >
+        <button className="icon-btn" title="Refresh" onClick={() => void refresh()} disabled={busy}>
           <RefreshIcon />
         </button>
       </div>
@@ -437,13 +439,7 @@ function SectionTitle({ title }: { title: string }) {
   return <div className="agent-config__section-title">{title}</div>;
 }
 
-function RawTomlEditor({
-  value,
-  onChange,
-}: {
-  value: string;
-  onChange: (value: string) => void;
-}) {
+function RawTomlEditor({ value, onChange }: { value: string; onChange: (value: string) => void }) {
   return (
     <>
       <SectionTitle title="config.toml" />
@@ -482,7 +478,9 @@ function KeyValueEditor({
 
   return (
     <div className="agent-config__kv">
-      {rows.length === 0 && <div className="agent-config__empty agent-config__empty--compact">No entries</div>}
+      {rows.length === 0 && (
+        <div className="agent-config__empty agent-config__empty--compact">No entries</div>
+      )}
       {rows.map((row, index) => (
         <div className="agent-config__kv-row" key={row.id}>
           <input
@@ -511,7 +509,10 @@ function KeyValueEditor({
   );
 }
 
-function currentProvider(snapshot: AiSettingsSnapshot | null, app: AiSettingsApp): AiSettingsProvider | null {
+function currentProvider(
+  snapshot: AiSettingsSnapshot | null,
+  app: AiSettingsApp,
+): AiSettingsProvider | null {
   const manager = snapshot?.state.apps[app];
   if (!manager) return null;
   return manager.providers[manager.current] ?? null;
@@ -606,9 +607,11 @@ function extractTomlSectionArray(text: string, section: string, field: string): 
 function extractTomlSectionStringMap(text: string, section: string): Record<string, string> {
   const record: Record<string, string> = {};
   for (const line of sectionLines(text, section)) {
-    const match = line.match(/^\s*([A-Za-z0-9_.-]+|"((?:\\.|[^"\\])*)")\s*=\s*"((?:\\.|[^"\\])*)"\s*$/);
+    const match = line.match(
+      /^\s*([A-Za-z0-9_.-]+|"((?:\\.|[^"\\])*)")\s*=\s*"((?:\\.|[^"\\])*)"\s*$/,
+    );
     if (!match) continue;
-    const key = match[2] ? unescapeTomlString(match[2]) : match[1] ?? "";
+    const key = match[2] ? unescapeTomlString(match[2]) : (match[1] ?? "");
     if (key) record[key] = unescapeTomlString(match[3] ?? "");
   }
   return record;
@@ -625,7 +628,7 @@ function extractTomlStringArrayFromLines(lines: string[], field: string): string
   const match = lines.join("\n").match(pattern);
   if (!match?.[1]) return [];
   return [...match[1].matchAll(/"((?:\\.|[^"\\])*)"/g)].map((item) =>
-    unescapeTomlString(item[1] ?? "")
+    unescapeTomlString(item[1] ?? ""),
   );
 }
 
@@ -684,12 +687,7 @@ function removeTomlTopLevelField(text: string, field: string): string {
     .join("\n");
 }
 
-function setTomlSectionString(
-  text: string,
-  section: string,
-  field: string,
-  value: string
-): string {
+function setTomlSectionString(text: string, section: string, field: string, value: string): string {
   return setTomlSectionLine(text, section, field, `${field} = "${escapeTomlString(value)}"`);
 }
 
@@ -697,19 +695,14 @@ function setTomlSectionArray(
   text: string,
   section: string,
   field: string,
-  values: string[]
+  values: string[],
 ): string {
   if (values.length === 0) return removeTomlSectionField(text, section, field);
   const array = values.map((value) => `"${escapeTomlString(value)}"`).join(", ");
   return setTomlSectionLine(text, section, field, `${field} = [${array}]`);
 }
 
-function setTomlSectionLine(
-  text: string,
-  section: string,
-  field: string,
-  line: string
-): string {
+function setTomlSectionLine(text: string, section: string, field: string, line: string): string {
   const header = `[${section}]`;
   const trimmed = trimTrailingBlankLines(text);
   if (!trimmed) return `${header}\n${line}`;
@@ -742,7 +735,7 @@ function removeTomlSectionField(text: string, section: string, field: string): s
 function setTomlSectionStringMap(
   text: string,
   section: string,
-  values: Record<string, string>
+  values: Record<string, string>,
 ): string {
   const withoutSection = removeTomlSection(removeTomlSectionInlineMap(text, section), section);
   const entries = Object.entries(values);

@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
-import { resolveWorkspace } from "../workspace.js";
-import { searchWorkspace, type SearchOptions } from "../search.js";
 import { errors } from "../errors.js";
+import { type SearchOptions, searchWorkspace } from "../search.js";
+import { resolveWorkspace } from "../workspace.js";
 
 function parseBool(v: string | undefined, fallback: boolean): boolean {
   if (v === undefined) return fallback;
@@ -16,7 +16,7 @@ function parseList(v: string | undefined): string[] {
     .filter((s) => s.length > 0);
 }
 
-function parseInt(v: string | undefined, fallback: number, max: number): number {
+function parseBoundedInt(v: string | undefined, fallback: number, max: number): number {
   if (v === undefined) return fallback;
   const n = Number.parseInt(v, 10);
   if (!Number.isFinite(n) || n <= 0) return fallback;
@@ -48,8 +48,8 @@ export async function registerSearchRoutes(app: FastifyInstance) {
       regex: parseBool(req.query.regex, false),
       include: parseList(req.query.include),
       exclude: parseList(req.query.exclude),
-      maxFiles: parseInt(req.query.maxFiles, 5000, 50000),
-      maxMatchesPerFile: parseInt(req.query.maxMatchesPerFile, 100, 1000),
+      maxFiles: parseBoundedInt(req.query.maxFiles, 5000, 50000),
+      maxMatchesPerFile: parseBoundedInt(req.query.maxMatchesPerFile, 100, 1000),
     };
 
     return await searchWorkspace(ws.path, opts);

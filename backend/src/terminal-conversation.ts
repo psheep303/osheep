@@ -1,3 +1,4 @@
+import type { Dirent } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -29,10 +30,7 @@ export class AgentTerminalConversationCollector {
     if (!raw) return;
     this.rawWindow = (this.rawWindow + raw).slice(-CONVERSATION_WINDOW_CHARS);
     const now = Date.now();
-    if (
-      this.rawWindow.length >= CONVERSATION_WINDOW_CHARS ||
-      now - this.lastFlushAt >= 400
-    ) {
+    if (this.rawWindow.length >= CONVERSATION_WINDOW_CHARS || now - this.lastFlushAt >= 400) {
       this.flush();
     }
   }
@@ -40,9 +38,7 @@ export class AgentTerminalConversationCollector {
   value(): string {
     this.flush(true);
     const joined = this.lines.join("\n").trim();
-    return joined.length <= CONVERSATION_MAX_CHARS
-      ? joined
-      : joined.slice(-CONVERSATION_MAX_CHARS);
+    return joined.length <= CONVERSATION_MAX_CHARS ? joined : joined.slice(-CONVERSATION_MAX_CHARS);
   }
 
   private flush(final = false): void {
@@ -54,11 +50,9 @@ export class AgentTerminalConversationCollector {
       }
       this.codexConversationStarted = true;
     }
-    for (const line of cleanAgentTerminalConversation(
-      this.rawWindow,
-      this.prompt,
-      this.kind
-    ).split("\n")) {
+    for (const line of cleanAgentTerminalConversation(this.rawWindow, this.prompt, this.kind).split(
+      "\n",
+    )) {
       const key = lineKey(line);
       if (!key || this.seen.has(key)) continue;
       this.seen.add(key);
@@ -72,22 +66,18 @@ export class AgentTerminalConversationCollector {
 export function cleanAgentTerminalConversation(
   raw: string,
   prompt = "",
-  kind?: AgentTerminalConversationKind
+  kind?: AgentTerminalConversationKind,
 ): string {
   if (!raw.trim()) return "";
-  const promptLines = new Set(
-    plainText(prompt)
-      .split("\n")
-      .map(lineKey)
-      .filter(Boolean)
-  );
+  const promptLines = new Set(plainText(prompt).split("\n").map(lineKey).filter(Boolean));
   const seen = new Set<string>();
   const output: string[] = [];
 
   const lines = plainText(raw).split("\n");
-  const codexStart = kind === "codex-cli"
-    ? lines.findIndex((line) => isCodexConversationStart(normalizeLine(line).trim()))
-    : -1;
+  const codexStart =
+    kind === "codex-cli"
+      ? lines.findIndex((line) => isCodexConversationStart(normalizeLine(line).trim()))
+      : -1;
   const conversationLines = codexStart >= 0 ? lines.slice(codexStart) : lines;
 
   for (const sourceLine of conversationLines) {
@@ -128,7 +118,7 @@ export function extractLastStructuredClaudeAnswer(conversation: string): string 
 
 export function extractAgentRunMetadata(
   conversation: string,
-  workspaceRoot: string
+  workspaceRoot: string,
 ): { changedFiles: string[]; verification: string[] } {
   const changedFiles = new Set<string>();
   const verification = new Set<string>();
@@ -141,9 +131,10 @@ export function extractAgentRunMetadata(
     }
     if (/^Tool · Bash$/i.test(block.label) && isVerificationCommand(block.content)) {
       const result = blocks[index + 1];
-      const resultText = result && /^Tool (?:result|error)$/.test(result.label)
-        ? verificationResultSummary(result.content)
-        : "";
+      const resultText =
+        result && /^Tool (?:result|error)$/.test(result.label)
+          ? verificationResultSummary(result.content)
+          : "";
       verification.add([block.content.trim(), resultText].filter(Boolean).join(" — "));
     }
   }
@@ -155,7 +146,9 @@ export function extractAgentRunMetadata(
     addChangedFile(changedFiles, match[1] ?? "", workspaceRoot);
   }
 
-  const verificationSection = conversation.match(/(?:验证结果|Verification)\s*[:：]\s*([\s\S]+)$/i)?.[1];
+  const verificationSection = conversation.match(
+    /(?:验证结果|Verification)\s*[:：]\s*([\s\S]+)$/i,
+  )?.[1];
   if (verificationSection) {
     for (const line of verificationSection.split("\n")) {
       const item = line.trim().replace(/^[-*]\s*/, "");
@@ -186,7 +179,10 @@ function structuredConversationBlocks(conversation: string): StructuredConversat
 }
 
 function addChangedFile(target: Set<string>, rawPath: string, workspaceRoot: string): void {
-  let value = rawPath.trim().replace(/^['"]|['"]$/g, "").replace(/:\d+(?::\d+)?$/, "");
+  let value = rawPath
+    .trim()
+    .replace(/^['"]|['"]$/g, "")
+    .replace(/:\d+(?::\d+)?$/, "");
   if (!value || /^https?:\/\//i.test(value)) return;
   value = value.replace(/\\/g, "/");
   const root = path.resolve(workspaceRoot);
@@ -198,14 +194,19 @@ function addChangedFile(target: Set<string>, rawPath: string, workspaceRoot: str
 
 function isVerificationCommand(command: string): boolean {
   return /(?:^|\s)(?:pytest|py\.test|npm\s+(?:test|run\s+(?:test|build|lint|typecheck|check))|pnpm\s+(?:test|build|lint|typecheck)|yarn\s+(?:test|build|lint|typecheck)|cargo\s+(?:test|check)|go\s+test|dotnet\s+test|mvn\s+test|gradle\s+test|python\s+-m\s+(?:pytest|compileall)|tsc\b|eslint\b)/i.test(
-    command
+    command,
   );
 }
 
 function verificationResultSummary(result: string): string {
-  const lines = result.split("\n").map((line) => line.trim()).filter(Boolean);
+  const lines = result
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
   return (
-    lines.find((line) => /(?:\d+\s+passed|PASS|FAILED|error|success|built|exit code)/i.test(line)) ||
+    lines.find((line) =>
+      /(?:\d+\s+passed|PASS|FAILED|error|success|built|exit code)/i.test(line),
+    ) ||
     lines.at(-1) ||
     ""
   ).slice(0, 240);
@@ -217,10 +218,10 @@ export async function readClaudeSessionConversation(sessionId: string): Promise<
   const claudeHome = path.resolve(
     process.env.OSHEEP_CLAUDE_CONFIG_DIR ||
       process.env.CLAUDE_CONFIG_DIR ||
-      path.join(home, ".claude")
+      path.join(home, ".claude"),
   );
   const projectsRoot = path.join(claudeHome, "projects");
-  let projectDirs;
+  let projectDirs: Dirent[];
   try {
     projectDirs = await fs.readdir(projectsRoot, { withFileTypes: true });
   } catch (error) {
@@ -243,9 +244,7 @@ export async function readCodexSessionFinalAnswer(sessionId: string): Promise<st
   if (!/^[a-z0-9_-]{8,128}$/i.test(sessionId)) return "";
   const home = os.homedir() || ".";
   const codexHome = path.resolve(
-    process.env.OSHEEP_CODEX_CONFIG_DIR ||
-      process.env.CODEX_HOME ||
-      path.join(home, ".codex")
+    process.env.OSHEEP_CODEX_CONFIG_DIR || process.env.CODEX_HOME || path.join(home, ".codex"),
   );
   const filePath = await findCodexSessionFile(path.join(codexHome, "sessions"), sessionId);
   if (!filePath) return "";
@@ -258,7 +257,7 @@ async function findCodexSessionFile(root: string, sessionId: string): Promise<st
   while (pending.length > 0) {
     const dir = pending.pop();
     if (!dir) break;
-    let entries;
+    let entries: Dirent[];
     try {
       entries = await fs.readdir(dir, { withFileTypes: true });
     } catch (error) {
@@ -311,10 +310,7 @@ function extractLastCodexAnswerFromJsonl(jsonl: string): string {
   for (let index = values.length - 1; index >= 0; index -= 1) {
     const value = values[index]!;
     const payload = objectValue(value.payload);
-    if (
-      stringValue(value.type) === "event_msg" &&
-      stringValue(payload.type) === "task_complete"
-    ) {
+    if (stringValue(value.type) === "event_msg" && stringValue(payload.type) === "task_complete") {
       const answer = cleanStructuredText(stringValue(payload.last_agent_message));
       if (answer) return answer;
     }
@@ -354,11 +350,12 @@ function formatClaudeJsonlConversation(jsonl: string): string {
     const message = objectValue(value.message);
     const role = stringValue(message.role);
     const content = message.content;
-    const next = role === "assistant"
-      ? formatClaudeAssistantContent(content)
-      : role === "user"
-        ? formatClaudeUserContent(content)
-        : [];
+    const next =
+      role === "assistant"
+        ? formatClaudeAssistantContent(content)
+        : role === "user"
+          ? formatClaudeUserContent(content)
+          : [];
     for (const block of next) {
       const normalized = block.trim();
       if (!normalized) continue;
@@ -476,7 +473,7 @@ function lineKey(value: string): string {
 
 function isClaudeToolHeading(value: string): boolean {
   return /^(?:Bash|Read|Write|Edit|Glob|Grep|Plan|Task|WebFetch|WebSearch|Skill|Agent)\b(?:\(|$)/i.test(
-    value.trim()
+    value.trim(),
   );
 }
 
@@ -525,7 +522,11 @@ function isTerminalChrome(line: string, kind?: AgentTerminalConversationKind): b
   if (kind === "codex-cli") {
     if (isCodexProgressFragment(line)) return true;
     if (/^[╭╮╰╯│┌┐└┘]/.test(line)) return true;
-    if (/^(?:You are in\s+|Do you trust the contents|Working with untrusted contents|Trusting the directory|prompt injection\b|\d+\.\s+No, quit|Press enter to continue)/i.test(line)) {
+    if (
+      /^(?:You are in\s+|Do you trust the contents|Working with untrusted contents|Trusting the directory|prompt injection\b|\d+\.\s+No, quit|Press enter to continue)/i.test(
+        line,
+      )
+    ) {
       return true;
     }
     if (/^(?:gpt-[\w.-]+(?:\s+\w+)?|minimal|low|medium|high|xhigh)\s*·\s*/i.test(line)) {

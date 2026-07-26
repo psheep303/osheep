@@ -1,8 +1,8 @@
-import test from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import test from "node:test";
 import {
   addClaudeMarketplace,
   applyClaudePluginSelection,
@@ -59,17 +59,20 @@ test("snapshot normalizes installed and available Claude plugins", async () => {
   });
 
   const installed = snapshot.plugins.find(
-    (plugin) => plugin.selector === "superpowers@claude-plugins-official"
+    (plugin) => plugin.selector === "superpowers@claude-plugins-official",
   );
   const available = snapshot.plugins.find(
-    (plugin) => plugin.selector === "github@claude-plugins-official"
+    (plugin) => plugin.selector === "github@claude-plugins-official",
   );
 
   assert.equal(installed?.displayName, "superpowers");
   assert.equal(installed?.version, "6.1.1");
   assert.equal(installed?.status.installed, true);
   assert.equal(installed?.status.enabled, true);
-  assert.equal(installed?.source.path, "C:/Users/me/.claude/plugins/cache/official/superpowers/6.1.1");
+  assert.equal(
+    installed?.source.path,
+    "C:/Users/me/.claude/plugins/cache/official/superpowers/6.1.1",
+  );
   assert.equal(available?.displayName, "github");
   assert.equal(available?.description, "GitHub workflows");
   assert.equal(available?.status.available, true);
@@ -85,7 +88,7 @@ test("snapshot enriches installed Claude plugins with manifest icons", async () 
     "cache",
     "claude-plugins-official",
     "superpowers",
-    "6.1.1"
+    "6.1.1",
   );
   await writeJson(path.join(pluginRoot, ".claude-plugin", "plugin.json"), {
     name: "superpowers",
@@ -107,7 +110,7 @@ test("snapshot enriches installed Claude plugins with manifest icons", async () 
   await fs.writeFile(
     path.join(pluginRoot, "assets", "superpowers-small.svg"),
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"></svg>',
-    "utf8"
+    "utf8",
   );
 
   const snapshot = await getClaudePluginSnapshot({
@@ -133,7 +136,7 @@ test("snapshot enriches installed Claude plugins with manifest icons", async () 
   });
 
   const installed = snapshot.plugins.find(
-    (plugin) => plugin.selector === "superpowers@claude-plugins-official"
+    (plugin) => plugin.selector === "superpowers@claude-plugins-official",
   ) as
     | {
         displayName?: string;
@@ -158,7 +161,7 @@ test("snapshot keeps installed manifest metadata when plugin is also available",
     "cache",
     "claude-plugins-official",
     "superpowers",
-    "6.1.1"
+    "6.1.1",
   );
   await writeJson(path.join(pluginRoot, ".claude-plugin", "plugin.json"), {
     name: "superpowers",
@@ -179,7 +182,7 @@ test("snapshot keeps installed manifest metadata when plugin is also available",
   await fs.writeFile(
     path.join(pluginRoot, "assets", "superpowers-small.svg"),
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"></svg>',
-    "utf8"
+    "utf8",
   );
 
   const snapshot = await getClaudePluginSnapshot({
@@ -213,7 +216,7 @@ test("snapshot keeps installed manifest metadata when plugin is also available",
   });
 
   const installed = snapshot.plugins.find(
-    (plugin) => plugin.selector === "superpowers@claude-plugins-official"
+    (plugin) => plugin.selector === "superpowers@claude-plugins-official",
   ) as
     | {
         displayName?: string;
@@ -239,7 +242,7 @@ test("snapshot enriches available Claude plugins from marketplace manifests", as
     ".claude",
     "plugins",
     "marketplaces",
-    "claude-plugins-official"
+    "claude-plugins-official",
   );
   const pluginRoot = path.join(marketplaceRoot, "plugins", "github");
   await writeJson(path.join(pluginRoot, ".claude-plugin", "plugin.json"), {
@@ -259,7 +262,7 @@ test("snapshot enriches available Claude plugins from marketplace manifests", as
   await fs.writeFile(
     path.join(pluginRoot, "assets", "github.svg"),
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"></svg>',
-    "utf8"
+    "utf8",
   );
 
   const snapshot = await getClaudePluginSnapshot({
@@ -291,7 +294,7 @@ test("snapshot enriches available Claude plugins from marketplace manifests", as
   });
 
   const available = snapshot.plugins.find(
-    (plugin) => plugin.selector === "github@claude-plugins-official"
+    (plugin) => plugin.selector === "github@claude-plugins-official",
   ) as
     | {
         displayName?: string;
@@ -337,7 +340,7 @@ test("snapshot gives available Claude plugins an icon fallback", async () => {
   });
 
   const available = snapshot.plugins.find(
-    (plugin) => plugin.selector === "airtable@claude-plugins-official"
+    (plugin) => plugin.selector === "airtable@claude-plugins-official",
   );
 
   assert.match(available?.icon ?? "", /^data:image\/svg\+xml,/);
@@ -372,7 +375,7 @@ test("snapshot derives available Claude plugin icons from GitHub source URLs", a
   });
 
   const available = snapshot.plugins.find(
-    (plugin) => plugin.selector === "42crunch-api-security-testing@claude-plugins-official"
+    (plugin) => plugin.selector === "42crunch-api-security-testing@claude-plugins-official",
   );
 
   assert.equal(available?.icon, "https://github.com/42Crunch-AI.png?size=64");
@@ -385,7 +388,7 @@ test("snapshot derives local available Claude plugin icons from marketplace home
     ".claude",
     "plugins",
     "marketplaces",
-    "claude-plugins-official"
+    "claude-plugins-official",
   );
   const pluginRoot = path.join(marketplaceRoot, "plugins", "agent-sdk-dev");
   await writeJson(path.join(pluginRoot, ".claude-plugin", "plugin.json"), {
@@ -436,7 +439,7 @@ test("snapshot derives local available Claude plugin icons from marketplace home
   });
 
   const available = snapshot.plugins.find(
-    (plugin) => plugin.selector === "agent-sdk-dev@claude-plugins-official"
+    (plugin) => plugin.selector === "agent-sdk-dev@claude-plugins-official",
   );
 
   assert.equal(available?.icon, "https://github.com/anthropics.png?size=64");
@@ -449,7 +452,7 @@ test("snapshot prefers local manifest author icons over marketplace homepage", a
     ".claude",
     "plugins",
     "marketplaces",
-    "claude-plugins-official"
+    "claude-plugins-official",
   );
   const pluginRoot = path.join(marketplaceRoot, "external_plugins", "github");
   await writeJson(path.join(pluginRoot, ".claude-plugin", "plugin.json"), {
@@ -500,7 +503,7 @@ test("snapshot prefers local manifest author icons over marketplace homepage", a
   });
 
   const available = snapshot.plugins.find(
-    (plugin) => plugin.selector === "github@claude-plugins-official"
+    (plugin) => plugin.selector === "github@claude-plugins-official",
   );
 
   assert.equal(available?.icon, "https://github.com/github.png?size=64");
@@ -537,10 +540,7 @@ test("Claude plugin actions reject unsafe selectors before invoking the CLI", as
 
   await assert.rejects(
     () => enableClaudePlugin("github@official & whoami", { runCli }),
-    (error: unknown) =>
-      error instanceof Error &&
-      "code" in error &&
-      error.code === "INVALID_QUERY"
+    (error: unknown) => error instanceof Error && "code" in error && error.code === "INVALID_QUERY",
   );
 
   assert.equal(calls, 0);
@@ -567,11 +567,20 @@ test("workflow Claude plugin selection only toggles installed plugins", async ()
   };
 
   const snapshot = await applyClaudePluginSelection(["alpha@official"], { runCli });
-  assert.equal(snapshot.plugins.find((plugin) => plugin.selector === "alpha@official")?.status.enabled, true);
-  assert.equal(snapshot.plugins.find((plugin) => plugin.selector === "beta@official")?.status.enabled, false);
+  assert.equal(
+    snapshot.plugins.find((plugin) => plugin.selector === "alpha@official")?.status.enabled,
+    true,
+  );
+  assert.equal(
+    snapshot.plugins.find((plugin) => plugin.selector === "beta@official")?.status.enabled,
+    false,
+  );
   assert.deepEqual(
     calls.filter((args) => args[0] === "plugin" && (args[1] === "enable" || args[1] === "disable")),
-    [["plugin", "disable", "beta@official"]]
+    [["plugin", "disable", "beta@official"]],
   );
-  assert.equal(calls.some((args) => args[2] === "not-installed@official"), false);
+  assert.equal(
+    calls.some((args) => args[2] === "not-installed@official"),
+    false,
+  );
 });
