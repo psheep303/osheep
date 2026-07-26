@@ -19,6 +19,7 @@ output/
 coverage/
 desktop/stage/
 desktop/src-tauri/target/
+workspaces/
 
 # Local environment and application state
 .env
