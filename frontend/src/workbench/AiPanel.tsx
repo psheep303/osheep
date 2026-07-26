@@ -26,7 +26,7 @@ export function AiPanel({
   workspaceId,
   onOpenWorkflow,
   activeWorkflowId,
-  refreshSignal: _refreshSignal,
+  refreshSignal,
   onWorkflowDeleted,
   developerMode,
   onTemplatesChanged,
@@ -67,7 +67,7 @@ export function AiPanel({
 
   useEffect(() => {
     void reload();
-  }, [reload]);
+  }, [reload, refreshSignal]);
 
   useEffect(() => {
     setCopiedWorkflow(null);
@@ -75,7 +75,7 @@ export function AiPanel({
     setPanelMenu(null);
     setRenamingId(null);
     setNotice(null);
-  }, []);
+  }, [workspaceId]);
 
   useEffect(() => {
     if (!workspaceId) return;

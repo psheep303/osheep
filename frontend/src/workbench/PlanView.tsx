@@ -41,7 +41,7 @@ export function PlanView({ workspaceId }: PlanViewProps) {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspaceId, selectedPath]);
+  }, [workspaceId]);
 
   useEffect(() => {
     if (!workspaceId || !selectedPath) {

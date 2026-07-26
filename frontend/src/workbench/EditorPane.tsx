@@ -86,7 +86,7 @@ export function EditorPane({
     if (appliedNonceRef.current === goto.nonce) return;
     if (!editorRef.current) return;
     applyGoto(goto);
-  }, [goto, applyGoto]);
+  }, [goto]);
 
   return (
     <Editor

@@ -67,7 +67,7 @@ export function Terminal({ workspaceId, launchRequest = null, onLaunchHandled }:
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [defaultProfileId]);
+  }, []);
 
   // Auto-spawn one session when the panel becomes usable
   useEffect(() => {
@@ -78,7 +78,7 @@ export function Terminal({ workspaceId, launchRequest = null, onLaunchHandled }:
     if (!profile) return;
     spawnSession(profile);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspaceId, profilesState, defaultProfileId, launchRequest, sessions.length]);
+  }, [workspaceId, profilesState, defaultProfileId, launchRequest]);
 
   useEffect(() => {
     if (!launchRequest || handledLaunchRef.current === launchRequest.key) return;

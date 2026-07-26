@@ -121,7 +121,7 @@ export function Workbench() {
 
   const [gitStatus, setGitStatus] = useState<GitStatus | null>(null);
   const decorations = useMemo(() => buildDecorations(gitStatus), [gitStatus]);
-  const [_statusVersion, setStatusVersion] = useState(0);
+  const [statusVersion, setStatusVersion] = useState(0);
   const refreshGitStatus = useCallback(() => {
     setStatusVersion((v) => v + 1);
   }, []);
@@ -151,7 +151,7 @@ export function Workbench() {
     return () => {
       cancelled = true;
     };
-  }, [workspaceId]);
+  }, [workspaceId, statusVersion]);
 
   const [leftWidth, setLeftWidth] = useState(DEFAULT_LEFT_WIDTH);
   const [bottomHeight, setBottomHeight] = useState(0);

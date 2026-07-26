@@ -23,7 +23,7 @@ export function ClaudePluginsView() {
 
   useEffect(() => {
     void refresh();
-  }, [refresh]);
+  }, []);
 
   const groups = useMemo(() => groupPlugins(snapshot?.plugins ?? []), [snapshot]);
   const filteredGroups = useMemo(() => filterGroups(groups, searchText), [groups, searchText]);
@@ -335,7 +335,7 @@ function PluginIcon({ plugin }: { plugin: ClaudePluginRecord }) {
 
   useEffect(() => {
     setFailed(false);
-  }, []);
+  }, [plugin.icon]);
 
   return (
     <div

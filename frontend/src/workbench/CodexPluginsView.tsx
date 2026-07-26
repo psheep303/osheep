@@ -28,7 +28,7 @@ export function CodexPluginsView() {
 
   useEffect(() => {
     void refresh();
-  }, [refresh]);
+  }, []);
 
   const groups = useMemo(() => groupPlugins(snapshot?.plugins ?? []), [snapshot]);
   const filteredGroups = useMemo(() => filterGroups(groups, searchText), [groups, searchText]);
@@ -439,7 +439,7 @@ function PluginIcon({ plugin }: { plugin: CodexPluginRecord }) {
 
   useEffect(() => {
     setFailed(false);
-  }, []);
+  }, [plugin.icon]);
 
   return (
     <div
