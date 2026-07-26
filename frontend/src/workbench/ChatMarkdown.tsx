@@ -46,7 +46,7 @@ export function ChatMarkdown({ source, compact, caret }: ChatMarkdownProps) {
 
   return (
     <div
-      className={"chat-markdown" + (compact ? " is-compact" : "")}
+      className={`chat-markdown${compact ? " is-compact" : ""}`}
       dangerouslySetInnerHTML={{
         __html: html + (caret ? '<span class="chat-markdown__caret"></span>' : ""),
       }}
@@ -92,7 +92,7 @@ function decorateTodoCheckboxes(html: string): string {
       const doing = /data-doing="1"/.test(body);
       const state = doing ? "doing" : checked ? "done" : "todo";
       return `<li${attrs} class="markdown-todo" data-state="${state}">${input}${body}</li>`;
-    }
+    },
   );
   return out;
 }

@@ -52,15 +52,10 @@ function lcsOps(a: string[], b: string[]): Op[] {
   if (m === 0) return a.map((line) => ({ t: "del" as const, line }));
 
   // dp[i][j] = LCS length of a[i:] and b[j:]
-  const dp: number[][] = Array.from({ length: n + 1 }, () =>
-    new Array<number>(m + 1).fill(0)
-  );
+  const dp: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
   for (let i = n - 1; i >= 0; i -= 1) {
     for (let j = m - 1; j >= 0; j -= 1) {
-      dp[i]![j] =
-        a[i] === b[j]
-          ? dp[i + 1]![j + 1]! + 1
-          : Math.max(dp[i + 1]![j]!, dp[i]![j + 1]!);
+      dp[i]![j] = a[i] === b[j] ? dp[i + 1]![j + 1]! + 1 : Math.max(dp[i + 1]![j]!, dp[i]![j + 1]!);
     }
   }
 
@@ -88,7 +83,7 @@ function lcsOps(a: string[], b: string[]): Op[] {
 export function buildUnifiedDiff(
   before: string,
   after: string,
-  opts?: { context?: number; maxRows?: number }
+  opts?: { context?: number; maxRows?: number },
 ): UnifiedDiff {
   const context = Math.max(0, opts?.context ?? 3);
   const maxRows = Math.max(8, opts?.maxRows ?? 60);
@@ -163,7 +158,11 @@ export function buildUnifiedDiff(
   // Keep changes and `context` ctx rows around each; collapse the rest to gaps.
   const keep = new Array<boolean>(numbered.length).fill(false);
   for (const idx of changeIdx) {
-    for (let k = Math.max(0, idx - context); k <= Math.min(numbered.length - 1, idx + context); k += 1) {
+    for (
+      let k = Math.max(0, idx - context);
+      k <= Math.min(numbered.length - 1, idx + context);
+      k += 1
+    ) {
       keep[k] = true;
     }
   }

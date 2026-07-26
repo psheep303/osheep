@@ -1,4 +1,6 @@
 import type { FastifyInstance } from "fastify";
+import { platform } from "../config.js";
+import { errors } from "../errors.js";
 import {
   attachSink,
   createSession,
@@ -10,8 +12,6 @@ import {
   writeInput,
 } from "../pty.js";
 import { resolveWorkspace } from "../workspace.js";
-import { errors } from "../errors.js";
-import { platform } from "../config.js";
 
 export async function registerTerminalRoutes(app: FastifyInstance) {
   app.get("/api/terminals/profiles", async () => {
@@ -38,10 +38,8 @@ export async function registerTerminalRoutes(app: FastifyInstance) {
     };
   }>("/api/terminals", async (req) => {
     const body = req.body ?? {};
-    if (typeof body.workspaceId !== "string")
-      throw errors.invalidPath("缺少 workspaceId");
-    if (typeof body.shell !== "string")
-      throw errors.unsupportedShell(String(body.shell));
+    if (typeof body.workspaceId !== "string") throw errors.invalidPath("缺少 workspaceId");
+    if (typeof body.shell !== "string") throw errors.unsupportedShell(String(body.shell));
     const ws = await resolveWorkspace(body.workspaceId);
     const session = createSession({
       workspace: ws,
@@ -58,22 +56,19 @@ export async function registerTerminalRoutes(app: FastifyInstance) {
     };
   });
 
-  app.delete<{ Params: { id: string } }>(
-    "/api/terminals/:id",
-    async (req) => {
-      // Throws if not found
-      getSession(req.params.id);
-      killSession(req.params.id, "client-delete");
-      return { id: req.params.id };
-    }
-  );
+  app.delete<{ Params: { id: string } }>("/api/terminals/:id", async (req) => {
+    // Throws if not found
+    getSession(req.params.id);
+    killSession(req.params.id, "client-delete");
+    return { id: req.params.id };
+  });
 
   app.get<{ Params: { id: string } }>(
     "/api/terminals/:id/io",
     { websocket: true },
     (socket, req) => {
       const id = req.params.id;
-      let session;
+      let session: ReturnType<typeof getSession>;
       try {
         session = getSession(id);
       } catch (e) {
@@ -82,7 +77,7 @@ export async function registerTerminalRoutes(app: FastifyInstance) {
             JSON.stringify({
               type: "error",
               message: (e as Error).message,
-            })
+            }),
           );
         } catch {
           /* ignore */
@@ -114,9 +109,7 @@ export async function registerTerminalRoutes(app: FastifyInstance) {
         try {
           msg = JSON.parse(raw.toString("utf-8"));
         } catch {
-          socket.send(
-            JSON.stringify({ type: "error", message: "invalid JSON frame" })
-          );
+          socket.send(JSON.stringify({ type: "error", message: "invalid JSON frame" }));
           return;
         }
         if (typeof msg !== "object" || msg === null) return;
@@ -147,9 +140,7 @@ export async function registerTerminalRoutes(app: FastifyInstance) {
               break;
           }
         } catch (e) {
-          socket.send(
-            JSON.stringify({ type: "error", message: (e as Error).message })
-          );
+          socket.send(JSON.stringify({ type: "error", message: (e as Error).message }));
         }
       });
 
@@ -161,6 +152,6 @@ export async function registerTerminalRoutes(app: FastifyInstance) {
           killSession(session.id, "ws-close");
         }
       });
-    }
+    },
   );
 }

@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   addGitRemote,
+  type GitBranch,
+  type GitChange,
+  type GitRemote,
+  type GitStatus,
   gitCheckout,
   gitCommit,
   gitDiscard,
@@ -13,10 +17,6 @@ import {
   listGitBranches,
   listGitRemotes,
   removeGitRemote,
-  type GitBranch,
-  type GitChange,
-  type GitRemote,
-  type GitStatus,
 } from "./api";
 import { GitGraph } from "./GitGraph";
 import { Resizer } from "./Resizer";
@@ -34,12 +34,7 @@ const MAX_SPLIT = 1;
 
 type CommitMode = "commit" | "commit-push" | "commit-sync";
 
-export function GitView({
-  workspaceId,
-  status,
-  onRefreshStatus,
-  onOpenDiff,
-}: GitViewProps) {
+export function GitView({ workspaceId, status, onRefreshStatus, onOpenDiff }: GitViewProps) {
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [busyLabel, setBusyLabel] = useState<string | null>(null);
@@ -286,11 +281,7 @@ export function GitView({
       {error && (
         <div className="git-view__error">
           {error}
-          <button
-            className="banner-error__close"
-            onClick={() => setError(null)}
-            title="关闭"
-          >
+          <button className="banner-error__close" onClick={() => setError(null)} title="关闭">
             ×
           </button>
         </div>
@@ -309,7 +300,10 @@ export function GitView({
                 onAction={(c) => void run("处理中…", () => gitUnstage(workspaceId, [c.path]))}
                 onBulk={() =>
                   void run("处理中…", () =>
-                    gitUnstage(workspaceId, staged.map((c) => c.path))
+                    gitUnstage(
+                      workspaceId,
+                      staged.map((c) => c.path),
+                    ),
                   )
                 }
                 busy={busy}
@@ -325,13 +319,14 @@ export function GitView({
               onDiscard={async (c) => {
                 const ok = window.confirm(`确定要撤销对 ${c.path} 的修改吗？此操作不可逆。`);
                 if (!ok) return;
-                await run("撤销中…", () =>
-                  gitDiscard(workspaceId, [c.path]).then(() => undefined)
-                );
+                await run("撤销中…", () => gitDiscard(workspaceId, [c.path]).then(() => undefined));
               }}
               onBulk={() =>
                 void run("处理中…", () =>
-                  gitStage(workspaceId, unstaged.map((c) => c.path))
+                  gitStage(
+                    workspaceId,
+                    unstaged.map((c) => c.path),
+                  ),
                 )
               }
               busy={busy}
@@ -349,11 +344,10 @@ export function GitView({
 
 function autoPushOpts(
   remotes: GitRemote[],
-  status: GitStatus | null
+  status: GitStatus | null,
 ): { remote: string; branch: string; setUpstream: true } | Record<string, never> {
   if (!status?.branch || remotes.length === 0) return {};
-  const remote =
-    remotes.find((r) => r.name === "origin")?.name ?? remotes[0].name;
+  const remote = remotes.find((r) => r.name === "origin")?.name ?? remotes[0].name;
   return { remote, branch: status.branch, setUpstream: true };
 }
 
@@ -408,7 +402,7 @@ function SyncControl({
   const hasWork = ahead > 0 || behind > 0;
   return (
     <button
-      className={"git-view__sync" + (hasWork ? " git-view__sync--active" : "")}
+      className={`git-view__sync${hasWork ? " git-view__sync--active" : ""}`}
       onClick={hasWork ? onSync : onFetch}
       disabled={busy}
       title={
@@ -482,7 +476,7 @@ function CommitSplitButton({
       {menuOpen && (
         <div className="git-view__commit-menu">
           <button
-            className={"git-view__commit-menu-item" + (mode === "commit" ? " is-active" : "")}
+            className={`git-view__commit-menu-item${mode === "commit" ? " is-active" : ""}`}
             onClick={() => {
               onModeChange("commit");
               setMenuOpen(false);
@@ -619,7 +613,6 @@ function BranchPopover({
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
           spellCheck={false}
-          autoFocus
         />
       </div>
       {filter.trim() && canCreate && (
@@ -640,34 +633,30 @@ function BranchPopover({
         {locals.length > 0 && <div className="git-view__branch-group">本地</div>}
         {locals.map((b) => (
           <button
-            key={"local:" + b.name}
-            className={"git-view__branch-item" + (b.isCurrent ? " is-current" : "")}
+            key={`local:${b.name}`}
+            className={`git-view__branch-item${b.isCurrent ? " is-current" : ""}`}
             disabled={b.isCurrent || busy || localBusy}
             onClick={() => void doCheckout(b.name)}
             title={b.upstream ? `tracking ${b.upstream}` : undefined}
           >
             <span className="git-view__branch-mark">{b.isCurrent ? "★" : ""}</span>
             <span className="git-view__branch-item-name">{b.name}</span>
-            {b.upstream && (
-              <span className="git-view__branch-upstream">{b.upstream}</span>
-            )}
+            {b.upstream && <span className="git-view__branch-upstream">{b.upstream}</span>}
           </button>
         ))}
         {remotes.length > 0 && <div className="git-view__branch-group">远程</div>}
         {remotes.map((b) => {
           const localName = b.name.replace(/^[^/]+\//, "");
-          const hasLocal = branches.some(
-            (x) => x.kind === "local" && x.name === localName
-          );
+          const hasLocal = branches.some((x) => x.kind === "local" && x.name === localName);
           return (
             <button
-              key={"remote:" + b.name}
+              key={`remote:${b.name}`}
               className="git-view__branch-item git-view__branch-item--remote"
               disabled={busy || localBusy}
               onClick={() =>
                 void doCheckout(
                   hasLocal ? localName : localName,
-                  hasLocal ? {} : { create: true, fromRef: b.name }
+                  hasLocal ? {} : { create: true, fromRef: b.name },
                 )
               }
               title={
@@ -712,11 +701,7 @@ function SplitSections({
   const onResize = (delta: number) => {
     const h = dragStartRef.current.height;
     if (h <= 0) return;
-    const next = clamp(
-      dragStartRef.current.split + delta / h,
-      MIN_SPLIT,
-      MAX_SPLIT
-    );
+    const next = clamp(dragStartRef.current.split + delta / h, MIN_SPLIT, MAX_SPLIT);
     dragStartRef.current.split = next;
     setSplit(next);
   };
@@ -758,7 +743,7 @@ function RemotesButton({
 }) {
   return (
     <button
-      className={"icon-btn git-view__remotes-btn" + (open ? " is-active" : "")}
+      className={`icon-btn git-view__remotes-btn${open ? " is-active" : ""}`}
       title="管理远程"
       onClick={onToggle}
     >
@@ -794,7 +779,7 @@ function RemotesPopover({
       const target = e.target as Node | null;
       if (target && !rootRef.current.contains(target)) {
         const el = target as HTMLElement;
-        if (el.closest && el.closest(".git-view__remotes-btn")) return;
+        if (el.closest?.(".git-view__remotes-btn")) return;
         onClose();
       }
     };
@@ -881,7 +866,6 @@ function RemotesPopover({
               onChange={(e) => setName(e.target.value)}
               spellCheck={false}
               disabled={localBusy}
-              autoFocus
             />
             <input
               className="git-view__input"
@@ -921,20 +905,11 @@ function RemotesPopover({
   );
 }
 
-function GraphSection({
-  workspaceId,
-  refreshKey,
-}: {
-  workspaceId: string;
-  refreshKey: number;
-}) {
+function GraphSection({ workspaceId, refreshKey }: { workspaceId: string; refreshKey: number }) {
   const [open, setOpen] = useState(true);
   return (
     <div className="git-view__section git-view__section--graph">
-      <div
-        className="git-view__section-header"
-        onClick={() => setOpen((v) => !v)}
-      >
+      <div className="git-view__section-header" onClick={() => setOpen((v) => !v)}>
         <span className="search-view__chevron">
           <ChevronIcon open={open} />
         </span>
@@ -969,10 +944,7 @@ function GitSection({
   const [open, setOpen] = useState(true);
   return (
     <div className="git-view__section">
-      <div
-        className="git-view__section-header"
-        onClick={() => setOpen((v) => !v)}
-      >
+      <div className="git-view__section-header" onClick={() => setOpen((v) => !v)}>
         <span className="search-view__chevron">
           <ChevronIcon open={open} />
         </span>
@@ -998,7 +970,7 @@ function GitSection({
             const status = displayStatus(c, kind);
             return (
               <div
-                key={kind + ":" + c.path}
+                key={`${kind}:${c.path}`}
                 className="git-view__row"
                 onClick={() => onClickFile(c)}
                 title={c.path}
@@ -1032,7 +1004,7 @@ function GitSection({
                   </button>
                 </span>
                 <span
-                  className={"git-view__badge git-view__badge--" + status.cls}
+                  className={`git-view__badge git-view__badge--${status.cls}`}
                   title={status.label}
                 >
                   {status.letter}
@@ -1048,7 +1020,7 @@ function GitSection({
 
 function displayStatus(
   c: GitChange,
-  kind: "staged" | "unstaged"
+  kind: "staged" | "unstaged",
 ): { letter: string; cls: string; label: string } {
   const s = kind === "staged" ? c.indexStatus : c.worktreeStatus;
   if (s === "M") return { letter: "M", cls: "M", label: "Modified" };

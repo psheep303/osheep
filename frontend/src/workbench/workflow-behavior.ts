@@ -227,9 +227,5 @@ interface WorkflowRefreshState {
 }
 
 export function canApplyWorkflowRefresh(state: WorkflowRefreshState): boolean {
-  return (
-    state.requestedRevision === state.currentRevision &&
-    !state.dragging &&
-    !state.pendingSave
-  );
+  return state.requestedRevision === state.currentRevision && !state.dragging && !state.pendingSave;
 }

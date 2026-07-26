@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   addClaudeMarketplaceApi,
+  type ClaudePluginRecord,
+  type ClaudePluginSnapshot,
   disableClaudePluginApi,
   enableClaudePluginApi,
   getClaudePlugins,
   installClaudePluginApi,
   uninstallClaudePluginApi,
-  type ClaudePluginRecord,
-  type ClaudePluginSnapshot,
 } from "./api";
 
 type DialogMode = "marketplace" | null;
@@ -23,18 +23,11 @@ export function ClaudePluginsView() {
 
   useEffect(() => {
     void refresh();
-  }, []);
+  }, [refresh]);
 
-  const groups = useMemo(
-    () => groupPlugins(snapshot?.plugins ?? []),
-    [snapshot]
-  );
-  const filteredGroups = useMemo(
-    () => filterGroups(groups, searchText),
-    [groups, searchText]
-  );
-  const hasVisiblePlugins =
-    filteredGroups.installed.length + filteredGroups.available.length > 0;
+  const groups = useMemo(() => groupPlugins(snapshot?.plugins ?? []), [snapshot]);
+  const filteredGroups = useMemo(() => filterGroups(groups, searchText), [groups, searchText]);
+  const hasVisiblePlugins = filteredGroups.installed.length + filteredGroups.available.length > 0;
 
   async function refresh() {
     await run(async () => {
@@ -84,7 +77,7 @@ export function ClaudePluginsView() {
       setSnapshot(
         plugin.status.enabled
           ? await disableClaudePluginApi(plugin.selector)
-          : await enableClaudePluginApi(plugin.selector)
+          : await enableClaudePluginApi(plugin.selector),
       );
     });
   }
@@ -102,22 +95,13 @@ export function ClaudePluginsView() {
     <div className="codex-plugins side-view">
       <div className="side-view__header codex-plugins__header">
         <span className="side-view__title">Claude Plugins</span>
-        <button
-          className="icon-btn"
-          title="Refresh"
-          onClick={() => void refresh()}
-          disabled={busy}
-        >
+        <button className="icon-btn" title="Refresh" onClick={() => void refresh()} disabled={busy}>
           <RefreshIcon />
         </button>
       </div>
 
       <div className="codex-plugins__toolbar">
-        <button
-          className="tb-btn"
-          onClick={() => resetDialog("marketplace")}
-          disabled={busy}
-        >
+        <button className="tb-btn" onClick={() => resetDialog("marketplace")} disabled={busy}>
           Source
         </button>
       </div>
@@ -141,15 +125,9 @@ export function ClaudePluginsView() {
         </div>
       )}
 
-      {error && (
-        <div className="codex-plugins__banner codex-plugins__banner--error">
-          {error}
-        </div>
-      )}
+      {error && <div className="codex-plugins__banner codex-plugins__banner--error">{error}</div>}
       {message && (
-        <div className="codex-plugins__banner codex-plugins__banner--success">
-          {message}
-        </div>
+        <div className="codex-plugins__banner codex-plugins__banner--success">{message}</div>
       )}
       {snapshot?.warnings.map((warning) => (
         <div key={warning} className="codex-plugins__banner codex-plugins__banner--warn">
@@ -209,7 +187,7 @@ function groupPlugins(plugins: ClaudePluginRecord[]) {
   const installed = plugins.filter((plugin) => plugin.status.installed);
   const installedSelectors = new Set(installed.map((plugin) => plugin.selector));
   const available = plugins.filter(
-    (plugin) => plugin.status.available && !installedSelectors.has(plugin.selector)
+    (plugin) => plugin.status.available && !installedSelectors.has(plugin.selector),
   );
   return { installed, available };
 }
@@ -218,12 +196,8 @@ function filterGroups(groups: ReturnType<typeof groupPlugins>, query: string) {
   const normalized = query.trim().toLowerCase();
   if (!normalized) return groups;
   return {
-    installed: groups.installed.filter((plugin) =>
-      matchesClaudePluginSearch(plugin, normalized)
-    ),
-    available: groups.available.filter((plugin) =>
-      matchesClaudePluginSearch(plugin, normalized)
-    ),
+    installed: groups.installed.filter((plugin) => matchesClaudePluginSearch(plugin, normalized)),
+    available: groups.available.filter((plugin) => matchesClaudePluginSearch(plugin, normalized)),
   };
 }
 
@@ -313,9 +287,7 @@ function PluginCard({
         <div className="codex-plugins__meta">
           <div className="codex-plugins__name">{plugin.displayName}</div>
           <div className="codex-plugins__selector">{plugin.selector}</div>
-          {plugin.description && (
-            <div className="codex-plugins__desc">{plugin.description}</div>
-          )}
+          {plugin.description && <div className="codex-plugins__desc">{plugin.description}</div>}
           {plugin.source.path && (
             <div className="codex-plugins__source" title={plugin.source.path}>
               {plugin.source.path}
@@ -359,29 +331,20 @@ function PluginCard({
 function PluginIcon({ plugin }: { plugin: ClaudePluginRecord }) {
   const [failed, setFailed] = useState(false);
   const icon = plugin.icon && !failed ? plugin.icon : "";
-  const fallbackStyle =
-    !icon && plugin.iconColor ? { background: plugin.iconColor } : undefined;
+  const fallbackStyle = !icon && plugin.iconColor ? { background: plugin.iconColor } : undefined;
 
   useEffect(() => {
     setFailed(false);
-  }, [plugin.icon]);
+  }, []);
 
   return (
     <div
-      className={
-        "codex-plugins__avatar" +
-        (icon ? " codex-plugins__avatar--image" : "")
-      }
+      className={`codex-plugins__avatar${icon ? " codex-plugins__avatar--image" : ""}`}
       style={fallbackStyle}
       title={plugin.displayName}
     >
       {icon ? (
-        <img
-          src={icon}
-          alt=""
-          aria-hidden="true"
-          onError={() => setFailed(true)}
-        />
+        <img src={icon} alt="" aria-hidden="true" onError={() => setFailed(true)} />
       ) : (
         plugin.displayName.slice(0, 1).toUpperCase()
       )}
@@ -392,14 +355,7 @@ function PluginIcon({ plugin }: { plugin: ClaudePluginRecord }) {
 function SearchIcon() {
   return (
     <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
-      <circle
-        cx="7"
-        cy="7"
-        r="4.5"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        fill="none"
-      />
+      <circle cx="7" cy="7" r="4.5" stroke="currentColor" strokeWidth="1.4" fill="none" />
       <path
         d="M10.5 10.5L14 14"
         stroke="currentColor"

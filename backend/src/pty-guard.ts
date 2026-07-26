@@ -1,7 +1,7 @@
+import { randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { randomBytes } from "node:crypto";
 
 /**
  * Produce shell-launch args + temp init file that locks the working directory
@@ -40,7 +40,7 @@ function randomToken(): string {
 export function buildPowerShellGuard(
   baseArgs: string[],
   workspacesRoot: string,
-  initialCwd: string
+  initialCwd: string,
 ): ShellGuardResult {
   const rootEscaped = escapePwshSingle(workspacesRoot);
   const cwdEscaped = escapePwshSingle(initialCwd);
@@ -104,16 +104,11 @@ Microsoft.PowerShell.Management\\Set-Location -LiteralPath '${cwdEscaped}'
   // PowerShell 5.1 reads BOM-less files using the system ANSI code page, which
   // garbles Chinese on zh-CN. Prepend a UTF-8 BOM so it consistently decodes
   // the script (and our 拒绝 / 无法解析 messages) as UTF-8.
-  fs.writeFileSync(tmpPath, "﻿" + script, "utf-8");
+  fs.writeFileSync(tmpPath, `﻿${script}`, "utf-8");
   // -NoExit keeps the interactive shell up after the dot-sourced script runs.
   // Use `& '...'` to call the file; functions inside it run in this scope when
   // they declare `global:` explicitly, which we do.
-  const args = [
-    ...baseArgs,
-    "-NoExit",
-    "-Command",
-    `& '${escapePwshSingle(tmpPath)}'`,
-  ];
+  const args = [...baseArgs, "-NoExit", "-Command", `& '${escapePwshSingle(tmpPath)}'`];
   return {
     args,
     cleanup: () => {
@@ -137,7 +132,7 @@ Microsoft.PowerShell.Management\\Set-Location -LiteralPath '${cwdEscaped}'
 export function buildBashGuard(
   baseArgs: string[],
   workspacesRoot: string,
-  initialCwd: string
+  initialCwd: string,
 ): ShellGuardResult {
   // Normalize Windows-style backslashes to forward slashes so bash builtins
   // (realpath, cd) consume the path natively. Git Bash maps drive letters
@@ -209,7 +204,7 @@ builtin cd -- '${cwdEsc}' 2>/dev/null || true
 export function buildCmdGuard(
   baseArgs: string[],
   workspacesRoot: string,
-  initialCwd: string
+  initialCwd: string,
 ): ShellGuardResult {
   const token = randomToken();
   const initPath = path.join(tmpDir(), `osheep-cmd-init-${token}.cmd`);
@@ -260,8 +255,8 @@ export function buildCmdGuard(
     'if "!_ok!"=="0" (',
     // findstr's CRT argv parser eats a single \" — we need a doubled backslash
     // before the closing quote so it survives as a literal trailing `\`.
-    "  (echo !_resolved!) | findstr /i /b /c:\"!_root!\\\\\" >nul",
-    "  if not errorlevel 1 set \"_ok=1\"",
+    '  (echo !_resolved!) | findstr /i /b /c:"!_root!\\\\" >nul',
+    '  if not errorlevel 1 set "_ok=1"',
     ")",
     'if "!_ok!"=="0" (',
     '  echo [osheep] 拒绝: 目标 "!_resolved!" 超出 workspaces 根 "!_root!" 1>&2',

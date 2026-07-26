@@ -1,4 +1,4 @@
-import { DiffEditor, type BeforeMount } from "@monaco-editor/react";
+import { type BeforeMount, DiffEditor } from "@monaco-editor/react";
 import { languageFromPath } from "./language";
 
 interface DiffPaneProps {
@@ -27,12 +27,7 @@ const beforeMount: BeforeMount = (monaco) => {
   });
 };
 
-export function DiffPane({
-  path,
-  fontSize,
-  leftContent,
-  rightContent,
-}: DiffPaneProps) {
+export function DiffPane({ path, fontSize, leftContent, rightContent }: DiffPaneProps) {
   const lang = languageFromPath(path);
   return (
     <DiffEditor

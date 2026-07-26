@@ -1,20 +1,19 @@
 import { randomUUID } from "node:crypto";
 import { execRun } from "./ai-exec.js";
 import {
-  buildAgentTerminalCommand,
-  runAgentTerminal,
   type AgentEffort,
   type AgentMode,
   type AgentTerminalFrame,
+  buildAgentTerminalCommand,
   type ClaudePermissionMode,
   type CodexApproval,
   type CodexSandbox,
+  runAgentTerminal,
 } from "./ai-terminal.js";
-import { callRemoteMcp, discoverRemoteMcp, type RemoteMcpTool } from "./remote-mcp.js";
-import { readFileText, writeFileText } from "./fs-ops.js";
-import { resolveWorkspace, type WorkspaceInfo } from "./workspace.js";
 import { applyClaudePluginSelection } from "./claude-plugins.js";
 import { applyCodexPluginSelection } from "./codex-plugins.js";
+import { readFileText, writeFileText } from "./fs-ops.js";
+import { callRemoteMcp, discoverRemoteMcp, type RemoteMcpTool } from "./remote-mcp.js";
 import {
   getWorkflow,
   updateWorkflow,
@@ -23,6 +22,7 @@ import {
   type WorkflowRecord,
   type WorkflowRun,
 } from "./workflows.js";
+import { resolveWorkspace, type WorkspaceInfo } from "./workspace.js";
 
 type WorkflowBlockOutput = Record<string, unknown>;
 type RunLogEntry = { stream: "stdout" | "stderr"; content: string };
@@ -91,11 +91,11 @@ export interface LiveAgentRunDetails {
   update: (
     status: WorkflowRunDetailSnapshot["status"],
     completedAt?: number,
-    force?: boolean
+    force?: boolean,
   ) => Promise<void>;
   snapshot: (
     status: WorkflowRunDetailSnapshot["status"],
-    completedAt?: number
+    completedAt?: number,
   ) => WorkflowRunDetailSnapshot;
   drain: () => Promise<void>;
 }
@@ -147,11 +147,11 @@ const DEFAULT_MCP_HEADERS_JSON = JSON.stringify(
     "MCP-Protocol-Version": "2025-03-26",
   },
   null,
-  2
+  2,
 );
 
 export function createLiveAgentRunDetails(
-  options: LiveAgentRunDetailsOptions
+  options: LiveAgentRunDetailsOptions,
 ): LiveAgentRunDetails {
   const logs = options.logs ?? [];
   const minUpdateIntervalMs = Math.max(0, options.minUpdateIntervalMs ?? 250);
@@ -161,10 +161,7 @@ export function createLiveAgentRunDetails(
   let lastUpdateAt = 0;
   let queue = Promise.resolve();
 
-  const snapshot = (
-    status: WorkflowRunDetailSnapshot["status"],
-    completedAt?: number
-  ) =>
+  const snapshot = (status: WorkflowRunDetailSnapshot["status"], completedAt?: number) =>
     agentRunSnapshot(
       options.node,
       status,
@@ -174,7 +171,7 @@ export function createLiveAgentRunDetails(
       terminalSessionId || undefined,
       conversationSessionId || undefined,
       terminalStatus || undefined,
-      options.autoSuccess
+      options.autoSuccess,
     );
 
   const enqueue = (next: WorkflowRunDetailSnapshot) => {
@@ -185,7 +182,7 @@ export function createLiveAgentRunDetails(
   const update = (
     status: WorkflowRunDetailSnapshot["status"],
     completedAt?: number,
-    force = true
+    force = true,
   ) => {
     const now = Date.now();
     if (!force && minUpdateIntervalMs > 0 && now - lastUpdateAt < minUpdateIntervalMs) {
@@ -223,14 +220,11 @@ export function createLiveAgentRunDetails(
   };
 }
 
-export function classifyAgentTerminalFailure(
-  raw: string,
-  prompt: string
-): AgentTerminalFailure {
+export function classifyAgentTerminalFailure(raw: string, prompt: string): AgentTerminalFailure {
   const text = stripAnsi(raw).replace(/\r/g, "\n");
   const apiError = lastRegexMatch(
     text,
-    /^[ \t]*(?:[●•*✖×!]\s*)?(?:Please run\s+\/login\s*(?:[·•-]\s*)?)?API Error\s*:\s*\S[^\n]*/im
+    /^[ \t]*(?:[●•*✖×!]\s*)?(?:Please run\s+\/login\s*(?:[·•-]\s*)?)?API Error\s*:\s*\S[^\n]*/im,
   );
   if (apiError?.index !== undefined) {
     if (!isAgentErrorSuperseded(text, apiError.index)) {
@@ -238,46 +232,37 @@ export function classifyAgentTerminalFailure(
         text,
         prompt,
         apiError,
-        isRetryableAgentTerminalMessage(apiError[0])
+        isRetryableAgentTerminalMessage(apiError[0]),
       );
     }
   }
 
   const transient = lastRegexMatch(
     text,
-    /\b(?:unexpected status\s+(?:408|429|5\d\d)\b[^\n]*|(?:service unavailable|auth_unavailable|rate limit|temporarily unavailable|overloaded|econnreset|etimedout)[^\n]*)/i
+    /\b(?:unexpected status\s+(?:408|429|5\d\d)\b[^\n]*|(?:service unavailable|auth_unavailable|rate limit|temporarily unavailable|overloaded|econnreset|etimedout)[^\n]*)/i,
   );
-  if (
-    transient?.index !== undefined &&
-    !isAgentErrorSuperseded(text, transient.index)
-  ) {
+  if (transient?.index !== undefined && !isAgentErrorSuperseded(text, transient.index)) {
     return agentTerminalFailure(text, prompt, transient, true);
   }
 
   const permanent = lastRegexMatch(
     text,
-    /^[ \t]*(?:[●•*✖×!]\s*)?(?:Please run\s+\/login\b[^\n]*|Image generation is not enabled for this (?:group|organization|account)\b[^\n]*|(?:authentication|authorization) (?:failed|required)\b[^\n]*)/im
+    /^[ \t]*(?:[●•*✖×!]\s*)?(?:Please run\s+\/login\b[^\n]*|Image generation is not enabled for this (?:group|organization|account)\b[^\n]*|(?:authentication|authorization) (?:failed|required)\b[^\n]*)/im,
   );
-  if (
-    permanent?.index !== undefined &&
-    !isAgentErrorSuperseded(text, permanent.index)
-  ) {
+  if (permanent?.index !== undefined && !isAgentErrorSuperseded(text, permanent.index)) {
     return agentTerminalFailure(text, prompt, permanent, false);
   }
 
   const decoratedError = lastRegexMatch(
     text,
-    /^[ \t]*[●•✖×!]\s*(?:(?:fatal|authentication|authorization|request)\s+)?error\s*:\s*\S[^\n]*/im
+    /^[ \t]*[●•✖×!]\s*(?:(?:fatal|authentication|authorization|request)\s+)?error\s*:\s*\S[^\n]*/im,
   );
-  if (
-    decoratedError?.index !== undefined &&
-    !isAgentErrorSuperseded(text, decoratedError.index)
-  ) {
+  if (decoratedError?.index !== undefined && !isAgentErrorSuperseded(text, decoratedError.index)) {
     return agentTerminalFailure(
       text,
       prompt,
       decoratedError,
-      isRetryableAgentTerminalMessage(decoratedError[0])
+      isRetryableAgentTerminalMessage(decoratedError[0]),
     );
   }
 
@@ -286,12 +271,15 @@ export function classifyAgentTerminalFailure(
 
 export function classifyAgentTerminalResultFailure(
   result: AgentTerminalProcessResult,
-  prompt: string
+  prompt: string,
 ): AgentTerminalFailure {
   const contentFailure = classifyAgentTerminalFailure(result.content, prompt);
   if (contentFailure.failed) return contentFailure;
 
-  const transcriptFailure = classifyAgentTerminalFailure(terminalTail(result.transcript, 80), prompt);
+  const transcriptFailure = classifyAgentTerminalFailure(
+    terminalTail(result.transcript, 80),
+    prompt,
+  );
   if (transcriptFailure.failed) return transcriptFailure;
 
   const modelOutput = terminalModelOutputBeforeError(result.content || result.transcript, prompt);
@@ -299,7 +287,7 @@ export function classifyAgentTerminalResultFailure(
     return agentTerminalLifecycleFailure(
       "Agent terminal stalled without output activity.",
       true,
-      modelOutput
+      modelOutput,
     );
   }
   if (result.exitCode === null) {
@@ -310,7 +298,7 @@ export function classifyAgentTerminalResultFailure(
     return agentTerminalLifecycleFailure(
       `Agent terminal exited with code ${result.exitCode}.`,
       false,
-      modelOutput
+      modelOutput,
     );
   }
   if (
@@ -321,7 +309,7 @@ export function classifyAgentTerminalResultFailure(
     return agentTerminalLifecycleFailure(
       `Agent terminal completed with unexpected signal ${result.signal}.`,
       false,
-      modelOutput
+      modelOutput,
     );
   }
   return noAgentTerminalFailure();
@@ -331,7 +319,7 @@ function agentTerminalFailure(
   text: string,
   prompt: string,
   match: RegExpMatchArray,
-  retryable: boolean
+  retryable: boolean,
 ): AgentTerminalFailure {
   const matchIndex = match.index ?? 0;
   const modelOutput = terminalModelOutputBeforeError(text.slice(0, matchIndex), prompt);
@@ -347,7 +335,7 @@ function agentTerminalFailure(
 function agentTerminalLifecycleFailure(
   message: string,
   retryable: boolean,
-  modelOutput: string
+  modelOutput: string,
 ): AgentTerminalFailure {
   return {
     failed: true,
@@ -375,17 +363,14 @@ function isRetryableAgentTerminalMessage(message: string): boolean {
     return code === 408 || code === 409 || code === 425 || code === 429 || code >= 500;
   }
   return /\b(?:service unavailable|auth_unavailable|rate limit|temporarily unavailable|overloaded|econnreset|etimedout|connection reset|network error|gateway timeout|internal server error)\b/i.test(
-    message
+    message,
   );
 }
 
-function isAgentErrorSuperseded(
-  text: string,
-  errorAt: number
-): boolean {
+function isAgentErrorSuperseded(text: string, errorAt: number): boolean {
   const recovery = text.slice(errorAt);
   return /(?:^|\n)\s*(?:[\p{S}\p{P}]\s*)?(?:Thought\s+for\s+\d|\p{L}[\p{L}'’-]*(?:…|\.\.\.)?\s*\(\s*\d+(?:\.\d+)?(?:ms|s|m|h)\b)/imu.test(
-    recovery
+    recovery,
   );
 }
 
@@ -407,7 +392,7 @@ function terminalTail(text: string, lineCount: number): string {
 
 export function nextAgentRetryPrompt(
   originalPrompt: string,
-  failure: AgentTerminalFailure
+  failure: AgentTerminalFailure,
 ): string {
   void originalPrompt;
   void failure;
@@ -418,7 +403,7 @@ export function shouldRetryAgentTerminalFailure(
   failure: AgentTerminalFailure,
   attempt: number,
   retries: number,
-  retryForever: boolean
+  retryForever: boolean,
 ): boolean {
   return failure.failed && (retryForever || attempt < retries);
 }
@@ -426,7 +411,7 @@ export function shouldRetryAgentTerminalFailure(
 export async function startWorkflowRun(
   workspaceId: string,
   workflowId: string,
-  requestedNodeIds?: string[]
+  requestedNodeIds?: string[],
 ): Promise<{ runId: string; workflow: WorkflowRecord }> {
   const key = runKey(workspaceId, workflowId);
   if (activeRuns.has(key)) throw new Error("Workflow is already running.");
@@ -446,7 +431,7 @@ export async function startWorkflowRun(
     nodeIds: ordered,
   };
   const resetIds = new Set(
-    requestedNodeIds?.length ? ordered : record.nodes.map((node) => node.id)
+    requestedNodeIds?.length ? ordered : record.nodes.map((node) => node.id),
   );
   record = await updateWorkflow(workspace.path, workflowId, (current) => ({
     ...current,
@@ -462,19 +447,15 @@ export async function startWorkflowRun(
             startedAt: undefined,
             completedAt: undefined,
           }
-        : node
+        : node,
     ),
     runs: [...current.runs.slice(-49), run],
   }));
 
   const abort = new AbortController();
-  const done = runWorkflowInBackground(
-    workspace,
-    workflowId,
-    run,
-    ordered,
-    abort
-  ).catch(() => undefined);
+  const done = runWorkflowInBackground(workspace, workflowId, run, ordered, abort).catch(
+    () => undefined,
+  );
   activeRuns.set(key, { workspaceId, workflowId, runId: run.id, abort, done });
   void done.finally(() => {
     const state = activeRuns.get(key);
@@ -492,7 +473,7 @@ export function stopWorkflowRun(workspaceId: string, workflowId: string): boolea
 
 export async function stopWorkflowRunAndWait(
   workspaceId: string,
-  workflowId: string
+  workflowId: string,
 ): Promise<boolean> {
   const key = runKey(workspaceId, workflowId);
   const state = activeRuns.get(key);
@@ -512,7 +493,7 @@ async function runWorkflowInBackground(
   workflowId: string,
   run: WorkflowRun,
   nodeIds: string[],
-  abort: AbortController
+  abort: AbortController,
 ): Promise<void> {
   try {
     for (const nodeId of nodeIds) {
@@ -608,15 +589,10 @@ async function runWorkflowInBackground(
                   completedAt: Date.now(),
                   config: finalizeRunDetailsOnError(node, message),
                 }
-              : node
+              : node,
           )
         : record.nodes;
-      return finishRunRecord(
-        { ...record, nodes },
-        run.id,
-        stopped ? "stopped" : "error",
-        message
-      );
+      return finishRunRecord({ ...record, nodes }, run.id, stopped ? "stopped" : "error", message);
     });
   }
 }
@@ -626,7 +602,7 @@ async function executeAgentNode(
   record: WorkflowRecord,
   node: WorkflowNode,
   startedAt: number,
-  abort: AbortController
+  abort: AbortController,
 ): Promise<LocalNodeResult> {
   if (!node.prompt.trim()) throw new Error(`${node.title} has no prompt.`);
   const logs: RunLogEntry[] = [];
@@ -696,7 +672,7 @@ async function executeAgentNode(
       result.transcript || result.content,
       attempt,
       retries,
-      retryForever
+      retryForever,
     );
     raw =
       result.content ||
@@ -711,9 +687,10 @@ async function executeAgentNode(
   if (!result) throw new Error(`${node.title} did not start.`);
   if (terminalFailure?.failed) {
     const agentLabel = node.providerKind === "codex-cli" ? "Codex CLI" : "Claude Code CLI";
-    const errorMessage = attempt > 0
-      ? `${agentLabel} failed after ${attempt + 1} attempt${attempt === 0 ? "" : "s"}: ${terminalFailure.message}`
-      : `${agentLabel} failed: ${terminalFailure.message}`;
+    const errorMessage =
+      attempt > 0
+        ? `${agentLabel} failed after ${attempt + 1} attempt${attempt === 0 ? "" : "s"}: ${terminalFailure.message}`
+        : `${agentLabel} failed: ${terminalFailure.message}`;
     const errorDetails = details.snapshot("error", Date.now());
     errorDetails.terminalSessionId = errorDetails.terminalSessionId ?? result.sessionId;
     if (terminalTranscript) errorDetails.transcript = terminalTranscript;
@@ -746,7 +723,7 @@ async function executeAgentNode(
     mcpTools,
     raw,
     abort.signal,
-    (entry) => appendRunLog(logs, entry)
+    (entry) => appendRunLog(logs, entry),
   );
   if (toolRun) raw = toolRun.raw;
   const output = agentOutput(node, raw);
@@ -775,17 +752,15 @@ function appendAgentAttemptTranscript(
   attemptTranscript: string,
   attempt: number,
   retries: number,
-  retryForever: boolean
+  retryForever: boolean,
 ): string {
   const marker =
-    attempt > 0
-      ? `[osheep] retry ${attempt}/${retryForever ? "infinity" : retries}`
-      : "";
+    attempt > 0 ? `[osheep] retry ${attempt}/${retryForever ? "infinity" : retries}` : "";
   return appendBoundedJoinedText(
     transcript,
     [marker, attemptTranscript.trim()].filter(Boolean).join("\n"),
     AGENT_RETAINED_OUTPUT_CHAR_LIMIT,
-    AGENT_RETAINED_OUTPUT_TRUNCATION_TEXT
+    AGENT_RETAINED_OUTPUT_TRUNCATION_TEXT,
   );
 }
 
@@ -794,14 +769,14 @@ export function appendAgentAttemptTranscriptForTest(
   attemptTranscript: string,
   attempt: number,
   retries: number,
-  retryForever = false
+  retryForever = false,
 ): string {
   return appendAgentAttemptTranscript(
     transcript,
     attemptTranscript,
     attempt,
     retries,
-    retryForever
+    retryForever,
   );
 }
 
@@ -810,7 +785,7 @@ async function executeCommandNode(
   record: WorkflowRecord,
   node: WorkflowNode,
   startedAt: number,
-  abort: AbortController
+  abort: AbortController,
 ): Promise<LocalNodeResult> {
   const commandLine = resolveBlockTemplate(node.prompt, record).trim();
   if (!commandLine) throw new Error(`${node.title} has no input.`);
@@ -843,7 +818,7 @@ async function executeCommandNode(
           Date.now(),
           result.command,
           logs,
-          result
+          result,
         ),
       },
     },
@@ -856,7 +831,7 @@ async function executeLocalNode(
   workspaceRoot: string,
   record: WorkflowRecord,
   node: WorkflowNode,
-  options: { allowMcpToolCall?: boolean; signal?: AbortSignal } = {}
+  options: { allowMcpToolCall?: boolean; signal?: AbortSignal } = {},
 ): Promise<LocalNodeResult> {
   const input = resolveBlockTemplate(node.prompt, record).trim();
   const kind = nodeKind(node);
@@ -902,7 +877,8 @@ async function executeLocalNode(
     const body = resolveBlockTemplate(config.body, record);
     if (!url) throw new Error(`${node.title} has no URL.`);
     const headersParsed = parseTemplatedJsonValue(config.headers, record);
-    if (!headersParsed.ok) throw new Error(`${node.title} headers JSON is invalid: ${headersParsed.error}`);
+    if (!headersParsed.ok)
+      throw new Error(`${node.title} headers JSON is invalid: ${headersParsed.error}`);
     const headersObject = objectValue(headersParsed.value);
     if (!headersObject) throw new Error(`${node.title} headers must be a JSON object.`);
     const result = await execRun(
@@ -917,7 +893,7 @@ async function executeLocalNode(
       "",
       120_000,
       "cmd",
-      { signal: options.signal }
+      { signal: options.signal },
     );
     const parsed = parseJsonObject(result.stdout);
     if (result.exitCode !== 0 || !parsed) {
@@ -1049,7 +1025,7 @@ async function executeLocalNode(
     const config = loopItemsConfig(node);
     const source = config.source.trim()
       ? resolveTemplateValue(config.source, record)
-      : incomingOutputs(record, node)[0]?.data ?? incomingOutputs(record, node)[0] ?? [];
+      : (incomingOutputs(record, node)[0]?.data ?? incomingOutputs(record, node)[0] ?? []);
     const items = Array.isArray(source) ? source : [source].filter((item) => item !== undefined);
     const batches = chunk(items, Math.max(1, config.batchSize));
     return {
@@ -1088,11 +1064,9 @@ async function executeLocalNode(
     const incoming = incomingOutputs(record, node);
     const source = config.source.trim()
       ? resolveTemplateValue(config.source, record)
-      : incoming[0] ?? "";
+      : (incoming[0] ?? "");
     const parsedSource = parseMaybeJson(source);
-    const value = config.path.trim()
-      ? getLoosePathValue(parsedSource, config.path)
-      : parsedSource;
+    const value = config.path.trim() ? getLoosePathValue(parsedSource, config.path) : parsedSource;
     return {
       output: {
         type: "json",
@@ -1238,9 +1212,10 @@ async function executeLocalNode(
   throw new Error(`${node.title} cannot run as a local block.`);
 }
 
-export function planWorkflowRunNodeIds(
-  record: WorkflowRecord
-): { nodeIds: string[]; error?: string } {
+export function planWorkflowRunNodeIds(record: WorkflowRecord): {
+  nodeIds: string[];
+  error?: string;
+} {
   const allNodeIds = new Set(record.nodes.map((node) => node.id));
   const outgoing = new Map<string, string[]>();
   for (const node of record.nodes) outgoing.set(node.id, []);
@@ -1249,9 +1224,7 @@ export function planWorkflowRunNodeIds(
     outgoing.get(edge.from)?.push(edge.to);
   }
 
-  const roots = record.nodes
-    .filter((node) => isTriggerKind(nodeKind(node)))
-    .map((node) => node.id);
+  const roots = record.nodes.filter((node) => isTriggerKind(nodeKind(node))).map((node) => node.id);
   const reachable = new Set<string>();
   const queue = [...roots];
   while (queue.length) {
@@ -1266,12 +1239,10 @@ export function planWorkflowRunNodeIds(
 
 function topoOrder(
   record: WorkflowRecord,
-  onlyNodeIds?: Set<string>
+  onlyNodeIds?: Set<string>,
 ): { nodeIds: string[]; error?: string } {
   const nodeIds = new Set(
-    record.nodes
-      .filter((node) => !onlyNodeIds || onlyNodeIds.has(node.id))
-      .map((node) => node.id)
+    record.nodes.filter((node) => !onlyNodeIds || onlyNodeIds.has(node.id)).map((node) => node.id),
   );
   const indegree = new Map<string, number>();
   const outgoing = new Map<string, string[]>();
@@ -1308,17 +1279,15 @@ function patchWorkflowNode(
   workspaceRoot: string,
   workflowId: string,
   nodeId: string,
-  patch: Partial<WorkflowNode>
+  patch: Partial<WorkflowNode>,
 ): Promise<WorkflowRecord> {
-  return updateWorkflow(workspaceRoot, workflowId, (record) =>
-    patchNode(record, nodeId, patch)
-  );
+  return updateWorkflow(workspaceRoot, workflowId, (record) => patchNode(record, nodeId, patch));
 }
 
 function patchNode(
   record: WorkflowRecord,
   nodeId: string,
-  patch: Partial<WorkflowNode>
+  patch: Partial<WorkflowNode>,
 ): WorkflowRecord {
   return {
     ...record,
@@ -1330,9 +1299,9 @@ function patchNode(
             config:
               patch.config && node.config
                 ? { ...node.config, ...patch.config }
-                : patch.config ?? node.config,
+                : (patch.config ?? node.config),
           }
-        : node
+        : node,
     ),
   };
 }
@@ -1342,10 +1311,10 @@ async function finishRun(
   workflowId: string,
   runId: string,
   status: WorkflowRun["status"],
-  error?: string
+  error?: string,
 ): Promise<WorkflowRecord> {
   return await updateWorkflow(workspaceRoot, workflowId, (record) =>
-    finishRunRecord(record, runId, status, error)
+    finishRunRecord(record, runId, status, error),
   );
 }
 
@@ -1353,7 +1322,7 @@ function finishRunRecord(
   record: WorkflowRecord,
   runId: string,
   status: WorkflowRun["status"],
-  error?: string
+  error?: string,
 ): WorkflowRecord {
   return {
     ...record,
@@ -1365,13 +1334,15 @@ function finishRunRecord(
             completedAt: Date.now(),
             error: error ?? run.error,
           }
-        : run
+        : run,
     ),
   };
 }
 
 function isTriggerKind(kind: WorkflowNodeKind): boolean {
-  return kind === "trigger" || kind === "manual-trigger" || kind === "cron" || kind === "webhook-trigger";
+  return (
+    kind === "trigger" || kind === "manual-trigger" || kind === "cron" || kind === "webhook-trigger"
+  );
 }
 
 function triggerOutput(node: WorkflowNode, kind: WorkflowNodeKind): WorkflowBlockOutput {
@@ -1394,7 +1365,7 @@ function triggerOutput(node: WorkflowNode, kind: WorkflowNodeKind): WorkflowBloc
 function buildBlockPrompt(
   record: WorkflowRecord,
   node: WorkflowNode,
-  mcpTools: McpRuntimeTool[] = []
+  mcpTools: McpRuntimeTool[] = [],
 ): string {
   const incoming = record.edges
     .filter((edge) => edge.to === node.id && edge.passSummary)
@@ -1421,7 +1392,7 @@ function buildBlockPrompt(
     ? [
         "",
         "Remote MCP tools are available. If you need one before producing the final answer, return JSON with a tool_calls array and keep text brief.",
-        "Each tool call must be: {\"name\":\"tool_name\",\"arguments\":{...}}.",
+        'Each tool call must be: {"name":"tool_name","arguments":{...}}.',
         "Available tools in OpenAI-compatible function shape:",
         JSON.stringify(mcpToolSpecs, null, 2),
         "After osheep executes the tool calls, it will run you again with the results. Do not invent tool results.",
@@ -1451,7 +1422,7 @@ async function maybeRunAgentMcpToolCalls(
   mcpTools: McpRuntimeTool[],
   raw: string,
   signal: AbortSignal,
-  onLog?: (entry: { stream: "stdout" | "stderr"; content: string }) => void
+  onLog?: (entry: { stream: "stdout" | "stderr"; content: string }) => void,
 ): Promise<{ raw: string } | null> {
   if (mcpTools.length === 0 || signal.aborted) return null;
   const calls = extractMcpToolCalls(raw);
@@ -1477,7 +1448,7 @@ async function maybeRunAgentMcpToolCalls(
       remoteLink: resolveBlockTemplate(runtimeTool.config.remoteLink, record).trim(),
       postUrl: runtimeTool.config.postUrl || undefined,
       headers: stringRecord(
-        parseJsonObject(resolveBlockTemplate(runtimeTool.config.headers, record)) ?? {}
+        parseJsonObject(resolveBlockTemplate(runtimeTool.config.headers, record)) ?? {},
       ),
       apiKey: runtimeTool.config.apiKey || undefined,
       name: call.name,
@@ -1507,7 +1478,7 @@ async function maybeRunAgentMcpToolCalls(
         NEXT: [],
       },
       null,
-      2
+      2,
     ),
   };
 }
@@ -1535,7 +1506,9 @@ function collectMcpToolsForAgent(record: WorkflowRecord, node: WorkflowNode): Mc
   return out;
 }
 
-function extractMcpToolCalls(raw: string): Array<{ name: string; arguments: Record<string, unknown> }> {
+function extractMcpToolCalls(
+  raw: string,
+): Array<{ name: string; arguments: Record<string, unknown> }> {
   const parsed = parseJsonObject(raw);
   const value = parsed?.tool_calls ?? parsed?.toolCalls ?? parsed?.tools;
   if (!Array.isArray(value)) return [];
@@ -1544,7 +1517,8 @@ function extractMcpToolCalls(raw: string): Array<{ name: string; arguments: Reco
     const obj = objectValue(item);
     if (!obj) continue;
     const nested = objectValue(obj.function);
-    const name = typeof obj.name === "string" ? obj.name : typeof nested?.name === "string" ? nested.name : "";
+    const name =
+      typeof obj.name === "string" ? obj.name : typeof nested?.name === "string" ? nested.name : "";
     if (!name.trim()) continue;
     let argsValue = obj.arguments ?? nested?.arguments ?? {};
     if (typeof argsValue === "string") argsValue = parseJsonObject(argsValue) ?? {};
@@ -1556,10 +1530,7 @@ function extractMcpToolCalls(raw: string): Array<{ name: string; arguments: Reco
   return calls;
 }
 
-function agentOutput(
-  node: WorkflowNode,
-  raw: string
-): WorkflowBlockOutput {
+function agentOutput(node: WorkflowNode, raw: string): WorkflowBlockOutput {
   const parsed = parseJsonObject(raw);
   if (parsed) {
     return normalizeOutputObject(parsed, {
@@ -1577,7 +1548,7 @@ function agentOutput(
 
 function normalizeOutputObject(
   value: WorkflowBlockOutput,
-  defaults: WorkflowBlockOutput
+  defaults: WorkflowBlockOutput,
 ): WorkflowBlockOutput {
   return {
     ...sanitizeBlockOutput(defaults),
@@ -1620,7 +1591,7 @@ function parseJsonValue(text: string): unknown {
 
 function parseTemplatedJsonValue(
   input: string,
-  record: WorkflowRecord
+  record: WorkflowRecord,
 ): { ok: true; value: unknown } | { ok: false; error: string } {
   const resolved = resolveJsonTemplate(input, record).trim();
   if (!resolved) return { ok: true, value: {} };
@@ -1656,18 +1627,18 @@ function textFromAny(value: unknown): string {
 
 function resolveBlockTemplate(input: string, record: WorkflowRecord): string {
   assertValidBlockTemplates(input);
-  return input.replace(/\{\{\s*blocks\[(\d+)\]((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}/g, (
-    _match,
-    idText: string,
-    pathText: string
-  ) => stringifyTemplateValue(resolveBlockReference(record, idText, pathText)));
+  return input.replace(
+    /\{\{\s*blocks\[(\d+)\]((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}/g,
+    (_match, idText: string, pathText: string) =>
+      stringifyTemplateValue(resolveBlockReference(record, idText, pathText)),
+  );
 }
 
 function resolveTemplateValue(input: string, record: WorkflowRecord): unknown {
   assertValidBlockTemplates(input);
   const trimmed = input.trim();
   const whole = trimmed.match(
-    /^\{\{\s*blocks\[(\d+)\]((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}$/
+    /^\{\{\s*blocks\[(\d+)\]((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}$/,
   );
   if (whole) return resolveBlockReference(record, whole[1] ?? "", whole[2] ?? "");
   return parseMaybeJson(resolveBlockTemplate(input, record));
@@ -1685,7 +1656,7 @@ function resolveJsonTemplate(input: string, record: WorkflowRecord): string {
     for (const ch of chunk) {
       if (escaped) escaped = false;
       else if (ch === "\\") escaped = true;
-      else if (ch === "\"") inString = !inString;
+      else if (ch === '"') inString = !inString;
     }
   };
   while ((match = re.exec(input)) !== null) {
@@ -1710,7 +1681,9 @@ function resolveBlockReference(record: WorkflowRecord, idText: string, pathText:
   }
   const output = parseBlockOutput(node);
   if (!output) {
-    throw new Error(`Workflow variable ${reference} references block #${idText}, which has no output yet.`);
+    throw new Error(
+      `Workflow variable ${reference} references block #${idText}, which has no output yet.`,
+    );
   }
   const result = getPathResult(output, pathText);
   if (!result.found) {
@@ -1725,7 +1698,8 @@ export function resolveWorkflowTemplate(input: string, record: WorkflowRecord): 
 
 function assertValidBlockTemplates(input: string): void {
   const expressionRe = /\{\{[\s\S]*?\}\}/g;
-  const validRe = /^\{\{\s*blocks\[(\d+)\]((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}$/;
+  const validRe =
+    /^\{\{\s*blocks\[(\d+)\]((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}$/;
   const expressions = input.match(expressionRe) ?? [];
   for (const expression of expressions) {
     if (!validRe.test(expression)) throw invalidWorkflowVariable(expression);
@@ -1739,7 +1713,7 @@ function assertValidBlockTemplates(input: string): void {
 function invalidWorkflowVariable(expression: string): Error {
   const preview = expression.length > 120 ? `${expression.slice(0, 117)}...` : expression;
   return new Error(
-    `Invalid workflow variable ${JSON.stringify(preview)}. Expected syntax: {{blocks[2].text}}.`
+    `Invalid workflow variable ${JSON.stringify(preview)}. Expected syntax: {{blocks[2].text}}.`,
   );
 }
 
@@ -1751,10 +1725,7 @@ function getPathValue(value: unknown, pathText: string): unknown {
   return getPathResult(value, pathText).value;
 }
 
-function getPathResult(
-  value: unknown,
-  pathText: string
-): { found: boolean; value: unknown } {
+function getPathResult(value: unknown, pathText: string): { found: boolean; value: unknown } {
   let current = value;
   const re = /\.([A-Za-z_$][\w$]*)|\[("([^"]+)"|'([^']+)'|(\d+))\]/g;
   let match: RegExpExecArray | null;
@@ -1768,7 +1739,7 @@ function getPathResult(
       }
       current = current[index];
     } else if (current && typeof current === "object") {
-      if (!Object.prototype.hasOwnProperty.call(current, key)) {
+      if (!Object.hasOwn(current, key)) {
         return { found: false, value: undefined };
       }
       current = (current as Record<string, unknown>)[key];
@@ -1782,7 +1753,10 @@ function getPathResult(
 function getLoosePathValue(value: unknown, pathText: string): unknown {
   const trimmed = pathText.trim();
   if (!trimmed) return value;
-  return getPathValue(value, trimmed.startsWith(".") || trimmed.startsWith("[") ? trimmed : `.${trimmed}`);
+  return getPathValue(
+    value,
+    trimmed.startsWith(".") || trimmed.startsWith("[") ? trimmed : `.${trimmed}`,
+  );
 }
 
 function stringifyTemplateValue(value: unknown): string {
@@ -1814,7 +1788,7 @@ function compareValues(left: unknown, operator: string, right: unknown): boolean
   if (operator === "contains") {
     if (typeof lhs === "string") return lhs.includes(String(rhs ?? ""));
     if (Array.isArray(lhs)) return lhs.some((item) => valuesEqual(item, rhs));
-    if (lhs && typeof lhs === "object") return Object.prototype.hasOwnProperty.call(lhs, String(rhs));
+    if (lhs && typeof lhs === "object") return Object.hasOwn(lhs, String(rhs));
     return false;
   }
   if (operator === "greaterThan" || operator === "lessThan") {
@@ -1844,14 +1818,22 @@ function valuesEqual(left: unknown, right: unknown): boolean {
   return jsonPreview(left) === jsonPreview(right);
 }
 
-async function runCodeBlock(code: string, input: WorkflowBlockOutput, items: WorkflowBlockOutput[]): Promise<unknown> {
+async function runCodeBlock(
+  code: string,
+  input: WorkflowBlockOutput,
+  items: WorkflowBlockOutput[],
+): Promise<unknown> {
   const helpers = { jsonPreview, textFromAny };
   const fn = new Function(
     "input",
     "items",
     "helpers",
-    `"use strict";\nreturn (async () => {\n${code}\n})();`
-  ) as (input: WorkflowBlockOutput, items: WorkflowBlockOutput[], helpers: Record<string, unknown>) => Promise<unknown>;
+    `"use strict";\nreturn (async () => {\n${code}\n})();`,
+  ) as (
+    input: WorkflowBlockOutput,
+    items: WorkflowBlockOutput[],
+    helpers: Record<string, unknown>,
+  ) => Promise<unknown>;
   return await fn(input, items, helpers);
 }
 
@@ -1940,7 +1922,7 @@ function httpRequestConfig(node: WorkflowNode) {
     headers:
       typeof config.headers === "string" && config.headers.trim()
         ? config.headers
-        : "{\n  \"accept\": \"application/json\"\n}",
+        : '{\n  "accept": "application/json"\n}',
     body: typeof config.body === "string" ? config.body : "",
     responseType: typeof config.responseType === "string" ? config.responseType : "auto",
   };
@@ -1948,7 +1930,7 @@ function httpRequestConfig(node: WorkflowNode) {
 
 function setNodeConfig(node: WorkflowNode): { data: string } {
   const config = node.config ?? {};
-  return { data: typeof config.data === "string" ? config.data : "{\n  \"text\": \"\"\n}" };
+  return { data: typeof config.data === "string" ? config.data : '{\n  "text": ""\n}' };
 }
 
 function ifNodeConfig(node: WorkflowNode): { left: string; operator: string; right: string } {
@@ -1971,7 +1953,7 @@ function codeNodeConfig(node: WorkflowNode): { code: string } {
     code:
       typeof config.code === "string"
         ? config.code
-        : "return {\n  text: input.text || input.content || input.stdout || \"\",\n  input\n};",
+        : 'return {\n  text: input.text || input.content || input.stdout || "",\n  input\n};',
   };
 }
 
@@ -2123,7 +2105,7 @@ function terminalModelOutputBeforeError(text: string, prompt: string): string {
       .replace(/\r/g, "\n")
       .split("\n")
       .map((line) => line.trim())
-      .filter(Boolean)
+      .filter(Boolean),
   );
   return text
     .split("\n")
@@ -2166,7 +2148,7 @@ function appendBoundedJoinedText(
   current: string,
   next: string,
   maxChars: number,
-  markerText: string
+  markerText: string,
 ): string {
   if (!next) return current;
   const joined = current ? `${current}\n${next}` : next;
@@ -2231,7 +2213,7 @@ function agentRunSnapshot(
   terminalSessionId?: string,
   conversationSessionId?: string,
   terminalStatus?: string,
-  autoSuccess?: boolean
+  autoSuccess?: boolean,
 ): WorkflowRunDetailSnapshot {
   const snapshot: WorkflowRunDetailSnapshot = {
     kind: "agent",
@@ -2265,7 +2247,7 @@ function commandRunSnapshot(
   completedAt: number | undefined,
   commandLine: string,
   logs: RunLogEntry[],
-  result?: { exitCode: number | null; signal: string | null; durationMs?: number }
+  result?: { exitCode: number | null; signal: string | null; durationMs?: number },
 ): WorkflowRunDetailSnapshot {
   return {
     kind: "command",
@@ -2279,7 +2261,8 @@ function commandRunSnapshot(
     transcript: formatRunTranscript(logs),
     exitCode: result?.exitCode,
     signal: result?.signal,
-    durationMs: result?.durationMs ?? (completedAt ? Math.max(0, completedAt - startedAt) : undefined),
+    durationMs:
+      result?.durationMs ?? (completedAt ? Math.max(0, completedAt - startedAt) : undefined),
   };
 }
 
@@ -2298,10 +2281,8 @@ function finalizeRunDetailsOnError(node: WorkflowNode, message: string): Record<
   };
 }
 
-function clearRunDetails(
-  config: WorkflowNode["config"]
-): WorkflowNode["config"] | undefined {
-  if (!config || !Object.prototype.hasOwnProperty.call(config, "runDetails")) return config;
+function clearRunDetails(config: WorkflowNode["config"]): WorkflowNode["config"] | undefined {
+  if (!config || !Object.hasOwn(config, "runDetails")) return config;
   const { runDetails: _runDetails, ...rest } = config;
   void _runDetails;
   return rest;
@@ -2327,13 +2308,14 @@ function valueFromJsonSchema(schema: Record<string, unknown> | null, root = fals
   if (examples.length > 0) return examples[0];
   if (schema.default !== undefined) return schema.default;
   if (Array.isArray(schema.enum) && schema.enum.length > 0) return schema.enum[0];
-  const type = typeof schema.type === "string" ? schema.type : root || schema.properties ? "object" : "string";
+  const type =
+    typeof schema.type === "string" ? schema.type : root || schema.properties ? "object" : "string";
   if (type === "object" || root) {
     const properties = objectValue(schema.properties) ?? {};
     const required = new Set(
       Array.isArray(schema.required)
         ? schema.required.filter((item): item is string => typeof item === "string")
-        : []
+        : [],
     );
     const keys = Object.keys(properties).filter((key) => required.size === 0 || required.has(key));
     const out: Record<string, unknown> = {};
@@ -2375,7 +2357,8 @@ function textFromMcpContent(value: unknown): string {
   if (!obj) return "";
   if (typeof obj.text === "string") return obj.text;
   if (typeof obj.content === "string") return obj.content;
-  if (Array.isArray(obj.content)) return obj.content.map(textFromMcpContent).filter(Boolean).join("\n");
+  if (Array.isArray(obj.content))
+    return obj.content.map(textFromMcpContent).filter(Boolean).join("\n");
   if (obj.result !== undefined) return textFromMcpContent(obj.result);
   return "";
 }
@@ -2402,7 +2385,10 @@ function redactUrl(value: string): string {
     if (url.password) url.password = "redacted";
     return url.toString();
   } catch {
-    return value.replace(/([?&](?:api[_-]?key|key|token|access[_-]?token|auth|authorization)=)[^&#]+/gi, "$1redacted");
+    return value.replace(
+      /([?&](?:api[_-]?key|key|token|access[_-]?token|auth|authorization)=)[^&#]+/gi,
+      "$1redacted",
+    );
   }
 }
 
@@ -2458,7 +2444,7 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
         clearTimeout(timer);
         reject(new Error("Stopped"));
       },
-      { once: true }
+      { once: true },
     );
   });
 }

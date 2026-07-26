@@ -1,8 +1,8 @@
-import * as nodePty from "node-pty";
-import * as path from "node:path";
-import * as fs from "node:fs";
 import { randomBytes } from "node:crypto";
-import { platform, config } from "./config.js";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import * as nodePty from "node-pty";
+import { config, platform } from "./config.js";
 import { errors } from "./errors.js";
 import { buildBashGuard, buildCmdGuard, buildPowerShellGuard } from "./pty-guard.js";
 import type { WorkspaceInfo } from "./workspace.js";
@@ -60,9 +60,7 @@ function whichSync(name: string): string | null {
   const PATH = process.env.PATH ?? "";
   const sep = platform === "windows" ? ";" : ":";
   const exts =
-    platform === "windows"
-      ? (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";")
-      : [""];
+    platform === "windows" ? (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";") : [""];
   for (const dir of PATH.split(sep)) {
     if (!dir) continue;
     for (const ext of exts) {
@@ -121,7 +119,7 @@ export function findProfile(id: string): ShellProfile | null {
 }
 
 function newSessionId(): string {
-  return "t_" + randomBytes(4).toString("hex");
+  return `t_${randomBytes(4).toString("hex")}`;
 }
 
 function clampSize(n: unknown, fallback: number): number {
@@ -300,7 +298,7 @@ function cleanupSession(s: TerminalSession, _reason: string): void {
 
 export function attachSink(
   s: TerminalSession,
-  sink: (frame: string) => void
+  sink: (frame: string) => void,
 ): { detach: () => void; replayed: string } {
   s.sink = sink;
   const replayed = s.scrollback;
@@ -315,7 +313,7 @@ export function attachSink(
 
 export function addTap(
   s: TerminalSession,
-  tap: (frame: string) => void
+  tap: (frame: string) => void,
 ): { detach: () => void; replayed: string } {
   s.taps.add(tap);
   const replayed = s.scrollback;
@@ -339,8 +337,7 @@ export function writeRawInput(s: TerminalSession, data: string): void {
 
 // ─── Workspace boundary enforcement for `cd` ───
 
-const CD_RE =
-  /^(?:cd|chdir|sl|set-location|pushd)\b(?:\s+\/d)?\s+([^;|&`$\n]+?)\s*$/i;
+const CD_RE = /^(?:cd|chdir|sl|set-location|pushd)\b(?:\s+\/d)?\s+([^;|&`$\n]+?)\s*$/i;
 
 function parseCdTarget(line: string): string | null {
   const stripped = line.replace(/^\s+/, "");
@@ -378,7 +375,7 @@ function sendWarningFrame(s: TerminalSession, text: string): void {
       JSON.stringify({
         type: "output",
         data: `\r\n\x1b[33m${text}\x1b[0m\r\n`,
-      })
+      }),
     );
   }
 }
@@ -410,10 +407,7 @@ function handleInputData(s: TerminalSession, data: string): void {
           if (!isWithinWorkspacesRoot(newCwd, s.workspacesRoot)) {
             // Block: cancel the typed line in PTY, surface a warning frame
             s.pty.write("\x03");
-            sendWarningFrame(
-              s,
-              `警告：超出 workspaces (${s.workspacesRoot})，已忽略 "${target}"`
-            );
+            sendWarningFrame(s, `警告：超出 workspaces (${s.workspacesRoot})，已忽略 "${target}"`);
             continue; // do not forward the Enter
           }
           // Inside boundary — accept and remember
@@ -456,11 +450,7 @@ function handleInputData(s: TerminalSession, data: string): void {
   flush();
 }
 
-export function resizeSession(
-  s: TerminalSession,
-  cols: number,
-  rows: number
-): void {
+export function resizeSession(s: TerminalSession, cols: number, rows: number): void {
   const c = clampSize(cols, s.cols);
   const r = clampSize(rows, s.rows);
   s.cols = c;

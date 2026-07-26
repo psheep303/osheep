@@ -1,10 +1,10 @@
+import { execFile } from "node:child_process";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import type { TomlTable } from "smol-toml";
+import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import { ApiError, errors } from "./errors.js";
 
 const execFileAsync = promisify(execFile);
@@ -123,9 +123,12 @@ export function toWindowsCmdCommandLine(command: string, args: string[]): string
   return ["call", quoteWindowsCmdArg(command), ...args.map(quoteWindowsCmdArg)].join(" ");
 }
 
-export function toCodexCliError(
-  error: { code?: string | number; message: string; stdout?: string; stderr?: string }
-): ApiError {
+export function toCodexCliError(error: {
+  code?: string | number;
+  message: string;
+  stdout?: string;
+  stderr?: string;
+}): ApiError {
   if (error.code === "ENOENT") {
     return errors.codexCliNotFound();
   }
@@ -138,15 +141,13 @@ export function toCodexCliError(
 
 export function defaultCodexPluginPaths(): CodexPluginPaths {
   const home = os.homedir() || ".";
-  const codexDir = path.resolve(
-    process.env.OSHEEP_CODEX_CONFIG_DIR || path.join(home, ".codex")
-  );
+  const codexDir = path.resolve(process.env.OSHEEP_CODEX_CONFIG_DIR || path.join(home, ".codex"));
   const personalMarketplace = path.resolve(
     process.env.OSHEEP_CODEX_PERSONAL_MARKETPLACE ||
-      path.join(home, ".agents", "plugins", "marketplace.json")
+      path.join(home, ".agents", "plugins", "marketplace.json"),
   );
   const personalPluginRoot = path.resolve(
-    process.env.OSHEEP_CODEX_PERSONAL_PLUGIN_ROOT || path.join(home, "plugins")
+    process.env.OSHEEP_CODEX_PERSONAL_PLUGIN_ROOT || path.join(home, "plugins"),
   );
   return {
     codexDir,
@@ -158,7 +159,7 @@ export function defaultCodexPluginPaths(): CodexPluginPaths {
 }
 
 export function resolveCodexPluginPaths(
-  overrides: Partial<CodexPluginPaths> = {}
+  overrides: Partial<CodexPluginPaths> = {},
 ): CodexPluginPaths {
   return { ...defaultCodexPluginPaths(), ...overrides };
 }
@@ -168,15 +169,13 @@ export async function runCodexPluginCli(args: string[]): Promise<string> {
   try {
     const result = await execFileAsync(
       process.platform === "win32" ? "cmd.exe" : bin,
-      process.platform === "win32"
-        ? ["/d", "/s", "/c", toWindowsCmdCommandLine(bin, args)]
-        : args,
+      process.platform === "win32" ? ["/d", "/s", "/c", toWindowsCmdCommandLine(bin, args)] : args,
       {
-      encoding: "utf8",
-      windowsHide: true,
-      windowsVerbatimArguments: process.platform === "win32",
-      maxBuffer: 8 * 1024 * 1024,
-      }
+        encoding: "utf8",
+        windowsHide: true,
+        windowsVerbatimArguments: process.platform === "win32",
+        maxBuffer: 8 * 1024 * 1024,
+      },
     );
     return result.stdout ?? "";
   } catch (error) {
@@ -287,9 +286,7 @@ function mergePlugin(map: Map<string, CodexPluginRecord>, input: MergeRecord): v
   });
 }
 
-function mergeMarketplaces(
-  records: CodexMarketplaceRecord[]
-): CodexMarketplaceRecord[] {
+function mergeMarketplaces(records: CodexMarketplaceRecord[]): CodexMarketplaceRecord[] {
   const map = new Map<string, CodexMarketplaceRecord>();
   for (const record of records) {
     const prev = map.get(record.name);
@@ -312,7 +309,7 @@ async function readJsonFile(filePath: string): Promise<unknown | null> {
 
 async function readPersonalMarketplaceFile(
   filePath: string,
-  warnings: string[]
+  warnings: string[],
 ): Promise<unknown | null> {
   let text = "";
   try {
@@ -336,7 +333,7 @@ const OPENAI_FALLBACK_ICON = svgDataUrl(
     '<path d="M32 12c5 0 9 3 11 7 5 1 9 6 9 11s-3 10-8 12c-1 5-6 10-12 10-5 0-9-3-11-7-5-1-9-6-9-11s3-10 8-12c1-5 6-10 12-10Z"/>' +
     '<path d="M24 22l16 9v18"/><path d="M40 22 24 31v18"/>' +
     '<path d="M18 33l14-8 14 8"/><path d="M18 33l14 8 14-8"/>' +
-    "</g></svg>"
+    "</g></svg>",
 );
 
 function svgDataUrl(svg: string): string {
@@ -402,7 +399,7 @@ function isOpenAiManifest(manifest: unknown): boolean {
 
 async function loadManifestIcon(
   manifest: unknown,
-  pluginRoot?: string
+  pluginRoot?: string,
 ): Promise<string | undefined> {
   const candidate = manifestIconCandidate(manifest);
   if (!candidate) {
@@ -440,29 +437,23 @@ async function loadManifestIcon(
 
 async function manifestMetadata(
   manifest: unknown,
-  pluginRoot?: string
-): Promise<Pick<
-  MergeRecord,
-  "displayName" | "version" | "description" | "icon" | "iconColor"
->> {
+  pluginRoot?: string,
+): Promise<Pick<MergeRecord, "displayName" | "version" | "description" | "icon" | "iconColor">> {
   const obj = objectValue(manifest);
   const ui = objectValue(obj?.interface);
   return {
     displayName: stringValue(ui?.displayName) || stringValue(obj?.name),
     version: stringValue(obj?.version) || undefined,
-    description:
-      stringValue(ui?.shortDescription) ||
-      stringValue(obj?.description) ||
-      undefined,
+    description: stringValue(ui?.shortDescription) || stringValue(obj?.description) || undefined,
     icon: await loadManifestIcon(manifest, pluginRoot),
-    iconColor:
-      stringValue(ui?.brandColor) ||
-      stringValue(obj?.brandColor) ||
-      undefined,
+    iconColor: stringValue(ui?.brandColor) || stringValue(obj?.brandColor) || undefined,
   };
 }
 
-function normalizeCliPlugin(value: unknown, fallbackStatus: "installed" | "available"): MergeRecord | null {
+function normalizeCliPlugin(
+  value: unknown,
+  fallbackStatus: "installed" | "available",
+): MergeRecord | null {
   const obj = objectValue(value);
   if (!obj) return null;
   const selector = stringValue(obj.selector);
@@ -482,14 +473,8 @@ function normalizeCliPlugin(value: unknown, fallbackStatus: "installed" | "avail
     version: stringValue(obj.version) || undefined,
     description: stringValue(obj.description) || undefined,
     icon:
-      stringValue(obj.icon) ||
-      stringValue(obj.composerIcon) ||
-      stringValue(obj.logo) ||
-      undefined,
-    iconColor:
-      stringValue(obj.iconColor) ||
-      stringValue(obj.brandColor) ||
-      undefined,
+      stringValue(obj.icon) || stringValue(obj.composerIcon) || stringValue(obj.logo) || undefined,
+    iconColor: stringValue(obj.iconColor) || stringValue(obj.brandColor) || undefined,
     installed: fallbackStatus === "installed" || obj.installed === true,
     available: fallbackStatus === "available" || obj.available === true,
     enabled: obj.enabled === true,
@@ -499,12 +484,14 @@ function normalizeCliPlugin(value: unknown, fallbackStatus: "installed" | "avail
 
 async function discoverCliPlugins(
   runCli: (args: string[]) => Promise<string>,
-  warnings: string[]
+  warnings: string[],
 ): Promise<{ records: MergeRecord[]; marketplaces: CodexMarketplaceRecord[] }> {
   const records: MergeRecord[] = [];
   const marketplaces: CodexMarketplaceRecord[] = [];
   try {
-    const parsed = objectValue(parseCliJson(await runCli(["plugin", "list", "--available", "--json"])));
+    const parsed = objectValue(
+      parseCliJson(await runCli(["plugin", "list", "--available", "--json"])),
+    );
     for (const item of Array.isArray(parsed?.installed) ? parsed.installed : []) {
       const record = normalizeCliPlugin(item, "installed");
       if (record) records.push(record);
@@ -518,7 +505,9 @@ async function discoverCliPlugins(
   }
 
   try {
-    const parsed = objectValue(parseCliJson(await runCli(["plugin", "marketplace", "list", "--json"])));
+    const parsed = objectValue(
+      parseCliJson(await runCli(["plugin", "marketplace", "list", "--json"])),
+    );
     for (const item of Array.isArray(parsed?.marketplaces) ? parsed.marketplaces : []) {
       const obj = objectValue(item);
       const name = stringValue(obj?.name);
@@ -537,7 +526,7 @@ async function discoverCliPlugins(
 
 async function readOfficialMarketplaceFile(
   filePath: string,
-  warnings: string[]
+  warnings: string[],
 ): Promise<unknown | null> {
   let text = "";
   try {
@@ -555,31 +544,23 @@ async function readOfficialMarketplaceFile(
   }
 }
 
-function resolveOfficialMarketplaceSourcePath(
-  marketplaceRoot: string,
-  sourcePath: string
-): string {
+function resolveOfficialMarketplaceSourcePath(marketplaceRoot: string, sourcePath: string): string {
   if (path.isAbsolute(sourcePath)) return path.resolve(sourcePath);
   return path.resolve(marketplaceRoot, path.normalize(sourcePath));
 }
 
 async function discoverOfficialMarketplacePlugins(
   paths: CodexPluginPaths,
-  warnings: string[]
+  warnings: string[],
 ): Promise<{ records: MergeRecord[]; marketplaces: CodexMarketplaceRecord[] }> {
   const marketplaceRoot = path.join(paths.codexDir, ".tmp", "plugins");
   const preferredMarketplace = path.join(
     marketplaceRoot,
     ".agents",
     "plugins",
-    "api_marketplace.json"
+    "api_marketplace.json",
   );
-  const fallbackMarketplace = path.join(
-    marketplaceRoot,
-    ".agents",
-    "plugins",
-    "marketplace.json"
-  );
+  const fallbackMarketplace = path.join(marketplaceRoot, ".agents", "plugins", "marketplace.json");
   const files = (await pathExists(preferredMarketplace))
     ? [preferredMarketplace]
     : [fallbackMarketplace];
@@ -603,18 +584,13 @@ async function discoverOfficialMarketplacePlugins(
       const sourcePath = stringValue(source?.path);
       if (!name || !sourcePath) continue;
 
-      const pluginRoot = resolveOfficialMarketplaceSourcePath(
-        marketplaceRoot,
-        sourcePath
-      );
+      const pluginRoot = resolveOfficialMarketplaceSourcePath(marketplaceRoot, sourcePath);
       if (!pathInside(marketplaceRoot, pluginRoot)) {
         warnings.push(`Official marketplace source escaped cache root: ${name}`);
         continue;
       }
 
-      const manifest = await readJsonFile(
-        path.join(pluginRoot, ".codex-plugin", "plugin.json")
-      );
+      const manifest = await readJsonFile(path.join(pluginRoot, ".codex-plugin", "plugin.json"));
       const metadata = await manifestMetadata(manifest ?? { name }, pluginRoot);
       records.push({
         name,
@@ -630,7 +606,10 @@ async function discoverOfficialMarketplacePlugins(
   return { records, marketplaces };
 }
 
-async function discoverConfigPlugins(configPath: string, warnings: string[]): Promise<MergeRecord[]> {
+async function discoverConfigPlugins(
+  configPath: string,
+  warnings: string[],
+): Promise<MergeRecord[]> {
   let text = "";
   try {
     text = await fs.readFile(configPath, "utf8");
@@ -715,10 +694,10 @@ function sameResolvedPath(left: string, right: string): boolean {
 
 async function discoverPersonalMarketplacePlugins(
   paths: CodexPluginPaths,
-  warnings: string[]
+  warnings: string[],
 ): Promise<MergeRecord[]> {
   const parsed = objectValue(
-    await readPersonalMarketplaceFile(paths.personalMarketplace, warnings)
+    await readPersonalMarketplaceFile(paths.personalMarketplace, warnings),
   ) as PersonalMarketplaceFile | null;
   if (!parsed || !Array.isArray(parsed.plugins)) return [];
   const marketName = stringValue(parsed.name) || "personal";
@@ -756,12 +735,12 @@ async function discoverPersonalPluginRoot(paths: CodexPluginPaths): Promise<Merg
 
   for (const entry of entries) {
     const pluginRoot = path.join(paths.personalPluginRoot, entry);
-    const manifest = await readJsonFile(
-      path.join(pluginRoot, ".codex-plugin", "plugin.json")
-    );
+    const manifest = await readJsonFile(path.join(pluginRoot, ".codex-plugin", "plugin.json"));
     const manifestObj = objectValue(manifest);
     const manifestName = stringValue(manifestObj?.name);
-    const pluginName = manifestName ? normalizePluginName(manifestName) : normalizePluginName(entry);
+    const pluginName = manifestName
+      ? normalizePluginName(manifestName)
+      : normalizePluginName(entry);
     if (!manifestObj || !pluginName) continue;
     const metadata = await manifestMetadata(manifest, pluginRoot);
     records.push({
@@ -788,10 +767,7 @@ export interface ImportLocalCodexPluginInput {
   path: string;
 }
 
-export function toMarketplaceSourcePath(
-  marketplacePath: string,
-  pluginRoot: string
-): string {
+export function toMarketplaceSourcePath(marketplacePath: string, pluginRoot: string): string {
   const relative = path.relative(path.dirname(marketplacePath), pluginRoot);
   if (path.isAbsolute(relative)) {
     return path.resolve(pluginRoot).replace(/\\/g, "/");
@@ -841,7 +817,7 @@ async function readMarketplaceFile(filePath: string): Promise<Record<string, unk
     parsed = JSON.parse(text) as unknown;
   } catch (error) {
     throw errors.invalidQuery(
-      `Personal marketplace parse failed: ${filePath}: ${(error as Error).message}`
+      `Personal marketplace parse failed: ${filePath}: ${(error as Error).message}`,
     );
   }
 
@@ -850,23 +826,17 @@ async function readMarketplaceFile(filePath: string): Promise<Record<string, unk
     throw errors.invalidQuery(`Personal marketplace must be a JSON object: ${filePath}`);
   }
   if ("plugins" in existing && !Array.isArray(existing.plugins)) {
-    throw errors.invalidQuery(
-      `Personal marketplace plugins must be an array: ${filePath}`
-    );
+    throw errors.invalidQuery(`Personal marketplace plugins must be an array: ${filePath}`);
   }
   if ("name" in existing && typeof existing.name !== "string") {
     throw errors.invalidQuery(`Personal marketplace name must be a string: ${filePath}`);
   }
   if ("interface" in existing && !objectValue(existing.interface)) {
-    throw errors.invalidQuery(
-      `Personal marketplace interface must be an object: ${filePath}`
-    );
+    throw errors.invalidQuery(`Personal marketplace interface must be an object: ${filePath}`);
   }
   const ui = objectValue(existing.interface);
   if (ui && "displayName" in ui && typeof ui.displayName !== "string") {
-    throw errors.invalidQuery(
-      `Personal marketplace displayName must be a string: ${filePath}`
-    );
+    throw errors.invalidQuery(`Personal marketplace displayName must be a string: ${filePath}`);
   }
   if (!Array.isArray(existing.plugins)) existing.plugins = [];
   if (!stringValue(existing.name)) existing.name = "personal";
@@ -878,9 +848,9 @@ async function writeJsonAtomic(filePath: string, value: unknown): Promise<void> 
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   const temp = path.join(
     path.dirname(filePath),
-    `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`
+    `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`,
   );
-  await fs.writeFile(temp, JSON.stringify(value, null, 2) + "\n", "utf8");
+  await fs.writeFile(temp, `${JSON.stringify(value, null, 2)}\n`, "utf8");
   await fs.rename(temp, filePath);
 }
 
@@ -888,7 +858,7 @@ async function writeTextAtomic(filePath: string, text: string): Promise<void> {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   const temp = path.join(
     path.dirname(filePath),
-    `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`
+    `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`,
   );
   await fs.writeFile(temp, text, "utf8");
   await fs.rename(temp, filePath);
@@ -898,7 +868,7 @@ async function upsertPersonalMarketplaceEntry(
   paths: CodexPluginPaths,
   pluginName: string,
   sourcePath = `./plugins/${pluginName}`,
-  marketplace?: Record<string, unknown>
+  marketplace?: Record<string, unknown>,
 ): Promise<void> {
   const nextMarketplace = marketplace ?? (await readMarketplaceFile(paths.personalMarketplace));
   const plugins = Array.isArray(nextMarketplace.plugins) ? nextMarketplace.plugins : [];
@@ -930,7 +900,7 @@ async function pathExists(filePath: string): Promise<boolean> {
 
 function defaultManifest(
   input: CreateLocalCodexPluginInput,
-  pluginName: string
+  pluginName: string,
 ): CodexPluginManifest {
   const displayName = input.displayName?.trim() || input.name.trim() || pluginName;
   const description = input.description?.trim() || `Personal Codex plugin ${displayName}`;
@@ -955,7 +925,7 @@ function defaultManifest(
 
 export async function createLocalCodexPlugin(
   input: CreateLocalCodexPluginInput,
-  options: CodexPluginServiceOptions = {}
+  options: CodexPluginServiceOptions = {},
 ): Promise<CodexPluginSnapshot> {
   const paths = resolveCodexPluginPaths(options.paths);
   const marketplace = await readMarketplaceFile(paths.personalMarketplace);
@@ -972,12 +942,12 @@ export async function createLocalCodexPlugin(
 
 export async function importLocalCodexPlugin(
   input: ImportLocalCodexPluginInput,
-  options: CodexPluginServiceOptions = {}
+  options: CodexPluginServiceOptions = {},
 ): Promise<CodexPluginSnapshot> {
   const paths = resolveCodexPluginPaths(options.paths);
   const pluginRoot = path.resolve(input.path);
   const manifest = objectValue(
-    await readJsonFile(path.join(pluginRoot, ".codex-plugin", "plugin.json"))
+    await readJsonFile(path.join(pluginRoot, ".codex-plugin", "plugin.json")),
   );
   if (!manifest || !stringValue(manifest.name)) {
     throw errors.invalidQuery("Codex plugin manifest with a name is required");
@@ -991,7 +961,7 @@ export async function importLocalCodexPlugin(
 export async function removeLocalCodexPlugin(
   name: string,
   deleteSource: boolean,
-  options: CodexPluginServiceOptions = {}
+  options: CodexPluginServiceOptions = {},
 ): Promise<CodexPluginSnapshot> {
   const paths = resolveCodexPluginPaths(options.paths);
   const pluginName = normalizePluginName(name);
@@ -1008,9 +978,7 @@ export async function removeLocalCodexPlugin(
     if (!sourcePath) {
       throw errors.invalidQuery("Refusing to delete source without a tracked personal path");
     }
-    const finalPath = path.resolve(
-      resolvePersonalMarketplaceSourcePath(paths, sourcePath)
-    );
+    const finalPath = path.resolve(resolvePersonalMarketplaceSourcePath(paths, sourcePath));
     const expected = path.resolve(path.join(paths.personalPluginRoot, pluginName));
     if (!sameResolvedPath(finalPath, expected)) {
       throw errors.invalidQuery("Refusing to delete source outside personal plugin root");
@@ -1026,42 +994,34 @@ export async function removeLocalCodexPlugin(
 
 export async function installCodexPlugin(
   selector: string,
-  options: CodexPluginServiceOptions = {}
+  options: CodexPluginServiceOptions = {},
 ): Promise<unknown> {
   const runCli = options.runCli ?? runCodexPluginCli;
-  return parseCliJson(
-    await runCli(["plugin", "add", validatePluginSelector(selector), "--json"])
-  );
+  return parseCliJson(await runCli(["plugin", "add", validatePluginSelector(selector), "--json"]));
 }
 
 export async function uninstallCodexPlugin(
   selector: string,
-  options: CodexPluginServiceOptions = {}
+  options: CodexPluginServiceOptions = {},
 ): Promise<unknown> {
   const runCli = options.runCli ?? runCodexPluginCli;
   return parseCliJson(
-    await runCli(["plugin", "remove", validatePluginSelector(selector), "--json"])
+    await runCli(["plugin", "remove", validatePluginSelector(selector), "--json"]),
   );
 }
 
 export async function addCodexMarketplace(
   source: string,
-  options: CodexPluginServiceOptions = {}
+  options: CodexPluginServiceOptions = {},
 ): Promise<unknown> {
   const runCli = options.runCli ?? runCodexPluginCli;
   return parseCliJson(
-    await runCli([
-      "plugin",
-      "marketplace",
-      "add",
-      validateMarketplaceSource(source),
-      "--json",
-    ])
+    await runCli(["plugin", "marketplace", "add", validateMarketplaceSource(source), "--json"]),
   );
 }
 
 export async function getCodexPluginSnapshot(
-  options: CodexPluginServiceOptions = {}
+  options: CodexPluginServiceOptions = {},
 ): Promise<CodexPluginSnapshot> {
   const paths = resolveCodexPluginPaths(options.paths);
   const runCli = options.runCli ?? runCodexPluginCli;
@@ -1072,7 +1032,8 @@ export async function getCodexPluginSnapshot(
   const official = await discoverOfficialMarketplacePlugins(paths, warnings);
   for (const record of cli.records) mergePlugin(map, record);
   for (const record of official.records) mergePlugin(map, record);
-  for (const record of await discoverConfigPlugins(paths.codexConfig, warnings)) mergePlugin(map, record);
+  for (const record of await discoverConfigPlugins(paths.codexConfig, warnings))
+    mergePlugin(map, record);
   for (const record of await discoverCachePlugins(paths.codexPluginCache)) mergePlugin(map, record);
   for (const record of await discoverPersonalMarketplacePlugins(paths, warnings)) {
     mergePlugin(map, record);
@@ -1103,7 +1064,7 @@ export async function getCodexPluginSnapshot(
  */
 export async function applyCodexPluginSelection(
   selectedSelectors: string[],
-  options: CodexPluginServiceOptions = {}
+  options: CodexPluginServiceOptions = {},
 ): Promise<CodexPluginSnapshot> {
   const paths = resolveCodexPluginPaths(options.paths);
   const snapshot = await getCodexPluginSnapshot(options);
@@ -1112,7 +1073,7 @@ export async function applyCodexPluginSelection(
     selectedSelectors
       .filter((selector): selector is string => typeof selector === "string")
       .map(validatePluginSelector)
-      .filter((selector) => known.has(selector))
+      .filter((selector) => known.has(selector)),
   );
 
   let parsed: TomlTable = {};

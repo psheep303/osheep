@@ -1,13 +1,14 @@
-import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import test from "node:test";
 import { promisify } from "node:util";
 import {
   addCodexMarketplace,
   applyCodexPluginSelection,
+  type CodexPluginPaths,
   createLocalCodexPlugin,
   getCodexPluginSnapshot,
   importLocalCodexPlugin,
@@ -16,15 +17,11 @@ import {
   parseCliJson,
   removeLocalCodexPlugin,
   toCodexCliError,
-  toWindowsCmdCommandLine,
   toMarketplaceSourcePath,
+  toWindowsCmdCommandLine,
   uninstallCodexPlugin,
-  type CodexPluginPaths,
 } from "./codex-plugins.js";
-import {
-  parseDeleteSourceFlag,
-  parseRequiredStringField,
-} from "./routes/codex-plugins.js";
+import { parseDeleteSourceFlag, parseRequiredStringField } from "./routes/codex-plugins.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -45,7 +42,7 @@ test("parseCliJson skips Windows code-page banner before JSON", () => {
 test("parseCliJson reports a useful error when stdout has no JSON", () => {
   assert.throws(
     () => parseCliJson("Active code page: 65001\nnot json"),
-    /Codex CLI did not return JSON/
+    /Codex CLI did not return JSON/,
   );
 });
 
@@ -58,17 +55,14 @@ test("toWindowsCmdCommandLine quotes arguments with spaces", () => {
       "C:/Users/Jane Doe/plugins/debug",
       "--json",
     ]),
-    'call "codex.cmd" "plugin" "marketplace" "add" "C:/Users/Jane Doe/plugins/debug" "--json"'
+    'call "codex.cmd" "plugin" "marketplace" "add" "C:/Users/Jane Doe/plugins/debug" "--json"',
   );
 });
 
 test("toWindowsCmdCommandLine rejects unsafe shell metacharacters", () => {
   assert.throws(
     () => toWindowsCmdCommandLine("codex.cmd", ["plugin", "add", "sample@debug & whoami"]),
-    (error: unknown) =>
-      error instanceof Error &&
-      "code" in error &&
-      error.code === "INVALID_QUERY"
+    (error: unknown) => error instanceof Error && "code" in error && error.code === "INVALID_QUERY",
   );
 });
 
@@ -81,13 +75,8 @@ test("toWindowsCmdCommandLine runs cmd files with arguments containing spaces", 
 
   const result = await execFileAsync(
     "cmd.exe",
-    [
-      "/d",
-      "/s",
-      "/c",
-      toWindowsCmdCommandLine(script, ["C:/Users/Jane Doe/plugins/debug"]),
-    ],
-    { encoding: "utf8", windowsVerbatimArguments: true }
+    ["/d", "/s", "/c", toWindowsCmdCommandLine(script, ["C:/Users/Jane Doe/plugins/debug"])],
+    { encoding: "utf8", windowsVerbatimArguments: true },
   );
 
   assert.match(result.stdout, /source=C:\/Users\/Jane Doe\/plugins\/debug/);
@@ -131,7 +120,7 @@ test("snapshot merges CLI, config, cache, and personal marketplace records", asy
   await fs.writeFile(
     paths.codexConfig,
     '[plugins."superpowers@openai-api-curated"]\nenabled = true\n',
-    "utf8"
+    "utf8",
   );
   await writeJson(
     path.join(
@@ -140,7 +129,7 @@ test("snapshot merges CLI, config, cache, and personal marketplace records", asy
       "superpowers",
       "3fdeeb49",
       ".codex-plugin",
-      "plugin.json"
+      "plugin.json",
     ),
     {
       name: "superpowers",
@@ -151,17 +140,11 @@ test("snapshot merges CLI, config, cache, and personal marketplace records", asy
         composerIcon: "./assets/superpowers-small.svg",
         brandColor: "#F59E0B",
       },
-    }
+    },
   );
   await fs.mkdir(
-    path.join(
-      paths.codexPluginCache,
-      "openai-api-curated",
-      "superpowers",
-      "3fdeeb49",
-      "assets"
-    ),
-    { recursive: true }
+    path.join(paths.codexPluginCache, "openai-api-curated", "superpowers", "3fdeeb49", "assets"),
+    { recursive: true },
   );
   await fs.writeFile(
     path.join(
@@ -170,10 +153,10 @@ test("snapshot merges CLI, config, cache, and personal marketplace records", asy
       "superpowers",
       "3fdeeb49",
       "assets",
-      "superpowers-small.svg"
+      "superpowers-small.svg",
     ),
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"></svg>',
-    "utf8"
+    "utf8",
   );
   await writeJson(paths.personalMarketplace, {
     name: "personal",
@@ -194,7 +177,7 @@ test("snapshot merges CLI, config, cache, and personal marketplace records", asy
       version: "0.1.0",
       description: "Local helper plugin",
       interface: { displayName: "Local Tools" },
-    }
+    },
   );
 
   const snapshot = await getCodexPluginSnapshot({
@@ -248,42 +231,36 @@ test("snapshot merges CLI, config, cache, and personal marketplace records", asy
 test("snapshot enriches official marketplace plugins from Codex tmp manifests", async () => {
   const paths = await makeFixturePaths();
   const marketplaceRoot = path.join(paths.codexDir, ".tmp", "plugins");
-  await writeJson(
-    path.join(marketplaceRoot, ".agents", "plugins", "api_marketplace.json"),
-    {
-      name: "openai-api-curated",
-      interface: { displayName: "Codex official" },
-      plugins: [
-        {
-          name: "github",
-          source: { source: "local", path: "./plugins/github" },
-          policy: { installation: "AVAILABLE", authentication: "ON_INSTALL" },
-          category: "Developer Tools",
-        },
-      ],
-    }
-  );
-  await writeJson(
-    path.join(marketplaceRoot, "plugins", "github", ".codex-plugin", "plugin.json"),
-    {
-      name: "github",
-      version: "0.1.6",
-      description: "GitHub workflows",
-      interface: {
-        displayName: "GitHub",
-        shortDescription: "Triage PRs and issues",
-        composerIcon: "./assets/github-small.svg",
-        brandColor: "#24292F",
+  await writeJson(path.join(marketplaceRoot, ".agents", "plugins", "api_marketplace.json"), {
+    name: "openai-api-curated",
+    interface: { displayName: "Codex official" },
+    plugins: [
+      {
+        name: "github",
+        source: { source: "local", path: "./plugins/github" },
+        policy: { installation: "AVAILABLE", authentication: "ON_INSTALL" },
+        category: "Developer Tools",
       },
-    }
-  );
+    ],
+  });
+  await writeJson(path.join(marketplaceRoot, "plugins", "github", ".codex-plugin", "plugin.json"), {
+    name: "github",
+    version: "0.1.6",
+    description: "GitHub workflows",
+    interface: {
+      displayName: "GitHub",
+      shortDescription: "Triage PRs and issues",
+      composerIcon: "./assets/github-small.svg",
+      brandColor: "#24292F",
+    },
+  });
   await fs.mkdir(path.join(marketplaceRoot, "plugins", "github", "assets"), {
     recursive: true,
   });
   await fs.writeFile(
     path.join(marketplaceRoot, "plugins", "github", "assets", "github-small.svg"),
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"></svg>',
-    "utf8"
+    "utf8",
   );
 
   const snapshot = await getCodexPluginSnapshot({
@@ -320,28 +297,19 @@ test("snapshot enriches official marketplace plugins from Codex tmp manifests", 
 test("snapshot uses an OpenAI fallback icon for official manifests without icon fields", async () => {
   const paths = await makeFixturePaths();
   const marketplaceRoot = path.join(paths.codexDir, ".tmp", "plugins");
+  await writeJson(path.join(marketplaceRoot, ".agents", "plugins", "api_marketplace.json"), {
+    name: "openai-api-curated",
+    plugins: [
+      {
+        name: "openai-ads-conversions",
+        source: { source: "local", path: "./plugins/openai-ads-conversions" },
+        policy: { installation: "AVAILABLE", authentication: "ON_INSTALL" },
+        category: "Developer Tools",
+      },
+    ],
+  });
   await writeJson(
-    path.join(marketplaceRoot, ".agents", "plugins", "api_marketplace.json"),
-    {
-      name: "openai-api-curated",
-      plugins: [
-        {
-          name: "openai-ads-conversions",
-          source: { source: "local", path: "./plugins/openai-ads-conversions" },
-          policy: { installation: "AVAILABLE", authentication: "ON_INSTALL" },
-          category: "Developer Tools",
-        },
-      ],
-    }
-  );
-  await writeJson(
-    path.join(
-      marketplaceRoot,
-      "plugins",
-      "openai-ads-conversions",
-      ".codex-plugin",
-      "plugin.json"
-    ),
+    path.join(marketplaceRoot, "plugins", "openai-ads-conversions", ".codex-plugin", "plugin.json"),
     {
       name: "openai-ads-conversions",
       version: "0.1.0",
@@ -350,12 +318,12 @@ test("snapshot uses an OpenAI fallback icon for official manifests without icon 
         displayName: "OpenAI Ads Conversions",
         developerName: "OpenAI",
       },
-    }
+    },
   );
 
   const snapshot = await getCodexPluginSnapshot({ paths, runCli: noCli });
   const plugin = snapshot.plugins.find(
-    (p) => p.selector === "openai-ads-conversions@openai-api-curated"
+    (p) => p.selector === "openai-ads-conversions@openai-api-curated",
   );
 
   assert.match(plugin?.icon ?? "", /^data:image\/svg\+xml,/);
@@ -377,7 +345,7 @@ test("personal marketplace ./plugins paths resolve under the personal plugin roo
     {
       name: "local-tools",
       interface: { displayName: "Local Tools" },
-    }
+    },
   );
 
   const snapshot = await getCodexPluginSnapshot({ paths, runCli: noCli });
@@ -397,7 +365,10 @@ test("personal marketplace non-plugin relative paths resolve from the marketplac
       },
     ],
   });
-  const pluginPath = path.resolve(path.dirname(paths.personalMarketplace), "../shared/sibling-tools");
+  const pluginPath = path.resolve(
+    path.dirname(paths.personalMarketplace),
+    "../shared/sibling-tools",
+  );
   await writeJson(path.join(pluginPath, ".codex-plugin", "plugin.json"), {
     name: "sibling-tools",
     interface: { displayName: "Sibling Tools" },
@@ -419,7 +390,7 @@ test("snapshot discovers unlisted personal plugin root directories", async () =>
       version: "0.2.0",
       description: "Root plugin",
       interface: { displayName: "Root Tools" },
-    }
+    },
   );
 
   const snapshot = await getCodexPluginSnapshot({ paths, runCli: noCli });
@@ -441,20 +412,23 @@ test("malformed personal marketplace JSON adds a warning", async () => {
   const snapshot = await getCodexPluginSnapshot({ paths, runCli: noCli });
 
   assert.match(snapshot.warnings.join("\n"), /Personal marketplace parse failed:/);
-  assert.match(snapshot.warnings.join("\n"), new RegExp(paths.personalMarketplace.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.match(
+    snapshot.warnings.join("\n"),
+    new RegExp(paths.personalMarketplace.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+  );
 });
 
 test("createLocalCodexPlugin writes manifest and initial personal marketplace", async () => {
   const paths = await makeFixturePaths();
   await createLocalCodexPlugin(
     { name: "My Tools", displayName: "My Tools", description: "Useful local commands" },
-    { paths, runCli: async () => "{}" }
+    { paths, runCli: async () => "{}" },
   );
   const manifest = JSON.parse(
     await fs.readFile(
       path.join(paths.personalPluginRoot, "my-tools", ".codex-plugin", "plugin.json"),
-      "utf8"
-    )
+      "utf8",
+    ),
   ) as { name: string; interface: { displayName: string } };
   assert.equal(manifest.name, "my-tools");
   assert.equal(manifest.interface.displayName, "My Tools");
@@ -476,12 +450,9 @@ test("createLocalCodexPlugin rejects malformed personal marketplace files", asyn
     () =>
       createLocalCodexPlugin(
         { name: "broken-marketplace", displayName: "Broken Marketplace" },
-        { paths, runCli: async () => "{}" }
+        { paths, runCli: async () => "{}" },
       ),
-    (error: unknown) =>
-      error instanceof Error &&
-      "code" in error &&
-      error.code === "INVALID_QUERY"
+    (error: unknown) => error instanceof Error && "code" in error && error.code === "INVALID_QUERY",
   );
 
   const text = await fs.readFile(paths.personalMarketplace, "utf8");
@@ -500,12 +471,9 @@ test("createLocalCodexPlugin rejects personal marketplace files with invalid plu
     () =>
       createLocalCodexPlugin(
         { name: "broken-shape", displayName: "Broken Shape" },
-        { paths, runCli: async () => "{}" }
+        { paths, runCli: async () => "{}" },
       ),
-    (error: unknown) =>
-      error instanceof Error &&
-      "code" in error &&
-      error.code === "INVALID_QUERY"
+    (error: unknown) => error instanceof Error && "code" in error && error.code === "INVALID_QUERY",
   );
 
   const marketplace = JSON.parse(await fs.readFile(paths.personalMarketplace, "utf8")) as {
@@ -520,7 +488,7 @@ test("createLocalCodexPlugin refuses to overwrite an existing plugin manifest", 
     paths.personalPluginRoot,
     "my-tools",
     ".codex-plugin",
-    "plugin.json"
+    "plugin.json",
   );
   await writeJson(manifestPath, {
     name: "my-tools",
@@ -531,12 +499,9 @@ test("createLocalCodexPlugin refuses to overwrite an existing plugin manifest", 
     () =>
       createLocalCodexPlugin(
         { name: "My Tools", displayName: "Replacement" },
-        { paths, runCli: async () => "{}" }
+        { paths, runCli: async () => "{}" },
       ),
-    (error: unknown) =>
-      error instanceof Error &&
-      "code" in error &&
-      error.code === "ENTRY_EXISTS"
+    (error: unknown) => error instanceof Error && "code" in error && error.code === "ENTRY_EXISTS",
   );
 
   const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8")) as {
@@ -555,7 +520,10 @@ test("importLocalCodexPlugin adds existing manifest to personal marketplace", as
     interface: { displayName: "Imported" },
   });
   await importLocalCodexPlugin({ path: pluginPath }, { paths, runCli: async () => "{}" });
-  const snapshot = await getCodexPluginSnapshot({ paths, runCli: async () => '{"installed":[],"available":[]}' });
+  const snapshot = await getCodexPluginSnapshot({
+    paths,
+    runCli: async () => '{"installed":[],"available":[]}',
+  });
   assert.equal(snapshot.plugins[0]?.selector, "imported@personal");
   assert.equal(snapshot.plugins[0]?.displayName, "Imported");
 });
@@ -564,10 +532,7 @@ test("toMarketplaceSourcePath keeps absolute paths for different-drive imports",
   if (process.platform !== "win32") return;
   const marketplacePath = String.raw`D:\users\me\.agents\plugins\marketplace.json`;
   const pluginRoot = String.raw`E:\plugins\imported`;
-  assert.equal(
-    toMarketplaceSourcePath(marketplacePath, pluginRoot),
-    "E:/plugins/imported"
-  );
+  assert.equal(toMarketplaceSourcePath(marketplacePath, pluginRoot), "E:/plugins/imported");
 });
 
 test("removeLocalCodexPlugin refuses to delete source outside the personal plugin root", async () => {
@@ -589,11 +554,11 @@ test("removeLocalCodexPlugin refuses to delete source outside the personal plugi
         },
       ],
     }),
-    "utf8"
+    "utf8",
   );
   await assert.rejects(
     () => removeLocalCodexPlugin("outside-plugin", true, { paths, runCli: async () => "{}" }),
-    /Refusing to delete source outside personal plugin root/
+    /Refusing to delete source outside personal plugin root/,
   );
 });
 
@@ -610,10 +575,7 @@ test("removeLocalCodexPlugin does not delete an untracked personal plugin direct
         paths,
         runCli: async () => "{}",
       }),
-    (error: unknown) =>
-      error instanceof Error &&
-      "code" in error &&
-      error.code === "NOT_FOUND"
+    (error: unknown) => error instanceof Error && "code" in error && error.code === "NOT_FOUND",
   );
 
   await fs.access(pluginRoot);
@@ -658,17 +620,11 @@ test("install and uninstall reject unsafe plugin selectors before invoking Codex
 
   await assert.rejects(
     () => installCodexPlugin("sample@debug & whoami", { runCli }),
-    (error: unknown) =>
-      error instanceof Error &&
-      "code" in error &&
-      error.code === "INVALID_QUERY"
+    (error: unknown) => error instanceof Error && "code" in error && error.code === "INVALID_QUERY",
   );
   await assert.rejects(
     () => uninstallCodexPlugin("sample@debug | whoami", { runCli }),
-    (error: unknown) =>
-      error instanceof Error &&
-      "code" in error &&
-      error.code === "INVALID_QUERY"
+    (error: unknown) => error instanceof Error && "code" in error && error.code === "INVALID_QUERY",
   );
 
   assert.equal(calls, 0);
@@ -683,10 +639,7 @@ test("addCodexMarketplace rejects unsafe source strings before invoking Codex CL
 
   await assert.rejects(
     () => addCodexMarketplace('C:/plugins/debug & echo "oops"', { runCli }),
-    (error: unknown) =>
-      error instanceof Error &&
-      "code" in error &&
-      error.code === "INVALID_QUERY"
+    (error: unknown) => error instanceof Error && "code" in error && error.code === "INVALID_QUERY",
   );
 
   assert.equal(calls, 0);
@@ -695,7 +648,7 @@ test("addCodexMarketplace rejects unsafe source strings before invoking Codex CL
 test("route helpers parse required strings and deleteSource flags", () => {
   assert.equal(
     parseRequiredStringField({ selector: " sample@debug " }, "selector"),
-    "sample@debug"
+    "sample@debug",
   );
   assert.equal(parseDeleteSourceFlag({ deleteSource: "true" }), true);
   assert.equal(parseDeleteSourceFlag({ deleteSource: "false" }), false);
@@ -708,7 +661,7 @@ test("workflow Codex plugin selection updates enabled state without installing p
   await fs.writeFile(
     paths.codexConfig,
     '[plugins."alpha@market"]\nenabled = true\n\n[plugins."beta@market"]\nenabled = false\n',
-    "utf8"
+    "utf8",
   );
   const calls: string[][] = [];
   const runCli = async (args: string[]) => {

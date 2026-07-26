@@ -76,9 +76,7 @@ export function ContextMenu({ x, y, sections, onClose }: ContextMenuProps) {
               }}
             >
               <span className="ctx-menu__label">{it.label}</span>
-              {it.shortcut && (
-                <span className="ctx-menu__shortcut">{it.shortcut}</span>
-              )}
+              {it.shortcut && <span className="ctx-menu__shortcut">{it.shortcut}</span>}
             </div>
           ))}
         </div>

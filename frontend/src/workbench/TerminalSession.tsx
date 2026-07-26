@@ -1,14 +1,15 @@
-import { useEffect, useRef, useState } from "react";
-import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { Terminal as XTerm } from "@xterm/xterm";
+import { useEffect, useRef, useState } from "react";
 import "@xterm/xterm/css/xterm.css";
 import {
+  type AgentSessionApp,
   createAgentSessionTerminal,
   createTerminal,
   killTerminal,
   openTerminalSocket,
-  type AgentSessionApp,
   type ShellProfile,
+  type TerminalCreateResp,
 } from "./api";
 
 interface TerminalSessionProps {
@@ -106,12 +107,10 @@ export function TerminalSession({
     let cancelled = false;
     let ws: WebSocket | null = null;
 
-    term.writeln(
-      `\x1b[2m[osheep] 连接到后端 PTY (${profile.label})…\x1b[0m`
-    );
+    term.writeln(`\x1b[2m[osheep] 连接到后端 PTY (${profile.label})…\x1b[0m`);
 
     (async () => {
-      let session;
+      let session: TerminalCreateResp;
       try {
         session = agentSession
           ? await createAgentSessionTerminal({
@@ -131,7 +130,7 @@ export function TerminalSession({
       } catch (e) {
         if (cancelled) return;
         setStatus("closed");
-        setError("创建终端失败：" + (e as Error).message);
+        setError(`创建终端失败：${(e as Error).message}`);
         return;
       }
       if (cancelled) {
@@ -151,7 +150,7 @@ export function TerminalSession({
               type: "resize",
               cols: term.cols,
               rows: term.rows,
-            })
+            }),
           );
         } catch {
           /* ignore */
@@ -164,9 +163,7 @@ export function TerminalSession({
             term.write(msg.data);
           } else if (msg.type === "exit") {
             term.writeln(
-              `\r\n\x1b[2m[osheep] 进程退出 code=${msg.code} signal=${
-                msg.signal ?? "null"
-              }\x1b[0m`
+              `\r\n\x1b[2m[osheep] 进程退出 code=${msg.code} signal=${msg.signal ?? "null"}\x1b[0m`,
             );
             setStatus("closed");
           } else if (msg.type === "error") {
@@ -205,7 +202,7 @@ export function TerminalSession({
               type: "resize",
               cols: term.cols,
               rows: term.rows,
-            })
+            }),
           );
         }
       } catch {
@@ -252,7 +249,7 @@ export function TerminalSession({
               type: "resize",
               cols: term.cols,
               rows: term.rows,
-            })
+            }),
           );
         }
       } catch {
@@ -263,20 +260,11 @@ export function TerminalSession({
   }, [active]);
 
   return (
-    <div
-      className={
-        "term-session" + (active ? " is-active" : " is-hidden")
-      }
-      data-status={status}
-    >
+    <div className={`term-session${active ? " is-active" : " is-hidden"}`} data-status={status}>
       {error && <div className="term-session__error">{error}</div>}
       <div className="term-session__host" ref={hostRef} />
       {!active && status === "closed" && (
-        <button
-          className="term-session__overlay-btn"
-          onClick={onClose}
-          title="关闭已结束的会话"
-        >
+        <button className="term-session__overlay-btn" onClick={onClose} title="关闭已结束的会话">
           关闭
         </button>
       )}

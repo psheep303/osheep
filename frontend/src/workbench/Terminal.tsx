@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { type AgentSessionApp, getProfiles, type ShellProfile } from "./api";
 import { TerminalSession } from "./TerminalSession";
-import { getProfiles, type AgentSessionApp, type ShellProfile } from "./api";
 
 interface ProfilesState {
   os: "windows" | "macos" | "linux";
@@ -35,11 +35,7 @@ interface TerminalProps {
 
 let SESSION_COUNTER = 0;
 
-export function Terminal({
-  workspaceId,
-  launchRequest = null,
-  onLaunchHandled,
-}: TerminalProps) {
+export function Terminal({ workspaceId, launchRequest = null, onLaunchHandled }: TerminalProps) {
   const [profilesState, setProfilesState] = useState<ProfilesState | null>(null);
   const [profilesError, setProfilesError] = useState<string | null>(null);
   const [sessions, setSessions] = useState<SessionEntry[]>([]);
@@ -63,7 +59,7 @@ export function Terminal({
         }
       } catch (e) {
         if (!cancelled) {
-          setProfilesError("无法获取后端 shell 列表：" + (e as Error).message);
+          setProfilesError(`无法获取后端 shell 列表：${(e as Error).message}`);
         }
       }
     })();
@@ -71,7 +67,7 @@ export function Terminal({
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [defaultProfileId]);
 
   // Auto-spawn one session when the panel becomes usable
   useEffect(() => {
@@ -82,7 +78,7 @@ export function Terminal({
     if (!profile) return;
     spawnSession(profile);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspaceId, profilesState, defaultProfileId, launchRequest]);
+  }, [workspaceId, profilesState, defaultProfileId, launchRequest, sessions.length]);
 
   useEffect(() => {
     if (!launchRequest || handledLaunchRef.current === launchRequest.key) return;
@@ -113,13 +109,10 @@ export function Terminal({
     setActiveId(null);
   }, [workspaceId]);
 
-  const spawnSession = (
-    profile: ShellProfile,
-    agentLaunch?: AgentTerminalLaunchRequest
-  ) => {
+  const spawnSession = (profile: ShellProfile, agentLaunch?: AgentTerminalLaunchRequest) => {
     if (!workspaceId && !agentLaunch) return;
     SESSION_COUNTER += 1;
-    const localId = "s_" + SESSION_COUNTER;
+    const localId = `s_${SESSION_COUNTER}`;
     const entry: SessionEntry = {
       localId,
       profile,
@@ -161,10 +154,10 @@ export function Terminal({
     profilesState?.os === "windows"
       ? "Windows"
       : profilesState?.os === "macos"
-      ? "macOS"
-      : profilesState?.os === "linux"
-      ? "Linux"
-      : "?";
+        ? "macOS"
+        : profilesState?.os === "linux"
+          ? "Linux"
+          : "?";
 
   if (!workspaceId && sessions.length === 0 && !launchRequest) {
     return (
@@ -178,9 +171,7 @@ export function Terminal({
     <div className="terminal" ref={rootRef}>
       <div className="terminal__main">
         <div className="terminal__panes">
-          {profilesError && (
-            <div className="terminal__error">{profilesError}</div>
-          )}
+          {profilesError && <div className="terminal__error">{profilesError}</div>}
           {sessions.length === 0 && !profilesError && (
             <div className="terminal__placeholder muted">
               {profilesState?.profiles.length === 0
@@ -203,11 +194,7 @@ export function Terminal({
           <div className="terminal__sidebar-actions">
             <button
               className="icon-btn"
-              title={
-                activeProfile
-                  ? `新建 ${activeProfile.label} 终端`
-                  : "新建终端"
-              }
+              title={activeProfile ? `新建 ${activeProfile.label} 终端` : "新建终端"}
               onClick={() => {
                 const profile =
                   activeProfile ??
@@ -217,7 +204,15 @@ export function Terminal({
               }}
               disabled={!profilesState || profilesState.profiles.length === 0}
             >
-              <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
+              <svg
+                viewBox="0 0 16 16"
+                width="14"
+                height="14"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.4"
+                strokeLinecap="round"
+              >
                 <path d="M8 3v10M3 8h10" />
               </svg>
             </button>
@@ -233,21 +228,14 @@ export function Terminal({
             </button>
             {menuOpen && (
               <div className="terminal__menu">
-                <div className="terminal__menu-header">
-                  新建终端（{osLabel}）
-                </div>
+                <div className="terminal__menu-header">新建终端（{osLabel}）</div>
                 {(profilesState?.profiles ?? []).length === 0 && (
-                  <div className="terminal__menu-item is-empty">
-                    后端未探测到可用 shell
-                  </div>
+                  <div className="terminal__menu-item is-empty">后端未探测到可用 shell</div>
                 )}
                 {profilesState?.profiles.map((p) => (
                   <button
                     key={p.id}
-                    className={
-                      "terminal__menu-item" +
-                      (p.id === defaultProfileId ? " is-active" : "")
-                    }
+                    className={`terminal__menu-item${p.id === defaultProfileId ? " is-active" : ""}`}
                     onClick={() => {
                       spawnSession(p);
                       setMenuOpen(false);
@@ -263,15 +251,21 @@ export function Terminal({
             {sessions.map((s) => (
               <div
                 key={s.localId}
-                className={
-                  "terminal__sidebar-item" +
-                  (s.localId === activeId ? " is-active" : "")
-                }
+                className={`terminal__sidebar-item${s.localId === activeId ? " is-active" : ""}`}
                 onClick={() => setActiveId(s.localId)}
                 title={s.title}
               >
                 <span className="terminal__sidebar-icon">
-                  <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+                  <svg
+                    viewBox="0 0 16 16"
+                    width="12"
+                    height="12"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.4"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
                     <path d="M2 4l4 4-4 4" />
                     <path d="M8 12h6" />
                   </svg>

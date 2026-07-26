@@ -29,6 +29,6 @@ test("Codex snapshot removes startup, redraw, and progress noise", () => {
       "• Added weather_spider.py (+16 -0)",
       "  1 +import sys",
       "• 已新增 weather_spider.py。",
-    ].join("\n")
+    ].join("\n"),
   );
 });

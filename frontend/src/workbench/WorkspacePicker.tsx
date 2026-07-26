@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useState } from "react";
 import {
   createWorkspace,
   getWorkspacesRoot,
@@ -32,10 +32,7 @@ export function WorkspacePicker({ currentId, onChoose, onCancel }: Props) {
     let cancelled = false;
     (async () => {
       try {
-        const [root, list] = await Promise.all([
-          getWorkspacesRoot(),
-          listWorkspaces(),
-        ]);
+        const [root, list] = await Promise.all([getWorkspacesRoot(), listWorkspaces()]);
         if (!cancelled) {
           setRootPath(root);
           setItems(list);
@@ -125,7 +122,6 @@ export function WorkspacePicker({ currentId, onChoose, onCancel }: Props) {
           {createOpen && (
             <form className="workspace-picker__create" onSubmit={submitNewWorkspace}>
               <input
-                autoFocus
                 value={newName}
                 onChange={(event) => setNewName(event.target.value)}
                 placeholder="新工作区名称"
@@ -162,10 +158,7 @@ export function WorkspacePicker({ currentId, onChoose, onCancel }: Props) {
                 <button
                   key={workspace.id}
                   type="button"
-                  className={
-                    "workspace-list__item" +
-                    (workspace.id === currentId ? " is-active" : "")
-                  }
+                  className={`workspace-list__item${workspace.id === currentId ? " is-active" : ""}`}
                   onClick={() => onChoose(workspace)}
                 >
                   <span className="workspace-list__name">{workspace.name}</span>

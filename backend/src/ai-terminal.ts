@@ -1,34 +1,34 @@
+import {
+  type AgentSessionApp,
+  type AgentSessionSummary,
+  isAgentSessionInProject,
+  listAgentSessions,
+} from "./agent-sessions.js";
+import type { CliProviderKind } from "./ai-cli.js";
 import { config, platform } from "./config.js";
 import {
   addTap,
   createSession,
   getSession,
   killSession,
-  writeRawInput,
   type TerminalSession,
+  writeRawInput,
 } from "./pty.js";
-import type { WorkspaceInfo } from "./workspace.js";
-import type { CliProviderKind } from "./ai-cli.js";
-import {
-  isAgentSessionInProject,
-  listAgentSessions,
-  type AgentSessionApp,
-  type AgentSessionSummary,
-} from "./agent-sessions.js";
-import {
-  captureWorkspaceChanges,
-  changedWorkspaceFiles,
-  type WorkspaceChangeBaseline,
-} from "./workspace-change-tracker.js";
 import {
   AgentTerminalConversationCollector,
   cleanAgentTerminalConversation,
   extractAgentRunMetadata,
   extractLastClaudeAnswer,
   extractLastStructuredClaudeAnswer,
-  readCodexSessionFinalAnswer,
   readClaudeSessionConversation,
+  readCodexSessionFinalAnswer,
 } from "./terminal-conversation.js";
+import type { WorkspaceInfo } from "./workspace.js";
+import {
+  captureWorkspaceChanges,
+  changedWorkspaceFiles,
+  type WorkspaceChangeBaseline,
+} from "./workspace-change-tracker.js";
 
 export type ClaudePermissionMode =
   | "default"
@@ -48,10 +48,7 @@ export type AgentEffort =
   | "xhigh"
   | "max"
   | "ultracode";
-export type AgentTerminalContentState =
-  | "empty"
-  | "waiting-for-choice"
-  | "ready-for-success";
+export type AgentTerminalContentState = "empty" | "waiting-for-choice" | "ready-for-success";
 export type AgentTerminalStatus =
   | "starting"
   | "waiting-for-input"
@@ -144,12 +141,10 @@ interface AgentTerminalControl {
 
 const controls = new Map<string, AgentTerminalControl>();
 
-export async function runAgentTerminal(
-  opts: AgentTerminalOptions
-): Promise<AgentTerminalResult> {
+export async function runAgentTerminal(opts: AgentTerminalOptions): Promise<AgentTerminalResult> {
   const conversationBaseline = await captureConversationSessionBaseline(opts);
   const workspaceBaseline = await captureWorkspaceChanges(opts.workspace.path).catch(
-    () => null as WorkspaceChangeBaseline | null
+    () => null as WorkspaceChangeBaseline | null,
   );
   const session = createSession({
     workspace: opts.workspace,
@@ -211,15 +206,17 @@ export async function runAgentTerminal(
     opts.onFrame?.({ type: "status", status: "starting" });
     writeRawInput(
       session,
-      `${buildAgentTerminalCommand(opts.kind, opts.model, {
-        claudePermissionMode: opts.claudePermissionMode,
-        mode: opts.mode,
-        codexApproval: opts.codexApproval,
-        codexSandbox: opts.codexSandbox,
-        effort: opts.effort,
-        conversationSessionId: opts.conversationSessionId,
-        resumeConversation: opts.resumeConversation,
-      }).command}\r`
+      `${
+        buildAgentTerminalCommand(opts.kind, opts.model, {
+          claudePermissionMode: opts.claudePermissionMode,
+          mode: opts.mode,
+          codexApproval: opts.codexApproval,
+          codexSandbox: opts.codexSandbox,
+          effort: opts.effort,
+          conversationSessionId: opts.conversationSessionId,
+          resumeConversation: opts.resumeConversation,
+        }).command
+      }\r`,
     );
     opts.onFrame?.({ type: "status", status: "waiting-for-input" });
     const ready = await waitForInputReady(
@@ -229,7 +226,7 @@ export async function runAgentTerminal(
       (wake) => {
         wakeOutput = wake;
       },
-      opts.signal
+      opts.signal,
     );
     if (!opts.signal?.aborted) {
       opts.onFrame?.({ type: "status", status: ready ? "ready" : "prompt-timeout" });
@@ -239,7 +236,7 @@ export async function runAgentTerminal(
         opts.prompt,
         () => transcript,
         () => lastOutputAt,
-        opts.signal
+        opts.signal,
       );
       await submitAgentTerminalPrompt(session.id);
       opts.onFrame?.({ type: "status", status: "prompt-sent" });
@@ -252,7 +249,7 @@ export async function runAgentTerminal(
       () => lastOutputAt,
       () => extractTerminalContent(transcript, opts.prompt, opts.kind),
       (status) => opts.onFrame?.({ type: "status", status }),
-      opts.signal
+      opts.signal,
     );
     if (
       completion === "idle" ||
@@ -260,22 +257,15 @@ export async function runAgentTerminal(
       completion === "manual-success" ||
       completion === "terminal-error"
     ) {
-      const conversationSessionId = await resolveConversationSessionId(
-        opts,
-        conversationBaseline
-      );
-      const structuredConversation = await structuredAgentConversation(
-        opts,
-        conversationSessionId
-      );
+      const conversationSessionId = await resolveConversationSessionId(opts, conversationBaseline);
+      const structuredConversation = await structuredAgentConversation(opts, conversationSessionId);
       const structuredAnswer = await structuredAgentFinalAnswer(
         opts,
         conversationSessionId,
-        structuredConversation
+        structuredConversation,
       );
       const content =
-        structuredAnswer ||
-        extractTerminalContent(transcript, opts.prompt, opts.kind);
+        structuredAnswer || extractTerminalContent(transcript, opts.prompt, opts.kind);
       const cleanTranscript =
         structuredConversation ||
         conversation.value() ||
@@ -318,18 +308,12 @@ export async function runAgentTerminal(
       };
     }
     opts.onFrame?.({ type: "status", status: "exited" });
-    const conversationSessionId = await resolveConversationSessionId(
-      opts,
-      conversationBaseline
-    );
-    const structuredConversation = await structuredAgentConversation(
-      opts,
-      conversationSessionId
-    );
+    const conversationSessionId = await resolveConversationSessionId(opts, conversationBaseline);
+    const structuredConversation = await structuredAgentConversation(opts, conversationSessionId);
     const structuredAnswer = await structuredAgentFinalAnswer(
       opts,
       conversationSessionId,
-      structuredConversation
+      structuredConversation,
     );
     const cleanTranscript =
       structuredConversation ||
@@ -342,9 +326,7 @@ export async function runAgentTerminal(
     return {
       sessionId: session.id,
       conversationSessionId,
-      content:
-        structuredAnswer ||
-        extractTerminalContent(transcript, opts.prompt, opts.kind),
+      content: structuredAnswer || extractTerminalContent(transcript, opts.prompt, opts.kind),
       transcript: cleanTranscript,
       changedFiles: metadata.changedFiles,
       verification: metadata.verification,
@@ -365,7 +347,7 @@ interface ConversationSessionBaseline {
 }
 
 async function captureConversationSessionBaseline(
-  opts: AgentTerminalOptions
+  opts: AgentTerminalOptions,
 ): Promise<ConversationSessionBaseline> {
   const app = opts.kind === "claude-cli" ? "claude" : "codex";
   const sessions = await listAgentSessions(app).catch(() => []);
@@ -375,14 +357,14 @@ async function captureConversationSessionBaseline(
     ids: new Set(
       sessions
         .filter((session) => isAgentSessionInProject(session, opts.workspace.path))
-        .map((session) => session.id)
+        .map((session) => session.id),
     ),
   };
 }
 
 async function resolveConversationSessionId(
   opts: AgentTerminalOptions,
-  baseline: ConversationSessionBaseline
+  baseline: ConversationSessionBaseline,
 ): Promise<string | undefined> {
   const expectedId = opts.conversationSessionId?.trim() || "";
   for (let attempt = 0; attempt < 6; attempt += 1) {
@@ -392,7 +374,7 @@ async function resolveConversationSessionId(
       opts.workspace.path,
       baseline.ids,
       baseline.startedAt,
-      expectedId
+      expectedId,
     );
     if (selected) return selected;
     if (attempt < 5) {
@@ -407,18 +389,16 @@ function selectConversationSessionId(
   projectPath: string,
   existingIds: Set<string>,
   startedAt: number,
-  expectedId = ""
+  expectedId = "",
 ): string | undefined {
   const projectSessions = sessions.filter((session) =>
-    isAgentSessionInProject(session, projectPath)
+    isAgentSessionInProject(session, projectPath),
   );
   if (expectedId && projectSessions.some((session) => session.id === expectedId)) {
     return expectedId;
   }
   return projectSessions
-    .filter(
-      (session) => !existingIds.has(session.id) && session.updatedAt >= startedAt - 2_000
-    )
+    .filter((session) => !existingIds.has(session.id) && session.updatedAt >= startedAt - 2_000)
     .sort((a, b) => b.updatedAt - a.updatedAt)[0]?.id;
 }
 
@@ -427,21 +407,21 @@ export function selectConversationSessionIdForTest(
   projectPath: string,
   existingIds: string[],
   startedAt: number,
-  expectedId = ""
+  expectedId = "",
 ): string | undefined {
   return selectConversationSessionId(
     sessions,
     projectPath,
     new Set(existingIds),
     startedAt,
-    expectedId
+    expectedId,
   );
 }
 
 async function agentRunMetadata(
   conversation: string,
   opts: AgentTerminalOptions,
-  baseline: WorkspaceChangeBaseline | null
+  baseline: WorkspaceChangeBaseline | null,
 ): Promise<{ changedFiles: string[]; verification: string[] }> {
   const extracted = extractAgentRunMetadata(conversation, opts.workspace.path);
   const observed = baseline
@@ -455,7 +435,7 @@ async function agentRunMetadata(
 
 async function structuredAgentConversation(
   opts: AgentTerminalOptions,
-  conversationSessionId?: string
+  conversationSessionId?: string,
 ): Promise<string> {
   if (opts.kind !== "claude-cli" || !conversationSessionId) return "";
   let latest = "";
@@ -471,7 +451,7 @@ async function structuredAgentConversation(
 async function structuredAgentFinalAnswer(
   opts: AgentTerminalOptions,
   conversationSessionId: string | undefined,
-  structuredConversation: string
+  structuredConversation: string,
 ): Promise<string> {
   if (opts.kind === "claude-cli") {
     return extractLastStructuredClaudeAnswer(structuredConversation);
@@ -489,7 +469,7 @@ async function structuredAgentFinalAnswer(
 
 export function setAgentTerminalAutoContinue(
   sessionId: string,
-  enabled: boolean
+  enabled: boolean,
 ): { autoContinue: boolean } {
   const control = controls.get(sessionId);
   if (!control) throw new Error("No pending prompt for this terminal session.");
@@ -499,7 +479,7 @@ export function setAgentTerminalAutoContinue(
 
 export function setAgentTerminalAutoSuccess(
   sessionId: string,
-  enabled: boolean
+  enabled: boolean,
 ): { autoSuccess: boolean } {
   const control = controls.get(sessionId);
   if (!control) throw new Error("No pending prompt for this terminal session.");
@@ -516,7 +496,7 @@ export function finishAgentTerminalSuccess(sessionId: string): void {
 
 export function createAgentTerminalControlForTest(
   sessionId: string,
-  patch: Partial<AgentTerminalControl> = {}
+  patch: Partial<AgentTerminalControl> = {},
 ): void {
   controls.set(sessionId, {
     prompt: "",
@@ -534,7 +514,7 @@ export function createAgentTerminalControlForTest(
 
 export async function injectAgentTerminalPrompt(
   sessionId: string,
-  options: { submit?: boolean } = {}
+  options: { submit?: boolean } = {},
 ): Promise<void> {
   const control = controls.get(sessionId);
   if (!control) throw new Error("No pending prompt for this terminal session.");
@@ -596,7 +576,7 @@ export function buildAgentTerminalCommand(
     effort?: AgentEffort;
     conversationSessionId?: string;
     resumeConversation?: boolean;
-  } = {}
+  } = {},
 ): { command: string } {
   const base = kind === "codex-cli" ? "codex" : "claude";
   const args: string[] = [];
@@ -606,7 +586,7 @@ export function buildAgentTerminalCommand(
     } else {
       args.push(
         "--permission-mode",
-        options.mode === "plan" ? "plan" : options.claudePermissionMode ?? "acceptEdits"
+        options.mode === "plan" ? "plan" : (options.claudePermissionMode ?? "acceptEdits"),
       );
       if (options.conversationSessionId) {
         args.push("--session-id", quoteShell(options.conversationSessionId));
@@ -627,7 +607,7 @@ export function buildAgentTerminalCommand(
 
 function codexPermissionArgs(
   approval: CodexApproval | undefined,
-  sandbox: CodexSandbox | undefined
+  sandbox: CodexSandbox | undefined,
 ): string[] {
   return [
     "--ask-for-approval",
@@ -646,7 +626,7 @@ function normalizeCodexApproval(approval: unknown): CodexApproval {
 
 function agentEffortCliValue(
   kind: CliProviderKind,
-  effort: AgentEffort | undefined
+  effort: AgentEffort | undefined,
 ): string | null {
   if (!effort || effort === "off") return null;
   if (kind === "claude-cli") {
@@ -688,14 +668,13 @@ export function shouldAutoEnterChoice(input: {
   return (
     input.alwaysEnter &&
     input.state === "waiting-for-choice" &&
-    (input.lastEnterAt === undefined ||
-      input.now - input.lastEnterAt >= ALWAYS_ENTER_COOLDOWN_MS)
+    (input.lastEnterAt === undefined || input.now - input.lastEnterAt >= ALWAYS_ENTER_COOLDOWN_MS)
   );
 }
 
 export function shouldExposeWaitingForChoice(
   alwaysEnter: boolean,
-  state: AgentTerminalContentState
+  state: AgentTerminalContentState,
 ): boolean {
   return !alwaysEnter && state === "waiting-for-choice";
 }
@@ -703,7 +682,7 @@ export function shouldExposeWaitingForChoice(
 async function writePrompt(
   session: TerminalSession,
   prompt: string,
-  submit: boolean
+  submit: boolean,
 ): Promise<void> {
   for (const chunk of buildAgentTerminalPromptWrites(prompt, submit)) {
     if (chunk === "\r") {
@@ -715,10 +694,7 @@ async function writePrompt(
   }
 }
 
-async function submitPromptInput(
-  session: TerminalSession,
-  prompt: string
-): Promise<void> {
+async function submitPromptInput(session: TerminalSession, prompt: string): Promise<void> {
   await sleep(agentTerminalPromptSubmitDelayMs(prompt));
   const enterCount = agentTerminalPromptEnterCount(prompt);
   for (let index = 0; index < enterCount; index += 1) {
@@ -736,14 +712,11 @@ export function agentTerminalPromptSubmitDelayMs(prompt: string): number {
   return Math.min(
     PASTED_PROMPT_SUBMIT_MAX_DELAY_MS,
     PASTED_PROMPT_SUBMIT_BASE_DELAY_MS +
-      Math.ceil(prompt.length / PASTED_PROMPT_CHARS_PER_DELAY_MS)
+      Math.ceil(prompt.length / PASTED_PROMPT_CHARS_PER_DELAY_MS),
   );
 }
 
-export function buildAgentTerminalPromptWrites(
-  prompt: string,
-  submit: boolean
-): string[] {
+export function buildAgentTerminalPromptWrites(prompt: string, submit: boolean): string[] {
   const writes: string[] = [];
   if (isPastedAgentTerminalPrompt(prompt)) {
     writes.push("\x1b[200~");
@@ -768,7 +741,7 @@ async function waitForPromptInputRendered(
   prompt: string,
   transcript: () => string,
   lastOutputAt: () => number,
-  signal?: AbortSignal
+  signal?: AbortSignal,
 ): Promise<void> {
   if (!isPastedAgentTerminalPrompt(prompt)) return;
   const startedAt = Date.now();
@@ -833,14 +806,15 @@ export function shouldFollowUpPastedPromptSubmit(input: {
 function isAgentTerminalRunning(rawTranscript: string): boolean {
   const rendered = renderTerminalScreen(rawTranscript);
   const plain = normalizeTerminalPlainText(rendered || rawTranscript);
-  return /\b(?:Working|Thinking|Esc to interrupt|Interrupting|tokens used|Running)\b/i.test(
-    plain
-  );
+  return /\b(?:Working|Thinking|Esc to interrupt|Interrupting|tokens used|Running)\b/i.test(plain);
 }
 
 function parsePtyFrame(
-  raw: string
-): { type: "output"; data: string } | { type: "exit"; code: number | null; signal: number | string | null } | null {
+  raw: string,
+):
+  | { type: "output"; data: string }
+  | { type: "exit"; code: number | null; signal: number | string | null }
+  | null {
   try {
     const frame = JSON.parse(raw) as {
       type?: string;
@@ -867,11 +841,7 @@ function parsePtyFrame(
   return null;
 }
 
-function extractTerminalContent(
-  transcript: string,
-  prompt = "",
-  kind?: CliProviderKind
-): string {
+function extractTerminalContent(transcript: string, prompt = "", kind?: CliProviderKind): string {
   if (kind === "codex-cli") {
     const rendered = renderTerminalScreen(transcript);
     const plain = normalizeTerminalPlainText(rendered || transcript);
@@ -902,7 +872,7 @@ function extractTerminalContent(
 export function extractAgentTerminalContentForTest(
   transcript: string,
   prompt = "",
-  kind?: CliProviderKind
+  kind?: CliProviderKind,
 ): string {
   return extractTerminalContent(transcript, prompt, kind);
 }
@@ -913,7 +883,9 @@ function stripAgentTerminalChrome(text: string): string {
     .map((line) => line.trimEnd())
     .filter((line) => {
       const trimmed = line.trim();
-      return !!trimmed && !isAgentTerminalChromeLine(trimmed) && !isAgentTerminalPromptLine(trimmed);
+      return (
+        !!trimmed && !isAgentTerminalChromeLine(trimmed) && !isAgentTerminalPromptLine(trimmed)
+      );
     })
     .join("\n")
     .trim();
@@ -986,7 +958,7 @@ function isCodexAssistantLine(trimmed: string): boolean {
 function isCodexToolActivityLine(trimmed: string): boolean {
   const content = trimmed.replace(/^[•●]\s*/, "").trim();
   return /^(?:Ran|Running|Explored|Searched|Read|Edited|Updated|Wrote|Deleted|Moved|Copied|Listed|Opened|Called|Checked|Viewed|Inspected)\b/i.test(
-    content
+    content,
   );
 }
 
@@ -1037,7 +1009,7 @@ function cleanTerminalTranscript(raw: string, prompt = ""): string {
     normalizeTerminalPlainText(prompt)
       .split("\n")
       .map((line) => line.trim())
-      .filter(Boolean)
+      .filter(Boolean),
   );
   return plain
     .split("\n")
@@ -1070,7 +1042,11 @@ function isTerminalPromptLine(trimmed: string): boolean {
 function isTerminalChromeLine(trimmed: string): boolean {
   if (/^Tip:\s+/i.test(trimmed)) return true;
   if (/^\/(?:model|init|help)\b/i.test(trimmed)) return true;
-  if (/^(?:gpt|codex|claude)[\w.-]*\s+(?:minimal|low|medium|high|xhigh|max|ultracode)\s+·\s+/i.test(trimmed)) {
+  if (
+    /^(?:gpt|codex|claude)[\w.-]*\s+(?:minimal|low|medium|high|xhigh|max|ultracode)\s+·\s+/i.test(
+      trimmed,
+    )
+  ) {
     return true;
   }
   return false;
@@ -1114,7 +1090,15 @@ function renderTerminalScreen(raw: string, maxRows?: number): string {
   for (let i = 0; i < raw.length; i += 1) {
     const ch = raw[i]!;
     if (ch === "\x1b") {
-      const consumed = consumeEscape(raw, i, rows, () => row, () => col, move, setLine);
+      const consumed = consumeEscape(
+        raw,
+        i,
+        rows,
+        () => row,
+        () => col,
+        move,
+        setLine,
+      );
       if (consumed > i) {
         i = consumed;
       }
@@ -1158,7 +1142,7 @@ function consumeEscape(
   getRow: () => number,
   getCol: () => number,
   move: (row: number, col: number) => void,
-  setLine: (value: string) => void
+  setLine: (value: string) => void,
 ): number {
   const next = raw[start + 1];
   if (!next) return start;
@@ -1210,7 +1194,7 @@ async function waitForInputReady(
   transcript: () => string,
   lastOutputAt: () => number,
   setWake: (wake: () => void) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
 ): Promise<boolean> {
   const startedAt = Date.now();
   return await new Promise((resolve) => {
@@ -1273,10 +1257,8 @@ function waitForAgentCompletion(
   lastOutputAt: () => number,
   content: () => string,
   onStatus: (status: AgentTerminalStatus) => void,
-  signal?: AbortSignal
-): Promise<
-  "exited" | "idle" | "stalled" | "aborted" | "manual-success" | "terminal-error"
-> {
+  signal?: AbortSignal,
+): Promise<"exited" | "idle" | "stalled" | "aborted" | "manual-success" | "terminal-error"> {
   if (done()) return Promise.resolve("exited");
   if (signal?.aborted) return Promise.resolve("aborted");
   return new Promise((resolve) => {
@@ -1358,7 +1340,10 @@ function waitForAgentCompletion(
           }
           return;
         }
-        if (shouldExposeWaitingForChoice(control.alwaysEnter, state) && state !== control.lastCompletionState) {
+        if (
+          shouldExposeWaitingForChoice(control.alwaysEnter, state) &&
+          state !== control.lastCompletionState
+        ) {
           control.lastCompletionState = state;
           onStatus("waiting-for-choice");
         }
@@ -1372,12 +1357,14 @@ function waitForAgentCompletion(
       }
       // Total runtime is intentionally unbounded. Only a continuous period
       // without terminal output is treated as a stalled agent.
-      if (hasAgentTerminalStalled(
-        now,
-        control.promptSubmittedAt,
-        lastOutputAt(),
-        config.agentStallTimeoutMs
-      )) {
+      if (
+        hasAgentTerminalStalled(
+          now,
+          control.promptSubmittedAt,
+          lastOutputAt(),
+          config.agentStallTimeoutMs,
+        )
+      ) {
         clearInterval(timer);
         resolve("stalled");
         return;
@@ -1406,7 +1393,7 @@ function hasAgentTerminalStalled(
   now: number,
   promptSubmittedAt: number,
   lastOutputAt: number,
-  timeoutMs: number
+  timeoutMs: number,
 ): boolean {
   if (timeoutMs <= 0) return false;
   return now - Math.max(promptSubmittedAt, lastOutputAt) >= timeoutMs;
@@ -1416,7 +1403,7 @@ export function agentTerminalStalledForTest(
   now: number,
   promptSubmittedAt: number,
   lastOutputAt: number,
-  timeoutMs: number
+  timeoutMs: number,
 ): boolean {
   return hasAgentTerminalStalled(now, promptSubmittedAt, lastOutputAt, timeoutMs);
 }
@@ -1443,7 +1430,7 @@ function hasAgentTerminalFailure(rawTranscript: string): boolean {
   }
   if (lastErrorAt < 0) return false;
   return !/(?:^|\n)\s*(?:[\p{S}\p{P}]\s*)?(?:Thought\s+for\s+\d|\p{L}[\p{L}'’-]*(?:…|\.\.\.)?\s*\(\s*\d+(?:\.\d+)?(?:ms|s|m|h)\b)/imu.test(
-    screen.slice(lastErrorEnd)
+    screen.slice(lastErrorEnd),
   );
 }
 
@@ -1475,7 +1462,7 @@ function lastAgentActivityIndex(screen: string): number {
 function isAgentTerminalReadyForAutoFinish(
   kind: CliProviderKind,
   rawTranscript: string,
-  state: AgentTerminalContentState
+  state: AgentTerminalContentState,
 ): boolean {
   if (isAgentTerminalBusy(rawTranscript)) return false;
   const screen = agentTerminalScreenSignature(rawTranscript);
@@ -1498,7 +1485,7 @@ function isCodexCompletionFooterVisible(screen: string): boolean {
 function hasActiveClaudeBackgroundAgent(screen: string): boolean {
   if (
     /\bWaiting for\s+(?:\d+\s+)?(?:background\s+)?(?:agents?|teammates?)\s+to finish\b/i.test(
-      screen
+      screen,
     )
   ) {
     return true;
@@ -1510,16 +1497,14 @@ function hasActiveClaudeBackgroundAgent(screen: string): boolean {
     if (/\b(?:idle|done|finished|completed|failed|stopped)\b/i.test(trimmed)) {
       return false;
     }
-    return /\b\d+(?:\.\d+)?(?:ms|s|m|h)(?:\s+\d+(?:\.\d+)?(?:ms|s|m|h))*\s*$/i.test(
-      trimmed
-    );
+    return /\b\d+(?:\.\d+)?(?:ms|s|m|h)(?:\s+\d+(?:\.\d+)?(?:ms|s|m|h))*\s*$/i.test(trimmed);
   });
 }
 
 export function agentTerminalReadyForAutoFinishForTest(
   kind: CliProviderKind,
   rawTranscript: string,
-  state: AgentTerminalContentState
+  state: AgentTerminalContentState,
 ): boolean {
   return isAgentTerminalReadyForAutoFinish(kind, rawTranscript, state);
 }
@@ -1527,7 +1512,7 @@ export function agentTerminalReadyForAutoFinishForTest(
 export function agentTerminalReadyForManualSuccessForTest(
   kind: CliProviderKind,
   rawTranscript: string,
-  state: AgentTerminalContentState
+  state: AgentTerminalContentState,
 ): boolean {
   return isAgentTerminalReadyForAutoFinish(kind, rawTranscript, state);
 }
@@ -1535,7 +1520,7 @@ export function agentTerminalReadyForManualSuccessForTest(
 function isClaudeIdlePromptVisible(screen: string): boolean {
   const tail = terminalTail(screen, 10);
   return /\b(?:(?:auto|manual|plan)\s+mode|bypass permissions|accept edits)\s+on\b[^\n]*for agents/i.test(
-    tail
+    tail,
   );
 }
 
@@ -1547,7 +1532,7 @@ function isClaudeChoicePromptVisible(screen: string): boolean {
 function resolveAgentTerminalContentState(
   kind: CliProviderKind,
   rawTranscript: string,
-  content: string
+  content: string,
 ): AgentTerminalContentState {
   const state = classifyAgentTerminalContent(content);
   if (kind !== "claude-cli") return state;
@@ -1560,7 +1545,7 @@ function resolveAgentTerminalContentState(
 export function resolveAgentTerminalContentStateForTest(
   kind: CliProviderKind,
   rawTranscript: string,
-  content: string
+  content: string,
 ): AgentTerminalContentState {
   return resolveAgentTerminalContentState(kind, rawTranscript, content);
 }
@@ -1597,9 +1582,7 @@ function hasLaterTerminalChoiceContent(text: string, choiceEndAt: number): boole
     .some((line) => isTerminalChoiceReleaseLine(line.trim()));
 }
 
-function lastInteractiveChoiceBlock(
-  text: string
-): { startAt: number; endAt: number } | null {
+function lastInteractiveChoiceBlock(text: string): { startAt: number; endAt: number } | null {
   const lines = text.split("\n");
   const offsets: number[] = [];
   let offset = 0;
@@ -1626,7 +1609,7 @@ function lastInteractiveChoiceBlock(
 
 function isTerminalChoiceInteractionCue(trimmed: string): boolean {
   return /\b(?:Enter to select|Tab\/Arrow keys to navigate|Esc to cancel|approve with this feedback)\b/i.test(
-    trimmed
+    trimmed,
   );
 }
 
@@ -1635,10 +1618,7 @@ function isSelectedTerminalChoiceOption(trimmed: string): boolean {
 }
 
 function isTerminalChoiceOption(trimmed: string): boolean {
-  return (
-    isSelectedTerminalChoiceOption(trimmed) ||
-    /^\d+[.)]\s+\S/.test(trimmed)
-  );
+  return isSelectedTerminalChoiceOption(trimmed) || /^\d+[.)]\s+\S/.test(trimmed);
 }
 
 function isTerminalChoiceChromeLine(trimmed: string): boolean {
@@ -1719,7 +1699,7 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
         clearTimeout(timer);
         resolve();
       },
-      { once: true }
+      { once: true },
     );
   });
 }

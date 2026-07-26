@@ -1,5 +1,5 @@
-import test from "node:test";
 import assert from "node:assert/strict";
+import test from "node:test";
 import {
   appendAgentAttemptTranscriptForTest,
   classifyAgentTerminalFailure,
@@ -35,10 +35,7 @@ test("workflow run planning excludes nodes that are not reachable from a trigger
     ],
   };
 
-  assert.deepEqual(planWorkflowRunNodeIds(record).nodeIds, [
-    "node_trigger",
-    "node_codex",
-  ]);
+  assert.deepEqual(planWorkflowRunNodeIds(record).nodeIds, ["node_trigger", "node_codex"]);
 });
 
 test("workflow run planning includes input blocks reachable from a trigger", () => {
@@ -103,15 +100,12 @@ test("workflow templates reject malformed and missing variables", () => {
 
   assert.throws(
     () => resolveWorkflowTemplate("{{blocks[id].(missing)}}", record),
-    /Invalid workflow variable/
+    /Invalid workflow variable/,
   );
-  assert.throws(
-    () => resolveWorkflowTemplate("{{blocks[99].text}}", record),
-    /missing block #99/
-  );
+  assert.throws(() => resolveWorkflowTemplate("{{blocks[99].text}}", record), /missing block #99/);
   assert.throws(
     () => resolveWorkflowTemplate("{{blocks[2].missing}}", record),
-    /value that does not exist/
+    /value that does not exist/,
   );
 });
 
@@ -131,7 +125,7 @@ function workflowNode(
   id: string,
   kind: WorkflowNode["kind"],
   title: string,
-  providerKind: WorkflowNode["providerKind"] = "codex-cli"
+  providerKind: WorkflowNode["providerKind"] = "codex-cli",
 ): WorkflowNode {
   return {
     id,
@@ -228,7 +222,7 @@ test("Claude API 403 output is a non-retryable terminal failure", () => {
       "  group",
       "\u273b Saut\u00e9ed for 5s",
     ].join("\n"),
-    prompt
+    prompt,
   );
 
   assert.equal(failure.failed, true);
@@ -240,7 +234,7 @@ test("Claude API 403 output is a non-retryable terminal failure", () => {
 test("configured retries are honored for permanent terminal failures", () => {
   const failure = classifyAgentTerminalFailure(
     "\u25cf Please run /login \u00b7 API Error: 403 Image generation is not enabled for this group",
-    "Build a weather crawler"
+    "Build a weather crawler",
   );
 
   assert.equal(failure.failed, true);
@@ -256,13 +250,13 @@ test("run details retain every terminal retry attempt", () => {
     "",
     "API Error: 403 Image generation is not enabled for this group",
     0,
-    2
+    2,
   );
   const second = appendAgentAttemptTranscriptForTest(
     first,
     "API Error: 403 Image generation is not enabled for this group",
     1,
-    2
+    2,
   );
 
   assert.match(second, /API Error: 403[\s\S]*\[osheep\] retry 1\/2[\s\S]*API Error: 403/);
@@ -275,7 +269,7 @@ test("Claude API errors without an HTTP status are terminal failures", () => {
       "\u25cf API Error: Content block not found",
       "\u273b Churned for 3m 14s",
     ].join("\n"),
-    "Build a weather crawler"
+    "Build a weather crawler",
   );
 
   assert.equal(failure.failed, true);
@@ -295,7 +289,7 @@ test("Claude API error followed by a new activity cycle is superseded", () => {
       "\u276f",
       "auto mode on (shift+tab to cycle) \u00b7 \u2190 for agents",
     ].join("\n"),
-    "Build a weather crawler"
+    "Build a weather crawler",
   );
 
   assert.equal(failure.failed, false);
@@ -303,11 +297,8 @@ test("Claude API error followed by a new activity cycle is superseded", () => {
 
 test("Claude duration footer alone does not supersede a later API error", () => {
   const failure = classifyAgentTerminalFailure(
-    [
-      "* Cogitated for 12m 40s",
-      "\u25cf API Error: Content block not found",
-    ].join("\n"),
-    "Build a weather crawler"
+    ["* Cogitated for 12m 40s", "\u25cf API Error: Content block not found"].join("\n"),
+    "Build a weather crawler",
   );
 
   assert.equal(failure.failed, true);
@@ -317,11 +308,11 @@ test("Claude duration footer alone does not supersede a later API error", () => 
 test("Claude API errors use status and transient text only for retry policy", () => {
   const overloaded = classifyAgentTerminalFailure(
     "\u25cf API Error: 529 Overloaded",
-    "Build a weather crawler"
+    "Build a weather crawler",
   );
   const rateLimited = classifyAgentTerminalFailure(
     "\u25cf API Error: Rate limit exceeded",
-    "Build a weather crawler"
+    "Build a weather crawler",
   );
 
   assert.equal(overloaded.failed, true);
@@ -338,7 +329,7 @@ test("agent result scans the terminal transcript when extracted content misses t
       exitCode: 0,
       signal: "auto-finished",
     },
-    "Build a weather crawler"
+    "Build a weather crawler",
   );
 
   assert.equal(failure.failed, true);
@@ -348,11 +339,11 @@ test("agent result scans the terminal transcript when extracted content misses t
 test("agent result never treats abnormal process completion as success", () => {
   const nonzero = classifyAgentTerminalResultFailure(
     { content: "", transcript: "", exitCode: 1, signal: null },
-    "Build a weather crawler"
+    "Build a weather crawler",
   );
   const missingExit = classifyAgentTerminalResultFailure(
     { content: "", transcript: "", exitCode: null, signal: "SIGTERM" },
-    "Build a weather crawler"
+    "Build a weather crawler",
   );
   const stalled = classifyAgentTerminalResultFailure(
     {
@@ -361,7 +352,7 @@ test("agent result never treats abnormal process completion as success", () => {
       exitCode: 0,
       signal: "agent-stalled",
     },
-    "Build a weather crawler"
+    "Build a weather crawler",
   );
   assert.equal(nonzero.failed, true);
   assert.match(nonzero.message, /code 1/);
@@ -380,7 +371,7 @@ test("normal auto-finished agent result remains successful", () => {
       exitCode: 0,
       signal: "auto-finished",
     },
-    "Build a weather crawler"
+    "Build a weather crawler",
   );
 
   assert.equal(failure.failed, false);
@@ -389,7 +380,7 @@ test("normal auto-finished agent result remains successful", () => {
 test("ordinary Claude output is not classified as a terminal failure", () => {
   const failure = classifyAgentTerminalFailure(
     "The weather crawler is complete.",
-    "Build a weather crawler"
+    "Build a weather crawler",
   );
 
   assert.equal(failure.failed, false);
@@ -408,7 +399,7 @@ test("codex transient service errors without model output retry with continue pr
       "(providers=codex, model=gpt-5.3-codex)",
       prompt,
     ].join("\n"),
-    prompt
+    prompt,
   );
 
   assert.equal(failure.retryable, true);
@@ -424,7 +415,7 @@ test("codex transient service errors after model output retry with continue prom
       "1. Inventory the current API consumers.",
       "unexpected status 503 Service Unavailable: auth_unavailable: no auth available",
     ].join("\n"),
-    prompt
+    prompt,
   );
 
   assert.equal(failure.retryable, true);

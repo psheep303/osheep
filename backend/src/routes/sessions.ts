@@ -1,31 +1,28 @@
 import type { FastifyInstance } from "fastify";
-import { resolveWorkspace } from "../workspace.js";
+import { errors } from "../errors.js";
 import {
   createSession,
   deleteSession,
   getSession,
   listSessions,
-  saveSession,
   type SessionRecord,
+  saveSession,
 } from "../sessions.js";
-import { errors } from "../errors.js";
+import { resolveWorkspace } from "../workspace.js";
 
 export async function registerSessionRoutes(app: FastifyInstance) {
-  app.get<{ Params: { id: string } }>(
-    "/api/workspaces/:id/sessions",
-    async (req) => {
-      const ws = await resolveWorkspace(req.params.id);
-      const sessions = await listSessions(ws.path);
-      return { sessions };
-    }
-  );
+  app.get<{ Params: { id: string } }>("/api/workspaces/:id/sessions", async (req) => {
+    const ws = await resolveWorkspace(req.params.id);
+    const sessions = await listSessions(ws.path);
+    return { sessions };
+  });
 
   app.get<{ Params: { id: string; sid: string } }>(
     "/api/workspaces/:id/sessions/:sid",
     async (req) => {
       const ws = await resolveWorkspace(req.params.id);
       return await getSession(ws.path, req.params.sid);
-    }
+    },
   );
 
   app.post<{
@@ -54,6 +51,6 @@ export async function registerSessionRoutes(app: FastifyInstance) {
       const ws = await resolveWorkspace(req.params.id);
       await deleteSession(ws.path, req.params.sid);
       return { ok: true };
-    }
+    },
   );
 }

@@ -68,17 +68,13 @@ async function ensureSessionDir(workspaceRoot: string): Promise<void> {
 
 function sanitize(raw: unknown, fallbackId: string): SessionRecord {
   const r = (raw ?? {}) as Partial<SessionRecord> & { messages?: unknown };
-  const id =
-    typeof r.id === "string" && SESSION_ID_RE.test(r.id) ? r.id : fallbackId;
+  const id = typeof r.id === "string" && SESSION_ID_RE.test(r.id) ? r.id : fallbackId;
   const title = typeof r.title === "string" ? r.title : "新对话";
   const agentName = typeof r.agentName === "string" ? r.agentName : "";
-  const providerId =
-    typeof r.providerId === "string" ? r.providerId : undefined;
+  const providerId = typeof r.providerId === "string" ? r.providerId : undefined;
   const model = typeof r.model === "string" ? r.model : undefined;
-  const createdAt =
-    typeof r.createdAt === "number" ? r.createdAt : Date.now();
-  const updatedAt =
-    typeof r.updatedAt === "number" ? r.updatedAt : createdAt;
+  const createdAt = typeof r.createdAt === "number" ? r.createdAt : Date.now();
+  const updatedAt = typeof r.updatedAt === "number" ? r.updatedAt : createdAt;
   let messages: ChatMessage[] = [];
   if (Array.isArray(r.messages)) {
     messages = r.messages
@@ -92,8 +88,7 @@ function sanitize(raw: unknown, fallbackId: string): SessionRecord {
         const out: ChatMessage = {
           role: mm.role,
           content: mm.content,
-          timestamp:
-            typeof mm.timestamp === "number" ? mm.timestamp : Date.now(),
+          timestamp: typeof mm.timestamp === "number" ? mm.timestamp : Date.now(),
         };
         if (mm.role === "assistant" && mm.steps !== undefined) {
           out.steps = mm.steps;
@@ -118,9 +113,7 @@ function sanitize(raw: unknown, fallbackId: string): SessionRecord {
   return result;
 }
 
-export async function listSessions(
-  workspaceRoot: string
-): Promise<SessionSummary[]> {
+export async function listSessions(workspaceRoot: string): Promise<SessionSummary[]> {
   await ensureSessionDir(workspaceRoot);
   const dir = sessionDir(workspaceRoot);
   let entries: string[];
@@ -156,10 +149,7 @@ export async function listSessions(
   return out;
 }
 
-export async function getSession(
-  workspaceRoot: string,
-  id: string
-): Promise<SessionRecord> {
+export async function getSession(workspaceRoot: string, id: string): Promise<SessionRecord> {
   validateId(id);
   let text: string;
   try {
@@ -176,7 +166,7 @@ export async function getSession(
 
 export async function createSession(
   workspaceRoot: string,
-  partial: Partial<SessionRecord>
+  partial: Partial<SessionRecord>,
 ): Promise<SessionRecord> {
   await ensureSessionDir(workspaceRoot);
   const now = Date.now();
@@ -195,7 +185,7 @@ export async function createSession(
 
 export async function saveSession(
   workspaceRoot: string,
-  record: SessionRecord
+  record: SessionRecord,
 ): Promise<SessionRecord> {
   validateId(record.id);
   await ensureSessionDir(workspaceRoot);
@@ -205,13 +195,10 @@ export async function saveSession(
   return next;
 }
 
-async function writeSessionFile(
-  workspaceRoot: string,
-  record: SessionRecord
-): Promise<void> {
+async function writeSessionFile(workspaceRoot: string, record: SessionRecord): Promise<void> {
   const abs = sessionFile(workspaceRoot, record.id);
   const body = JSON.stringify(record, null, 2);
-  const tmp = abs + ".osheep.tmp." + Date.now();
+  const tmp = `${abs}.osheep.tmp.${Date.now()}`;
   await fs.writeFile(tmp, body, "utf-8");
   try {
     await fs.rename(tmp, abs);
@@ -221,10 +208,7 @@ async function writeSessionFile(
   }
 }
 
-export async function deleteSession(
-  workspaceRoot: string,
-  id: string
-): Promise<void> {
+export async function deleteSession(workspaceRoot: string, id: string): Promise<void> {
   validateId(id);
   try {
     await fs.unlink(sessionFile(workspaceRoot, id));

@@ -104,7 +104,7 @@ test("inspector output prefers real node state before the empty schema", async (
   assert.equal(behavior.blockOutputText({ ...base, error: "error" } as never), "error");
   assert.equal(
     behavior.blockOutputText(base as never),
-    JSON.stringify(behavior.emptyBlockOutput(base as never), null, 2)
+    JSON.stringify(behavior.emptyBlockOutput(base as never), null, 2),
   );
 });
 
@@ -123,7 +123,7 @@ test("inspector removes legacy changed-file and verification metadata", async ()
         VERIFICATION: [],
       }),
     } as never),
-    JSON.stringify({ type: "codex", status: "success", text: "done" }, null, 2)
+    JSON.stringify({ type: "codex", status: "success", text: "done" }, null, 2),
   );
 });
 
@@ -139,7 +139,7 @@ test("workflow refresh applies only when its local revision is still current", a
       dragging: false,
       pendingSave: false,
     }),
-    true
+    true,
   );
   assert.equal(
     behavior.canApplyWorkflowRefresh({
@@ -148,7 +148,7 @@ test("workflow refresh applies only when its local revision is still current", a
       dragging: false,
       pendingSave: false,
     }),
-    false
+    false,
   );
 });
 
@@ -164,7 +164,7 @@ test("workflow refresh is rejected during a drag or pending save", async () => {
       dragging: true,
       pendingSave: false,
     }),
-    false
+    false,
   );
   assert.equal(
     behavior.canApplyWorkflowRefresh({
@@ -173,6 +173,6 @@ test("workflow refresh is rejected during a drag or pending save", async () => {
       dragging: false,
       pendingSave: true,
     }),
-    false
+    false,
   );
 });
