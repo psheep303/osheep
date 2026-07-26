@@ -63,7 +63,7 @@ export function AgentAdvancedSettingsView({ app, section }: AgentAdvancedSetting
 
   useEffect(() => {
     void refresh();
-  }, [refresh]);
+  }, []);
 
   const activeProvider = useMemo(() => currentProvider(snapshot, app), [snapshot, app]);
 
@@ -77,7 +77,7 @@ export function AgentAdvancedSettingsView({ app, section }: AgentAdvancedSetting
   useEffect(() => {
     if (!snapshot) return;
     resetDraft(provider);
-  }, [snapshot, provider, resetDraft]);
+  }, [snapshot, provider, app, section]);
 
   async function refresh() {
     await run(async () => {

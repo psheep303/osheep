@@ -755,7 +755,7 @@ export function AiSettingsView({ app }: AiSettingsViewProps) {
 
   useEffect(() => {
     void refresh();
-  }, [refresh]);
+  }, []);
 
   async function refresh() {
     await run(async () => {

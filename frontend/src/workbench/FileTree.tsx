@@ -116,7 +116,7 @@ export function FileTree({
     return () => {
       cancelled = true;
     };
-  }, [workspaceId]);
+  }, [workspaceId, treeVersion]);
 
   const bumpTree = () => {
     setTreeVersion((v) => v + 1);
@@ -406,7 +406,7 @@ function TreeNode({ node, depth }: TreeNodeProps) {
   useEffect(() => {
     if (expanded) void reload();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [expanded, reload]);
+  }, [ctx.treeVersion]);
 
   const expand = async () => {
     if (node.kind !== "directory") return;

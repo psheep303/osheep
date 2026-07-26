@@ -27,7 +27,7 @@ export function TemplateView({
   onOpenTemplate,
   onTemplateDeleted,
   developerMode,
-  refreshSignal: _refreshSignal,
+  refreshSignal,
 }: TemplateViewProps) {
   const [section, setSection] = useState<TemplateSource>("system");
   const [templates, setTemplates] = useState<{
@@ -59,7 +59,7 @@ export function TemplateView({
 
   useEffect(() => {
     void reload();
-  }, [reload]);
+  }, [reload, refreshSignal]);
 
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();

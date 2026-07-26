@@ -812,7 +812,7 @@ export function WorkflowTab({
       }
       abortRef.current?.abort();
     };
-  }, [workspaceId, workflowId, onTemplateBinding]);
+  }, [workspaceId, workflowId]);
 
   useEffect(() => {
     if (!workflowId || !workspaceId) return;
@@ -871,7 +871,7 @@ export function WorkflowTab({
     const observer = new ResizeObserver(measure);
     observer.observe(wrap);
     return () => observer.disconnect();
-  }, []);
+  }, [loading]);
 
   const selectedNode = useMemo(
     () => workflow?.nodes.find((node) => node.id === selectedId) ?? null,
@@ -954,7 +954,7 @@ export function WorkflowTab({
     const current = workflowRef.current;
     runtimeLayoutRef.current.clear();
     if (current) scheduleSave(current);
-  }, [running, scheduleSave]);
+  }, [running]);
 
   const flushPendingSave = async () => {
     if (saveTimerRef.current !== null) {
@@ -1008,7 +1008,7 @@ export function WorkflowTab({
     if (!current || !previous) return;
     redoStackRef.current = [...redoStackRef.current.slice(-99), cloneWorkflow(current)];
     restoreHistory(previous);
-  }, [running, restoreHistory]);
+  }, [running]);
 
   const redo = useCallback(() => {
     if (running) return;
@@ -1017,7 +1017,7 @@ export function WorkflowTab({
     if (!current || !next) return;
     undoStackRef.current = [...undoStackRef.current.slice(-99), cloneWorkflow(current)];
     restoreHistory(next);
-  }, [running, restoreHistory]);
+  }, [running]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -3209,7 +3209,7 @@ function WorkflowAgentTerminal({
 
   useEffect(() => {
     setAutoSuccess(initialAutoSuccess);
-  }, [initialAutoSuccess]);
+  }, [initialAutoSuccess, sessionId]);
 
   useEffect(() => {
     if (!hostRef.current) return;

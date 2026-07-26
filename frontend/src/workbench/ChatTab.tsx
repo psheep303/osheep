@@ -148,7 +148,7 @@ export function ChatTab({
     ta.style.height = "auto";
     const next = Math.min(ta.scrollHeight, 220);
     ta.style.height = `${next}px`;
-  }, []);
+  }, [input]);
 
   const scrollStateSignature = useMemo(
     () =>

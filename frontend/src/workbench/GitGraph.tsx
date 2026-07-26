@@ -38,7 +38,7 @@ const HISTORY_ITEM_REF_COLOR = "#3794ff";
 const HISTORY_ITEM_REMOTE_REF_COLOR = "#b180d7";
 const GRAPH_COLORS = ["#ffb000", "#dc267f", "#994f00", "#40b0a6", "#b66dff"];
 
-export function GitGraph({ workspaceId, refreshKey: _refreshKey }: GitGraphProps) {
+export function GitGraph({ workspaceId, refreshKey }: GitGraphProps) {
   const [commits, setCommits] = useState<GitCommit[]>([]);
   const [head, setHead] = useState<string | null>(null);
   const [currentRef, setCurrentRef] = useState<string | null>(null);
@@ -69,7 +69,7 @@ export function GitGraph({ workspaceId, refreshKey: _refreshKey }: GitGraphProps
     return () => {
       cancelled = true;
     };
-  }, [workspaceId]);
+  }, [workspaceId, refreshKey]);
 
   const rows = useMemo(
     () => toHistoryRows(commits, head, currentRef, currentRemoteRef),
