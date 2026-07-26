@@ -10,13 +10,16 @@
     "check:agent-navigation": "node scripts/check-agent-navigation.mjs",
     "check:workflow-left-sidebar": "node scripts/check-workflow-left-sidebar.mjs",
     "check:workflow-css": "node scripts/check-workflow-node-css.mjs",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "lint": "biome check src scripts",
+    "lint:fix": "biome check --write src",
+    "format": "biome format --write src"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.11.0",
     "@fontsource/geist-mono": "^5.2.8",
     "@fontsource/geist-sans": "^5.2.5",
     "@monaco-editor/react": "^4.6.0",
+    "@tauri-apps/api": "^2.11.0",
     "@vscode/codicons": "^0.0.45",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/xterm": "^5.5.0",
@@ -27,6 +30,7 @@
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.5",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
