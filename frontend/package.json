@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && node scripts/compress-dist.mjs",
     "test:workflow-behavior": "node --test src/workbench/workflow-behavior.test.ts",
     "test:terminal-conversation": "node --test src/workbench/terminal-conversation.test.ts",
     "check:agent-navigation": "node scripts/check-agent-navigation.mjs",
