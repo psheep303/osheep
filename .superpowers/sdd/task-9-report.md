@@ -54,3 +54,52 @@ None observed. Pruning source directories remains conditional on the Windows x64
 ### Fix Concerns
 
 - Runtime behavior of the corrected gates has not been reconfirmed by a fresh full preparation run because of the active read-only constraint. Syntax and control flow were verified, but the prior `139.1 MB` measurement predates this gate-only fix.
+
+## Validation Addendum: Commit 8347474
+
+Implementation validation completed against `83474749158ca79893e21cc00a447b926c21de6d`.
+
+### Commands and Results
+
+1. Syntax validation:
+
+   Command: `powershell.exe -NoProfile -Command '$null = [scriptblock]::Create((Get-Content -Raw "D:\project\osheep\desktop\scripts\prepare-release.ps1")); Write-Output "PowerShell syntax OK"'`
+
+   Result: exit code `0`; exact output: `PowerShell syntax OK`.
+
+2. Full stage preparation:
+
+   Command: `powershell.exe -NoProfile -File "D:\project\osheep\desktop\scripts\prepare-release.ps1"`
+
+   Result: exit code `0`; exact final smoke/size output:
+
+   ```text
+   node-pty OK
+   Desktop stage ready: 139.1 MB (Node runtime: 85.7 MB)
+   ```
+
+3. Stage artifact inspection:
+
+   Command: `powershell.exe -NoProfile -Command '$pty = "D:\project\osheep\desktop\stage\backend\node_modules\node-pty"; "prebuilds=" + ((Get-ChildItem (Join-Path $pty "prebuilds") -Directory).Name -join ","); "build=" + (Test-Path (Join-Path $pty "build")); foreach ($dir in "third_party", "deps", "src") { "$dir=" + (Test-Path (Join-Path $pty $dir)) }; "package-lock=" + (Test-Path "D:\project\osheep\desktop\stage\backend\package-lock.json"); "testJsCount=" + @((Get-ChildItem "D:\project\osheep\desktop\stage\backend\dist" -Recurse -Filter "*.test.js")).Count'`
+
+   Exact output:
+
+   ```text
+   prebuilds=win32-x64
+   build=True
+   third_party=False
+   deps=False
+   src=False
+   package-lock=False
+   testJsCount=0
+   ```
+
+4. Generated-stage cleanup:
+
+   Command: `powershell.exe -NoProfile -Command '$stage = "D:\project\osheep\desktop\stage"; $desktop = (Resolve-Path "D:\project\osheep\desktop").Path; if (Test-Path $stage) { $resolved = (Resolve-Path $stage).Path; if (-not $resolved.StartsWith($desktop, [System.StringComparison]::OrdinalIgnoreCase)) { throw "Refusing to remove stage outside desktop directory: $resolved" }; Remove-Item -LiteralPath $resolved -Recurse -Force }; "stageExists=" + (Test-Path $stage)'`
+
+   Result: exit code `0`; exact output: `stageExists=False`.
+
+### Addendum Conclusion
+
+The corrected release-stage smoke gates are runtime-validated. The stage contains only the `win32-x64` prebuild, preserves `node-pty/build`, and excludes all requested artifacts. The measured size remains `139.1 MB`, saving `28.9 MB` from the prior `168 MB`. No Tauri build or Cargo release build was run. No implementation concern remains.
