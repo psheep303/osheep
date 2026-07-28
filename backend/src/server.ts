@@ -22,7 +22,10 @@ import { ensureWorkspacesRoot } from "./workspace.js";
 
 export async function buildServer() {
   const app = Fastify({
-    logger: { transport: { target: "pino-pretty", options: { colorize: true } } },
+    logger:
+      process.env.NODE_ENV === "production"
+        ? true
+        : { transport: { target: "pino-pretty", options: { colorize: true } } },
     bodyLimit: 16 * 1024 * 1024,
   });
 
