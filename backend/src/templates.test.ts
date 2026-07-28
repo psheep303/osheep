@@ -136,6 +136,125 @@ test("system template sync is skipped when source unchanged", async () => {
   assert.equal(st1.birthtimeMs, st2.birthtimeMs);
 });
 
+test("system template sync detects same-size source changes with preserved mtime", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-system-sync-bytes-"));
+  const systemSourceRoot = await fs.mkdtemp(
+    path.join(os.tmpdir(), "osheep-system-sync-bytes-source-"),
+  );
+  const id = "tpl_syncbytes01";
+  const sourceFile = path.join(systemSourceRoot, id, "template.json");
+  const record = {
+    id,
+    source: "system",
+    title: "First version",
+    description: "Same-size source replacement.",
+    readme: "",
+    createdAt: 1,
+    updatedAt: 1,
+    nodes: [],
+    edges: [],
+  };
+  await fs.mkdir(path.dirname(sourceFile));
+  const firstContent = JSON.stringify(record);
+  await fs.writeFile(sourceFile, firstContent, "utf8");
+  const sourceStat = await fs.stat(sourceFile);
+  const opts = { root, systemSourceRoot };
+  await listWorkflowTemplates(opts);
+
+  const nextContent = JSON.stringify({ ...record, title: "Other version" });
+  assert.equal(Buffer.byteLength(nextContent), Buffer.byteLength(firstContent));
+  await fs.writeFile(sourceFile, nextContent, "utf8");
+  await fs.utimes(sourceFile, sourceStat.atime, sourceStat.mtime);
+
+  const library = await listWorkflowTemplates(opts);
+
+  assert.equal(library.system[0]?.title, "Other version");
+  assert.equal(
+    JSON.parse(await fs.readFile(path.join(root, "system", id, "template.json"), "utf8")).title,
+    "Other version",
+  );
+});
+
+test("concurrent system template reads share a consistent fresh sync", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-system-sync-concurrent-"));
+  const systemSourceRoot = await fs.mkdtemp(
+    path.join(os.tmpdir(), "osheep-system-sync-concurrent-source-"),
+  );
+  const id = "tpl_syncparallel";
+  const record = {
+    id,
+    source: "system",
+    title: "Concurrent template",
+    description: "Concurrent sync source.",
+    readme: "",
+    createdAt: 1,
+    updatedAt: 1,
+    nodes: [],
+    edges: [],
+  };
+  await fs.mkdir(path.join(systemSourceRoot, id));
+  await fs.writeFile(
+    path.join(systemSourceRoot, id, "template.json"),
+    JSON.stringify(record),
+    "utf8",
+  );
+  const opts = { root, systemSourceRoot };
+
+  const results = await Promise.all(
+    Array.from({ length: 20 }, (_, index) =>
+      index % 2 === 0 ? listWorkflowTemplates(opts) : getWorkflowTemplate("system", id, opts),
+    ),
+  );
+
+  assert.equal(results.length, 20);
+  assert.equal(
+    JSON.parse(await fs.readFile(path.join(root, "system", id, "template.json"), "utf8")).title,
+    record.title,
+  );
+  const marker = JSON.parse(await fs.readFile(path.join(root, ".system-sync.json"), "utf8"));
+  assert.equal(typeof marker.signature, "string");
+  assert.ok(marker.signature.length > 0);
+});
+
+test("invalid system sync marker triggers a full recovery", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-system-sync-recovery-"));
+  const systemSourceRoot = await fs.mkdtemp(
+    path.join(os.tmpdir(), "osheep-system-sync-recovery-source-"),
+  );
+  const id = "tpl_syncrecover";
+  const record = {
+    id,
+    source: "system",
+    title: "Recovered template",
+    description: "Recovery source.",
+    readme: "",
+    createdAt: 1,
+    updatedAt: 1,
+    nodes: [],
+    edges: [],
+  };
+  await fs.mkdir(path.join(systemSourceRoot, id));
+  await fs.writeFile(
+    path.join(systemSourceRoot, id, "template.json"),
+    JSON.stringify(record),
+    "utf8",
+  );
+  const opts = { root, systemSourceRoot };
+  await listWorkflowTemplates(opts);
+  await fs.writeFile(path.join(root, ".system-sync.json"), "not json", "utf8");
+  await fs.writeFile(
+    path.join(root, "system", id, "template.json"),
+    JSON.stringify({ ...record, title: "Stale runtime" }),
+    "utf8",
+  );
+
+  const library = await listWorkflowTemplates(opts);
+
+  assert.equal(library.system[0]?.title, record.title);
+  const marker = JSON.parse(await fs.readFile(path.join(root, ".system-sync.json"), "utf8"));
+  assert.equal(typeof marker.signature, "string");
+});
+
 test("user templates can be deleted without affecting system templates", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-template-delete-"));
   const workflowRoot = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-delete-source-"));
