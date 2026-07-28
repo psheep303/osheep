@@ -190,35 +190,67 @@ async function migrateLegacyUserTemplates(root: string): Promise<void> {
   }
 }
 
+const systemSyncs = new Map<string, Promise<void>>();
+
 async function sourceSignature(systemSourceRoot: string): Promise<string | null> {
-  const parts: string[] = [];
+  const files: string[] = [];
 
   async function visit(dir: string): Promise<void> {
     const entries = await fs.readdir(dir, { withFileTypes: true });
+    entries.sort((a, b) => a.name.localeCompare(b.name));
     for (const entry of entries) {
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) {
         await visit(full);
-        continue;
+      } else if (entry.isFile()) {
+        files.push(full);
       }
-      if (!entry.isFile()) continue;
-      const st = await fs.stat(full);
-      parts.push(`${path.relative(systemSourceRoot, full)}:${st.size}:${Math.round(st.mtimeMs)}`);
     }
   }
 
   try {
     await visit(systemSourceRoot);
+    if (!files.length) return null;
+
+    const hash = createHash("sha1");
+    for (const file of files) {
+      const relative = path.relative(systemSourceRoot, file).split(path.sep).join("/");
+      const data = await fs.readFile(file);
+      hash.update(`${Buffer.byteLength(relative)}:${relative}${data.length}:`);
+      hash.update(data);
+    }
+    return hash.digest("hex");
   } catch {
     return null;
   }
+}
 
-  if (!parts.length) return null;
-  parts.sort();
-  return createHash("sha1").update(parts.join("|")).digest("hex");
+function systemSyncKey(root: string, systemSourceRoot: string): string {
+  const normalize = (value: string) => {
+    const resolved = path.resolve(value);
+    return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  };
+  return `${normalize(root)}\0${normalize(systemSourceRoot)}`;
 }
 
 async function syncBundledSystemTemplates(root: string, systemSourceRoot: string): Promise<void> {
+  const key = systemSyncKey(root, systemSourceRoot);
+  const active = systemSyncs.get(key);
+  if (active) return active;
+
+  const sync = syncBundledSystemTemplatesOnce(root, systemSourceRoot);
+  systemSyncs.set(key, sync);
+  try {
+    await sync;
+  } finally {
+    if (systemSyncs.get(key) === sync) systemSyncs.delete(key);
+  }
+}
+
+async function syncBundledSystemTemplatesOnce(
+  root: string,
+  systemSourceRoot: string,
+): Promise<void> {
   const signature = await sourceSignature(systemSourceRoot);
   if (!signature) return;
 
