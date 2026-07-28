@@ -227,6 +227,58 @@ test("concurrent system template reads share a consistent fresh sync", async () 
   assert.ok(marker.signature.length > 0);
 });
 
+test("different system sources serialize writes to one runtime root", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-system-sync-sources-runtime-"));
+  const sourceA = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-system-sync-source-a-"));
+  const sourceB = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-system-sync-source-b-"));
+  const id = "tpl_syncsources1";
+  const record = {
+    id,
+    source: "system",
+    title: "Source A template",
+    description: "Serialized source template.",
+    readme: "",
+    createdAt: 1,
+    updatedAt: 1,
+    nodes: [],
+    edges: [],
+  };
+  for (const [source, title] of [
+    [sourceA, "Source A template"],
+    [sourceB, "Source B template"],
+  ] as const) {
+    await fs.mkdir(path.join(source, id));
+    await fs.writeFile(
+      path.join(source, id, "template.json"),
+      JSON.stringify({ ...record, title }),
+      "utf8",
+    );
+  }
+
+  const pendingA = listWorkflowTemplates({ root, systemSourceRoot: sourceA });
+  const pendingB = listWorkflowTemplates({ root, systemSourceRoot: sourceB });
+  const [libraryA, libraryB] = await Promise.all([pendingA, pendingB]);
+
+  assert.deepEqual(
+    libraryA.system.map((template) => [template.id, template.title]),
+    [[id, "Source A template"]],
+  );
+  assert.deepEqual(
+    libraryB.system.map((template) => [template.id, template.title]),
+    [[id, "Source B template"]],
+  );
+  const runtimeTitle = JSON.parse(
+    await fs.readFile(path.join(root, "system", id, "template.json"), "utf8"),
+  ).title;
+  assert.ok(["Source A template", "Source B template"].includes(runtimeTitle));
+  const finalSource = runtimeTitle === "Source A template" ? sourceA : sourceB;
+  const markerFile = path.join(root, ".system-sync.json");
+  const markerBefore = await fs.readFile(markerFile, "utf8");
+  const repeated = await listWorkflowTemplates({ root, systemSourceRoot: finalSource });
+  assert.equal(repeated.system[0]?.title, runtimeTitle);
+  assert.equal(await fs.readFile(markerFile, "utf8"), markerBefore);
+});
+
 test("system sync serializes real and linked source path aliases", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-system-sync-alias-runtime-"));
   const sourceParent = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-system-sync-alias-source-"));

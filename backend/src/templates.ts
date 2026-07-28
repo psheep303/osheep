@@ -190,7 +190,12 @@ async function migrateLegacyUserTemplates(root: string): Promise<void> {
   }
 }
 
-const systemSyncs = new Map<string, Promise<void>>();
+interface SystemSyncQueue {
+  tail: Promise<void>;
+  pendingSources: Map<string, Promise<void>>;
+}
+
+const systemSyncQueues = new Map<string, SystemSyncQueue>();
 
 async function sourceSignature(systemSourceRoot: string): Promise<string | null> {
   const files: string[] = [];
@@ -234,25 +239,44 @@ async function canonicalSyncPath(value: string): Promise<string> {
   }
 }
 
-async function systemSyncKey(root: string, systemSourceRoot: string): Promise<string> {
-  const [rootKey, sourceKey] = await Promise.all([
-    canonicalSyncPath(root),
+async function systemSyncKeys(
+  root: string,
+  systemSourceRoot: string,
+): Promise<{ destinationKey: string; sourceKey: string }> {
+  const runtimeRoot = sourceDir(root, "system");
+  const [sourceKey, destinationKey] = await Promise.all([
     canonicalSyncPath(systemSourceRoot),
+    fs.realpath(runtimeRoot).catch(async (error: NodeJS.ErrnoException) => {
+      if (error.code !== "ENOENT") throw error;
+      return path.join(await canonicalSyncPath(root), "system");
+    }),
   ]);
-  return JSON.stringify([rootKey, sourceKey]);
+  return { destinationKey, sourceKey };
 }
 
 async function syncBundledSystemTemplates(root: string, systemSourceRoot: string): Promise<void> {
-  const key = await systemSyncKey(root, systemSourceRoot);
-  const active = systemSyncs.get(key);
+  const { destinationKey, sourceKey } = await systemSyncKeys(root, systemSourceRoot);
+  let queue = systemSyncQueues.get(destinationKey);
+  if (!queue) {
+    queue = { tail: Promise.resolve(), pendingSources: new Map() };
+    systemSyncQueues.set(destinationKey, queue);
+  }
+
+  const active = queue.pendingSources.get(sourceKey);
   if (active) return active;
 
-  const sync = syncBundledSystemTemplatesOnce(root, systemSourceRoot);
-  systemSyncs.set(key, sync);
+  const operation = queue.tail.then(() => syncBundledSystemTemplatesOnce(root, systemSourceRoot));
+  queue.pendingSources.set(sourceKey, operation);
+  const tail = operation.catch(() => undefined);
+  queue.tail = tail;
+
   try {
-    await sync;
+    await operation;
   } finally {
-    if (systemSyncs.get(key) === sync) systemSyncs.delete(key);
+    if (queue.pendingSources.get(sourceKey) === operation) queue.pendingSources.delete(sourceKey);
+    if (queue.tail === tail && queue.pendingSources.size === 0) {
+      systemSyncQueues.delete(destinationKey);
+    }
   }
 }
 
