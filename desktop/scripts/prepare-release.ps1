@@ -35,7 +35,13 @@ Copy-Item $NodeBinary (Join-Path $stage 'node\node.exe')
 
 Write-Host 'Installing production-only backend dependencies into desktop stage...'
 Push-Location $stageBackend
-try { & npm.cmd ci --omit=dev --no-audit --no-fund } finally { Pop-Location }
+try {
+  & npm.cmd ci --omit=dev --no-audit --no-fund
+  $npmExitCode = $LASTEXITCODE
+} finally {
+  Pop-Location
+}
+if ($npmExitCode -ne 0) { throw "npm ci failed with exit code $npmExitCode" }
 
 Write-Host 'Pruning desktop stage...'
 $ptyRoot = Join-Path $stageBackend 'node_modules\node-pty'
@@ -50,16 +56,16 @@ if (Test-Path $ptyRoot) {
       if (Test-Path $path) { Remove-Item -LiteralPath $path -Recurse -Force }
     }
   }
-
-  Push-Location $stageBackend
-  try {
-    & (Join-Path $stage 'node\node.exe') -e "require('node-pty'); console.log('node-pty OK')"
-    $nodePtyExitCode = $LASTEXITCODE
-  } finally {
-    Pop-Location
-  }
-  if ($nodePtyExitCode -ne 0) { throw 'node-pty failed to load after pruning' }
 }
+
+Push-Location $stageBackend
+try {
+  & (Join-Path $stage 'node\node.exe') -e "require('node-pty'); console.log('node-pty OK')"
+  $nodePtyExitCode = $LASTEXITCODE
+} finally {
+  Pop-Location
+}
+if ($nodePtyExitCode -ne 0) { throw 'node-pty failed to load after pruning' }
 
 Remove-Item -LiteralPath (Join-Path $stageBackend 'package-lock.json') -Force -ErrorAction SilentlyContinue
 Get-ChildItem (Join-Path $stageBackend 'dist') -Recurse -Filter '*.test.js' -ErrorAction SilentlyContinue |

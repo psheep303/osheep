@@ -34,3 +34,23 @@ No Tauri build or Cargo release build was run. The ignored generated `desktop/st
 ## Concerns
 
 None observed. Pruning source directories remains conditional on the Windows x64 prebuild being present, and the retained `build` directory covers local native compilation fallback.
+
+## Review Fix
+
+- Captured the `npm ci` native process exit code immediately and now throw after `Pop-Location` when it is nonzero; the `finally` block always restores the caller's location.
+- Moved the staged bundled-Node `require('node-pty')` smoke test outside the conditional pruning block. Missing `node-pty` now produces a nonzero Node exit and stops packaging.
+- Kept pruning conditional on the staged `node-pty` path and `prebuilds/win32-x64` presence, and continued to preserve `node-pty/build`.
+
+### Fix Validation
+
+- Windows PowerShell syntax validation: passed.
+- Exact syntax output: `PowerShell syntax validation: passed`.
+- `git diff --check`: passed.
+- A new full `prepare-release.ps1` run was requested but not executed: the active read-only review constraint explicitly prohibited rerunning it, and the environment denied both invocation attempts before the script started.
+- Therefore there is no new smoke or size output for this fix. The most recent completed full-run output remains `node-pty OK` and `Desktop stage ready: 139.1 MB` as recorded above.
+- Generated `desktop/stage`: absent after fix validation; no cleanup action was required.
+- No Tauri build or Cargo release build was run.
+
+### Fix Concerns
+
+- Runtime behavior of the corrected gates has not been reconfirmed by a fresh full preparation run because of the active read-only constraint. Syntax and control flow were verified, but the prior `139.1 MB` measurement predates this gate-only fix.
