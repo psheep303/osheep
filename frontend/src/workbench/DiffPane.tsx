@@ -1,3 +1,4 @@
+import "./monaco-setup";
 import { type BeforeMount, DiffEditor } from "@monaco-editor/react";
 import { languageFromPath } from "./language";
 
