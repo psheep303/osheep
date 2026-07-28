@@ -207,6 +207,17 @@ test("concurrent system template reads share a consistent fresh sync", async () 
   );
 
   assert.equal(results.length, 20);
+  for (const result of results) {
+    if ("system" in result) {
+      assert.deepEqual(
+        result.system.map((template) => [template.id, template.title]),
+        [[id, record.title]],
+      );
+    } else {
+      assert.equal(result.id, id);
+      assert.equal(result.title, record.title);
+    }
+  }
   assert.equal(
     JSON.parse(await fs.readFile(path.join(root, "system", id, "template.json"), "utf8")).title,
     record.title,
@@ -214,6 +225,67 @@ test("concurrent system template reads share a consistent fresh sync", async () 
   const marker = JSON.parse(await fs.readFile(path.join(root, ".system-sync.json"), "utf8"));
   assert.equal(typeof marker.signature, "string");
   assert.ok(marker.signature.length > 0);
+});
+
+test("system sync serializes real and linked source path aliases", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-system-sync-alias-runtime-"));
+  const sourceParent = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-system-sync-alias-source-"));
+  const systemSourceRoot = path.join(sourceParent, "actual");
+  const sourceAlias = path.join(sourceParent, "alias");
+  const id = "tpl_syncpathalias";
+  const record = {
+    id,
+    source: "system",
+    title: "Aliased source template",
+    description: "Path alias sync source.",
+    readme: "",
+    createdAt: 1,
+    updatedAt: 1,
+    nodes: [],
+    edges: [],
+  };
+  await fs.mkdir(path.join(systemSourceRoot, id), { recursive: true });
+  await fs.writeFile(
+    path.join(systemSourceRoot, id, "template.json"),
+    JSON.stringify(record),
+    "utf8",
+  );
+  try {
+    await fs.symlink(
+      systemSourceRoot,
+      sourceAlias,
+      process.platform === "win32" ? "junction" : "dir",
+    );
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (["EACCES", "EPERM", "ENOSYS", "UNKNOWN"].includes(code ?? "")) {
+      t.skip(`directory links are unavailable: ${code}`);
+      return;
+    }
+    throw error;
+  }
+
+  const results = await Promise.all(
+    Array.from({ length: 20 }, (_, index) =>
+      listWorkflowTemplates({
+        root,
+        systemSourceRoot: index % 2 === 0 ? systemSourceRoot : sourceAlias,
+      }),
+    ),
+  );
+
+  for (const result of results) {
+    assert.deepEqual(
+      result.system.map((template) => [template.id, template.title]),
+      [[id, record.title]],
+    );
+  }
+  assert.equal(
+    JSON.parse(await fs.readFile(path.join(root, "system", id, "template.json"), "utf8")).title,
+    record.title,
+  );
+  const marker = JSON.parse(await fs.readFile(path.join(root, ".system-sync.json"), "utf8"));
+  assert.equal(typeof marker.signature, "string");
 });
 
 test("invalid system sync marker triggers a full recovery", async () => {

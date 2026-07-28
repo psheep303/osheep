@@ -225,16 +225,25 @@ async function sourceSignature(systemSourceRoot: string): Promise<string | null>
   }
 }
 
-function systemSyncKey(root: string, systemSourceRoot: string): string {
-  const normalize = (value: string) => {
-    const resolved = path.resolve(value);
-    return process.platform === "win32" ? resolved.toLowerCase() : resolved;
-  };
-  return `${normalize(root)}\0${normalize(systemSourceRoot)}`;
+async function canonicalSyncPath(value: string): Promise<string> {
+  try {
+    return await fs.realpath(value);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return path.resolve(value);
+    throw error;
+  }
+}
+
+async function systemSyncKey(root: string, systemSourceRoot: string): Promise<string> {
+  const [rootKey, sourceKey] = await Promise.all([
+    canonicalSyncPath(root),
+    canonicalSyncPath(systemSourceRoot),
+  ]);
+  return JSON.stringify([rootKey, sourceKey]);
 }
 
 async function syncBundledSystemTemplates(root: string, systemSourceRoot: string): Promise<void> {
-  const key = systemSyncKey(root, systemSourceRoot);
+  const key = await systemSyncKey(root, systemSourceRoot);
   const active = systemSyncs.get(key);
   if (active) return active;
 
