@@ -103,6 +103,39 @@ test("developers can replace system templates with editable JSON files", async (
   assert.equal(loaded.title, "Developer template");
 });
 
+test("system template sync is skipped when source unchanged", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-system-sync-cache-"));
+  const systemSourceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-system-sync-source-"));
+  const record = {
+    id: "tpl_syncskip001",
+    source: "system",
+    title: "Cached sync template",
+    description: "Loaded from the bundled source library.",
+    readme: "# Cached sync template",
+    createdAt: 1,
+    updatedAt: 1,
+    nodes: [],
+    edges: [],
+  };
+  await fs.mkdir(path.join(systemSourceRoot, record.id));
+  await fs.writeFile(
+    path.join(systemSourceRoot, record.id, "template.json"),
+    JSON.stringify(record),
+    "utf8",
+  );
+  const opts = { root, systemSourceRoot };
+
+  await listWorkflowTemplates(opts);
+  const marker = path.join(root, ".system-sync.json");
+  const st1 = await fs.stat(path.join(root, "system"));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await listWorkflowTemplates(opts);
+  const st2 = await fs.stat(path.join(root, "system"));
+
+  assert.ok((await fs.stat(marker)).isFile());
+  assert.equal(st1.birthtimeMs, st2.birthtimeMs);
+});
+
 test("user templates can be deleted without affecting system templates", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-template-delete-"));
   const workflowRoot = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-delete-source-"));

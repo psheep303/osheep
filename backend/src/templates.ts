@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { config } from "./config.js";
@@ -189,7 +190,46 @@ async function migrateLegacyUserTemplates(root: string): Promise<void> {
   }
 }
 
+async function sourceSignature(systemSourceRoot: string): Promise<string | null> {
+  const parts: string[] = [];
+
+  async function visit(dir: string): Promise<void> {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await visit(full);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      const st = await fs.stat(full);
+      parts.push(`${path.relative(systemSourceRoot, full)}:${st.size}:${Math.round(st.mtimeMs)}`);
+    }
+  }
+
+  try {
+    await visit(systemSourceRoot);
+  } catch {
+    return null;
+  }
+
+  if (!parts.length) return null;
+  parts.sort();
+  return createHash("sha1").update(parts.join("|")).digest("hex");
+}
+
 async function syncBundledSystemTemplates(root: string, systemSourceRoot: string): Promise<void> {
+  const signature = await sourceSignature(systemSourceRoot);
+  if (!signature) return;
+
+  const markerFile = path.join(root, ".system-sync.json");
+  try {
+    const marker = JSON.parse(await fs.readFile(markerFile, "utf8")) as { signature?: string };
+    if (marker.signature === signature) return;
+  } catch {
+    // Missing or invalid markers are repaired by a full sync below.
+  }
+
   let entries: Array<{ name: string; isDirectory(): boolean }>;
   try {
     entries = await fs.readdir(systemSourceRoot, { withFileTypes: true });
@@ -208,6 +248,7 @@ async function syncBundledSystemTemplates(root: string, systemSourceRoot: string
       recursive: true,
     });
   }
+  await fs.writeFile(markerFile, JSON.stringify({ signature }), "utf8");
 }
 
 async function readStoredTemplate(
