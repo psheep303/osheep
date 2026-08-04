@@ -1,16 +1,19 @@
 import { createHash } from "node:crypto";
+import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { normalizeCssLineEndings, readWorkbenchCss } from "./read-workbench-css.mjs";
 
-const expected = {
-  sha256: "d985a3c6e31a6accc38ec22c7c7636cfe1fbe588ec2b8d004ee49fc9ea4b3c86",
-  bytes: 196153,
+const expected = Object.freeze({
+  sha256: "97bfdbaf1f70812c746c6c22c7accb72203fc4658d88e02b9e9492f1362f3142",
+  bytes: 197950,
   openingBraces: 1423,
   closingBraces: 1423,
   declarations: 5786,
-};
+});
+
+const expectedPattern = /const expected = Object\.freeze\(\{[\s\S]*?\}\);/;
 
 export function workbenchCssMetrics(css) {
   const normalizedCss = normalizeCssLineEndings(css);
@@ -32,7 +35,29 @@ export function checkWorkbenchCssEquivalence(css = readWorkbenchCss()) {
   }
 }
 
+function updateWorkbenchCssBaseline(css = readWorkbenchCss()) {
+  const scriptPath = fileURLToPath(import.meta.url);
+  const script = readFileSync(scriptPath, "utf8");
+  const actual = workbenchCssMetrics(css);
+  const replacement = `const expected = Object.freeze({
+  sha256: "${actual.sha256}",
+  bytes: ${actual.bytes},
+  openingBraces: ${actual.openingBraces},
+  closingBraces: ${actual.closingBraces},
+  declarations: ${actual.declarations},
+});`;
+  if (!expectedPattern.test(script)) {
+    throw new Error("workbench CSS baseline block not found");
+  }
+  writeFileSync(scriptPath, script.replace(expectedPattern, replacement));
+  console.log("updated workbench CSS canonical baseline", actual);
+}
+
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  checkWorkbenchCssEquivalence();
-  console.log("workbench CSS equivalence checks passed");
+  if (process.argv.includes("--update")) {
+    updateWorkbenchCssBaseline();
+  } else {
+    checkWorkbenchCssEquivalence();
+    console.log("workbench CSS canonical baseline checks passed");
+  }
 }

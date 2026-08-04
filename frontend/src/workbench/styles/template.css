@@ -314,7 +314,7 @@
 }
 
 .template-sidebar__message.is-error {
-  color: #f48771;
+  color: var(--color-error);
 }
 
 .template-card {
@@ -420,7 +420,7 @@
 
 .template-detail__state.is-error,
 .template-detail__error {
-  color: #f48771;
+  color: var(--color-error);
 }
 
 .template-detail__hero {
@@ -782,13 +782,13 @@
   padding: 1px 5px;
   border-radius: 3px;
   background: rgba(63, 185, 80, 0.12);
-  color: #8cc796;
+  color: var(--color-success-strong);
   border: 1px solid rgba(63, 185, 80, 0.32);
 }
 
 .run-io__exit--bad {
   background: rgba(203, 36, 37, 0.12);
-  color: #f48771;
+  color: var(--color-error);
   border: 1px solid rgba(203, 36, 37, 0.32);
 }
 
@@ -818,7 +818,7 @@
 }
 
 .run-io__line--err {
-  color: #f48771;
+  color: var(--color-error);
 }
 
 .run-io__stream-label {

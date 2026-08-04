@@ -51,7 +51,7 @@
 
 .search-view__input {
   width: 100%;
-  background: #313131;
+  background: var(--surface-control);
   color: var(--fg-default);
   border: 1px solid var(--border-edge);
   border-radius: 2px;

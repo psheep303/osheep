@@ -269,7 +269,7 @@
 }
 
 .git-view__msg {
-  background: #313131;
+  background: var(--surface-control);
   color: var(--fg-default);
   border: 1px solid var(--border-edge);
   border-radius: 2px;
@@ -544,7 +544,7 @@
 .git-view__badge--D { color: #c74e39; }
 .git-view__badge--R { color: #69a4ff; }
 .git-view__badge--U { color: #73c991; }
-.git-view__badge--C { color: #f48771; font-weight: 700; }
+.git-view__badge--C { color: var(--color-error); font-weight: 700; }
 .git-view__badge--X { color: var(--fg-muted); }
 
 .git-view__empty {
@@ -610,7 +610,7 @@
 }
 
 .git-view__input {
-  background: #313131;
+  background: var(--surface-control);
   color: var(--fg-default);
   border: 1px solid var(--border-edge);
   border-radius: 2px;
