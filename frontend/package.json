@@ -15,6 +15,7 @@
     "check:workflow-left-sidebar": "node scripts/check-workflow-left-sidebar.mjs",
     "check:workflow-css": "node scripts/check-workflow-node-css.mjs",
     "check:workbench-css-equivalence": "node scripts/check-workbench-css-equivalence.mjs",
+    "update:workbench-css-equivalence": "node scripts/check-workbench-css-equivalence.mjs --update",
     "preview": "vite preview",
     "lint": "biome check src scripts",
     "lint:fix": "biome check --write src",

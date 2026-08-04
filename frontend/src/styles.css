@@ -31,10 +31,12 @@
   --z-dropdown: 100; --z-modal: 200; --z-toast: 300;
   --duration-fast: 120ms; --duration-normal: 160ms;
   /* ── 语义色(源自 workbench.css 高频影子令牌) ── */
-  --color-error: #f48771; --color-warning: #cca700; --color-success: #89d185;
+  --color-error: #f48771; --color-warning: #cca700; --color-warning-strong: #fde68a;
+  --color-success: #89d185; --color-success-strong: #8cc796;
   --color-info: #75beff; --color-link: #6aa8ff; --color-link-strong: #d8eaff;
   --surface-1: #181818; --surface-2: #1f1f1f; --surface-3: #262626; --surface-4: #303030;
-  --border-subtle: #2b2b2b; --border-strong: #3c3c3c;
+  --surface-control: #313131;
+  --border-subtle: #2b2b2b; --border-strong: #3c3c3c; --border-control: #343434;
 }
 
 * {

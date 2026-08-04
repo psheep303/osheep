@@ -453,7 +453,7 @@
 }
 
 .agent-config__banner--success {
-  color: #8cc796;
+  color: var(--color-success-strong);
   background: rgba(63, 185, 80, 0.12);
   border: 1px solid rgba(63, 185, 80, 0.28);
 }
@@ -524,7 +524,7 @@
 }
 
 .ai-settings__banner--success {
-  color: #8cc796;
+  color: var(--color-success-strong);
   background: rgba(63, 185, 80, 0.12);
   border: 1px solid rgba(63, 185, 80, 0.28);
 }
@@ -911,7 +911,7 @@
 }
 
 .ai-settings__message {
-  color: #8cc796;
+  color: var(--color-success-strong);
   background: rgba(63, 185, 80, 0.12);
   border: 1px solid rgba(63, 185, 80, 0.28);
 }
@@ -954,7 +954,7 @@
   margin: 8px 10px 0;
   padding: 6px 10px;
   color: var(--fg-muted);
-  background: #1f1f1f;
+  background: var(--surface-2);
   border: 1px solid #2e2e2e;
   border-radius: 6px;
 }
@@ -1016,7 +1016,7 @@
 }
 
 .codex-plugins__banner--success {
-  color: #8cc796;
+  color: var(--color-success-strong);
   background: rgba(63, 185, 80, 0.12);
   border: 1px solid rgba(63, 185, 80, 0.28);
 }
@@ -1049,8 +1049,8 @@
   resize: vertical;
   padding: 7px 8px;
   color: var(--fg-default);
-  background: #313131;
-  border: 1px solid #3c3c3c;
+  background: var(--surface-control);
+  border: 1px solid var(--border-strong);
   border-radius: 3px;
   font: inherit;
   font-size: 12px;
@@ -1194,7 +1194,7 @@
 }
 
 .codex-plugins__danger {
-  color: #f48771;
+  color: var(--color-error);
 }
 
 .tab-loading-fallback {
