@@ -21,6 +21,20 @@
 
   --border-faint: #2b2b2b;
   --border-edge: #333333;
+
+  /* ── 布局与形状 ── */
+  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-5: 24px;
+  --radius-sm: 4px; --radius-md: 6px; --radius-lg: 8px;
+  --text-xs: 11px; --text-sm: 12px; --text-md: 13px; --text-lg: 14px; --text-xl: 16px;
+  --shadow-1: 0 2px 8px rgba(0, 0, 0, 0.35);
+  --shadow-2: 0 8px 24px rgba(0, 0, 0, 0.45);
+  --z-dropdown: 100; --z-modal: 200; --z-toast: 300;
+  --duration-fast: 120ms; --duration-normal: 160ms;
+  /* ── 语义色(源自 workbench.css 高频影子令牌) ── */
+  --color-error: #f48771; --color-warning: #cca700; --color-success: #89d185;
+  --color-info: #75beff; --color-link: #6aa8ff; --color-link-strong: #d8eaff;
+  --surface-1: #181818; --surface-2: #1f1f1f; --surface-3: #262626; --surface-4: #303030;
+  --border-subtle: #2b2b2b; --border-strong: #3c3c3c;
 }
 
 * {
