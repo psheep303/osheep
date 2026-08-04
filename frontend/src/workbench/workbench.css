@@ -1,4 +1,4 @@
-﻿.workbench {
+.workbench {
   display: grid;
   grid-template-rows: 36px 1fr;
   height: 100vh;
@@ -6,7 +6,7 @@
   background: var(--bg-editor);
 }
 
-/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ Titlebar 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* ==== Titlebar ==== */
 
 .titlebar {
   display: flex;
@@ -107,7 +107,7 @@
   color: var(--fg-strong);
 }
 
-/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ Body 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* ==== Body ==== */
 
 .body {
   display: flex;
@@ -116,7 +116,7 @@
   overflow: hidden;
 }
 
-/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ Activity Bar 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* ==== Activity Bar ==== */
 
 .activity-bar {
   display: flex;
@@ -173,7 +173,7 @@
   display: inline-flex;
 }
 
-/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ Side panels 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* ==== Side panels ==== */
 
 .side {
   background: var(--bg-shell);
@@ -232,7 +232,7 @@
   padding: 8px 20px;
 }
 
-/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ File Tree 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* ==== File Tree ==== */
 
 .file-tree {
   padding-bottom: 8px;
@@ -364,7 +364,7 @@
   pointer-events: none;
 }
 
-/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ Icon buttons 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* ==== Icon buttons ==== */
 
 .icon-btn {
   display: inline-flex;
@@ -407,7 +407,7 @@
   filter: brightness(1.1);
 }
 
-/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ Main / Editor 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* ==== Main / Editor ==== */
 
 .main {
   flex: 1 1 auto;
@@ -567,7 +567,7 @@
   line-height: 1.5;
 }
 
-/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ Bottom Panel 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* ==== Bottom Panel ==== */
 
 .bottom {
   background: var(--bg-shell);
@@ -628,7 +628,7 @@
   font-size: 12px;
 }
 
-/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ Resizers 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* ==== Resizers ==== */
 
 .resizer {
   flex-shrink: 0;
@@ -670,7 +670,7 @@
   background: var(--accent);
 }
 
-/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ Context Menu 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* ==== Context Menu ==== */
 
 .ctx-menu {
   position: fixed;
@@ -733,7 +733,7 @@
   margin: 4px 0;
 }
 
-/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ Settings 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* ==== Settings ==== */
 
 .settings-view {
   height: 100%;
@@ -1012,7 +1012,7 @@
   justify-content: flex-end;
 }
 
-/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ Agent view 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* ==== Agent view ==== */
 
 .agent-view {
   height: 100%;
@@ -1149,7 +1149,7 @@
   color: var(--accent);
 }
 
-/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ AI panel (right sidebar) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* ==== AI panel (right sidebar) ==== */
 
 .ai-panel {
   display: flex;
@@ -4420,7 +4420,7 @@
     width: min(94vw, 640px);
   }
 }
-/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ Chat tab (editor area) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* ==== Chat tab (editor area) ==== */
 
 .chat-tab {
   display: flex;
@@ -4815,7 +4815,7 @@
 }
 
 
-/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ osheep code: AI panel tabs 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* ==== osheep code: AI panel tabs ==== */
 
 .ai-panel__tabs {
   display: flex;
@@ -4869,7 +4869,7 @@
   gap: 4px;
 }
 
-/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ osheep code: timeline 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* ==== osheep code: timeline ==== */
 
 .chat-msg--assistant .chat-msg__content {
   /* legacy non-timeline assistant fallback 鈥?keep but unused for new msgs */
@@ -5245,7 +5245,7 @@
   border: 1px solid rgba(203, 36, 37, 0.32);
 }
 
-/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ edit_file thumbnail diff 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* ==== edit_file thumbnail diff ==== */
 
 .edit-diff {
   margin: 6px 0 0;
@@ -5487,7 +5487,7 @@
   color: var(--fg);
 }
 
-/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ Provider / Model picker 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* ==== Provider / Model picker ==== */
 
 .chat-composer__provider {
   position: relative;
@@ -5584,7 +5584,7 @@
   color: var(--fg-muted);
 }
 
-/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ Slash menu 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* ==== Slash menu ==== */
 
 .chat-composer__slash-backdrop {
   position: fixed;
@@ -5696,7 +5696,7 @@
   margin-left: 12px;
 }
 
-/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ Auto-allow panel 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* ==== Auto-allow panel ==== */
 
 .auto-allow-panel {
   position: relative;
@@ -5745,7 +5745,7 @@
   margin-top: 10px;
 }
 
-/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ Tool confirm bar 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* ==== Tool confirm bar ==== */
 
 .tool-confirm {
   margin: 0 12px 8px;
@@ -5891,7 +5891,7 @@
   max-width: 55%;
 }
 
-/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ Ask dialog (osheep code) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* ==== Ask dialog (osheep code) ==== */
 
 .ask-dialog__backdrop {
   position: fixed;
@@ -6091,7 +6091,7 @@
   background: rgba(229, 83, 75, 0.12);
 }
 
-/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ Chat Markdown 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* ==== Chat Markdown ==== */
 
 .chat-markdown {
   color: var(--fg-default);
@@ -6297,7 +6297,7 @@
   color: var(--fg-default);
 }
 
-/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ Chat timeline hairlines + shimmer 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* ==== Chat timeline hairlines + shimmer ==== */
 
 /* The vertical "thread" line that connects step icons. We keep the
  * pseudo-element on the timeline container but extend the effect with
@@ -6361,7 +6361,7 @@
   }
 }
 
-/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ Slash menu Model picker 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* ==== Slash menu Model picker ==== */
 
 .slash-model-list {
   max-height: 240px;
@@ -6450,7 +6450,7 @@
   color: var(--fg-strong);
 }
 
-/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ Composer model chip (between / and 鈫? 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* ==== Composer model chip ==== */
 
 .composer-model-chip {
   display: inline-flex;
@@ -6491,7 +6491,7 @@
   border-radius: 3px;
 }
 
-/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ Auto-allow panel (redesigned) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* ==== Auto-allow panel (redesigned) ==== */
 
 .auto-allow-panel-v2 {
   margin: 0 12px 8px;
@@ -6637,7 +6637,7 @@
   margin-top: 10px;
 }
 
-/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ Pending step "thinking" dot 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* ==== Pending step "thinking" dot ==== */
 
 .chat-msg__typing-pill {
   display: inline-flex;
@@ -6686,7 +6686,7 @@
 }
 
 
-/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ Terminal 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* ==== Terminal ==== */
 
 .terminal {
   display: flex;
@@ -6735,7 +6735,7 @@
   flex-shrink: 0;
 }
 
-/* 鈹€鈹€鈹€ Per-session panel, stacked; only the active one is visible 鈹€鈹€鈹€ */
+/* ==== Per-session panel, stacked; only the active one is visible ==== */
 
 .term-session {
   position: absolute;
@@ -6788,7 +6788,7 @@
   font-family: inherit;
 }
 
-/* 鈹€鈹€鈹€ Sidebar listing active sessions 鈹€鈹€鈹€ */
+/* ==== Sidebar listing active sessions ==== */
 
 .terminal__sidebar {
   width: 180px;
@@ -6936,7 +6936,7 @@
   pointer-events: none;
 }
 
-/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ Plan View 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* ==== Plan View ==== */
 
 .plan-view {
   display: flex;
@@ -7020,7 +7020,7 @@
   font-size: 12px;
 }
 
-/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ Markdown Preview (VS Code-like) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* ==== Markdown Preview (VS Code-like) ==== */
 
 .markdown-preview {
   max-width: 980px;
@@ -7198,7 +7198,7 @@
   border-radius: 3px;
 }
 
-/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ Modal 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* ==== Modal ==== */
 
 .modal-backdrop {
   position: fixed;
@@ -7368,7 +7368,7 @@
   font-family: "Cascadia Mono", Consolas, monospace;
 }
 
-/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ Search View 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* ==== Search View ==== */
 
 .search-view {
   display: flex;
@@ -7615,7 +7615,7 @@
   padding: 0 1px;
 }
 
-/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ Git View 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* ==== Git View ==== */
 
 .git-view {
   display: flex;
@@ -7699,7 +7699,7 @@
   font-family: inherit;
 }
 
-/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ Commit split-button 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* ==== Commit split-button ==== */
 
 .git-view__commit-split {
   position: relative;
@@ -7760,7 +7760,7 @@
   cursor: default;
 }
 
-/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ Branch popover 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* ==== Branch popover ==== */
 
 .git-view__branch-popover {
   position: relative;
@@ -7923,7 +7923,7 @@
   padding-bottom: 8px;
 }
 
-/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ Git Split (Changes / Graph) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* ==== Git Split (Changes / Graph) ==== */
 
 .git-view__split {
   flex: 1 1 0;
@@ -7942,7 +7942,7 @@
   overflow-x: hidden;
 }
 
-/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ Git Remotes (header button + popover) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* ==== Git Remotes (header button + popover) ==== */
 
 .git-view__remotes-btn {
   position: relative;
@@ -8178,7 +8178,7 @@
   color: var(--fg-default);
 }
 
-/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ Git Remotes Section 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* ==== Git Remotes Section ==== */
 
 .git-view__remote-row {
   padding: 2px 10px 2px 22px;
@@ -8250,7 +8250,7 @@
   font-size: 12px;
 }
 
-/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ Git Graph 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* ==== Git Graph ==== */
 
 .git-view__section--graph {
   margin-top: 0;
@@ -8994,7 +8994,7 @@
   text-overflow: ellipsis;
 }
 
-/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ run in/out card 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* ==== run in/out card ==== */
 
 .run-io {
   margin: 6px 0 0;
