@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
 
-import { readCssWithImports } from "./read-workbench-css.mjs";
+import { workbenchCssMetrics } from "./check-workbench-css-equivalence.mjs";
+import { normalizeCssLineEndings, readCssWithImports } from "./read-workbench-css.mjs";
 
 function withCssFiles(files, run) {
   const directory = mkdtempSync(resolve(tmpdir(), "osheep-css-"));
@@ -31,6 +32,30 @@ test("expands nested local CSS imports in source order", () => {
       assert.equal(
         readCssWithImports(resolve(directory, "entry.css")),
         ".before { order: 1; }\n.child { order: 2; }\n.shared { order: 3; }\n.after { order: 4; }\n",
+      );
+    },
+  );
+});
+
+test("normalizes CRLF and lone CR in imported CSS without changing content", () => {
+  withCssFiles(
+    {
+      "entry.css": '@import "./child.css";\r\n.after { order: 3; }\r\n',
+      "child.css": ".child { order: 1; }\r\n.shared { order: 2; }\r",
+    },
+    (directory) => {
+      const normalized = normalizeCssLineEndings(
+        readCssWithImports(resolve(directory, "entry.css")),
+      );
+      assert.equal(
+        normalized,
+        ".child { order: 1; }\n.shared { order: 2; }\n.after { order: 3; }\n",
+      );
+      const reference = ".child { order: 1; }\n.shared { order: 2; }\n.after { order: 3; }\n";
+      assert.deepEqual(workbenchCssMetrics(normalized), workbenchCssMetrics(reference));
+      assert.notDeepEqual(
+        workbenchCssMetrics(normalized),
+        workbenchCssMetrics(".child { order: 1; }\n.shared { order: 9; }\n.after { order: 3; }\n"),
       );
     },
   );

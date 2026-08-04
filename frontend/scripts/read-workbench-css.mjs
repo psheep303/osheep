@@ -21,6 +21,10 @@ export function readCssWithImports(entryPath, stack = []) {
   );
 }
 
+export function normalizeCssLineEndings(css) {
+  return css.replace(/\r\n?/g, "\n");
+}
+
 export function readWorkbenchCss() {
   return readCssWithImports(workbenchCssPath);
 }

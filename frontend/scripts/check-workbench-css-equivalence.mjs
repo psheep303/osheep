@@ -1,29 +1,38 @@
 import { createHash } from "node:crypto";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-import { readWorkbenchCss } from "./read-workbench-css.mjs";
+import { normalizeCssLineEndings, readWorkbenchCss } from "./read-workbench-css.mjs";
 
-const expectedSha256 = "d985a3c6e31a6accc38ec22c7c7636cfe1fbe588ec2b8d004ee49fc9ea4b3c86";
-const expectedBytes = 196153;
-const expectedBraces = 1423;
-const expectedDeclarations = 5786;
-const css = readWorkbenchCss();
-const sha256 = createHash("sha256").update(css).digest("hex");
-const bytes = Buffer.byteLength(css);
-const openingBraces = css.match(/{/g)?.length ?? 0;
-const closingBraces = css.match(/}/g)?.length ?? 0;
-const declarations = css.match(/(^|;)\s*[-a-zA-Z][\w-]*\s*:/gm)?.length ?? 0;
+const expected = {
+  sha256: "d985a3c6e31a6accc38ec22c7c7636cfe1fbe588ec2b8d004ee49fc9ea4b3c86",
+  bytes: 196153,
+  openingBraces: 1423,
+  closingBraces: 1423,
+  declarations: 5786,
+};
 
-if (sha256 !== expectedSha256) {
-  throw new Error(`workbench CSS content or order changed: ${sha256}`);
-}
-if (bytes !== expectedBytes) {
-  throw new Error(`workbench CSS byte count changed: ${bytes}`);
-}
-if (openingBraces !== expectedBraces || closingBraces !== expectedBraces) {
-  throw new Error(`workbench CSS brace count changed: ${openingBraces}/${closingBraces}`);
-}
-if (declarations !== expectedDeclarations) {
-  throw new Error(`workbench CSS declaration count changed: ${declarations}`);
+export function workbenchCssMetrics(css) {
+  const normalizedCss = normalizeCssLineEndings(css);
+  return {
+    sha256: createHash("sha256").update(normalizedCss).digest("hex"),
+    bytes: Buffer.byteLength(normalizedCss),
+    openingBraces: normalizedCss.match(/{/g)?.length ?? 0,
+    closingBraces: normalizedCss.match(/}/g)?.length ?? 0,
+    declarations: normalizedCss.match(/(^|;)\s*[-a-zA-Z][\w-]*\s*:/gm)?.length ?? 0,
+  };
 }
 
-console.log("workbench CSS equivalence checks passed");
+export function checkWorkbenchCssEquivalence(css = readWorkbenchCss()) {
+  const actual = workbenchCssMetrics(css);
+  for (const key of Object.keys(expected)) {
+    if (actual[key] !== expected[key]) {
+      throw new Error(`workbench CSS ${key} changed: ${actual[key]}`);
+    }
+  }
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  checkWorkbenchCssEquivalence();
+  console.log("workbench CSS equivalence checks passed");
+}
