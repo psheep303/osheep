@@ -408,6 +408,68 @@ test("system sync serializes missing destination path aliases", async (t) => {
   );
 });
 
+test("system sync normalizes missing Windows destination casing", async (t) => {
+  if (process.platform !== "win32") {
+    t.skip("Windows paths are required");
+    return;
+  }
+
+  const destinationParent = await fs.mkdtemp(
+    path.join(os.tmpdir(), "osheep-system-sync-destination-case-"),
+  );
+  const sourceA = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-system-sync-case-a-"));
+  const sourceB = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-system-sync-case-b-"));
+  const id = "tpl_syncdestcase";
+  const recordA = {
+    id,
+    source: "system",
+    title: "Case source A",
+    description: "Missing destination case source.",
+    readme: "Case source A data",
+    createdAt: 1,
+    updatedAt: 1,
+    nodes: [],
+    edges: [],
+  };
+  const recordB = {
+    ...recordA,
+    title: "Case source B",
+    readme: "Case source B data",
+  };
+  for (const [source, record] of [
+    [sourceA, recordA],
+    [sourceB, recordB],
+  ] as const) {
+    await fs.mkdir(path.join(source, id));
+    await fs.writeFile(path.join(source, id, "template.json"), JSON.stringify(record), "utf8");
+  }
+
+  const operations = Array.from({ length: 20 }, (_, index) => {
+    const useA = index % 2 === 0;
+    return getWorkflowTemplate("system", id, {
+      root: path.join(destinationParent, useA ? "RUN-CASE" : "run-case"),
+      systemSourceRoot: useA ? sourceA : sourceB,
+    }).then((template) => ({ template, expected: useA ? recordA : recordB }));
+  });
+  const results = await Promise.all(operations);
+
+  for (const { template, expected } of results) {
+    assert.equal(template.title, expected.title);
+    assert.equal(template.readme, expected.readme);
+  }
+  const runtimeTemplate = JSON.parse(
+    await fs.readFile(
+      path.join(destinationParent, "run-case", "system", id, "template.json"),
+      "utf8",
+    ),
+  );
+  assert.ok([recordA.title, recordB.title].includes(runtimeTemplate.title));
+  assert.equal(
+    runtimeTemplate.readme,
+    runtimeTemplate.title === recordA.title ? recordA.readme : recordB.readme,
+  );
+});
+
 test("invalid system sync marker triggers a full recovery", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-system-sync-recovery-"));
   const systemSourceRoot = await fs.mkdtemp(
