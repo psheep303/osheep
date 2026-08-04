@@ -133,3 +133,28 @@ Production preview browser smoke (`vite preview`, headless Chromium):
 - Console/page errors: none.
 
 Post-fix validation passed: frontend typecheck, lint, production build, both frontend test suites (9 tests total), and all three guard scripts. Desktop was not built or launched.
+
+## Terminal Initial Focus Regression Fix
+
+Fixed the deferred xterm initialization regression introduced by the lazy terminal mount. The `[active]` focus effect could run before the zero-delay mount timer populated `xtermRef`/`fitRef`; because an initially active session did not change `active`, that effect never reran and the terminal textarea remained unfocused.
+
+`frontend/src/workbench/TerminalSession.tsx` now:
+
+- keeps `activeRef.current` synchronized on every render, avoiding a stale `active` closure while the mount timer is pending;
+- after `term.open()`, initial `fit.fit()`, and ref installation, performs the same `fit.fit()` + `term.focus()` behavior when the session is still active;
+- retains the existing `[active]` transition effect for later session switches;
+- leaves the Strict Mode timer cancellation, terminal disposer, ResizeObserver cleanup, WebSocket closure, PTY kill, and ref clearing unchanged.
+
+A separate pure helper was not added because focus is an imperative xterm/DOM lifecycle behavior and the existing Node tests do not provide a component DOM harness. The focused frontend browser smoke exercised the real component instead.
+
+Browser terminal-focus smoke (`vite dev`, headless Chromium, no desktop/Tauri):
+
+- Selected the existing `osheep` workspace.
+- Expanded the bottom panel through its existing vertical resizer, creating the initially active terminal session.
+- Bottom panel visible: yes.
+- xterm visible: yes.
+- `.xterm-helper-textarea` count: 1.
+- `document.activeElement` is `.xterm-helper-textarea`: yes.
+- Console/page errors: none.
+
+Post-fix validation passed: frontend typecheck, lint, production build, both frontend test suites (9 tests total), and all three guard scripts. The build still emits the lazy Monaco/xterm/Markdown chunks, and desktop was not built or launched.

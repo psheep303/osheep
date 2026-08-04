@@ -38,6 +38,8 @@ export function TerminalSession({
   const fitRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const sessionIdRef = useRef<string | null>(null);
+  const activeRef = useRef(active);
+  activeRef.current = active;
   const [status, setStatus] = useState<Status>("connecting");
   const [error, setError] = useState<string | null>(null);
 
@@ -70,6 +72,14 @@ export function TerminalSession({
       }
       xtermRef.current = term;
       fitRef.current = fit;
+      if (activeRef.current) {
+        try {
+          fit.fit();
+          term.focus();
+        } catch {
+          /* layout race */
+        }
+      }
 
       // Intercept Ctrl+Shift+C / Ctrl+Shift+V so the browser doesn't open
       // devtools and we route them to clipboard ourselves. xterm's default
