@@ -232,41 +232,38 @@ test("different system sources serialize writes to one runtime root", async () =
   const sourceA = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-system-sync-source-a-"));
   const sourceB = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-system-sync-source-b-"));
   const id = "tpl_syncsources1";
-  const record = {
+  const recordA = {
     id,
     source: "system",
     title: "Source A template",
     description: "Serialized source template.",
-    readme: "",
+    readme: "Source A data",
     createdAt: 1,
     updatedAt: 1,
     nodes: [],
     edges: [],
   };
-  for (const [source, title] of [
-    [sourceA, "Source A template"],
-    [sourceB, "Source B template"],
+  const recordB = {
+    ...recordA,
+    title: "Source B template",
+    readme: "Source B data",
+  };
+  for (const [source, record] of [
+    [sourceA, recordA],
+    [sourceB, recordB],
   ] as const) {
     await fs.mkdir(path.join(source, id));
-    await fs.writeFile(
-      path.join(source, id, "template.json"),
-      JSON.stringify({ ...record, title }),
-      "utf8",
-    );
+    await fs.writeFile(path.join(source, id, "template.json"), JSON.stringify(record), "utf8");
   }
 
-  const pendingA = listWorkflowTemplates({ root, systemSourceRoot: sourceA });
-  const pendingB = listWorkflowTemplates({ root, systemSourceRoot: sourceB });
-  const [libraryA, libraryB] = await Promise.all([pendingA, pendingB]);
+  const pendingA = getWorkflowTemplate("system", id, { root, systemSourceRoot: sourceA });
+  const pendingB = getWorkflowTemplate("system", id, { root, systemSourceRoot: sourceB });
+  const [templateA, templateB] = await Promise.all([pendingA, pendingB]);
 
-  assert.deepEqual(
-    libraryA.system.map((template) => [template.id, template.title]),
-    [[id, "Source A template"]],
-  );
-  assert.deepEqual(
-    libraryB.system.map((template) => [template.id, template.title]),
-    [[id, "Source B template"]],
-  );
+  assert.equal(templateA.title, recordA.title);
+  assert.equal(templateA.readme, recordA.readme);
+  assert.equal(templateB.title, recordB.title);
+  assert.equal(templateB.readme, recordB.readme);
   const runtimeTitle = JSON.parse(
     await fs.readFile(path.join(root, "system", id, "template.json"), "utf8"),
   ).title;
