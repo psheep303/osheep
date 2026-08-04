@@ -1,5 +1,78 @@
 <!doctype html>
 <html lang="zh-CN">
-  <head><meta charset="UTF-8"><title>Osheep</title></head>
-  <body></body>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Osheep</title>
+    <style>
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+
+      body {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-direction: column;
+        gap: 16px;
+        background: #181818;
+        color: #cccccc;
+        font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      }
+
+      .brand {
+        color: #f2f2f2;
+        font-size: 24px;
+        font-weight: 600;
+      }
+
+      .spinner {
+        width: 28px;
+        height: 28px;
+        box-sizing: border-box;
+        border: 3px solid #3c3c3c;
+        border-top-color: #0078d4;
+        border-radius: 50%;
+        animation: spin 0.9s linear infinite;
+      }
+
+      .status {
+        font-size: 14px;
+      }
+
+      .error {
+        display: none;
+        max-width: min(480px, calc(100vw - 48px));
+        color: #f48771;
+        font-size: 14px;
+        line-height: 1.6;
+        text-align: center;
+        white-space: pre-wrap;
+      }
+
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="brand">Osheep</div>
+    <div class="spinner" id="spinner" aria-hidden="true"></div>
+    <div class="status" id="status">正在启动...</div>
+    <div class="error" id="error" role="alert"></div>
+    <script>
+      window.__osheepStartupError = function (message) {
+        document.getElementById("spinner").style.display = "none";
+        document.getElementById("status").style.display = "none";
+        var error = document.getElementById("error");
+        error.style.display = "block";
+        error.textContent =
+          "启动失败: " + message + "\n请查看日志目录中的 backend.log，或重启应用重试。";
+      };
+    </script>
+  </body>
 </html>
