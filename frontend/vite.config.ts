@@ -9,8 +9,10 @@ export default defineConfig({
     chunkSizeWarningLimit: 1200,
     rollupOptions: {
       output: {
+        onlyExplicitManualChunks: true,
         manualChunks(id: string) {
-          if (id.includes("monaco-editor")) return "monaco";
+          const normalizedId = id.replaceAll("\\\\", "/");
+          if (normalizedId.includes("/node_modules/monaco-editor/")) return "monaco";
           if (id.includes("@xterm")) return "xterm";
           if (id.includes("marked") || id.includes("dompurify")) return "markdown";
         },
