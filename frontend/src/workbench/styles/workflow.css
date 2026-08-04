@@ -25,7 +25,7 @@
   padding: 8px 10px;
   background: transparent;
   border: none;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   color: var(--accent);
   font-size: 13px;
   font-family: inherit;
@@ -55,7 +55,7 @@
   margin: 0 0 4px;
   background: var(--surface-2);
   border: 1px solid #2e2e2e;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   color: var(--fg-muted);
 }
 
@@ -85,7 +85,7 @@
   color: var(--color-error);
   padding: 6px 8px;
   font-size: 12px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -126,7 +126,7 @@
   align-items: center;
   gap: 6px;
   padding: 7px 10px;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   cursor: pointer;
   font-size: 13px;
   color: var(--fg-default);
@@ -154,7 +154,7 @@
   height: 24px;
   padding: 2px 6px;
   border: 1px solid var(--accent);
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   outline: none;
   background: var(--bg-editor);
   color: var(--fg-default);
@@ -179,9 +179,9 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   opacity: 0;
-  transition: opacity 0.1s ease, color 0.1s ease, background 0.1s ease;
+  transition: opacity var(--duration-fast) ease, color var(--duration-fast) ease, background var(--duration-fast) ease;
   padding: 0;
 }
 
@@ -223,7 +223,7 @@
   background: var(--surface-2);
   border: 1px solid var(--surface-4);
   color: var(--fg-strong);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   padding: 0 9px;
   font: inherit;
   outline: none;
@@ -239,7 +239,7 @@
   display: flex;
   align-items: center;
   padding: 0 10px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   color: var(--fg-strong);
   font-weight: 600;
   white-space: nowrap;
@@ -268,7 +268,7 @@
   border: 1px solid var(--border);
   background: #242424;
   color: var(--fg-default);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   padding: 0 10px;
   font: inherit;
   font-size: 12px;
@@ -387,7 +387,7 @@
   gap: 8px;
   padding: 10px;
   border: 1px solid var(--border-edge);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   background: #202020;
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.25);
 }
@@ -423,7 +423,7 @@
   background: var(--surface-1);
   border: 1px solid var(--border-edge);
   color: var(--fg-strong);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   padding: 0 8px;
   font: inherit;
   outline: none;
@@ -444,7 +444,7 @@
   height: 22px;
   padding: 0 8px;
   border: 1px solid #3a3a3a;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   color: var(--fg-muted);
   font-size: 11px;
   text-transform: uppercase;
@@ -463,7 +463,7 @@
   border: 1px solid var(--border-control);
   background: var(--surface-1);
   color: var(--fg-default);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   height: 26px;
   font: inherit;
   font-size: 12px;
@@ -501,7 +501,7 @@
   background: var(--surface-1);
   color: var(--fg-default);
   border: 1px solid var(--border-edge);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   padding: 8px;
   font: inherit;
   font-size: 12.5px;
@@ -520,7 +520,7 @@
   border: 1px solid var(--border-edge);
   background: var(--surface-1);
   color: var(--fg-default);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   padding: 0 8px;
   font: inherit;
   font-size: 12px;
@@ -542,7 +542,7 @@
   padding: 4px 5px;
   background: var(--surface-1);
   border: 1px solid var(--surface-4);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   color: var(--fg-muted);
   font-size: 12px;
 }
@@ -568,7 +568,7 @@
   padding: 8px;
   background: #161616;
   border: 1px solid var(--surface-4);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   color: var(--fg-muted);
   font-family: "Cascadia Mono", Consolas, "Courier New", monospace;
   font-size: 11.5px;
@@ -669,7 +669,7 @@
   justify-content: center;
   gap: 0;
   padding: 0 18px;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: #222222;
   border: 1px solid #393939;
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
@@ -875,7 +875,7 @@
   z-index: 15;
   padding: 6px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   background: rgba(20, 20, 20, 0.86);
   box-shadow: 0 10px 26px rgba(0, 0, 0, 0.42);
   pointer-events: auto;
@@ -914,7 +914,7 @@
   background: var(--surface-2);
   border: 1px solid var(--surface-4);
   color: var(--fg-strong);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   padding: 0 9px;
   font: inherit;
   outline: none;
@@ -936,7 +936,7 @@
   border: 1px solid var(--border);
   background: #242424;
   color: var(--fg-default);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   font: inherit;
   cursor: pointer;
 }
@@ -973,7 +973,7 @@
   height: 24px;
   padding: 0 9px;
   border: 1px solid var(--border-control);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: linear-gradient(180deg, #242424, #191919);
   color: #a9d6ff;
   font: inherit;
@@ -995,7 +995,7 @@
   border: 1px solid var(--border-control);
   background: var(--surface-1);
   color: var(--fg-muted);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   font: inherit;
   cursor: pointer;
 }
@@ -1020,7 +1020,7 @@
   min-width: 62px;
   padding: 0 8px;
   border: 1px solid #3a3a3a;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   color: var(--fg-muted);
   font-size: 11px;
   text-transform: uppercase;
@@ -1061,7 +1061,7 @@
   background: var(--surface-1);
   border: 1px solid var(--border-edge);
   color: var(--fg-default);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   padding: 7px 8px;
   font: inherit;
   font-size: 12.5px;
@@ -1080,7 +1080,7 @@
   width: 100%;
   min-width: 0;
   border: 1px solid var(--border-edge);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   padding: 7px 8px;
   font: inherit;
   font-size: 12.5px;
@@ -1243,7 +1243,7 @@
   border: 1px solid var(--border-control);
   background: var(--surface-1);
   color: var(--fg-default);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   font: inherit;
   font-size: 12px;
   cursor: pointer;
@@ -1396,7 +1396,7 @@
 .workflow-inspector__mcp-error {
   padding: 7px 8px;
   border: 1px solid #5c2821;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: rgba(159, 58, 45, 0.12);
   font-size: 12px;
   overflow-wrap: anywhere;
@@ -1416,7 +1416,7 @@
   min-height: 32px;
   padding: 4px 5px 4px 8px;
   border: 1px solid var(--surface-4);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: var(--surface-1);
 }
 
@@ -1442,7 +1442,7 @@
   padding: 8px;
   background: #161616;
   border: 1px solid var(--surface-4);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   color: var(--fg-muted);
   font-family: "Cascadia Mono", Consolas, "Courier New", monospace;
   font-size: 11.5px;
@@ -1456,7 +1456,7 @@
   overflow: auto;
   padding: 10px;
   border: 1px solid var(--surface-4);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: #161616;
 }
 
@@ -1500,7 +1500,7 @@
 .workflow-run-details__meta span {
   padding: 3px 7px;
   border: 1px solid var(--surface-4);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: var(--surface-1);
 }
 
@@ -1543,7 +1543,7 @@
   display: flex;
   flex-direction: column;
   border: 1px solid var(--surface-4);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: #101010;
   overflow: hidden;
 }
@@ -1624,7 +1624,7 @@
   height: 24px;
   padding: 0 9px;
   border: 1px solid var(--border-control);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: #1b1b1b;
   color: var(--fg-default);
   font: inherit;
@@ -1651,7 +1651,7 @@
   height: 24px;
   padding: 0 8px;
   border: 1px solid #2f2f2f;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: rgba(255, 255, 255, 0.03);
   color: var(--fg-default);
   font-size: 11px;
@@ -1691,7 +1691,7 @@
   overflow: auto;
   padding: 14px;
   border: 1px solid var(--surface-4);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: #161616;
   text-align: left;
 }
@@ -1743,7 +1743,7 @@
   border: 1px solid var(--border-control);
   background: var(--surface-1);
   color: var(--fg-default);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   padding: 0 10px;
   font: inherit;
   font-size: 12px;
@@ -1947,7 +1947,7 @@
   max-width: min(260px, 25vw);
   padding: 0 9px;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   color: var(--wf-text);
   font-size: 12px;
   font-weight: 600;
@@ -2001,7 +2001,7 @@
   min-width: 26px;
   padding: 0 8px;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--wf-text-soft);
   box-shadow: none;
@@ -2448,7 +2448,7 @@
   width: clamp(300px, 28vw, 380px) !important;
   height: auto !important;
   border: 1px solid var(--wf-border);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   background: var(--wf-panel);
 }
 
@@ -2507,7 +2507,7 @@
 .workflow-run-details__toggle {
   height: 28px;
   border: 1px solid var(--wf-border);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: rgba(255, 255, 255, 0.035);
   color: var(--wf-text-soft);
   box-shadow: none;
@@ -2534,7 +2534,7 @@
 
 .workflow-inspector__close {
   width: 28px;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
 }
 
 .workflow-inspector__eyebrow,
@@ -2593,7 +2593,7 @@
 .workflow-template-editor__mirror,
 .workflow-template-editor__control {
   border: 1px solid var(--wf-border);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: rgba(9, 9, 11, 0.72);
   color: var(--wf-text-soft);
   box-shadow: none;
@@ -2667,7 +2667,7 @@
   gap: 8px;
   padding: 8px 9px;
   border: 1px solid rgba(250, 204, 21, 0.34);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: rgba(250, 204, 21, 0.08);
   color: var(--color-warning-strong);
   font-size: 12px;
@@ -2703,7 +2703,7 @@
 .workflow-template-token {
   color: #bfdbfe;
   background: rgba(96, 165, 250, 0.11);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   box-shadow: inset 0 0 0 1px rgba(96, 165, 250, 0.16);
   text-shadow: none;
 }
@@ -2711,7 +2711,7 @@
 .workflow-template-editor {
   background: rgba(9, 9, 11, 0.72);
   border: 1px solid var(--wf-border);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   font-family: var(--wf-font-mono);
   font-size: 12px;
   line-height: 1.45;
@@ -2749,7 +2749,7 @@
 .workflow-template-token {
   color: transparent;
   background: rgba(37, 99, 235, 0.22);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   box-shadow: inset 0 0 0 1px rgba(96, 165, 250, 0.32);
   text-shadow: none;
 }
@@ -2764,7 +2764,7 @@
   height: 16px;
   margin: 0;
   border: 1px solid rgba(214, 204, 176, 0.18);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0)),
     #111318;
@@ -2971,7 +2971,7 @@
   gap: 9px;
   padding: 8px 9px;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   appearance: none;
   -webkit-appearance: none;
   background: transparent;
@@ -3084,7 +3084,7 @@
 .workflow-run-details__meta span,
 .workflow-inspector__mcp-error {
   border: 1px solid var(--wf-border);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: rgba(9, 9, 11, 0.64);
 }
 

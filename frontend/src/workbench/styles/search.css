@@ -32,7 +32,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
 }
 .search-view__toggle:hover {
   background: var(--bg-hover);
@@ -88,7 +88,7 @@
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
 }
 .search-view__mod:hover {
   background: var(--bg-hover);
@@ -173,7 +173,7 @@
 .search-view__file-count {
   background: #3a3d41;
   color: var(--fg-default);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   padding: 1px 8px;
   font-size: 10px;
   font-family: "Cascadia Mono", Consolas, monospace;
@@ -190,7 +190,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   font-size: 14px;
   line-height: 1;
 }

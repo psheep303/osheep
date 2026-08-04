@@ -94,7 +94,7 @@
   background: var(--bg-shell);
   color: var(--fg-default);
   border: 1px solid var(--border-edge);
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   padding: 3px 10px;
   cursor: pointer;
   font-family: inherit;
@@ -138,6 +138,8 @@
   color: var(--fg-default);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 12px;
+  transition: background-color var(--duration-fast) ease, color var(--duration-fast) ease,
+    border-color var(--duration-fast) ease;
 }
 
 .terminal__sidebar-item:hover {
@@ -174,10 +176,12 @@
   cursor: pointer;
   width: 18px;
   height: 18px;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   font-size: 14px;
   line-height: 1;
   opacity: 0;
+  transition: background-color var(--duration-fast) ease, color var(--duration-fast) ease,
+    opacity var(--duration-fast) ease;
 }
 
 .terminal__sidebar-item:hover .terminal__sidebar-close,
@@ -225,6 +229,7 @@
   font-family: inherit;
   font-size: 13px;
   cursor: pointer;
+  transition: background-color var(--duration-fast) ease, color var(--duration-fast) ease;
 }
 
 .terminal__menu-item:hover {

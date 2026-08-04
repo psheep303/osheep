@@ -40,7 +40,7 @@
   display: flex;
   gap: 2px;
   opacity: 0;
-  transition: opacity 0.1s ease;
+  transition: opacity var(--duration-fast) ease;
 }
 
 .side-view__header:hover .side-view__actions {

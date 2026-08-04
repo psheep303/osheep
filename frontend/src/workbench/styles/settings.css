@@ -81,7 +81,7 @@
 .settings-view__segmented {
   display: inline-flex;
   border: 1px solid var(--border-strong);
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   overflow: hidden;
   background: var(--surface-control);
 }
@@ -125,7 +125,7 @@
 
 .provider-card {
   border: 1px solid var(--border-faint);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   padding: 12px 14px;
   margin-bottom: 14px;
   background: rgba(255, 255, 255, 0.02);
@@ -240,7 +240,7 @@
   width: 100%;
   margin-top: 8px;
   border: 1px solid var(--border-strong);
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   background: #2a2a2a;
 }
 
@@ -308,7 +308,7 @@
 
 .agent-card {
   border: 1px solid var(--border-faint);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   padding: 12px 14px;
   margin-bottom: 14px;
   background: rgba(255, 255, 255, 0.02);
