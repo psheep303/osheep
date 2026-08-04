@@ -10,7 +10,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{webview::PageLoadEvent, Manager, WebviewUrl, WebviewWindowBuilder};
 
 #[derive(Default)]
 struct BackendProcessState {
@@ -20,6 +20,15 @@ struct BackendProcessState {
 
 #[derive(Clone, Default)]
 struct BackendProcess(Arc<Mutex<BackendProcessState>>);
+
+#[derive(Default)]
+struct StartupUiState {
+    shell_loaded: bool,
+    pending_error: Option<String>,
+}
+
+#[derive(Clone, Default)]
+struct StartupUi(Arc<Mutex<StartupUiState>>);
 
 #[tauri::command]
 async fn pick_workspace_folder(
@@ -40,30 +49,26 @@ async fn pick_workspace_folder(
 }
 
 impl BackendProcess {
-    fn store(&self, mut child: Child) -> io::Result<()> {
-        let error = {
-            let mut state = self
-                .0
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if state.stopping {
-                io::Error::new(
-                    io::ErrorKind::Interrupted,
-                    "desktop stopped during backend startup",
-                )
-            } else if state.child.is_some() {
-                io::Error::new(
-                    io::ErrorKind::AlreadyExists,
-                    "backend process already managed",
-                )
-            } else {
-                state.child = Some(child);
-                return Ok(());
-            }
-        };
+    fn spawn(&self, command: &mut Command) -> io::Result<()> {
+        let mut state = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.stopping {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "desktop stopped during backend startup",
+            ));
+        }
+        if state.child.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "backend process already managed",
+            ));
+        }
 
-        terminate_child(&mut child);
-        Err(error)
+        state.child = Some(command.spawn()?);
+        Ok(())
     }
 
     fn child_exited(&self) -> io::Result<Option<std::process::ExitStatus>> {
@@ -112,6 +117,34 @@ impl BackendProcess {
         };
         if let Some(mut child) = child {
             terminate_child(&mut child);
+        }
+    }
+}
+
+impl StartupUi {
+    fn queue_error(&self, message: String) -> Option<String> {
+        let mut state = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.shell_loaded {
+            Some(message)
+        } else {
+            state.pending_error = Some(message);
+            None
+        }
+    }
+
+    fn mark_shell_loaded(&self) -> Option<String> {
+        let mut state = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.shell_loaded {
+            None
+        } else {
+            state.shell_loaded = true;
+            state.pending_error.take()
         }
     }
 }
@@ -221,7 +254,7 @@ fn wait_until_listening(backend: &BackendProcess, port: u16) -> io::Result<()> {
     ))
 }
 
-fn spawn_local_backend(app: &tauri::AppHandle, port: u16) -> io::Result<Child> {
+fn local_backend_command(app: &tauri::AppHandle, port: u16) -> io::Result<Command> {
     let paths = local_backend_paths(app)?;
     let node = node_path(&paths.node);
     let script = node_path(&paths.script);
@@ -282,7 +315,7 @@ fn spawn_local_backend(app: &tauri::AppHandle, port: u16) -> io::Result<Child> {
         command.creation_flags(CREATE_NO_WINDOW);
     }
 
-    command.spawn()
+    Ok(command)
 }
 
 fn javascript_string(value: &str) -> String {
@@ -309,9 +342,37 @@ fn javascript_string(value: &str) -> String {
 
 fn startup_error_script(message: &str) -> String {
     format!(
-        "(() => {{ const show = () => window.__osheepStartupError?.({}); if (typeof window.__osheepStartupError === 'function') {{ show(); }} else {{ window.addEventListener(document.readyState === 'loading' ? 'DOMContentLoaded' : 'load', show, {{ once: true }}); }} }})()",
+        "window.__osheepStartupError({})",
         javascript_string(message)
     )
+}
+
+fn schedule_startup_error(
+    handle: &tauri::AppHandle,
+    backend: &BackendProcess,
+    message: String,
+) {
+    if backend.is_stopping() {
+        return;
+    }
+    let script = startup_error_script(&message);
+    let main_handle = handle.clone();
+    let main_backend = backend.clone();
+    if let Err(error) = handle.run_on_main_thread(move || {
+        if main_backend.is_stopping() {
+            return;
+        }
+        match main_handle.get_webview_window("main") {
+            Some(window) => {
+                if let Err(error) = window.eval(script) {
+                    eprintln!("failed to show startup error: {error}");
+                }
+            }
+            None => eprintln!("main window closed before startup error display"),
+        }
+    }) {
+        eprintln!("failed to schedule startup error display: {error}");
+    }
 }
 
 fn remote_url() -> io::Result<Option<tauri::Url>> {
@@ -356,18 +417,32 @@ pub fn run() {
                 return Ok(());
             }
 
+            let startup_ui = StartupUi::default();
+            let page_ui = startup_ui.clone();
+            let page_backend = backend.clone();
             WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
                 .title("Osheep")
                 .inner_size(1440.0, 900.0)
                 .min_inner_size(960.0, 640.0)
+                .on_page_load(move |window, payload| {
+                    if payload.event() == PageLoadEvent::Finished {
+                        if let Some(message) = page_ui.mark_shell_loaded() {
+                            schedule_startup_error(window.app_handle(), &page_backend, message);
+                        }
+                    }
+                })
                 .build()?;
 
             let handle = app.handle().clone();
             thread::spawn(move || {
                 let outcome = (|| -> io::Result<u16> {
                     let port = reserve_port()?;
-                    backend.store(spawn_local_backend(&handle, port)?)?;
-                    wait_until_listening(&backend, port)?;
+                    let mut command = local_backend_command(&handle, port)?;
+                    backend.spawn(&mut command)?;
+                    if let Err(error) = wait_until_listening(&backend, port) {
+                        backend.cleanup_startup_failure();
+                        return Err(error);
+                    }
                     Ok(port)
                 })();
 
@@ -408,27 +483,8 @@ pub fn run() {
                         }
                     }
                     Err(error) => {
-                        backend.cleanup_startup_failure();
-                        if backend.is_stopping() {
-                            return;
-                        }
-                        let script = startup_error_script(&error.to_string());
-                        let main_handle = handle.clone();
-                        let main_backend = backend.clone();
-                        if let Err(schedule_error) = handle.run_on_main_thread(move || {
-                            if main_backend.is_stopping() {
-                                return;
-                            }
-                            match main_handle.get_webview_window("main") {
-                                Some(window) => {
-                                    if let Err(error) = window.eval(script) {
-                                        eprintln!("failed to show startup error: {error}");
-                                    }
-                                }
-                                None => eprintln!("main window closed before startup error display"),
-                            }
-                        }) {
-                            eprintln!("failed to schedule startup error display: {schedule_error}");
+                        if let Some(message) = startup_ui.queue_error(error.to_string()) {
+                            schedule_startup_error(&handle, &backend, message);
                         }
                     }
                 }
@@ -472,38 +528,53 @@ mod tests {
     }
 
     #[test]
-    fn startup_error_script_waits_for_page_callback() {
-        let script = startup_error_script("bad \\\"input\n");
-        assert!(script.contains("typeof window.__osheepStartupError === 'function'"));
-        assert!(script.contains("document.readyState === 'loading' ? 'DOMContentLoaded' : 'load'"));
-        assert!(script.contains("{ once: true }"));
-        assert!(script.contains("window.__osheepStartupError?.(\"bad \\\\\\\"input\\n\")"));
+    fn startup_error_script_calls_loaded_page_callback() {
+        assert_eq!(
+            startup_error_script("bad \\\"input\n"),
+            "window.__osheepStartupError(\"bad \\\\\\\"input\\n\")"
+        );
+    }
+
+    #[test]
+    fn startup_ui_flushes_error_after_shell_load() {
+        let ui = StartupUi::default();
+        assert_eq!(ui.queue_error("startup failed".into()), None);
+        assert_eq!(ui.mark_shell_loaded(), Some("startup failed".into()));
+        assert_eq!(ui.mark_shell_loaded(), None);
+    }
+
+    #[test]
+    fn startup_ui_dispatches_error_immediately_after_shell_load() {
+        let ui = StartupUi::default();
+        assert_eq!(ui.mark_shell_loaded(), None);
+        assert_eq!(ui.queue_error("startup failed".into()), Some("startup failed".into()));
     }
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn store_after_stop_terminates_rejected_child() {
-        use std::os::windows::process::CommandExt;
+    fn spawn_after_stop_does_not_start_command() {
+        use std::{os::windows::process::CommandExt, time::SystemTime};
 
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let marker = env::temp_dir().join(format!(
+            "osheep-spawn-after-stop-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .expect("system time after Unix epoch")
+                .as_nanos()
+        ));
         let backend = BackendProcess::default();
         backend.stop();
-        let child = Command::new("cmd")
-            .args(["/C", "ping -n 30 127.0.0.1 >NUL"])
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn()
-            .expect("spawn test child");
-        let pid = child.id();
+        let mut command = Command::new("cmd");
+        command
+            .args(["/C", &format!("type nul > \\\"{}\\\"", marker.display())])
+            .creation_flags(CREATE_NO_WINDOW);
 
-        let error = backend.store(child).expect_err("store must reject after stop");
+        let error = backend
+            .spawn(&mut command)
+            .expect_err("spawn must reject after stop");
         assert_eq!(error.kind(), io::ErrorKind::Interrupted);
-
-        let status = Command::new("tasklist")
-            .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
-            .creation_flags(CREATE_NO_WINDOW)
-            .output()
-            .expect("query test child");
-        let output = String::from_utf8_lossy(&status.stdout);
-        assert!(!output.contains(&pid.to_string()), "child {pid} is still running");
+        assert!(!marker.exists(), "rejected command still ran");
     }
 }
