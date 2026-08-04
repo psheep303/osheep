@@ -61,6 +61,23 @@ button {
   font-family: inherit;
 }
 
+body :where(
+  button,
+  [href],
+  input,
+  select,
+  textarea,
+  [tabindex]:not([tabindex="-1"])
+):focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.monaco-editor textarea:focus-visible,
+.xterm-helper-textarea:focus-visible {
+  outline: none;
+}
+
 body.is-resizing-x {
   cursor: col-resize !important;
   user-select: none;
@@ -93,4 +110,7 @@ body.is-resizing-y * {
 ::-webkit-scrollbar-thumb:hover {
   background: #52525b;
   background-clip: padding-box;
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
 }

@@ -21,6 +21,8 @@
   white-space: nowrap;
   color: var(--fg-default);
   position: relative;
+  transition: background-color var(--duration-fast) ease, color var(--duration-fast) ease,
+    border-color var(--duration-fast) ease;
 }
 
 .tree-row:hover {
@@ -74,7 +76,7 @@
   display: flex;
   gap: 2px;
   opacity: 0;
-  transition: opacity 0.1s ease;
+  transition: opacity var(--duration-fast) ease;
 }
 
 .tree-row__badge {
@@ -142,8 +144,10 @@
   border: none;
   color: var(--fg-default);
   cursor: pointer;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   padding: 0;
+  transition: background-color var(--duration-fast) ease, color var(--duration-fast) ease,
+    border-color var(--duration-fast) ease;
 }
 
 .icon-btn:hover {
@@ -168,6 +172,7 @@
   font-size: 12px;
   border-radius: 2px;
   cursor: pointer;
+  transition: filter var(--duration-fast) ease;
 }
 .primary-btn:hover {
   filter: brightness(1.1);
