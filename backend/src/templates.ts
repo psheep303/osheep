@@ -219,20 +219,24 @@ async function sourceSignature(systemSourceRoot: string): Promise<string | null>
 }
 
 async function canonicalSyncPath(value: string): Promise<string> {
-  try {
-    return await fs.realpath(value);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return path.resolve(value);
-    throw error;
+  let current = path.resolve(value);
+  const missingSegments: string[] = [];
+
+  while (true) {
+    try {
+      return path.join(await fs.realpath(current), ...missingSegments);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      const parent = path.dirname(current);
+      if (parent === current) return path.join(current, ...missingSegments);
+      missingSegments.unshift(path.basename(current));
+      current = parent;
+    }
   }
 }
 
 async function templateLibraryDestinationKey(root: string): Promise<string> {
-  const runtimeRoot = sourceDir(root, "system");
-  return fs.realpath(runtimeRoot).catch(async (error: NodeJS.ErrnoException) => {
-    if (error.code !== "ENOENT") throw error;
-    return path.join(await canonicalSyncPath(root), "system");
-  });
+  return canonicalSyncPath(sourceDir(root, "system"));
 }
 
 async function withTemplateLibrary<T>(
