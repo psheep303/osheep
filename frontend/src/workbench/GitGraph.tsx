@@ -1,5 +1,6 @@
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { type GitCommit, getGitLog } from "./api";
+import { gitGraphPalette, gitGraphRefColors } from "./theme";
 
 interface GitGraphProps {
   workspaceId: string;
@@ -34,9 +35,9 @@ const SWIMLANE_CURVE_RADIUS = 5;
 const CIRCLE_RADIUS = 4;
 const CIRCLE_STROKE_WIDTH = 2;
 
-const HISTORY_ITEM_REF_COLOR = "#3794ff";
-const HISTORY_ITEM_REMOTE_REF_COLOR = "#b180d7";
-const GRAPH_COLORS = ["#ffb000", "#dc267f", "#994f00", "#40b0a6", "#b66dff"];
+const { ref: HISTORY_ITEM_REF_COLOR, remoteRef: HISTORY_ITEM_REMOTE_REF_COLOR } =
+  gitGraphRefColors();
+const GRAPH_COLORS = gitGraphPalette();
 
 export function GitGraph({ workspaceId, refreshKey }: GitGraphProps) {
   const [commits, setCommits] = useState<GitCommit[]>([]);

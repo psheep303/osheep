@@ -1,6 +1,7 @@
 import "./monaco-setup";
 import { type BeforeMount, DiffEditor } from "@monaco-editor/react";
 import { languageFromPath } from "./language";
+import { monacoDiffColors } from "./theme";
 
 interface DiffPaneProps {
   path: string;
@@ -12,19 +13,11 @@ interface DiffPaneProps {
 }
 
 const beforeMount: BeforeMount = (monaco) => {
-  // Reuse the dark theme registered by EditorPane (idempotent define is safe).
   monaco.editor.defineTheme("osheep-dark", {
     base: "vs-dark",
     inherit: true,
     rules: [],
-    colors: {
-      "editor.background": "#1f1f1f",
-      "editor.foreground": "#cccccc",
-      "diffEditor.insertedTextBackground": "#23863633",
-      "diffEditor.removedTextBackground": "#cb242533",
-      "diffEditorGutter.insertedLineBackground": "#23863622",
-      "diffEditorGutter.removedLineBackground": "#cb242522",
-    },
+    colors: monacoDiffColors(),
   });
 };
 

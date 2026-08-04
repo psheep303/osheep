@@ -3,6 +3,7 @@ import Editor, { type BeforeMount, type OnMount } from "@monaco-editor/react";
 import type * as Monaco from "monaco-editor";
 import { useEffect, useRef } from "react";
 import { languageFromPath } from "./language";
+import { monacoEditorColors } from "./theme";
 
 export interface GotoTarget {
   line: number;
@@ -25,25 +26,7 @@ const beforeMount: BeforeMount = (monaco) => {
     base: "vs-dark",
     inherit: true,
     rules: [],
-    colors: {
-      "editor.background": "#1f1f1f",
-      "editor.foreground": "#cccccc",
-      "editor.lineHighlightBackground": "#ffffff0a",
-      "editor.lineHighlightBorder": "#00000000",
-      "editorLineNumber.foreground": "#6e7681",
-      "editorLineNumber.activeForeground": "#cccccc",
-      "editorCursor.foreground": "#aeafad",
-      "editorGutter.background": "#1f1f1f",
-      "editorIndentGuide.background": "#404040",
-      "editorIndentGuide.activeBackground": "#707070",
-      "editor.selectionBackground": "#264f78",
-      "editor.inactiveSelectionBackground": "#3a3d41",
-      "editorWidget.background": "#202020",
-      "editorWidget.border": "#454545",
-      "scrollbarSlider.background": "#79797966",
-      "scrollbarSlider.hoverBackground": "#646464b3",
-      "scrollbarSlider.activeBackground": "#bfbfbf66",
-    },
+    colors: monacoEditorColors(),
   });
 };
 

@@ -11,6 +11,7 @@ import {
   type ShellProfile,
   type TerminalCreateResp,
 } from "./api";
+import { xtermTheme } from "./theme";
 
 interface TerminalSessionProps {
   workspaceId: string | null;
@@ -54,12 +55,7 @@ export function TerminalSession({
         cursorBlink: true,
         fontFamily: "Cascadia Mono, Consolas, Courier New, monospace",
         fontSize: 13,
-        theme: {
-          background: "#1f1f1f",
-          foreground: "#cccccc",
-          cursor: "#aeafad",
-          selectionBackground: "#264f78",
-        },
+        theme: xtermTheme(),
         scrollback: 5000,
       });
       const fit = new FitAddon();
