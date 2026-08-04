@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   deleteWorkflowTemplate as apiDeleteWorkflowTemplate,
   createWorkflow,
@@ -12,7 +12,10 @@ import {
   type WorkflowTemplateSummary,
 } from "./api";
 import { ContextMenu } from "./ContextMenu";
-import { MarkdownPreview } from "./MarkdownPreview";
+
+const MarkdownPreview = lazy(() =>
+  import("./MarkdownPreview").then((module) => ({ default: module.MarkdownPreview })),
+);
 
 interface TemplateViewProps {
   activeTemplateId: string | null;
@@ -347,7 +350,9 @@ export function TemplateDetail({
       {error && <div className="template-detail__error">{error}</div>}
       <div className="template-detail__content">
         {template.readme.trim() ? (
-          <MarkdownPreview source={template.readme} />
+          <Suspense fallback={<div className="tab-loading-fallback" />}>
+            <MarkdownPreview source={template.readme} />
+          </Suspense>
         ) : (
           <div className="template-detail__empty">This template does not have a README yet.</div>
         )}

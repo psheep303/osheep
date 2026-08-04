@@ -1,6 +1,9 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { type FsNode, PLAN_DIR, readDirShallow, readFileText } from "./fs";
-import { MarkdownPreview } from "./MarkdownPreview";
+
+const MarkdownPreview = lazy(() =>
+  import("./MarkdownPreview").then((module) => ({ default: module.MarkdownPreview })),
+);
 
 interface PlanViewProps {
   workspaceId: string | null;
@@ -89,7 +92,9 @@ export function PlanView({ workspaceId }: PlanViewProps) {
         {error ? (
           <div className="plan-view__error">{error}</div>
         ) : selectedPath ? (
-          <MarkdownPreview source={content} />
+          <Suspense fallback={<div className="tab-loading-fallback" />}>
+            <MarkdownPreview source={content} />
+          </Suspense>
         ) : (
           <div className="muted plan-view__placeholder">从左侧选择一份计划</div>
         )}

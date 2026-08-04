@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityBar, type ViewId } from "./ActivityBar";
 import { ClaudeCodeAgentView, CodexAgentView } from "./AgentSettingsView";
 import { AiPanel } from "./AiPanel";
@@ -9,10 +9,7 @@ import {
   getGitStatus,
   getTemplateCapabilities,
 } from "./api";
-import { BottomPanel } from "./BottomPanel";
-import { DiffPane } from "./DiffPane";
-import { EditorPane, type GotoTarget } from "./EditorPane";
-import { FileTree } from "./FileTree";
+import type { GotoTarget } from "./EditorPane";
 import {
   type FsNode,
   loadOsheepSettings,
@@ -20,18 +17,38 @@ import {
   saveOsheepSettings,
   writeFileText,
 } from "./fs";
-import { GitView } from "./GitView";
 import { buildDecorations } from "./git-decorations";
-import { MarkdownPreview } from "./MarkdownPreview";
 import { Resizer } from "./Resizer";
-import { SearchView } from "./SearchView";
 import { SettingsView } from "./SettingsView";
 import { DEFAULT_SETTINGS, type OsheepSettings } from "./settings";
-import { TemplateDetail, TemplateView } from "./TemplateView";
 import type { AgentTerminalLaunchRequest } from "./Terminal";
-import { WorkflowTab } from "./WorkflowTab";
 import { WorkspacePicker } from "./WorkspacePicker";
 import "./workbench.css";
+
+const BottomPanel = lazy(() =>
+  import("./BottomPanel").then((module) => ({ default: module.BottomPanel })),
+);
+const DiffPane = lazy(() => import("./DiffPane").then((module) => ({ default: module.DiffPane })));
+const EditorPane = lazy(() =>
+  import("./EditorPane").then((module) => ({ default: module.EditorPane })),
+);
+const FileTree = lazy(() => import("./FileTree").then((module) => ({ default: module.FileTree })));
+const GitView = lazy(() => import("./GitView").then((module) => ({ default: module.GitView })));
+const MarkdownPreview = lazy(() =>
+  import("./MarkdownPreview").then((module) => ({ default: module.MarkdownPreview })),
+);
+const SearchView = lazy(() =>
+  import("./SearchView").then((module) => ({ default: module.SearchView })),
+);
+const TemplateDetail = lazy(() =>
+  import("./TemplateView").then((module) => ({ default: module.TemplateDetail })),
+);
+const TemplateView = lazy(() =>
+  import("./TemplateView").then((module) => ({ default: module.TemplateView })),
+);
+const WorkflowTab = lazy(() =>
+  import("./WorkflowTab").then((module) => ({ default: module.WorkflowTab })),
+);
 
 interface FileTab {
   kind: "file";
@@ -580,72 +597,77 @@ export function Workbench() {
 
         {!leftCollapsed && (
           <div className="side" style={{ width: leftWidth }}>
-            {activeView === "workflow" && (
-              <AiPanel
-                workspaceId={workspaceId}
-                onOpenWorkflow={openWorkflowTab}
-                activeWorkflowId={activeTab?.kind === "workflow" ? activeTab.workflowId : null}
-                refreshSignal={aiRefreshSignal}
-                onWorkflowDeleted={(workflowId) => closeTab(workflowPath(workflowId))}
-                developerMode={developerMode}
-                onTemplatesChanged={() => setTemplateRefreshSignal((signal) => signal + 1)}
-              />
-            )}
-            {activeView === "template" && (
-              <TemplateView
-                activeTemplateId={activeTab?.kind === "template" ? activeTab.templateId : null}
-                onOpenTemplate={openTemplateTab}
-                onTemplateDeleted={(source, templateId) =>
-                  closeTemplateArtifacts(source, templateId)
-                }
-                developerMode={developerMode}
-                refreshSignal={templateRefreshSignal}
-              />
-            )}
-            {activeView === "explorer" &&
-              (workspaceId ? (
-                <FileTree
+            <Suspense fallback={<div className="tab-loading-fallback" />}>
+              {activeView === "workflow" && (
+                <AiPanel
                   workspaceId={workspaceId}
-                  workspaceName={workspaceName ?? workspaceId}
-                  selectedPath={selectedTreePath}
-                  onSelect={setSelectedTreePath}
-                  onOpenFile={openFile}
-                  onPathRenamed={onPathRenamed}
-                  onPathDeleted={onPathDeleted}
-                  decorations={decorations}
-                  onFsChange={refreshGitStatus}
-                  refreshSignal={fileTreeVersion}
+                  onOpenWorkflow={openWorkflowTab}
+                  activeWorkflowId={activeTab?.kind === "workflow" ? activeTab.workflowId : null}
+                  refreshSignal={aiRefreshSignal}
+                  onWorkflowDeleted={(workflowId) => closeTab(workflowPath(workflowId))}
+                  developerMode={developerMode}
+                  onTemplatesChanged={() => setTemplateRefreshSignal((signal) => signal + 1)}
                 />
-              ) : (
-                <div className="side-view">
-                  <div className="side-view__header">
-                    <span className="side-view__title">资源管理器</span>
+              )}
+              {activeView === "template" && (
+                <TemplateView
+                  activeTemplateId={activeTab?.kind === "template" ? activeTab.templateId : null}
+                  onOpenTemplate={openTemplateTab}
+                  onTemplateDeleted={(source, templateId) =>
+                    closeTemplateArtifacts(source, templateId)
+                  }
+                  developerMode={developerMode}
+                  refreshSignal={templateRefreshSignal}
+                />
+              )}
+              {activeView === "explorer" &&
+                (workspaceId ? (
+                  <FileTree
+                    workspaceId={workspaceId}
+                    workspaceName={workspaceName ?? workspaceId}
+                    selectedPath={selectedTreePath}
+                    onSelect={setSelectedTreePath}
+                    onOpenFile={openFile}
+                    onPathRenamed={onPathRenamed}
+                    onPathDeleted={onPathDeleted}
+                    decorations={decorations}
+                    onFsChange={refreshGitStatus}
+                    refreshSignal={fileTreeVersion}
+                  />
+                ) : (
+                  <div className="side-view">
+                    <div className="side-view__header">
+                      <span className="side-view__title">资源管理器</span>
+                    </div>
+                    <div className="side-view__body side-view__body--padded">
+                      <div className="muted">所有文件由后端 osheep-backend 提供</div>
+                    </div>
                   </div>
-                  <div className="side-view__body side-view__body--padded">
-                    <div className="muted">所有文件由后端 osheep-backend 提供</div>
-                  </div>
-                </div>
-              ))}
-            {activeView === "search" && (
-              <SearchView
-                workspaceId={workspaceId}
-                onOpenMatch={(p, line, col) => void openFileAt(p, line, col)}
-              />
-            )}
-            {activeView === "git" && (
-              <GitView
-                workspaceId={workspaceId}
-                status={gitStatus}
-                onRefreshStatus={refreshGitStatus}
-                onOpenDiff={(p, base, head) => void openDiffTab(p, base, head)}
-              />
-            )}
-            {activeView === "claude-code" && (
-              <ClaudeCodeAgentView workspaceId={workspaceId} onResumeSession={resumeAgentSession} />
-            )}
-            {activeView === "codex" && (
-              <CodexAgentView workspaceId={workspaceId} onResumeSession={resumeAgentSession} />
-            )}
+                ))}
+              {activeView === "search" && (
+                <SearchView
+                  workspaceId={workspaceId}
+                  onOpenMatch={(p, line, col) => void openFileAt(p, line, col)}
+                />
+              )}
+              {activeView === "git" && (
+                <GitView
+                  workspaceId={workspaceId}
+                  status={gitStatus}
+                  onRefreshStatus={refreshGitStatus}
+                  onOpenDiff={(p, base, head) => void openDiffTab(p, base, head)}
+                />
+              )}
+              {activeView === "claude-code" && (
+                <ClaudeCodeAgentView
+                  workspaceId={workspaceId}
+                  onResumeSession={resumeAgentSession}
+                />
+              )}
+              {activeView === "codex" && (
+                <CodexAgentView workspaceId={workspaceId} onResumeSession={resumeAgentSession} />
+              )}
+            </Suspense>
           </div>
         )}
         <Resizer axis="x" onResizeStart={onLeftStart} onResize={onLeftResize} />
@@ -717,80 +739,82 @@ export function Workbench() {
               )}
             </div>
             <div className="editor-host">
-              {activeFileTab ? (
-                isMarkdownPath(activeFileTab.path) && activeFileTab.previewMode ? (
-                  <div className="editor-host__preview">
-                    <MarkdownPreview source={activeFileTab.content} />
-                  </div>
-                ) : (
-                  <div className="editor-host__source">
-                    <EditorPane
-                      path={activeFileTab.path}
-                      value={activeFileTab.content}
-                      fontSize={settings.editor.fontSize}
-                      tabSize={settings.editor.tabSize}
-                      onChange={updateActive}
-                      onSave={saveActive}
-                      goto={activeFileTab.goto ?? null}
-                    />
-                  </div>
-                )
-              ) : activeDiffTab ? (
-                <div className="editor-host__source">
-                  {activeDiffTab.binary ? (
-                    <div className="empty-hint">该文件为二进制，无法显示 diff</div>
+              <Suspense fallback={<div className="tab-loading-fallback" />}>
+                {activeFileTab ? (
+                  isMarkdownPath(activeFileTab.path) && activeFileTab.previewMode ? (
+                    <div className="editor-host__preview">
+                      <MarkdownPreview source={activeFileTab.content} />
+                    </div>
                   ) : (
-                    <DiffPane
-                      path={activeDiffTab.filePath}
-                      fontSize={settings.editor.fontSize}
-                      leftContent={activeDiffTab.leftContent}
-                      rightContent={activeDiffTab.rightContent}
+                    <div className="editor-host__source">
+                      <EditorPane
+                        path={activeFileTab.path}
+                        value={activeFileTab.content}
+                        fontSize={settings.editor.fontSize}
+                        tabSize={settings.editor.tabSize}
+                        onChange={updateActive}
+                        onSave={saveActive}
+                        goto={activeFileTab.goto ?? null}
+                      />
+                    </div>
+                  )
+                ) : activeDiffTab ? (
+                  <div className="editor-host__source">
+                    {activeDiffTab.binary ? (
+                      <div className="empty-hint">该文件为二进制，无法显示 diff</div>
+                    ) : (
+                      <DiffPane
+                        path={activeDiffTab.filePath}
+                        fontSize={settings.editor.fontSize}
+                        leftContent={activeDiffTab.leftContent}
+                        rightContent={activeDiffTab.rightContent}
+                      />
+                    )}
+                  </div>
+                ) : activeTab?.kind === "settings" ? (
+                  <SettingsView
+                    settings={settings}
+                    onChange={updateSettings}
+                    hasProject={!!workspaceId}
+                  />
+                ) : activeTab?.kind === "workflow" ? (
+                  workspaceId ? (
+                    <WorkflowTab
+                      workspaceId={workspaceId}
+                      workflowId={activeTab.workflowId}
+                      onWorkflowChanged={bumpAiRefresh}
+                      onFilesChanged={bumpFileTree}
+                      onResumeSession={resumeAgentSession}
+                      onTemplateBinding={(templateBinding) =>
+                        setTabs((current) =>
+                          current.map((tab) =>
+                            tab.kind === "workflow" && tab.workflowId === activeTab.workflowId
+                              ? { ...tab, templateBinding }
+                              : tab,
+                          ),
+                        )
+                      }
                     />
-                  )}
-                </div>
-              ) : activeTab?.kind === "settings" ? (
-                <SettingsView
-                  settings={settings}
-                  onChange={updateSettings}
-                  hasProject={!!workspaceId}
-                />
-              ) : activeTab?.kind === "workflow" ? (
-                workspaceId ? (
-                  <WorkflowTab
+                  ) : (
+                    <div className="empty-hint">请先打开工作区</div>
+                  )
+                ) : activeTab?.kind === "template" ? (
+                  <TemplateDetail
                     workspaceId={workspaceId}
-                    workflowId={activeTab.workflowId}
-                    onWorkflowChanged={bumpAiRefresh}
-                    onFilesChanged={bumpFileTree}
-                    onResumeSession={resumeAgentSession}
-                    onTemplateBinding={(templateBinding) =>
-                      setTabs((current) =>
-                        current.map((tab) =>
-                          tab.kind === "workflow" && tab.workflowId === activeTab.workflowId
-                            ? { ...tab, templateBinding }
-                            : tab,
-                        ),
-                      )
-                    }
+                    source={activeTab.source}
+                    templateId={activeTab.templateId}
+                    onOpenWorkflow={(workflowId, templateBinding) => {
+                      openWorkflowTab(workflowId, templateBinding);
+                      setActiveView("workflow");
+                    }}
+                    onWorkflowCreated={bumpAiRefresh}
+                    developerMode={developerMode}
+                    onTemplateChanged={() => setTemplateRefreshSignal((signal) => signal + 1)}
                   />
                 ) : (
-                  <div className="empty-hint">请先打开工作区</div>
-                )
-              ) : activeTab?.kind === "template" ? (
-                <TemplateDetail
-                  workspaceId={workspaceId}
-                  source={activeTab.source}
-                  templateId={activeTab.templateId}
-                  onOpenWorkflow={(workflowId, templateBinding) => {
-                    openWorkflowTab(workflowId, templateBinding);
-                    setActiveView("workflow");
-                  }}
-                  onWorkflowCreated={bumpAiRefresh}
-                  developerMode={developerMode}
-                  onTemplateChanged={() => setTemplateRefreshSignal((signal) => signal + 1)}
-                />
-              ) : (
-                <div className="empty-hint">在左侧选择文件以开始编辑</div>
-              )}
+                  <div className="empty-hint">在左侧选择文件以开始编辑</div>
+                )}
+              </Suspense>
             </div>
           </div>
 
@@ -802,12 +826,14 @@ export function Workbench() {
                 height: bottomCollapsed ? 0 : bottomHeight,
               }}
             >
-              <BottomPanel
-                workspaceId={workspaceId}
-                onClose={hardCloseBottom}
-                terminalLaunchRequest={terminalLaunchRequest}
-                onTerminalLaunchHandled={handleTerminalLaunch}
-              />
+              <Suspense fallback={<div className="tab-loading-fallback" />}>
+                <BottomPanel
+                  workspaceId={workspaceId}
+                  onClose={hardCloseBottom}
+                  terminalLaunchRequest={terminalLaunchRequest}
+                  onTerminalLaunchHandled={handleTerminalLaunch}
+                />
+              </Suspense>
             </div>
           )}
         </div>
