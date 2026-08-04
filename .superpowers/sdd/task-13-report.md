@@ -102,3 +102,34 @@ Limitations:
 - `ChatTab` cannot be smoke-tested because it has no active render route in this branch.
 
 Browser screenshots were captured under `.superpowers/sdd/` for the shell, workspace, and editor smoke runs.
+
+## P1 Review Fix: Cold Monaco Loading
+
+Fixed the review finding that `id.includes("monaco-editor")` also classified `@monaco-editor/react`. That mixed the React wrapper with the 3.94 MB local Monaco package and caused the production entry to statically import and preload Monaco on a cold workbench load.
+
+`frontend/vite.config.ts` now:
+
+- normalizes Rollup module IDs to `/` separators;
+- assigns only `/node_modules/monaco-editor/` to the `monaco` chunk, excluding `/node_modules/@monaco-editor/react/` by package-path construction;
+- enables `onlyExplicitManualChunks: true` so Rollup does not pull wrapper dependencies into the manual vendor chunk;
+- preserves the existing xterm and Markdown chunk rules.
+
+Exact verification after `npm run build`:
+
+- Entry: `index-YXAUvkIo.js`, 224.97 kB (225,678 bytes), gzip 69.56 kB.
+- Before fix at commit `682c661`: `index-Cw4gUgD9.js`, 217.39 kB displayed by Vite (218,094 bytes), gzip 67.11 kB.
+- Monaco: `monaco-WDIK9jD_.js`, 3,913.73 kB, gzip 993.93 kB.
+- Entry static imports: none; specifically no static `monaco-*` import.
+- `dist/index.html`: no Monaco module preload or stylesheet link.
+- Entry dependency map retains Monaco only as a dynamic dependency for lazy editor/diff loading.
+- `EditorPane-waQnu3gX.js` and `DiffPane-BHQAfFQr.js` reference `monaco-WDIK9jD_.js`, preserving runtime editor loading and local workers.
+
+Production preview browser smoke (`vite preview`, headless Chromium):
+
+- Cold workbench Monaco requests: `[]`.
+- Cold shell rendered successfully.
+- After selecting the existing `osheep` workspace and opening `README.md`, the browser requested `monaco-WDIK9jD_.js` and `monaco-D6kYW_CN.css`.
+- Monaco editor became visible.
+- Console/page errors: none.
+
+Post-fix validation passed: frontend typecheck, lint, production build, both frontend test suites (9 tests total), and all three guard scripts. Desktop was not built or launched.
