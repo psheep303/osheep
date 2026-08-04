@@ -1,0 +1,247 @@
+/* ==== Search View ==== */
+
+.search-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.search-view__form {
+  padding: 8px 10px 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.search-view__input-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.search-view__toggle {
+  width: 18px;
+  flex-shrink: 0;
+  align-self: stretch;
+  margin-top: 4px;
+  background: transparent;
+  border: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+}
+.search-view__toggle:hover {
+  background: var(--bg-hover);
+  color: var(--fg-default);
+}
+.search-view__toggle.is-active {
+  color: var(--fg-strong);
+}
+
+.search-view__input-wrap {
+  flex: 1;
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.search-view__input {
+  width: 100%;
+  background: #313131;
+  color: var(--fg-default);
+  border: 1px solid var(--border-edge);
+  border-radius: 2px;
+  font-size: 12px;
+  padding: 4px 70px 4px 8px;
+  outline: none;
+  font-family: inherit;
+}
+.search-view__input:focus {
+  border-color: var(--accent);
+}
+.search-view__input--filter {
+  padding-right: 8px;
+}
+
+.search-view__mods {
+  position: absolute;
+  right: 3px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  gap: 1px;
+}
+
+.search-view__mod {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--fg-muted);
+  font-size: 11px;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  border-radius: 3px;
+}
+.search-view__mod:hover {
+  background: var(--bg-hover);
+  color: var(--fg-default);
+}
+.search-view__mod.is-active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--fg-strong);
+}
+
+.search-view__filters {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-left: 22px;
+}
+
+.search-view__status {
+  padding: 4px 12px 6px 22px;
+  font-size: 11px;
+  border-bottom: 1px solid var(--border-faint);
+}
+
+.search-view__warn {
+  color: #d29922;
+}
+
+.search-view__error {
+  color: var(--fg-error);
+}
+
+.search-view__results {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 0 8px;
+}
+
+.search-view__file {
+  margin-top: 2px;
+}
+
+.search-view__file-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 12px 2px 6px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 12px;
+}
+.search-view__file-row:hover {
+  background: var(--bg-hover);
+}
+
+.search-view__chevron {
+  width: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-muted);
+  flex-shrink: 0;
+}
+
+.search-view__file-name {
+  color: var(--fg-strong);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.search-view__file-path {
+  color: var(--fg-faint);
+  font-size: 11px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.search-view__file-count {
+  background: #3a3d41;
+  color: var(--fg-default);
+  border-radius: 8px;
+  padding: 1px 8px;
+  font-size: 10px;
+  font-family: "Cascadia Mono", Consolas, monospace;
+}
+
+.search-view__dismiss {
+  background: transparent;
+  border: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  visibility: hidden;
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  font-size: 14px;
+  line-height: 1;
+}
+.search-view__file-row:hover .search-view__dismiss,
+.search-view__line:hover .search-view__dismiss {
+  visibility: visible;
+}
+.search-view__dismiss:hover {
+  background: var(--bg-hover);
+  color: var(--fg-default);
+}
+
+.search-view__lines {
+  display: flex;
+  flex-direction: column;
+}
+
+.search-view__line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 12px 2px 28px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: "Cascadia Mono", Consolas, monospace;
+}
+.search-view__line:hover {
+  background: var(--bg-hover);
+}
+
+.search-view__line-num {
+  color: var(--fg-faint);
+  font-size: 11px;
+  min-width: 28px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.search-view__line-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-default);
+}
+
+.search-view__hl {
+  background: rgba(234, 179, 8, 0.4);
+  color: var(--fg-strong);
+  border-radius: 1px;
+  padding: 0 1px;
+}
+

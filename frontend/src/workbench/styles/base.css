@@ -1,0 +1,8 @@
+.workbench {
+  display: grid;
+  grid-template-rows: 36px 1fr;
+  height: 100vh;
+  width: 100vw;
+  background: var(--bg-editor);
+}
+
