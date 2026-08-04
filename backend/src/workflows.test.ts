@@ -3,6 +3,9 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
+import Fastify from "fastify";
+import { config } from "./config.js";
+import { registerWorkflowRoutes } from "./routes/workflows.js";
 import {
   createWorkflow,
   findWorkflowByTemplateBinding,
@@ -11,6 +14,45 @@ import {
   listWorkflows,
   saveWorkflow,
 } from "./workflows.js";
+
+test("workflow GET routes support ETag revalidation", async () => {
+  const workspacesRoot = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-workflow-etag-"));
+  const workspaceRoot = path.join(workspacesRoot, "demo");
+  const previousWorkspacesRoot = config.workspacesRoot;
+  const app = Fastify();
+
+  try {
+    config.workspacesRoot = workspacesRoot;
+    await fs.mkdir(workspaceRoot);
+    const workflow = await createWorkflow(workspaceRoot, { title: "Cached workflow" });
+    await registerWorkflowRoutes(app);
+
+    for (const url of [
+      "/api/workspaces/demo/workflows",
+      `/api/workspaces/demo/workflows/${workflow.id}`,
+    ]) {
+      const first = await app.inject({ method: "GET", url });
+      assert.equal(first.statusCode, 200);
+      assert.match(first.headers["content-type"] ?? "", /^application\/json/);
+      const etag = first.headers.etag;
+      assert.ok(etag);
+
+      const second = await app.inject({
+        method: "GET",
+        url,
+        headers: { "if-none-match": etag },
+      });
+
+      assert.equal(second.statusCode, 304);
+      assert.equal(second.body, "");
+      assert.equal(second.headers.etag, etag);
+    }
+  } finally {
+    config.workspacesRoot = previousWorkspacesRoot;
+    await app.close();
+    await fs.rm(workspacesRoot, { recursive: true, force: true });
+  }
+});
 
 test("workflow node model can be saved as an empty string", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-workflow-model-"));

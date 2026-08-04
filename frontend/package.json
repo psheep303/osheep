@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build && node scripts/compress-dist.mjs",
     "test:workflow-behavior": "node --test src/workbench/workflow-behavior.test.ts",
     "test:terminal-conversation": "node --test src/workbench/terminal-conversation.test.ts",
+    "test:api": "node --experimental-transform-types --test src/workbench/api.test.ts",
     "test:vite-manual-chunks": "node --test scripts/vite-manual-chunks.test.ts",
     "check:agent-navigation": "node scripts/check-agent-navigation.mjs",
     "check:workflow-left-sidebar": "node scripts/check-workflow-left-sidebar.mjs",
