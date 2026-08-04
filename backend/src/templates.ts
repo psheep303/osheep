@@ -157,13 +157,6 @@ function summary(template: StoredWorkflowTemplate): WorkflowTemplateSummary {
   };
 }
 
-async function ensureLibrary(opts: Required<TemplateStoreOptions>): Promise<void> {
-  await fs.mkdir(sourceDir(opts.root, "system"), { recursive: true });
-  await fs.mkdir(sourceDir(opts.root, "user"), { recursive: true });
-  await migrateLegacyUserTemplates(opts.root);
-  await syncBundledSystemTemplates(opts.root, opts.systemSourceRoot);
-}
-
 async function migrateLegacyUserTemplates(root: string): Promise<void> {
   let entries: string[];
   try {
@@ -190,12 +183,7 @@ async function migrateLegacyUserTemplates(root: string): Promise<void> {
   }
 }
 
-interface SystemSyncQueue {
-  tail: Promise<void>;
-  pendingSources: Map<string, Promise<void>>;
-}
-
-const systemSyncQueues = new Map<string, SystemSyncQueue>();
+const templateLibraryQueues = new Map<string, Promise<void>>();
 
 async function sourceSignature(systemSourceRoot: string): Promise<string | null> {
   const files: string[] = [];
@@ -239,43 +227,38 @@ async function canonicalSyncPath(value: string): Promise<string> {
   }
 }
 
-async function systemSyncKeys(
-  root: string,
-  systemSourceRoot: string,
-): Promise<{ destinationKey: string; sourceKey: string }> {
+async function templateLibraryDestinationKey(root: string): Promise<string> {
   const runtimeRoot = sourceDir(root, "system");
-  const [sourceKey, destinationKey] = await Promise.all([
-    canonicalSyncPath(systemSourceRoot),
-    fs.realpath(runtimeRoot).catch(async (error: NodeJS.ErrnoException) => {
-      if (error.code !== "ENOENT") throw error;
-      return path.join(await canonicalSyncPath(root), "system");
-    }),
-  ]);
-  return { destinationKey, sourceKey };
+  return fs.realpath(runtimeRoot).catch(async (error: NodeJS.ErrnoException) => {
+    if (error.code !== "ENOENT") throw error;
+    return path.join(await canonicalSyncPath(root), "system");
+  });
 }
 
-async function syncBundledSystemTemplates(root: string, systemSourceRoot: string): Promise<void> {
-  const { destinationKey, sourceKey } = await systemSyncKeys(root, systemSourceRoot);
-  let queue = systemSyncQueues.get(destinationKey);
-  if (!queue) {
-    queue = { tail: Promise.resolve(), pendingSources: new Map() };
-    systemSyncQueues.set(destinationKey, queue);
-  }
-
-  const active = queue.pendingSources.get(sourceKey);
-  if (active) return active;
-
-  const operation = queue.tail.then(() => syncBundledSystemTemplatesOnce(root, systemSourceRoot));
-  queue.pendingSources.set(sourceKey, operation);
-  const tail = operation.catch(() => undefined);
-  queue.tail = tail;
+async function withTemplateLibrary<T>(
+  opts: Required<TemplateStoreOptions>,
+  callback: () => Promise<T>,
+): Promise<T> {
+  const destinationKey = await templateLibraryDestinationKey(opts.root);
+  const previousTail = templateLibraryQueues.get(destinationKey) ?? Promise.resolve();
+  const operation = previousTail.then(async () => {
+    await fs.mkdir(sourceDir(opts.root, "system"), { recursive: true });
+    await fs.mkdir(sourceDir(opts.root, "user"), { recursive: true });
+    await migrateLegacyUserTemplates(opts.root);
+    await syncBundledSystemTemplatesOnce(opts.root, opts.systemSourceRoot);
+    return callback();
+  });
+  const tail = operation.then(
+    () => undefined,
+    () => undefined,
+  );
+  templateLibraryQueues.set(destinationKey, tail);
 
   try {
-    await operation;
+    return await operation;
   } finally {
-    if (queue.pendingSources.get(sourceKey) === operation) queue.pendingSources.delete(sourceKey);
-    if (queue.tail === tail && queue.pendingSources.size === 0) {
-      systemSyncQueues.delete(destinationKey);
+    if (templateLibraryQueues.get(destinationKey) === tail) {
+      templateLibraryQueues.delete(destinationKey);
     }
   }
 }
@@ -320,10 +303,8 @@ async function readStoredTemplate(
   source: TemplateSource,
   id: string,
   opts: Required<TemplateStoreOptions>,
-  ensure = true,
 ): Promise<StoredWorkflowTemplate> {
   validateTemplateId(id);
-  if (ensure) await ensureLibrary(opts);
   try {
     const text = await fs.readFile(templateFile(opts.root, source, id), "utf8");
     return sanitizeStoredTemplate(JSON.parse(text), id, source);
@@ -385,26 +366,27 @@ export async function listWorkflowTemplates(value: TemplateStoreOptions = {}): P
   developerMode: boolean;
 }> {
   const opts = options(value);
-  await ensureLibrary(opts);
-  const readSource = async (source: TemplateSource) => {
-    const result: WorkflowTemplateSummary[] = [];
-    const entries = await fs.readdir(sourceDir(opts.root, source), { withFileTypes: true });
-    for (const entry of entries) {
-      if (!entry.isDirectory() || !TEMPLATE_ID_RE.test(entry.name)) continue;
-      try {
-        result.push(summary(await readStoredTemplate(source, entry.name, opts, false)));
-      } catch {
-        // Ignore one invalid template without hiding the rest of the library.
+  return withTemplateLibrary(opts, async () => {
+    const readSource = async (source: TemplateSource) => {
+      const result: WorkflowTemplateSummary[] = [];
+      const entries = await fs.readdir(sourceDir(opts.root, source), { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isDirectory() || !TEMPLATE_ID_RE.test(entry.name)) continue;
+        try {
+          result.push(summary(await readStoredTemplate(source, entry.name, opts)));
+        } catch {
+          // Ignore one invalid template without hiding the rest of the library.
+        }
       }
-    }
-    result.sort((a, b) => b.updatedAt - a.updatedAt || a.title.localeCompare(b.title));
-    return result;
-  };
-  return {
-    system: await readSource("system"),
-    user: await readSource("user"),
-    developerMode: opts.developerMode,
-  };
+      result.sort((a, b) => b.updatedAt - a.updatedAt || a.title.localeCompare(b.title));
+      return result;
+    };
+    return {
+      system: await readSource("system"),
+      user: await readSource("user"),
+      developerMode: opts.developerMode,
+    };
+  });
 }
 
 export async function getWorkflowTemplate(
@@ -413,7 +395,9 @@ export async function getWorkflowTemplate(
   value: TemplateStoreOptions = {},
 ): Promise<WorkflowTemplate> {
   const opts = options(value);
-  return publicTemplate(await readStoredTemplate(source, id, opts));
+  return withTemplateLibrary(opts, async () =>
+    publicTemplate(await readStoredTemplate(source, id, opts)),
+  );
 }
 
 export async function saveWorkflowAsTemplate(
@@ -423,30 +407,33 @@ export async function saveWorkflowAsTemplate(
 ): Promise<WorkflowTemplate> {
   const opts = options(value);
   if (source === "system") requireDeveloperMode(opts);
-  await ensureLibrary(opts);
-  const template = storedFromWorkflow(workflow, source);
-  await writeStoredTemplate(template, opts.root);
-  if (source === "system") {
-    await writeSystemSourceTemplate(template, opts.systemSourceRoot);
-  }
-  return publicTemplate(template);
+  return withTemplateLibrary(opts, async () => {
+    const template = storedFromWorkflow(workflow, source);
+    await writeStoredTemplate(template, opts.root);
+    if (source === "system") {
+      await writeSystemSourceTemplate(template, opts.systemSourceRoot);
+    }
+    return publicTemplate(template);
+  });
 }
 
 export async function updateTemplateFromWorkflow(
   workflow: WorkflowRecord,
   value: TemplateStoreOptions = {},
 ): Promise<WorkflowTemplate | null> {
-  const binding = workflow.templateBinding;
-  if (!binding) return null;
   const opts = options(value);
-  if (binding.source === "system") requireDeveloperMode(opts);
-  const previous = await readStoredTemplate(binding.source, binding.id, opts);
-  const template = storedFromWorkflow(workflow, binding.source, previous);
-  await writeStoredTemplate(template, opts.root);
-  if (binding.source === "system") {
-    await writeSystemSourceTemplate(template, opts.systemSourceRoot);
-  }
-  return publicTemplate(template);
+  return withTemplateLibrary(opts, async () => {
+    const binding = workflow.templateBinding;
+    if (!binding) return null;
+    if (binding.source === "system") requireDeveloperMode(opts);
+    const previous = await readStoredTemplate(binding.source, binding.id, opts);
+    const template = storedFromWorkflow(workflow, binding.source, previous);
+    await writeStoredTemplate(template, opts.root);
+    if (binding.source === "system") {
+      await writeSystemSourceTemplate(template, opts.systemSourceRoot);
+    }
+    return publicTemplate(template);
+  });
 }
 
 export async function updateWorkflowTemplateIcon(
@@ -457,13 +444,15 @@ export async function updateWorkflowTemplateIcon(
 ): Promise<WorkflowTemplate> {
   const opts = options(value);
   if (source === "system") requireDeveloperMode(opts);
-  const template = await readStoredTemplate(source, id, opts);
-  const updated = await writeTemplateIcon(template, icon, opts.root);
-  if (source === "system") {
-    await writeSystemSourceTemplate(updated, opts.systemSourceRoot);
-    await copyIconToSystemSource(updated, opts.root, opts.systemSourceRoot);
-  }
-  return publicTemplate(updated);
+  return withTemplateLibrary(opts, async () => {
+    const template = await readStoredTemplate(source, id, opts);
+    const updated = await writeTemplateIcon(template, icon, opts.root);
+    if (source === "system") {
+      await writeSystemSourceTemplate(updated, opts.systemSourceRoot);
+      await copyIconToSystemSource(updated, opts.root, opts.systemSourceRoot);
+    }
+    return publicTemplate(updated);
+  });
 }
 
 async function writeTemplateIcon(
@@ -513,25 +502,27 @@ export async function getWorkflowTemplateIcon(
   value: TemplateStoreOptions = {},
 ): Promise<{ data: Buffer; mime: string }> {
   const opts = options(value);
-  const template = await readStoredTemplate(source, id, opts);
-  if (!template.iconFile) throw errors.notFound("template icon not found");
-  const extension = path.extname(template.iconFile).toLowerCase();
-  const mime =
-    extension === ".png"
-      ? "image/png"
-      : extension === ".jpg" || extension === ".jpeg"
-        ? "image/jpeg"
-        : extension === ".webp"
-          ? "image/webp"
-          : extension === ".gif"
-            ? "image/gif"
-            : extension === ".svg"
-              ? "image/svg+xml"
-              : "application/octet-stream";
-  return {
-    data: await fs.readFile(path.join(templateDir(opts.root, source, id), template.iconFile)),
-    mime,
-  };
+  return withTemplateLibrary(opts, async () => {
+    const template = await readStoredTemplate(source, id, opts);
+    if (!template.iconFile) throw errors.notFound("template icon not found");
+    const extension = path.extname(template.iconFile).toLowerCase();
+    const mime =
+      extension === ".png"
+        ? "image/png"
+        : extension === ".jpg" || extension === ".jpeg"
+          ? "image/jpeg"
+          : extension === ".webp"
+            ? "image/webp"
+            : extension === ".gif"
+              ? "image/gif"
+              : extension === ".svg"
+                ? "image/svg+xml"
+                : "application/octet-stream";
+    return {
+      data: await fs.readFile(path.join(templateDir(opts.root, source, id), template.iconFile)),
+      mime,
+    };
+  });
 }
 
 export async function deleteWorkflowTemplate(
@@ -541,12 +532,14 @@ export async function deleteWorkflowTemplate(
 ): Promise<void> {
   const opts = options(value);
   if (source === "system") requireDeveloperMode(opts);
-  await readStoredTemplate(source, id, opts);
-  await fs.rm(templateDir(opts.root, source, id), { recursive: true, force: true });
-  if (source === "system") {
-    await fs.rm(systemSourceDir(opts.systemSourceRoot, id), {
-      recursive: true,
-      force: true,
-    });
-  }
+  await withTemplateLibrary(opts, async () => {
+    await readStoredTemplate(source, id, opts);
+    await fs.rm(templateDir(opts.root, source, id), { recursive: true, force: true });
+    if (source === "system") {
+      await fs.rm(systemSourceDir(opts.systemSourceRoot, id), {
+        recursive: true,
+        force: true,
+      });
+    }
+  });
 }
