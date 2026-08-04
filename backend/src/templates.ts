@@ -236,7 +236,8 @@ async function canonicalSyncPath(value: string): Promise<string> {
 }
 
 async function templateLibraryDestinationKey(root: string): Promise<string> {
-  return canonicalSyncPath(sourceDir(root, "system"));
+  const destination = await canonicalSyncPath(sourceDir(root, "system"));
+  return process.platform === "win32" ? destination.toLowerCase() : destination;
 }
 
 async function withTemplateLibrary<T>(
