@@ -1,8 +1,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-const cssPath = resolve("src/workbench/workbench.css");
-const css = readFileSync(cssPath, "utf8");
+import { readWorkbenchCss } from "./read-workbench-css.mjs";
+
+const css = readWorkbenchCss();
 const cssLookup = css.replace(/\/\*[\s\S]*?\*\//g, "");
 const main = readFileSync(resolve("src/main.tsx"), "utf8");
 const styles = readFileSync(resolve("src/styles.css"), "utf8");

@@ -1,0 +1,59 @@
+/* ==== Side panels ==== */
+
+.side {
+  background: var(--bg-shell);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.side-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.side-view__header {
+  display: flex;
+  align-items: center;
+  height: 35px;
+  padding: 0 10px 0 20px;
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--fg-default);
+  flex-shrink: 0;
+}
+
+.side-view__title {
+  flex: 1 1 auto;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.side-view__actions {
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.1s ease;
+}
+
+.side-view__header:hover .side-view__actions {
+  opacity: 1;
+}
+
+.side-view__body {
+  flex: 1 1 auto;
+  overflow: auto;
+  min-height: 0;
+}
+
+.side-view__body--padded {
+  padding: 8px 20px;
+}
+

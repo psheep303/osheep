@@ -72,6 +72,9 @@ jobs:
       - name: Terminal conversation test
         run: npm.cmd run test:terminal-conversation
 
+      - name: Workbench CSS reader test
+        run: npm.cmd run test:workbench-css-reader
+
       - name: Agent navigation check
         run: npm.cmd run check:agent-navigation
 
@@ -80,6 +83,9 @@ jobs:
 
       - name: Workflow CSS check
         run: npm.cmd run check:workflow-css
+
+      - name: Workbench CSS equivalence check
+        run: npm.cmd run check:workbench-css-equivalence
 
       - name: Build
         run: npx.cmd vite build
