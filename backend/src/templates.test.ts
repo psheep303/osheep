@@ -337,6 +337,77 @@ test("system sync serializes real and linked source path aliases", async (t) => 
   assert.equal(typeof marker.signature, "string");
 });
 
+test("system sync serializes missing destination path aliases", async (t) => {
+  const destinationParent = await fs.mkdtemp(
+    path.join(os.tmpdir(), "osheep-system-sync-destination-alias-"),
+  );
+  const destinationRoot = path.join(destinationParent, "actual");
+  const destinationAlias = path.join(destinationParent, "alias");
+  const sourceA = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-system-sync-destination-a-"));
+  const sourceB = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-system-sync-destination-b-"));
+  const id = "tpl_syncdestalias";
+  const recordA = {
+    id,
+    source: "system",
+    title: "Destination source A",
+    description: "Missing destination alias source.",
+    readme: "Destination source A data",
+    createdAt: 1,
+    updatedAt: 1,
+    nodes: [],
+    edges: [],
+  };
+  const recordB = {
+    ...recordA,
+    title: "Destination source B",
+    readme: "Destination source B data",
+  };
+  for (const [source, record] of [
+    [sourceA, recordA],
+    [sourceB, recordB],
+  ] as const) {
+    await fs.mkdir(path.join(source, id));
+    await fs.writeFile(path.join(source, id, "template.json"), JSON.stringify(record), "utf8");
+  }
+  await fs.mkdir(destinationRoot);
+  try {
+    await fs.symlink(
+      destinationRoot,
+      destinationAlias,
+      process.platform === "win32" ? "junction" : "dir",
+    );
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (["EACCES", "EPERM", "ENOSYS", "UNKNOWN"].includes(code ?? "")) {
+      t.skip(`directory links are unavailable: ${code}`);
+      return;
+    }
+    throw error;
+  }
+
+  const operations = Array.from({ length: 20 }, (_, index) => {
+    const useA = index % 2 === 0;
+    return getWorkflowTemplate("system", id, {
+      root: path.join(useA ? destinationRoot : destinationAlias, "run-1"),
+      systemSourceRoot: useA ? sourceA : sourceB,
+    }).then((template) => ({ template, expected: useA ? recordA : recordB }));
+  });
+  const results = await Promise.all(operations);
+
+  for (const { template, expected } of results) {
+    assert.equal(template.title, expected.title);
+    assert.equal(template.readme, expected.readme);
+  }
+  const runtimeTemplate = JSON.parse(
+    await fs.readFile(path.join(destinationRoot, "run-1", "system", id, "template.json"), "utf8"),
+  );
+  assert.ok([recordA.title, recordB.title].includes(runtimeTemplate.title));
+  assert.equal(
+    runtimeTemplate.readme,
+    runtimeTemplate.title === recordA.title ? recordA.readme : recordB.readme,
+  );
+});
+
 test("invalid system sync marker triggers a full recovery", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-system-sync-recovery-"));
   const systemSourceRoot = await fs.mkdtemp(
