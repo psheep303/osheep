@@ -40,23 +40,37 @@ async fn pick_workspace_folder(
 }
 
 impl BackendProcess {
-    fn store(&self, child: Child) -> Result<(), Child> {
-        let Ok(mut state) = self.0.lock() else {
-            return Err(child);
+    fn store(&self, mut child: Child) -> io::Result<()> {
+        let error = {
+            let mut state = self
+                .0
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if state.stopping {
+                io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "desktop stopped during backend startup",
+                )
+            } else if state.child.is_some() {
+                io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "backend process already managed",
+                )
+            } else {
+                state.child = Some(child);
+                return Ok(());
+            }
         };
-        if state.stopping {
-            Err(child)
-        } else {
-            state.child = Some(child);
-            Ok(())
-        }
+
+        terminate_child(&mut child);
+        Err(error)
     }
 
     fn child_exited(&self) -> io::Result<Option<std::process::ExitStatus>> {
         let mut state = self
             .0
             .lock()
-            .map_err(|_| io::Error::other("backend mutex poisoned"))?;
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let stopping = state.stopping;
         match state.child.as_mut() {
             Some(child) => child.try_wait(),
@@ -68,16 +82,37 @@ impl BackendProcess {
         }
     }
 
+    fn is_stopping(&self) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .stopping
+    }
+
+    fn cleanup_startup_failure(&self) {
+        let child = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .child
+            .take();
+        if let Some(mut child) = child {
+            terminate_child(&mut child);
+        }
+    }
+
     fn stop(&self) {
-        let Ok(mut state) = self.0.lock() else {
-            return;
+        let child = {
+            let mut state = self
+                .0
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state.stopping = true;
+            state.child.take()
         };
-        state.stopping = true;
-        let Some(mut child) = state.child.take() else {
-            return;
-        };
-        drop(state);
-        terminate_child(&mut child);
+        if let Some(mut child) = child {
+            terminate_child(&mut child);
+        }
     }
 }
 
@@ -272,6 +307,13 @@ fn javascript_string(value: &str) -> String {
     output
 }
 
+fn startup_error_script(message: &str) -> String {
+    format!(
+        "(() => {{ const show = () => window.__osheepStartupError?.({}); if (typeof window.__osheepStartupError === 'function') {{ show(); }} else {{ window.addEventListener(document.readyState === 'loading' ? 'DOMContentLoaded' : 'load', show, {{ once: true }}); }} }})()",
+        javascript_string(message)
+    )
+}
+
 fn remote_url() -> io::Result<Option<tauri::Url>> {
     let Some(raw) = env::var("OSHEEP_REMOTE_URL")
         .ok()
@@ -314,50 +356,80 @@ pub fn run() {
                 return Ok(());
             }
 
-            let window = WebviewWindowBuilder::new(
-                app,
-                "main",
-                WebviewUrl::App("index.html".into()),
-            )
-            .title("Osheep")
-            .inner_size(1440.0, 900.0)
-            .min_inner_size(960.0, 640.0)
-            .build()?;
+            WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+                .title("Osheep")
+                .inner_size(1440.0, 900.0)
+                .min_inner_size(960.0, 640.0)
+                .build()?;
 
             let handle = app.handle().clone();
             thread::spawn(move || {
                 let outcome = (|| -> io::Result<u16> {
                     let port = reserve_port()?;
-                    let child = spawn_local_backend(&handle, port)?;
-                    if let Err(mut child) = backend.store(child) {
-                        terminate_child(&mut child);
-                        return Err(io::Error::new(
-                            io::ErrorKind::Interrupted,
-                            "desktop stopped during backend startup",
-                        ));
-                    }
+                    backend.store(spawn_local_backend(&handle, port)?)?;
                     wait_until_listening(&backend, port)?;
                     Ok(port)
                 })();
 
                 match outcome {
                     Ok(port) => {
-                        let url = format!("http://127.0.0.1:{port}")
-                            .parse::<tauri::Url>()
-                            .expect("local backend URL");
-                        let _ = handle.run_on_main_thread(move || {
-                            let _ = window.navigate(url);
-                        });
+                        if backend.is_stopping() {
+                            return;
+                        }
+                        let url = match format!("http://127.0.0.1:{port}").parse::<tauri::Url>() {
+                            Ok(url) => url,
+                            Err(error) => {
+                                eprintln!("failed to parse local backend URL: {error}");
+                                backend.cleanup_startup_failure();
+                                return;
+                            }
+                        };
+                        let main_handle = handle.clone();
+                        let main_backend = backend.clone();
+                        if let Err(error) = handle.run_on_main_thread(move || {
+                            if main_backend.is_stopping() {
+                                return;
+                            }
+                            match main_handle.get_webview_window("main") {
+                                Some(window) => {
+                                    if let Err(error) = window.navigate(url) {
+                                        eprintln!("failed to navigate main window: {error}");
+                                        main_backend.cleanup_startup_failure();
+                                    }
+                                }
+                                None => {
+                                    eprintln!("main window closed before backend became ready");
+                                    main_backend.cleanup_startup_failure();
+                                }
+                            }
+                        }) {
+                            eprintln!("failed to schedule main-window navigation: {error}");
+                            backend.cleanup_startup_failure();
+                        }
                     }
                     Err(error) => {
-                        backend.stop();
-                        let script = format!(
-                            "window.__osheepStartupError({})",
-                            javascript_string(&error.to_string())
-                        );
-                        let _ = handle.run_on_main_thread(move || {
-                            let _ = window.eval(script);
-                        });
+                        backend.cleanup_startup_failure();
+                        if backend.is_stopping() {
+                            return;
+                        }
+                        let script = startup_error_script(&error.to_string());
+                        let main_handle = handle.clone();
+                        let main_backend = backend.clone();
+                        if let Err(schedule_error) = handle.run_on_main_thread(move || {
+                            if main_backend.is_stopping() {
+                                return;
+                            }
+                            match main_handle.get_webview_window("main") {
+                                Some(window) => {
+                                    if let Err(error) = window.eval(script) {
+                                        eprintln!("failed to show startup error: {error}");
+                                    }
+                                }
+                                None => eprintln!("main window closed before startup error display"),
+                            }
+                        }) {
+                            eprintln!("failed to schedule startup error display: {schedule_error}");
+                        }
                     }
                 }
             });
@@ -385,4 +457,53 @@ pub fn run() {
             handle.state::<BackendProcess>().stop();
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn javascript_string_escapes_script_sensitive_characters() {
+        assert_eq!(
+            javascript_string("\\\"\n\r\t\u{0008}\u{2028}\u{2029}"),
+            "\"\\\\\\\"\\n\\r\\u0009\\u0008\\u2028\\u2029\""
+        );
+    }
+
+    #[test]
+    fn startup_error_script_waits_for_page_callback() {
+        let script = startup_error_script("bad \\\"input\n");
+        assert!(script.contains("typeof window.__osheepStartupError === 'function'"));
+        assert!(script.contains("document.readyState === 'loading' ? 'DOMContentLoaded' : 'load'"));
+        assert!(script.contains("{ once: true }"));
+        assert!(script.contains("window.__osheepStartupError?.(\"bad \\\\\\\"input\\n\")"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn store_after_stop_terminates_rejected_child() {
+        use std::os::windows::process::CommandExt;
+
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let backend = BackendProcess::default();
+        backend.stop();
+        let child = Command::new("cmd")
+            .args(["/C", "ping -n 30 127.0.0.1 >NUL"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .expect("spawn test child");
+        let pid = child.id();
+
+        let error = backend.store(child).expect_err("store must reject after stop");
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+
+        let status = Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .expect("query test child");
+        let output = String::from_utf8_lossy(&status.stdout);
+        assert!(!output.contains(&pid.to_string()), "child {pid} is still running");
+    }
 }
