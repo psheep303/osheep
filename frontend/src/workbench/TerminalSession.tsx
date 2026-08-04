@@ -170,6 +170,7 @@ export function TerminalSession({
           }
         };
         ws.onmessage = (ev) => {
+          if (cancelled) return;
           try {
             const msg = JSON.parse(ev.data);
             if (msg.type === "output" && typeof msg.data === "string") {
@@ -228,14 +229,20 @@ export function TerminalSession({
         cancelled = true;
         resizeObs.disconnect();
         inputDisp.dispose();
+        const live = wsRef.current;
+        if (live) {
+          live.onmessage = null;
+          live.onopen = null;
+          live.onerror = null;
+          live.onclose = null;
+          if (live.readyState <= WebSocket.OPEN) live.close();
+        }
+        wsRef.current = null;
         try {
           term.dispose();
         } catch {
           /* already disposed */
         }
-        const live = wsRef.current;
-        if (live && live.readyState <= WebSocket.OPEN) live.close();
-        wsRef.current = null;
         const sid = sessionIdRef.current;
         sessionIdRef.current = null;
         if (sid) void killTerminal(sid).catch(() => undefined);

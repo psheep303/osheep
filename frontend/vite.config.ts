@@ -3,6 +3,18 @@ import { defineConfig } from "vite";
 
 const BACKEND = process.env.VITE_API_PROXY ?? "http://127.0.0.1:4178";
 
+export function frontendManualChunk(id: string): string | undefined {
+  const normalizedId = id.replaceAll("\\", "/");
+  if (normalizedId.includes("/node_modules/monaco-editor/")) return "monaco";
+  if (normalizedId.includes("/node_modules/@xterm/")) return "xterm";
+  if (
+    normalizedId.includes("/node_modules/marked/") ||
+    normalizedId.includes("/node_modules/dompurify/")
+  ) {
+    return "markdown";
+  }
+}
+
 export default defineConfig({
   plugins: [react()],
   build: {
@@ -10,12 +22,7 @@ export default defineConfig({
     rollupOptions: {
       output: {
         onlyExplicitManualChunks: true,
-        manualChunks(id: string) {
-          const normalizedId = id.replaceAll("\\\\", "/");
-          if (normalizedId.includes("/node_modules/monaco-editor/")) return "monaco";
-          if (id.includes("@xterm")) return "xterm";
-          if (id.includes("marked") || id.includes("dompurify")) return "markdown";
-        },
+        manualChunks: frontendManualChunk,
       },
     },
   },

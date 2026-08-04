@@ -158,3 +158,45 @@ Browser terminal-focus smoke (`vite dev`, headless Chromium, no desktop/Tauri):
 - Console/page errors: none.
 
 Post-fix validation passed: frontend typecheck, lint, production build, both frontend test suites (9 tests total), and all three guard scripts. The build still emits the lazy Monaco/xterm/Markdown chunks, and desktop was not built or launched.
+
+## Remaining Review Fixes: Terminal Teardown and Exact Package Matching
+
+### Terminal WebSocket teardown
+
+Hardened `frontend/src/workbench/TerminalSession.tsx` against callbacks racing with disposal:
+
+- `ws.onmessage` now immediately returns when the session has been cancelled, before parsing or touching xterm.
+- Cleanup sets `cancelled` first, disconnects input/resize callbacks, then clears `onmessage`, `onopen`, `onerror`, and `onclose` before closing the socket.
+- The terminal is disposed only after WebSocket handlers are neutralized.
+- Existing PTY cleanup, timer cancellation, socket close, ref clearing, and normal active-session close/error behavior remain intact.
+- Existing async PTY creation already checks `cancelled` in its rejection and post-create paths; no broader lifecycle changes were needed.
+
+### Exact cross-platform package matcher
+
+Extracted `frontendManualChunk()` from `frontend/vite.config.ts` and added `npm run test:vite-manual-chunks` (`frontend/scripts/vite-manual-chunks.test.ts`). The matcher now replaces every Windows `\\` separator with `/` and classifies only exact normalized package paths:
+
+- `/node_modules/monaco-editor/` -> `monaco`
+- `/node_modules/@xterm/` -> `xterm`
+- `/node_modules/marked/` or `/node_modules/dompurify/` -> `markdown`
+
+The focused test passes POSIX and synthetic Windows IDs, verifies `@monaco-editor/react` remains unclassified, and verifies application paths merely containing `marked`, `dompurify`, or `@xterm` remain unclassified.
+
+Final production build:
+
+- Entry: `index-CXfgxB48.js`, 224.97 kB (225,678 bytes), gzip 69.56 kB.
+- Entry static imports: none.
+- Static Monaco imports: none.
+- `dist/index.html` Monaco preload: absent.
+- Entry dynamic Monaco references: 2.
+- Vendor chunks remain `monaco-C2OC-Gro.js`, `xterm-AXT4tBbJ.js`, and `markdown-CdA5ezDB.js`.
+
+Terminal lifecycle browser smoke (`vite dev`, headless Chromium, no desktop/Tauri):
+
+- First mount initial xterm focus: passed.
+- Bottom panel fully unmounted: passed.
+- Remounted xterm visible: passed.
+- Remounted xterm focus: passed.
+- Page exceptions / disposed-xterm callback errors: none.
+- One console network error occurred during idempotent PTY cleanup: backend `DELETE /api/terminals/{id}` returned 404 after socket teardown. Cleanup intentionally remains best-effort (`catch(() => undefined)`); this is an existing backend endpoint behavior, not a frontend lifecycle exception.
+
+Final validation passed: frontend typecheck, lint (52 files), production build, both existing test suites (9 tests), the new manual-chunk matcher test (1 test), and all three guard scripts. Desktop was not built or launched.
