@@ -15,13 +15,25 @@ export class ApiClientError extends Error {
   }
 }
 
+const etagCache = new Map<string, { etag: string; body: unknown }>();
+
 async function request<T>(method: string, url: string, body?: unknown): Promise<T> {
   const init: RequestInit = { method };
+  const cached = method === "GET" ? etagCache.get(url) : undefined;
+  if (cached) {
+    init.headers = { "if-none-match": cached.etag };
+  }
   if (body !== undefined) {
     init.headers = { "content-type": "application/json" };
     init.body = JSON.stringify(body);
   }
-  const res = await fetch(url, init);
+
+  let res = await fetch(url, init);
+  if (res.status === 304) {
+    if (cached) return cached.body as T;
+    res = await fetch(url, { method: "GET" });
+  }
+
   const text = await res.text();
   let parsed: unknown = null;
   if (text) {
@@ -38,6 +50,10 @@ async function request<T>(method: string, url: string, body?: unknown): Promise<
       err?.code ?? `HTTP_${res.status}`,
       err?.message ?? `请求失败 ${res.status}`,
     );
+  }
+  if (method === "GET") {
+    const etag = res.headers.get("etag");
+    if (etag) etagCache.set(url, { etag, body: parsed });
   }
   return parsed as T;
 }
