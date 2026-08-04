@@ -54,7 +54,12 @@ function updateWorkbenchCssBaseline(css = readWorkbenchCss()) {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  if (process.argv.includes("--update")) {
+  const update = process.argv.includes("--update");
+  if (update && process.env.CI) {
+    console.error("Refusing to update workbench CSS baseline in CI");
+    process.exit(1);
+  }
+  if (update) {
     updateWorkbenchCssBaseline();
   } else {
     checkWorkbenchCssEquivalence();
