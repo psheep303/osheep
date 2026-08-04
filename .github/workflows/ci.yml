@@ -66,6 +66,9 @@ jobs:
       - name: Typecheck
         run: npx.cmd tsc --noEmit
 
+      - name: Theme test
+        run: npm.cmd run test:theme
+
       - name: Behavior test
         run: npm.cmd run test:workflow-behavior
 
