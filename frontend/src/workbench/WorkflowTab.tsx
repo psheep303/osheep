@@ -1,11 +1,14 @@
 ﻿import { FitAddon } from "@xterm/addon-fit";
 import { Terminal as XTerm } from "@xterm/xterm";
+import "@xterm/xterm/css/xterm.css";
 import {
   type CSSProperties,
+  lazy,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
   type PointerEvent as ReactPointerEvent,
   type WheelEvent as ReactWheelEvent,
+  Suspense,
   useCallback,
   useEffect,
   useMemo,
@@ -54,7 +57,6 @@ import {
 } from "./api";
 import { ClaudeLogo, OpenAILogo } from "./BrandIcons";
 import { ContextMenu, type CtxMenuSection } from "./ContextMenu";
-import { MarkdownPreview } from "./MarkdownPreview";
 import { cleanAgentTerminalConversation } from "./terminal-conversation";
 import {
   blockOutputText,
@@ -62,6 +64,10 @@ import {
   formatWorkflowDuration,
   type WorkflowBlockOutput,
 } from "./workflow-behavior";
+
+const MarkdownPreview = lazy(() =>
+  import("./MarkdownPreview").then((module) => ({ default: module.MarkdownPreview })),
+);
 
 interface WorkflowTabProps {
   workspaceId: string;
@@ -2416,7 +2422,9 @@ export function WorkflowTab({
                   spellCheck={false}
                 />
               ) : workflow.readme.trim() ? (
-                <MarkdownPreview source={workflow.readme} />
+                <Suspense fallback={<div className="tab-loading-fallback" />}>
+                  <MarkdownPreview source={workflow.readme} />
+                </Suspense>
               ) : (
                 <div className="workflow-readme__empty">
                   No README yet. Click <strong>edit</strong> to describe this workflow.
@@ -3395,7 +3403,9 @@ function WorkflowMpePanel({ markdown, onClose }: { markdown: string; onClose: ()
         </button>
       </div>
       <div className="workflow-mpe-panel__body">
-        <MarkdownPreview source={markdown} />
+        <Suspense fallback={<div className="tab-loading-fallback" />}>
+          <MarkdownPreview source={markdown} />
+        </Suspense>
       </div>
     </aside>
   );

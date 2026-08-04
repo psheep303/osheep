@@ -1,6 +1,8 @@
-import { useEffect, useState } from "react";
-import { PlanView } from "./PlanView";
-import { type AgentTerminalLaunchRequest, Terminal } from "./Terminal";
+import { lazy, Suspense, useEffect, useState } from "react";
+import type { AgentTerminalLaunchRequest } from "./Terminal";
+
+const PlanView = lazy(() => import("./PlanView").then((module) => ({ default: module.PlanView })));
+const Terminal = lazy(() => import("./Terminal").then((module) => ({ default: module.Terminal })));
 
 type BottomTab = "terminal" | "log" | "plan";
 
@@ -63,19 +65,21 @@ export function BottomPanel({
         </button>
       </div>
       <div className="bottom-panel__body">
-        {tab === "terminal" && (
-          <Terminal
-            workspaceId={workspaceId}
-            launchRequest={terminalLaunchRequest}
-            onLaunchHandled={onTerminalLaunchHandled}
-          />
-        )}
-        {tab === "log" && (
-          <div className="muted" style={{ padding: "10px 16px" }}>
-            任务执行日志将在后续阶段接入。
-          </div>
-        )}
-        {tab === "plan" && <PlanView workspaceId={workspaceId} />}
+        <Suspense fallback={<div className="tab-loading-fallback" />}>
+          {tab === "terminal" && (
+            <Terminal
+              workspaceId={workspaceId}
+              launchRequest={terminalLaunchRequest}
+              onLaunchHandled={onTerminalLaunchHandled}
+            />
+          )}
+          {tab === "log" && (
+            <div className="muted" style={{ padding: "10px 16px" }}>
+              任务执行日志将在后续阶段接入。
+            </div>
+          )}
+          {tab === "plan" && <PlanView workspaceId={workspaceId} />}
+        </Suspense>
       </div>
     </div>
   );

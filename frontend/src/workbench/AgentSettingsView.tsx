@@ -1,10 +1,13 @@
-import { type ReactNode, useState } from "react";
+import { lazy, type ReactNode, Suspense, useState } from "react";
 import { AgentAdvancedSettingsView } from "./AgentAdvancedSettingsView";
 import { AgentSessionsView } from "./AgentSessionsView";
-import { AiSettingsView } from "./AiSettingsView";
 import type { AgentSessionSummary } from "./api";
 import { ClaudePluginsView } from "./ClaudePluginsView";
 import { CodexPluginsView } from "./CodexPluginsView";
+
+const AiSettingsView = lazy(() =>
+  import("./AiSettingsView").then((module) => ({ default: module.AiSettingsView })),
+);
 
 interface AgentSection<T extends string> {
   id: T;
@@ -137,7 +140,9 @@ function AgentShell<T extends string>({
           ))}
       </div>
 
-      <div className="agent-settings__body">{children}</div>
+      <div className="agent-settings__body">
+        <Suspense fallback={<div className="tab-loading-fallback" />}>{children}</Suspense>
+      </div>
     </div>
   );
 }
