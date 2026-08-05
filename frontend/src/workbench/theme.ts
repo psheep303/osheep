@@ -87,6 +87,67 @@ type XtermTheme = Required<
   Pick<ITheme, "background" | "foreground" | "cursor" | "selectionBackground">
 >;
 
+export type XtermAnsiTheme = Pick<
+  ITheme,
+  | "black"
+  | "red"
+  | "green"
+  | "yellow"
+  | "blue"
+  | "magenta"
+  | "cyan"
+  | "white"
+  | "brightBlack"
+  | "brightRed"
+  | "brightGreen"
+  | "brightYellow"
+  | "brightBlue"
+  | "brightMagenta"
+  | "brightCyan"
+  | "brightWhite"
+  | "selectionForeground"
+>;
+
+const DARK_ANSI: XtermAnsiTheme = {
+  black: "#000000",
+  red: "#cd3131",
+  green: "#0dbc79",
+  yellow: "#e5e510",
+  blue: "#2472c8",
+  magenta: "#bc3fbc",
+  cyan: "#11a8cd",
+  white: "#e5e5e5",
+  brightBlack: "#666666",
+  brightRed: "#cd3131",
+  brightGreen: "#14ce14",
+  brightYellow: "#e5e510",
+  brightBlue: "#5cb2ff",
+  brightMagenta: "#bc3fbc",
+  brightCyan: "#29b8db",
+  brightWhite: "#e5e5e5",
+  selectionForeground: "#ffffff",
+};
+
+const LIGHT_ANSI: XtermAnsiTheme = {
+  black: "#1f2933",
+  red: "#cd3131",
+  green: "#107c10",
+  yellow: "#795e26",
+  blue: "#0451a5",
+  magenta: "#af00db",
+  cyan: "#0598bc",
+  white: "#555555",
+  brightBlack: "#616161",
+  brightRed: "#a31515",
+  brightGreen: "#0b6a0b",
+  brightYellow: "#795e26",
+  brightBlue: "#003f8f",
+  brightMagenta: "#7a00a3",
+  brightCyan: "#047f9b",
+  brightWhite: "#1f2933",
+  selectionForeground: "#17212b",
+};
+
 export function xtermTheme(theme: UiColorTheme = "dark"): XtermTheme {
   return {
     background: token("--surface-2", theme),
@@ -103,6 +164,10 @@ export function workflowXtermTheme(theme: UiColorTheme = "dark"): XtermTheme {
     cursor: token("--color-link-strong", theme),
     selectionBackground: theme === "light" ? "#c5def5" : "#264f78",
   };
+}
+
+export function xtermAnsiTheme(theme: UiColorTheme = "dark"): XtermAnsiTheme {
+  return theme === "light" ? { ...LIGHT_ANSI } : { ...DARK_ANSI };
 }
 
 const GIT_GRAPH_PALETTE = ["#ffb000", "#dc267f", "#994f00", "#40b0a6", "#b66dff"] as const;

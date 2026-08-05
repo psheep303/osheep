@@ -18,6 +18,7 @@ const {
   monacoDiffColors,
   monacoEditorColors,
   workflowXtermTheme,
+  xtermAnsiTheme,
   xtermTheme,
 } = await loadTheme();
 
@@ -91,6 +92,8 @@ test("explicit light palettes stay readable without a DOM", () => {
     selectionBackground: "#c5def5",
   });
   assert.equal(workflowXtermTheme("light").background, "#ffffff");
+  assert.equal(xtermAnsiTheme("light").brightWhite, "#1f2933");
+  assert.equal(xtermAnsiTheme("light").brightYellow, "#795e26");
 });
 
 test("cssVar trims DOM values and falls back for empty tokens", () => {

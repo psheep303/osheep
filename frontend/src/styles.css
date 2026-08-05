@@ -43,18 +43,50 @@
 
 :root[data-theme="light"] {
   color-scheme: light;
-  scrollbar-color: #b8bcc2 #f2f3f5;
-  --bg-shell: #f3f4f6; --bg-editor: #ffffff; --bg-hover: #e9edf2; --bg-selection: #cfe8ff; --bg-active: #ffffff;
-  --fg-default: #26313d; --fg-muted: #5d6875; --fg-faint: #87919d; --fg-strong: #17212b; --fg-error: #b42318;
-  --accent: #0b6fc4; --accent-soft: rgba(11, 111, 196, 0.13);
-  --border-faint: #e3e7eb; --border-edge: #cbd2d9;
-  --shadow-1: 0 2px 8px rgba(28, 39, 51, 0.12); --shadow-2: 0 8px 24px rgba(28, 39, 51, 0.16);
-  --color-error: #b42318; --color-warning: #9a6700; --color-warning-strong: #7a5300;
-  --color-success: #18794e; --color-success-strong: #146c45; --color-info: #1769aa;
-  --color-link: #0b63b6; --color-link-strong: #07549b;
-  --surface-1: #f3f4f6; --surface-2: #ffffff; --surface-3: #f7f8fa; --surface-4: #edf0f3; --surface-control: #ffffff;
-  --border-subtle: #e3e7eb; --border-strong: #b8c1ca; --border-control: #cbd2d9;
-  --overlay-subtle: rgba(38, 49, 61, 0.035); --overlay-hover: rgba(38, 49, 61, 0.075); --overlay-strong: rgba(38, 49, 61, 0.12);
+  scrollbar-color: #c2c6cc #f3f3f3;
+
+  /* VS Code Modern Light-inspired workbench hierarchy. */
+  --bg-shell: #f3f3f3;
+  --bg-editor: #ffffff;
+  --bg-hover: #e8e8e8;
+  --bg-selection: #cce8ff;
+  --bg-active: #ffffff;
+
+  --fg-default: #3b3b3b;
+  --fg-muted: #616161;
+  --fg-faint: #767676;
+  --fg-strong: #1f1f1f;
+  --fg-error: #a1260d;
+
+  --accent: #0078d4;
+  --accent-soft: rgba(0, 120, 212, 0.12);
+
+  --border-faint: #e5e5e5;
+  --border-edge: #d4d4d4;
+
+  --shadow-1: 0 2px 8px rgba(0, 0, 0, 0.12);
+  --shadow-2: 0 8px 24px rgba(0, 0, 0, 0.16);
+
+  --color-error: #a1260d;
+  --color-warning: #7a5d00;
+  --color-warning-strong: #6a4f00;
+  --color-success: #16825d;
+  --color-success-strong: #116b4c;
+  --color-info: #006ab1;
+  --color-link: #006ab1;
+  --color-link-strong: #005a9e;
+
+  --surface-1: #f3f3f3;
+  --surface-2: #ffffff;
+  --surface-3: #f8f8f8;
+  --surface-4: #eeeeee;
+  --surface-control: #ffffff;
+  --border-subtle: #e5e5e5;
+  --border-strong: #c8c8c8;
+  --border-control: #cecece;
+  --overlay-subtle: rgba(0, 0, 0, 0.025);
+  --overlay-hover: rgba(0, 0, 0, 0.055);
+  --overlay-strong: rgba(0, 0, 0, 0.1);
 }
 
 * {

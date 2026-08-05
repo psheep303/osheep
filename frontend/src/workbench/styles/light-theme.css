@@ -1,62 +1,390 @@
-:root[data-theme="light"] .activity-bar__item:hover,
+/* Modern Light uses a dark activity rail, quiet gray chrome, and a white
+   editor. These overrides also neutralize legacy dark literals that predate
+   the semantic token layer. */
+
+:root[data-theme="light"] .activity-bar {
+  background: #2c2c2c;
+  border-right-color: #3c3c3c;
+}
+
+:root[data-theme="light"] .activity-bar__item {
+  color: #c5c5c5;
+}
+
+:root[data-theme="light"] .activity-bar__item:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #ffffff;
+}
+
+:root[data-theme="light"] .activity-bar__item.is-active {
+  color: #ffffff;
+}
+
+:root[data-theme="light"] .activity-bar__item.is-active::before {
+  width: 2px;
+  background: #0078d4;
+}
+
+:root[data-theme="light"] .titlebar {
+  background: #f3f3f3;
+  border-bottom-color: #d8d8d8;
+}
+
+:root[data-theme="light"] .side,
+:root[data-theme="light"] .ai-panel,
+:root[data-theme="light"] .template-sidebar,
+:root[data-theme="light"] .bottom-panel__tabs {
+  background: #f7f7f7;
+}
+
+:root[data-theme="light"] .side-view__header,
+:root[data-theme="light"] .tabs,
+:root[data-theme="light"] .bottom-panel__tabs {
+  border-color: #e1e1e1;
+}
+
+:root[data-theme="light"] .titlebar__dev-badge {
+  border-color: #b98a00;
+  color: #7a5d00;
+}
+
 :root[data-theme="light"] .tree-row.is-selected,
 :root[data-theme="light"] .terminal__sidebar-item.is-active,
-:root[data-theme="light"] .plan-view__item.is-active {
-  background: var(--bg-hover);
+:root[data-theme="light"] .plan-view__item.is-active,
+:root[data-theme="light"] .agent-settings__nav-item.is-active {
+  background: #e4e6ea;
+  color: var(--fg-strong);
+}
+
+:root[data-theme="light"] .file-tree__guide {
+  background: rgba(0, 0, 0, 0.1);
+}
+
+:root[data-theme="light"] .editor-tab,
+:root[data-theme="light"] .tab {
+  color: #555555;
+}
+
+:root[data-theme="light"] .editor-tab.is-active,
+:root[data-theme="light"] .tab.is-active {
+  background: #ffffff;
+  color: #1f1f1f;
 }
 
 :root[data-theme="light"] .ctx-menu,
-:root[data-theme="light"] .git-view__branch-menu,
-:root[data-theme="light"] .git-view__remote-menu,
+:root[data-theme="light"] .modal,
+:root[data-theme="light"] .terminal__menu,
+:root[data-theme="light"] .git-view__branch-popover,
+:root[data-theme="light"] .git-view__remotes-popover,
+:root[data-theme="light"] .git-view__commit-menu,
 :root[data-theme="light"] .chat-composer__agent-menu,
-:root[data-theme="light"] .provider-card__picker {
-  background: var(--surface-2);
-  border-color: var(--border-strong);
+:root[data-theme="light"] .chat-composer__slash,
+:root[data-theme="light"] .provider-card__picker,
+:root[data-theme="light"] .workflow-mode-menu {
+  background: #ffffff;
+  border-color: #c8c8c8;
   box-shadow: var(--shadow-2);
+  color: var(--fg-default);
+}
+
+:root[data-theme="light"] .ctx-menu__item:hover:not(.is-disabled),
+:root[data-theme="light"] .terminal__menu-item:hover,
+:root[data-theme="light"] .chat-composer__agent-option:hover,
+:root[data-theme="light"] .chat-composer__icon-btn:hover:not(:disabled),
+:root[data-theme="light"] .chat-composer__agent-btn:hover:not(:disabled),
+:root[data-theme="light"] .chat-composer__slash-item:hover:not(.is-disabled),
+:root[data-theme="light"] .workflow-mode-menu__item:hover {
+  background: #e8e8e8;
+  color: #1f1f1f;
+}
+
+:root[data-theme="light"] .ctx-menu__shortcut,
+:root[data-theme="light"] .ctx-menu__item:hover:not(.is-disabled) .ctx-menu__shortcut {
+  color: #616161;
 }
 
 :root[data-theme="light"] .provider-card,
 :root[data-theme="light"] .agent-card,
 :root[data-theme="light"] .codex-plugins__card,
-:root[data-theme="light"] .claude-plugins__card {
-  background: var(--overlay-subtle);
+:root[data-theme="light"] .claude-plugins__card,
+:root[data-theme="light"] .git-view__remote-form,
+:root[data-theme="light"] .git-view__remotes-form {
+  background: #fafafa;
+  border-color: #dedede;
 }
 
-:root[data-theme="light"] .workflow-tab {
-  --wf-bg: #f7f8fa; --wf-canvas: #f1f4f7; --wf-panel: #ffffff; --wf-panel-strong: #f8fafc;
-  --wf-muted-surface: rgba(38, 49, 61, 0.045); --wf-muted-surface-strong: rgba(38, 49, 61, 0.085);
-  --wf-border: rgba(38, 49, 61, 0.16); --wf-border-strong: rgba(38, 49, 61, 0.26);
-  --wf-text: #1f2933; --wf-text-soft: #3f4b57; --wf-muted: #687482;
-  --wf-blue: #146dcc; --wf-blue-strong: #0b5db5; --wf-green: #16805a; --wf-amber: #a66800;
-  --wf-red: #bd3c32; --wf-violet: #7352b5; --wf-cyan: #087f9b; --wf-teal: #087f78;
+:root[data-theme="light"] .agent-settings__textarea,
+:root[data-theme="light"] .agent-settings__input,
+:root[data-theme="light"] .ai-settings__textarea,
+:root[data-theme="light"] .ai-settings__input,
+:root[data-theme="light"] .codex-plugins__input {
+  background: #ffffff;
+  border-color: #c8c8c8;
+  color: #3b3b3b;
 }
 
-:root[data-theme="light"] .workflow-node {
-  background: linear-gradient(180deg, #ffffff, #f8fafc);
-  border-color: rgba(38, 49, 61, 0.2);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 1px 2px rgba(38, 49, 61, 0.12), 0 10px 24px rgba(38, 49, 61, 0.1);
+:root[data-theme="light"] .chat-composer {
+  background: #f8f8f8;
+  border-color: #cecece;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
 }
 
-:root[data-theme="light"] .workflow-canvas-wrap {
-  background-image: linear-gradient(rgba(38, 49, 61, 0.08) 1px, transparent 1px), linear-gradient(90deg, rgba(38, 49, 61, 0.08) 1px, transparent 1px);
-  box-shadow: inset 0 1px 0 rgba(38, 49, 61, 0.04), inset 0 48px 120px rgba(255, 255, 255, 0.4);
+:root[data-theme="light"] .chat-composer:focus-within {
+  border-color: #0078d4;
+  box-shadow: 0 0 0 1px rgba(0, 120, 212, 0.18);
+}
+
+:root[data-theme="light"] .chat-msg__content,
+:root[data-theme="light"] .chat-markdown,
+:root[data-theme="light"] .chat-markdown strong,
+:root[data-theme="light"] .chat-markdown code {
+  color: #303030;
+}
+
+:root[data-theme="light"] .chat-markdown code,
+:root[data-theme="light"] .chat-markdown th,
+:root[data-theme="light"] .ask-step__summary,
+:root[data-theme="light"] .edit-diff__head,
+:root[data-theme="light"] .auto-allow-panel-v2__row:hover {
+  background: rgba(0, 0, 0, 0.045);
+}
+
+:root[data-theme="light"] .run-io,
+:root[data-theme="light"] .edit-diff,
+:root[data-theme="light"] .ask-step {
+  border-color: #d8d8d8;
+  background: #fbfbfb;
+}
+
+:root[data-theme="light"] .markdown-preview pre {
+  background: #f6f8fa;
+  border-color: #d8dee4;
+}
+
+:root[data-theme="light"] .markdown-preview code {
+  background: rgba(175, 184, 193, 0.22);
+  color: #24292f;
+}
+
+:root[data-theme="light"] .markdown-preview blockquote {
+  border-left-color: #c8c8c8;
+}
+
+:root[data-theme="light"] .markdown-preview kbd {
+  background: #f3f3f3;
+  border-color: #c8c8c8;
+  color: #333333;
+}
+
+:root[data-theme="light"] .search-view__file-count,
+:root[data-theme="light"] .git-view__section-count {
+  background: #e1e1e1;
+  color: #454545;
+}
+
+:root[data-theme="light"] .banner-error,
+:root[data-theme="light"] .terminal__error,
+:root[data-theme="light"] .term-session__error,
+:root[data-theme="light"] .markdown-preview__error {
+  background: #fde7e5;
+  color: #a1260d;
+}
+
+:root[data-theme="light"] .terminal__menu {
+  border-color: #c8c8c8;
+}
+
+:root[data-theme="light"] .terminal__sidebar {
+  background: #f3f3f3;
+  border-left-color: #dedede;
+}
+
+:root[data-theme="light"] .template-sidebar__nav button.is-active,
+:root[data-theme="light"] .template-card.is-active {
+  background: #e7edf3;
+  border-color: #9dbbd5;
+  color: #1f1f1f;
+}
+
+:root[data-theme="light"] .template-sidebar__search,
+:root[data-theme="light"] .template-card,
+:root[data-theme="light"] .template-detail__edit {
+  background: #ffffff;
+  border-color: #d8d8d8;
+  color: #3b3b3b;
 }
 
 :root[data-theme="light"] .workflow-readme,
 :root[data-theme="light"] .workflow-readme__bar,
 :root[data-theme="light"] .workflow-readme__content,
-:root[data-theme="light"] .workflow-readme__content textarea,
-:root[data-theme="light"] .workflow-inspector,
-:root[data-theme="light"] .workflow-run-details__terminal,
-:root[data-theme="light"] .workflow-run-details__xterm,
-:root[data-theme="light"] .workflow-mpe-panel__body {
-  background: var(--surface-2);
-  color: var(--fg-default);
+:root[data-theme="light"] .workflow-readme__content textarea {
+  background: #ffffff;
+  color: #303030;
 }
 
-:root[data-theme="light"] .workflow-readme { border-color: var(--border-strong); box-shadow: var(--shadow-2); }
-:root[data-theme="light"] .workflow-toolbar__btn.is-primary { border-color: var(--accent); background: var(--accent); color: #ffffff; }
-:root[data-theme="light"] .workflow-toolbar__btn.is-primary:hover:not(:disabled) { background: var(--color-link-strong); color: #ffffff; }
+:root[data-theme="light"] .workflow-readme {
+  border-color: #c8c8c8;
+  box-shadow: var(--shadow-2);
+}
+
+:root[data-theme="light"] .workflow-block-picker {
+  background: #ffffff;
+  border-left-color: #d4d4d4;
+  box-shadow: -12px 0 30px rgba(0, 0, 0, 0.12);
+  color: #303030;
+}
+
+:root[data-theme="light"] .workflow-block-picker__categories {
+  border-right-color: #e1e1e1;
+}
+
+:root[data-theme="light"] .workflow-block-picker__categories button,
+:root[data-theme="light"] .workflow-block-picker__items button {
+  background: #f7f7f7;
+  border-color: #d4d4d4;
+  color: #3b3b3b;
+}
+
+:root[data-theme="light"] .workflow-block-picker__categories button:hover,
+:root[data-theme="light"] .workflow-block-picker__items button:hover {
+  background: #e8e8e8;
+  border-color: #b8b8b8;
+  color: #1f1f1f;
+}
+
+:root[data-theme="light"] .workflow-block-picker__categories button.is-active {
+  background: #e7f3fc;
+  border-color: #0078d4;
+  color: #005a9e;
+}
+
+:root[data-theme="light"] .workflow-block-picker__icon,
+:root[data-theme="light"] .workflow-block-picker__item-icon {
+  color: #616161;
+  filter: none;
+}
+
+:root[data-theme="light"] .workflow-block-picker__categories button:hover .workflow-block-picker__icon,
+:root[data-theme="light"] .workflow-block-picker__items button:hover .workflow-block-picker__item-icon,
+:root[data-theme="light"] .workflow-block-picker__categories button.is-active .workflow-block-picker__icon {
+  color: #0078d4;
+}
+
+/* Workflow has its own palette so node categories keep their meaning while
+   the canvas reads as a first-class light editor rather than an inverted UI. */
+:root[data-theme="light"] .workflow-tab {
+  --wf-bg: #f8f8f8;
+  --wf-canvas: #f3f5f7;
+  --wf-panel: #ffffff;
+  --wf-panel-strong: #f7f7f7;
+  --wf-muted-surface: rgba(0, 0, 0, 0.035);
+  --wf-muted-surface-strong: rgba(0, 0, 0, 0.07);
+  --wf-border: rgba(31, 31, 31, 0.15);
+  --wf-border-strong: rgba(31, 31, 31, 0.25);
+  --wf-text: #252525;
+  --wf-text-soft: #454545;
+  --wf-muted: #686868;
+  --wf-blue: #0078d4;
+  --wf-blue-strong: #0069b9;
+  --wf-green: #16825d;
+  --wf-amber: #936f00;
+  --wf-red: #b42318;
+  --wf-violet: #7049a5;
+  --wf-cyan: #087f9b;
+  --wf-teal: #087f78;
+}
+
+:root[data-theme="light"] .workflow-canvas-wrap {
+  background-color: var(--wf-canvas);
+  background-image: linear-gradient(rgba(31, 31, 31, 0.08) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(31, 31, 31, 0.08) 1px, transparent 1px);
+  box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.04);
+}
+
+:root[data-theme="light"] .workflow-node {
+  background: linear-gradient(180deg, #ffffff, #f8f8f8);
+  border-color: rgba(31, 31, 31, 0.2);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12), 0 6px 18px rgba(0, 0, 0, 0.08);
+  color: var(--wf-text);
+}
+
+:root[data-theme="light"] .workflow-node:hover {
+  border-color: rgba(31, 31, 31, 0.34);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.14), 0 8px 20px rgba(0, 0, 0, 0.1);
+}
+
+:root[data-theme="light"] .workflow-node.is-selected {
+  border-color: #0078d4;
+  box-shadow: 0 0 0 1px #0078d4, 0 0 0 4px rgba(0, 120, 212, 0.12),
+    0 8px 22px rgba(0, 0, 0, 0.12);
+}
+
+:root[data-theme="light"] .workflow-node__id,
+:root[data-theme="light"] .workflow-node__icon {
+  color: #5f5f5f;
+}
+
+:root[data-theme="light"] .workflow-node__handle {
+  background: #ffffff;
+  border-color: #8a8a8a;
+}
+
+:root[data-theme="light"] .workflow-edge {
+  stroke: rgba(0, 120, 212, 0.82);
+}
+
+:root[data-theme="light"] #workflow-arrow path {
+  fill: #0078d4;
+}
+
+:root[data-theme="light"] .workflow-inspector,
+:root[data-theme="light"] .workflow-palette,
+:root[data-theme="light"] .workflow-mpe-panel,
+:root[data-theme="light"] .workflow-mpe-panel__body,
+:root[data-theme="light"] .workflow-run-details,
+:root[data-theme="light"] .workflow-run-details__terminal,
+:root[data-theme="light"] .workflow-run-details__xterm,
+:root[data-theme="light"] .workflow-inspector__output,
+:root[data-theme="light"] .workflow-inspector__markdown-preview {
+  background: #ffffff;
+  color: var(--wf-text);
+}
+
+:root[data-theme="light"] .workflow-inspector__head-actions button,
+:root[data-theme="light"] .workflow-rename-panel__actions button,
 :root[data-theme="light"] .workflow-run-details__controls,
 :root[data-theme="light"] .workflow-run-details__controls button,
-:root[data-theme="light"] .workflow-run-details__outcome { background: var(--surface-3); }
+:root[data-theme="light"] .workflow-run-details__outcome {
+  background: #f3f3f3;
+  border-color: #d2d2d2;
+  color: #454545;
+}
+
+:root[data-theme="light"] .workflow-toolbar__btn.is-primary,
+:root[data-theme="light"] .workflow-rename-panel__actions button.is-primary {
+  border-color: #0078d4;
+  background: #0078d4;
+  color: #ffffff;
+}
+
+:root[data-theme="light"] .workflow-toolbar__btn.is-primary:hover:not(:disabled),
+:root[data-theme="light"] .workflow-rename-panel__actions button.is-primary:hover:not(:disabled) {
+  background: #0069b9;
+  color: #ffffff;
+}
+
+:root[data-theme="light"] .workflow-error {
+  border-color: #d13438;
+  background: #fde7e5;
+  color: #a1260d;
+}
+
+:root[data-theme="light"] .workflow-waiting-choice {
+  border-color: #c8a200;
+  background: #fff8d6;
+  color: #5f4b00;
+}
+
+:root[data-theme="light"] .workflow-waiting-choice__message span {
+  color: #6b5900;
+}

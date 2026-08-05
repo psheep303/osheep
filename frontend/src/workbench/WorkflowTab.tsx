@@ -59,7 +59,7 @@ import {
 import { ClaudeLogo, OpenAILogo } from "./BrandIcons";
 import { ContextMenu, type CtxMenuSection } from "./ContextMenu";
 import { cleanAgentTerminalConversation } from "./terminal-conversation";
-import { workflowXtermTheme } from "./theme";
+import { workflowXtermTheme, xtermAnsiTheme } from "./theme";
 import {
   blockOutputText,
   canApplyWorkflowRefresh,
@@ -3230,7 +3230,7 @@ function WorkflowAgentTerminal({
       fontFamily: "Geist Mono, SFMono-Regular, Cascadia Mono, Consolas, Courier New, monospace",
       fontSize: 12.5,
       scrollback: 8000,
-      theme: workflowXtermTheme(resolvedTheme),
+      theme: { ...workflowXtermTheme(resolvedTheme), ...xtermAnsiTheme(resolvedTheme) },
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -3305,7 +3305,11 @@ function WorkflowAgentTerminal({
 
   useEffect(() => {
     const term = termRef.current;
-    if (term) term.options.theme = workflowXtermTheme(resolvedTheme);
+    if (term)
+      term.options.theme = {
+        ...workflowXtermTheme(resolvedTheme),
+        ...xtermAnsiTheme(resolvedTheme),
+      };
   }, [resolvedTheme]);
 
   const updateAutoSuccess = async (enabled: boolean) => {

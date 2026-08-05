@@ -12,7 +12,7 @@ import {
   type ShellProfile,
   type TerminalCreateResp,
 } from "./api";
-import { xtermTheme } from "./theme";
+import { xtermAnsiTheme, xtermTheme } from "./theme";
 
 interface TerminalSessionProps {
   workspaceId: string | null;
@@ -57,7 +57,7 @@ export function TerminalSession({
         cursorBlink: true,
         fontFamily: "Cascadia Mono, Consolas, Courier New, monospace",
         fontSize: 13,
-        theme: xtermTheme(resolvedTheme),
+        theme: { ...xtermTheme(resolvedTheme), ...xtermAnsiTheme(resolvedTheme) },
         scrollback: 5000,
       });
       const fit = new FitAddon();
@@ -257,7 +257,8 @@ export function TerminalSession({
 
   useEffect(() => {
     const term = xtermRef.current;
-    if (term) term.options.theme = xtermTheme(resolvedTheme);
+    if (term)
+      term.options.theme = { ...xtermTheme(resolvedTheme), ...xtermAnsiTheme(resolvedTheme) };
   }, [resolvedTheme]);
 
   // When this session becomes visible, force a fit + focus.
