@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useUiPreferences } from "../i18n/UiPreferences";
 import {
   getSession as apiGetSession,
   saveSession as apiSaveSession,
@@ -56,6 +57,7 @@ export function ChatTab({
   onOpenSettings,
   onOpenAiDiff,
 }: ChatTabProps) {
+  const { t } = useUiPreferences();
   const [session, setSession] = useState<SessionRecord | null>(null);
   const [input, setInput] = useState("");
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -209,7 +211,7 @@ export function ChatTab({
 
   const clearConversation = async () => {
     if (!session) return;
-    if (!window.confirm("清空当前对话的所有消息？")) return;
+    if (!window.confirm(t("chat.clearConfirm"))) return;
     const next: SessionRecord = {
       ...session,
       messages: [],
@@ -298,8 +300,8 @@ export function ChatTab({
     return null;
   }, [session, sending]);
 
-  if (loading) return <div className="empty-hint">加载中…</div>;
-  if (!session) return <div className="empty-hint">{loadError ?? "未能加载该对话"}</div>;
+  if (loading) return <div className="empty-hint">{t("chat.loading")}</div>;
+  if (!session) return <div className="empty-hint">{loadError ?? t("chat.loadFailed")}</div>;
 
   const onComposerKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -322,9 +324,9 @@ export function ChatTab({
         <div className="chat-tab__messages-inner">
           {session.messages.length === 0 && !sending && (
             <div className="chat-tab__welcome">
-              <div className="chat-tab__welcome-title">{session.title || "新对话"}</div>
+              <div className="chat-tab__welcome-title">{session.title || t("chat.new")}</div>
               <div className="chat-tab__welcome-hint">
-                {readyToSend ? "向 osheep code 描述你的任务" : sendBlockReason}
+                {readyToSend ? t("chat.prompt") : sendBlockReason}
               </div>
             </div>
           )}
@@ -351,7 +353,7 @@ export function ChatTab({
               chatRuntime.clearError(sessionId);
               setLoadError(null);
             }}
-            aria-label="关闭错误提示"
+            aria-label={t("chat.closeError")}
           >
             ×
           </button>
@@ -391,8 +393,8 @@ export function ChatTab({
             rows={1}
             placeholder={
               readyToSend
-                ? "描述你想做的事…  ( /  打开菜单 )"
-                : sendBlockReason || "描述你想做的事…"
+                ? `${t("chat.promptPlaceholder")}  ( /  ${t("chat.openSlashMenu")} )`
+                : sendBlockReason || t("chat.promptPlaceholder")
             }
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={onComposerKeyDown}
@@ -401,7 +403,7 @@ export function ChatTab({
             <div className="chat-composer__row-left">
               <button
                 className="chat-composer__icon-btn"
-                title="附加上下文（敬请期待）"
+                title={t("chat.attachSoon")}
                 disabled
                 tabIndex={-1}
               >
@@ -409,7 +411,7 @@ export function ChatTab({
               </button>
               <button
                 className="chat-composer__icon-btn"
-                title="斜杠菜单"
+                title={t("chat.openSlashMenu")}
                 onClick={() => {
                   setSlashOpen((v) => !v);
                 }}
@@ -439,7 +441,7 @@ export function ChatTab({
                 <button
                   className="chat-composer__send is-stop"
                   onClick={stopStream}
-                  title="停止生成（Esc）"
+                  title={t("chat.stop")}
                 >
                   <StopIcon />
                 </button>
@@ -452,10 +454,10 @@ export function ChatTab({
                     !readyToSend
                       ? sendBlockReason
                       : !input.trim()
-                        ? "请先输入内容"
+                        ? t("chat.enterContent")
                         : sending
-                          ? "停止当前任务并发送新消息（Enter）"
-                          : "发送（Enter）"
+                          ? t("chat.stopAndSend")
+                          : t("chat.send")
                   }
                 >
                   <ArrowUpIcon />
