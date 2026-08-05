@@ -19,6 +19,7 @@ output/
 coverage/
 desktop/stage/
 desktop/src-tauri/target/
+workspaces/
 
 # Local environment and application state
 .env
@@ -32,6 +33,7 @@ backend/workspaces/
 .agents/
 .claude/
 .codex/
+.superpowers/
 
 # Credentials, private keys, and signing material
 credentials.json
@@ -77,3 +79,5 @@ Desktop.ini
 # Local reports and scratch material
 docs/bugs/
 other/
+docs/reports/
+docs/superpowers/

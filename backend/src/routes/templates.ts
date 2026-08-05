@@ -1,7 +1,16 @@
 import type { FastifyInstance } from "fastify";
 import { config } from "../config.js";
 import { errors } from "../errors.js";
-import { listWorkspaces, resolveWorkspace } from "../workspace.js";
+import {
+  deleteWorkflowTemplate,
+  getWorkflowTemplate,
+  getWorkflowTemplateIcon,
+  listWorkflowTemplates,
+  saveWorkflowAsTemplate,
+  type TemplateSource,
+  updateWorkflowTemplateIcon,
+} from "../templates.js";
+import { stopWorkflowRunAndWait } from "../workflow-runner.js";
 import {
   createWorkflow,
   deleteWorkflow,
@@ -10,16 +19,7 @@ import {
   listWorkflowIdsByTemplateBinding,
   saveWorkflow,
 } from "../workflows.js";
-import { stopWorkflowRunAndWait } from "../workflow-runner.js";
-import {
-  deleteWorkflowTemplate,
-  getWorkflowTemplate,
-  getWorkflowTemplateIcon,
-  listWorkflowTemplates,
-  saveWorkflowAsTemplate,
-  updateWorkflowTemplateIcon,
-  type TemplateSource,
-} from "../templates.js";
+import { listWorkspaces, resolveWorkspace } from "../workspace.js";
 
 function sourceOf(value: string): TemplateSource {
   if (value === "system" || value === "user") return value;
@@ -42,20 +42,14 @@ export async function registerTemplateRoutes(app: FastifyInstance) {
   app.get<{ Params: { source: string; tid: string } }>(
     "/api/templates/:source/:tid/icon",
     async (req, reply) => {
-      const icon = await getWorkflowTemplateIcon(
-        sourceOf(req.params.source),
-        req.params.tid
-      );
-      return reply
-        .type(icon.mime)
-        .header("cache-control", "no-cache")
-        .send(icon.data);
-    }
+      const icon = await getWorkflowTemplateIcon(sourceOf(req.params.source), req.params.tid);
+      return reply.type(icon.mime).header("cache-control", "no-cache").send(icon.data);
+    },
   );
 
   app.get<{ Params: { source: string; tid: string } }>(
     "/api/templates/:source/:tid",
-    async (req) => await getWorkflowTemplate(sourceOf(req.params.source), req.params.tid)
+    async (req) => await getWorkflowTemplate(sourceOf(req.params.source), req.params.tid),
   );
 
   app.post<{ Params: { id: string; wid: string } }>(
@@ -64,7 +58,7 @@ export async function registerTemplateRoutes(app: FastifyInstance) {
       const workspace = await resolveWorkspace(req.params.id);
       const workflow = await getWorkflow(workspace.path, req.params.wid);
       return await saveWorkflowAsTemplate(workflow, "user");
-    }
+    },
   );
 
   app.post<{ Params: { id: string; wid: string } }>(
@@ -74,7 +68,7 @@ export async function registerTemplateRoutes(app: FastifyInstance) {
       const workspace = await resolveWorkspace(req.params.id);
       const workflow = await getWorkflow(workspace.path, req.params.wid);
       return await saveWorkflowAsTemplate(workflow, "system");
-    }
+    },
   );
 
   app.post<{ Params: { id: string; source: string; tid: string } }>(
@@ -84,11 +78,7 @@ export async function registerTemplateRoutes(app: FastifyInstance) {
       assertEditable(source);
       const workspace = await resolveWorkspace(req.params.id);
       const template = await getWorkflowTemplate(source, req.params.tid);
-      const existing = await findWorkflowByTemplateBinding(
-        workspace.path,
-        source,
-        req.params.tid
-      );
+      const existing = await findWorkflowByTemplateBinding(workspace.path, source, req.params.tid);
       if (existing) {
         return await saveWorkflow(workspace.path, {
           ...existing,
@@ -107,7 +97,7 @@ export async function registerTemplateRoutes(app: FastifyInstance) {
         edges: template.edges,
         runs: [],
       });
-    }
+    },
   );
 
   app.put<{
@@ -116,11 +106,7 @@ export async function registerTemplateRoutes(app: FastifyInstance) {
   }>("/api/templates/:source/:tid/icon", async (req) => {
     const source = sourceOf(req.params.source);
     assertEditable(source);
-    return await updateWorkflowTemplateIcon(
-      source,
-      req.params.tid,
-      req.body?.icon ?? ""
-    );
+    return await updateWorkflowTemplateIcon(source, req.params.tid, req.body?.icon ?? "");
   });
 
   app.delete<{ Params: { source: string; tid: string } }>(
@@ -133,7 +119,7 @@ export async function registerTemplateRoutes(app: FastifyInstance) {
         const workflowIds = await listWorkflowIdsByTemplateBinding(
           workspace.path,
           source,
-          req.params.tid
+          req.params.tid,
         );
         for (const workflowId of workflowIds) {
           await stopWorkflowRunAndWait(workspace.id, workflowId);
@@ -142,6 +128,6 @@ export async function registerTemplateRoutes(app: FastifyInstance) {
       }
       await deleteWorkflowTemplate(source, req.params.tid);
       return { ok: true };
-    }
+    },
   );
 }

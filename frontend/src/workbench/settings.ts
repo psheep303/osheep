@@ -69,11 +69,8 @@ function sanitizeAutoAllow(raw: unknown): AiAutoAllow {
   // Back-compat: an old setting with `run: true` should expand to all run-*
   // categories being true. `run: false` (or absent) keeps the new defaults.
   const legacyRun = typeof r.run === "boolean" ? r.run : null;
-  const pick = (
-    key: keyof AiAutoAllow,
-    fallback: boolean,
-    legacy: boolean | null
-  ) => (typeof r[key] === "boolean" ? (r[key] as boolean) : legacy ?? fallback);
+  const pick = (key: keyof AiAutoAllow, fallback: boolean, legacy: boolean | null) =>
+    typeof r[key] === "boolean" ? (r[key] as boolean) : (legacy ?? fallback);
   return {
     read: pick("read", DEFAULT_AUTO_ALLOW.read, null),
     write: pick("write", DEFAULT_AUTO_ALLOW.write, null),
@@ -93,9 +90,7 @@ export function mergeSettings(partial: unknown): OsheepSettings {
     };
   };
   const fontSize =
-    typeof p.editor?.fontSize === "number" &&
-    p.editor.fontSize >= 8 &&
-    p.editor.fontSize <= 64
+    typeof p.editor?.fontSize === "number" && p.editor.fontSize >= 8 && p.editor.fontSize <= 64
       ? p.editor.fontSize
       : DEFAULT_SETTINGS.editor.fontSize;
   const tabSize: TabSize = p.editor?.tabSize === 4 ? 4 : 2;
@@ -110,10 +105,7 @@ export function mergeSettings(partial: unknown): OsheepSettings {
 
 export type ReasoningKind = "cli";
 
-export function detectReasoningKind(
-  _kind: AiProviderKind,
-  _model: string
-): ReasoningKind | null {
+export function detectReasoningKind(_kind: AiProviderKind, _model: string): ReasoningKind | null {
   return null;
 }
 

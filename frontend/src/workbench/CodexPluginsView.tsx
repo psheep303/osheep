@@ -1,14 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   addCodexMarketplaceApi,
+  type CodexPluginRecord,
+  type CodexPluginSnapshot,
   createLocalCodexPluginApi,
   getCodexPlugins,
   importLocalCodexPluginApi,
   installCodexPluginApi,
   removeLocalCodexPluginApi,
   uninstallCodexPluginApi,
-  type CodexPluginRecord,
-  type CodexPluginSnapshot,
 } from "./api";
 
 type DialogMode = "new" | "import" | "marketplace" | null;
@@ -30,14 +30,8 @@ export function CodexPluginsView() {
     void refresh();
   }, []);
 
-  const groups = useMemo(
-    () => groupPlugins(snapshot?.plugins ?? []),
-    [snapshot]
-  );
-  const filteredGroups = useMemo(
-    () => filterGroups(groups, searchText),
-    [groups, searchText]
-  );
+  const groups = useMemo(() => groupPlugins(snapshot?.plugins ?? []), [snapshot]);
+  const filteredGroups = useMemo(() => filterGroups(groups, searchText), [groups, searchText]);
   const hasVisiblePlugins =
     filteredGroups.installed.length +
       filteredGroups.available.length +
@@ -95,11 +89,11 @@ export function CodexPluginsView() {
     if (deleteSource) {
       const sourcePath = plugin.source.path ?? "(unknown source path)";
       const typed = prompt(
-        `Delete source directory for ${plugin.displayName}?\n\n${sourcePath}\n\nType ${plugin.name} to confirm.`
+        `Delete source directory for ${plugin.displayName}?\n\n${sourcePath}\n\nType ${plugin.name} to confirm.`,
       );
       if (typed !== plugin.name) return;
     } else if (!confirm(`Remove ${plugin.displayName} from the personal marketplace?`)) {
-        return;
+      return;
     }
     void run(async () => {
       setSnapshot(await removeLocalCodexPluginApi(plugin.name, deleteSource));
@@ -109,11 +103,13 @@ export function CodexPluginsView() {
   function submitDialog() {
     if (dialog === "new") {
       void run(async () => {
-        setSnapshot(await createLocalCodexPluginApi({
-          name,
-          displayName,
-          description,
-        }));
+        setSnapshot(
+          await createLocalCodexPluginApi({
+            name,
+            displayName,
+            description,
+          }),
+        );
         resetDialog(null);
       });
       return;
@@ -137,12 +133,7 @@ export function CodexPluginsView() {
     <div className="codex-plugins side-view">
       <div className="side-view__header codex-plugins__header">
         <span className="side-view__title">Codex Plugins</span>
-        <button
-          className="icon-btn"
-          title="Refresh"
-          onClick={() => void refresh()}
-          disabled={busy}
-        >
+        <button className="icon-btn" title="Refresh" onClick={() => void refresh()} disabled={busy}>
           <RefreshIcon />
         </button>
       </div>
@@ -178,15 +169,9 @@ export function CodexPluginsView() {
         </div>
       )}
 
-      {error && (
-        <div className="codex-plugins__banner codex-plugins__banner--error">
-          {error}
-        </div>
-      )}
+      {error && <div className="codex-plugins__banner codex-plugins__banner--error">{error}</div>}
       {message && (
-        <div className="codex-plugins__banner codex-plugins__banner--success">
-          {message}
-        </div>
+        <div className="codex-plugins__banner codex-plugins__banner--success">{message}</div>
       )}
       {snapshot?.warnings.map((warning) => (
         <div key={warning} className="codex-plugins__banner codex-plugins__banner--warn">
@@ -289,14 +274,14 @@ function groupPlugins(plugins: CodexPluginRecord[]) {
   const installed = plugins.filter((plugin) => isInstalled(plugin));
   const installedSelectors = new Set(installed.map((plugin) => plugin.selector));
   const local = plugins.filter(
-    (plugin) => plugin.status.local && !installedSelectors.has(plugin.selector)
+    (plugin) => plugin.status.local && !installedSelectors.has(plugin.selector),
   );
   const localSelectors = new Set(local.map((plugin) => plugin.selector));
   const available = plugins.filter(
     (plugin) =>
       plugin.status.available &&
       !installedSelectors.has(plugin.selector) &&
-      !localSelectors.has(plugin.selector)
+      !localSelectors.has(plugin.selector),
   );
   return { installed, available, local };
 }
@@ -305,15 +290,9 @@ function filterGroups(groups: ReturnType<typeof groupPlugins>, query: string) {
   const normalized = query.trim().toLowerCase();
   if (!normalized) return groups;
   return {
-    installed: groups.installed.filter((plugin) =>
-      matchesCodexPluginSearch(plugin, normalized)
-    ),
-    available: groups.available.filter((plugin) =>
-      matchesCodexPluginSearch(plugin, normalized)
-    ),
-    local: groups.local.filter((plugin) =>
-      matchesCodexPluginSearch(plugin, normalized)
-    ),
+    installed: groups.installed.filter((plugin) => matchesCodexPluginSearch(plugin, normalized)),
+    available: groups.available.filter((plugin) => matchesCodexPluginSearch(plugin, normalized)),
+    local: groups.local.filter((plugin) => matchesCodexPluginSearch(plugin, normalized)),
   };
 }
 
@@ -412,9 +391,7 @@ function PluginCard({
         <div className="codex-plugins__meta">
           <div className="codex-plugins__name">{plugin.displayName}</div>
           <div className="codex-plugins__selector">{plugin.selector}</div>
-          {plugin.description && (
-            <div className="codex-plugins__desc">{plugin.description}</div>
-          )}
+          {plugin.description && <div className="codex-plugins__desc">{plugin.description}</div>}
           {plugin.source.path && (
             <div className="codex-plugins__source" title={plugin.source.path}>
               {plugin.source.path}
@@ -446,11 +423,7 @@ function PluginCard({
           </button>
         )}
         {canDeleteSource && (
-          <button
-            className="tb-btn codex-plugins__danger"
-            onClick={onDeleteSource}
-            disabled={busy}
-          >
+          <button className="tb-btn codex-plugins__danger" onClick={onDeleteSource} disabled={busy}>
             Delete Source
           </button>
         )}
@@ -462,8 +435,7 @@ function PluginCard({
 function PluginIcon({ plugin }: { plugin: CodexPluginRecord }) {
   const [failed, setFailed] = useState(false);
   const icon = plugin.icon && !failed ? plugin.icon : "";
-  const fallbackStyle =
-    !icon && plugin.iconColor ? { background: plugin.iconColor } : undefined;
+  const fallbackStyle = !icon && plugin.iconColor ? { background: plugin.iconColor } : undefined;
 
   useEffect(() => {
     setFailed(false);
@@ -471,20 +443,12 @@ function PluginIcon({ plugin }: { plugin: CodexPluginRecord }) {
 
   return (
     <div
-      className={
-        "codex-plugins__avatar" +
-        (icon ? " codex-plugins__avatar--image" : "")
-      }
+      className={`codex-plugins__avatar${icon ? " codex-plugins__avatar--image" : ""}`}
       style={fallbackStyle}
       title={plugin.displayName}
     >
       {icon ? (
-        <img
-          src={icon}
-          alt=""
-          aria-hidden="true"
-          onError={() => setFailed(true)}
-        />
+        <img src={icon} alt="" aria-hidden="true" onError={() => setFailed(true)} />
       ) : (
         plugin.displayName.slice(0, 1).toUpperCase()
       )}
@@ -492,10 +456,7 @@ function PluginIcon({ plugin }: { plugin: CodexPluginRecord }) {
   );
 }
 
-function canDeletePersonalSource(
-  plugin: CodexPluginRecord,
-  personalPluginRoot: string
-): boolean {
+function canDeletePersonalSource(plugin: CodexPluginRecord, personalPluginRoot: string): boolean {
   if (!plugin.status.local || !plugin.source.path || !personalPluginRoot) {
     return false;
   }
@@ -511,14 +472,7 @@ function normalizeFilePath(value: string): string {
 function SearchIcon() {
   return (
     <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
-      <circle
-        cx="7"
-        cy="7"
-        r="4.5"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        fill="none"
-      />
+      <circle cx="7" cy="7" r="4.5" stroke="currentColor" strokeWidth="1.4" fill="none" />
       <path
         d="M10.5 10.5L14 14"
         stroke="currentColor"

@@ -1,14 +1,14 @@
 import type { FastifyInstance } from "fastify";
-import { resolveWorkspace } from "../workspace.js";
 import {
+  type AgentRecord,
   deleteAgent,
   getAgent,
   listAgents,
   renameAgent,
   saveAgent,
-  type AgentRecord,
 } from "../agents.js";
 import { errors } from "../errors.js";
+import { resolveWorkspace } from "../workspace.js";
 
 function parseAgent(body: unknown): AgentRecord {
   const b = (body ?? {}) as Partial<AgentRecord>;
@@ -24,21 +24,18 @@ function parseAgent(body: unknown): AgentRecord {
 }
 
 export async function registerAgentRoutes(app: FastifyInstance) {
-  app.get<{ Params: { id: string } }>(
-    "/api/workspaces/:id/agents",
-    async (req) => {
-      const ws = await resolveWorkspace(req.params.id);
-      const agents = await listAgents(ws.path);
-      return { agents };
-    }
-  );
+  app.get<{ Params: { id: string } }>("/api/workspaces/:id/agents", async (req) => {
+    const ws = await resolveWorkspace(req.params.id);
+    const agents = await listAgents(ws.path);
+    return { agents };
+  });
 
   app.get<{ Params: { id: string; name: string } }>(
     "/api/workspaces/:id/agents/:name",
     async (req) => {
       const ws = await resolveWorkspace(req.params.id);
       return await getAgent(ws.path, req.params.name);
-    }
+    },
   );
 
   app.put<{ Params: { id: string; name: string }; Body: unknown }>(
@@ -51,18 +48,15 @@ export async function registerAgentRoutes(app: FastifyInstance) {
       }
       await saveAgent(ws.path, agent);
       return { ok: true };
-    }
+    },
   );
 
-  app.post<{ Params: { id: string }; Body: unknown }>(
-    "/api/workspaces/:id/agents",
-    async (req) => {
-      const ws = await resolveWorkspace(req.params.id);
-      const agent = parseAgent(req.body);
-      await saveAgent(ws.path, agent);
-      return { ok: true };
-    }
-  );
+  app.post<{ Params: { id: string }; Body: unknown }>("/api/workspaces/:id/agents", async (req) => {
+    const ws = await resolveWorkspace(req.params.id);
+    const agent = parseAgent(req.body);
+    await saveAgent(ws.path, agent);
+    return { ok: true };
+  });
 
   app.delete<{ Params: { id: string; name: string } }>(
     "/api/workspaces/:id/agents/:name",
@@ -70,6 +64,6 @@ export async function registerAgentRoutes(app: FastifyInstance) {
       const ws = await resolveWorkspace(req.params.id);
       await deleteAgent(ws.path, req.params.name);
       return { ok: true };
-    }
+    },
   );
 }

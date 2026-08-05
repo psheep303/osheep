@@ -48,13 +48,7 @@ function priority(s: GitFileStatus): number {
 }
 
 function letterToStatus(letter: string): GitFileStatus | null {
-  if (
-    letter === "M" ||
-    letter === "A" ||
-    letter === "D" ||
-    letter === "R" ||
-    letter === "C"
-  )
+  if (letter === "M" || letter === "A" || letter === "D" || letter === "R" || letter === "C")
     return letter;
   if (letter === "?") return "U";
   return null;
@@ -81,11 +75,9 @@ function parentOf(p: string): string {
  *
  * Returns an empty map if status is null or not a repo.
  */
-export function buildDecorations(
-  status: GitStatus | null
-): Map<string, FileDecoration> {
+export function buildDecorations(status: GitStatus | null): Map<string, FileDecoration> {
   const map = new Map<string, FileDecoration>();
-  if (!status || !status.isRepo) return map;
+  if (!status?.isRepo) return map;
 
   for (const c of status.changes) {
     const s = effectiveStatus(c);

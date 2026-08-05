@@ -40,10 +40,13 @@ To connect the shell to a remote osheep deployment instead of starting a local
 backend:
 
 ```powershell
-.\desktop-dev.cmd -RemoteUrl https://osheep.example.com
+.\desktop-dev.cmd -RemoteUrl 'https://osheep.example.com/#osheep-token=YOUR_TOKEN'
 ```
 
-The remote URL must serve the osheep frontend and `/api` from the same origin.
+The remote URL must serve the osheep frontend and `/api` from the same origin. The remote backend
+must set the same value as `OSHEEP_AUTH_TOKEN`, list the HTTPS origin in `CORS_ORIGIN`, and remain
+behind network access controls. The frontend exchanges the fragment token for an HttpOnly session
+and removes it from the address bar.
 
 ## Windows Installer
 

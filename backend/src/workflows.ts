@@ -172,12 +172,7 @@ function asStatus(value: unknown): WorkflowNodeStatus {
 }
 
 function asRunStatus(value: unknown): WorkflowRunStatus {
-  if (
-    value === "running" ||
-    value === "success" ||
-    value === "error" ||
-    value === "stopped"
-  ) {
+  if (value === "running" || value === "success" || value === "error" || value === "stopped") {
     return value;
   }
   return "idle";
@@ -188,18 +183,13 @@ function asFiniteNumber(value: unknown, fallback: number): number {
 }
 
 function asPositiveInteger(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isInteger(value) && value > 0
-    ? value
-    : undefined;
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
 }
 
 function sanitizeNode(raw: unknown, index: number): WorkflowNode | null {
   if (!raw || typeof raw !== "object") return null;
   const r = raw as Partial<WorkflowNode>;
-  const id =
-    typeof r.id === "string" && NODE_ID_RE.test(r.id)
-      ? r.id
-      : generateWorkflowNodeId();
+  const id = typeof r.id === "string" && NODE_ID_RE.test(r.id) ? r.id : generateWorkflowNodeId();
   const node: WorkflowNode = {
     id,
     blockId: asPositiveInteger(r.blockId) ?? index + 1,
@@ -246,10 +236,7 @@ function sanitizeEdge(raw: unknown, nodeIds: Set<string>): WorkflowEdge | null {
   const r = raw as Partial<WorkflowEdge>;
   if (typeof r.from !== "string" || typeof r.to !== "string") return null;
   if (!nodeIds.has(r.from) || !nodeIds.has(r.to) || r.from === r.to) return null;
-  const id =
-    typeof r.id === "string" && EDGE_ID_RE.test(r.id)
-      ? r.id
-      : generateWorkflowEdgeId();
+  const id = typeof r.id === "string" && EDGE_ID_RE.test(r.id) ? r.id : generateWorkflowEdgeId();
   return {
     id,
     from: r.from,
@@ -306,8 +293,7 @@ function defaultNodes(): WorkflowNode[] {
 
 function sanitize(raw: unknown, fallbackId: string): WorkflowRecord {
   const r = (raw ?? {}) as Partial<WorkflowRecord>;
-  const id =
-    typeof r.id === "string" && WORKFLOW_ID_RE.test(r.id) ? r.id : fallbackId;
+  const id = typeof r.id === "string" && WORKFLOW_ID_RE.test(r.id) ? r.id : fallbackId;
   const nodes = Array.isArray(r.nodes)
     ? r.nodes
         .map((node, index) => sanitizeNode(node, index))
@@ -340,8 +326,7 @@ function sanitize(raw: unknown, fallbackId: string): WorkflowRecord {
       : undefined;
   return {
     id,
-    title:
-      typeof r.title === "string" && r.title.trim() ? r.title : "New workflow",
+    title: typeof r.title === "string" && r.title.trim() ? r.title : "New workflow",
     readme: typeof r.readme === "string" ? r.readme : "",
     templateBinding,
     createdAt,
@@ -359,9 +344,7 @@ function workflowStatus(record: WorkflowRecord): WorkflowRunStatus {
   return latest?.status ?? "idle";
 }
 
-export async function listWorkflows(
-  workspaceRoot: string
-): Promise<WorkflowSummary[]> {
+export async function listWorkflows(workspaceRoot: string): Promise<WorkflowSummary[]> {
   await ensureWorkflowDir(workspaceRoot);
   let entries: string[];
   try {
@@ -398,7 +381,7 @@ export async function listWorkflows(
 export async function findWorkflowByTemplateBinding(
   workspaceRoot: string,
   source: "system" | "user",
-  templateId: string
+  templateId: string,
 ): Promise<WorkflowRecord | null> {
   await ensureWorkflowDir(workspaceRoot);
   const entries = await fs.readdir(workflowDir(workspaceRoot));
@@ -408,15 +391,10 @@ export async function findWorkflowByTemplateBinding(
     if (!WORKFLOW_ID_RE.test(id)) continue;
     try {
       const record = sanitize(
-        JSON.parse(
-          await fs.readFile(path.join(workflowDir(workspaceRoot), entry), "utf8")
-        ),
-        id
+        JSON.parse(await fs.readFile(path.join(workflowDir(workspaceRoot), entry), "utf8")),
+        id,
       );
-      if (
-        record.templateBinding?.source === source &&
-        record.templateBinding.id === templateId
-      ) {
+      if (record.templateBinding?.source === source && record.templateBinding.id === templateId) {
         return record;
       }
     } catch {
@@ -429,7 +407,7 @@ export async function findWorkflowByTemplateBinding(
 export async function listWorkflowIdsByTemplateBinding(
   workspaceRoot: string,
   source: "system" | "user",
-  templateId: string
+  templateId: string,
 ): Promise<string[]> {
   const ids: string[] = [];
   await ensureWorkflowDir(workspaceRoot);
@@ -440,15 +418,10 @@ export async function listWorkflowIdsByTemplateBinding(
     if (!WORKFLOW_ID_RE.test(id)) continue;
     try {
       const record = sanitize(
-        JSON.parse(
-          await fs.readFile(path.join(workflowDir(workspaceRoot), entry), "utf8")
-        ),
-        id
+        JSON.parse(await fs.readFile(path.join(workflowDir(workspaceRoot), entry), "utf8")),
+        id,
       );
-      if (
-        record.templateBinding?.source === source &&
-        record.templateBinding.id === templateId
-      ) {
+      if (record.templateBinding?.source === source && record.templateBinding.id === templateId) {
         ids.push(record.id);
       }
     } catch {
@@ -458,10 +431,7 @@ export async function listWorkflowIdsByTemplateBinding(
   return ids;
 }
 
-export async function getWorkflow(
-  workspaceRoot: string,
-  id: string
-): Promise<WorkflowRecord> {
+export async function getWorkflow(workspaceRoot: string, id: string): Promise<WorkflowRecord> {
   validateWorkflowId(id);
   let text: string;
   try {
@@ -478,7 +448,7 @@ export async function getWorkflow(
 
 export async function createWorkflow(
   workspaceRoot: string,
-  partial: Partial<WorkflowRecord>
+  partial: Partial<WorkflowRecord>,
 ): Promise<WorkflowRecord> {
   await ensureWorkflowDir(workspaceRoot);
   const now = Date.now();
@@ -493,7 +463,7 @@ export async function createWorkflow(
       edges: Array.isArray(partial.edges) ? partial.edges : [],
       runs: Array.isArray(partial.runs) ? partial.runs : [],
     },
-    id
+    id,
   );
   await writeWorkflowFile(workspaceRoot, record);
   return record;
@@ -501,7 +471,7 @@ export async function createWorkflow(
 
 export async function saveWorkflow(
   workspaceRoot: string,
-  record: WorkflowRecord
+  record: WorkflowRecord,
 ): Promise<WorkflowRecord> {
   validateWorkflowId(record.id);
   await ensureWorkflowDir(workspaceRoot);
@@ -514,7 +484,7 @@ export async function saveWorkflow(
 export async function updateWorkflow(
   workspaceRoot: string,
   id: string,
-  updater: (record: WorkflowRecord) => WorkflowRecord | Promise<WorkflowRecord>
+  updater: (record: WorkflowRecord) => WorkflowRecord | Promise<WorkflowRecord>,
 ): Promise<WorkflowRecord> {
   validateWorkflowId(id);
   const current = await getWorkflow(workspaceRoot, id);
@@ -525,10 +495,7 @@ export async function updateWorkflow(
   return await saveWorkflow(workspaceRoot, updated);
 }
 
-export async function deleteWorkflow(
-  workspaceRoot: string,
-  id: string
-): Promise<void> {
+export async function deleteWorkflow(workspaceRoot: string, id: string): Promise<void> {
   validateWorkflowId(id);
   try {
     await fs.unlink(workflowFile(workspaceRoot, id));
@@ -537,16 +504,11 @@ export async function deleteWorkflow(
   }
 }
 
-async function writeWorkflowFile(
-  workspaceRoot: string,
-  record: WorkflowRecord
-): Promise<void> {
+async function writeWorkflowFile(workspaceRoot: string, record: WorkflowRecord): Promise<void> {
   const abs = workflowFile(workspaceRoot, record.id);
   const data = JSON.stringify(record, null, 2);
   const previous = writeLocks.get(abs) ?? Promise.resolve();
-  const next = previous
-    .catch(() => undefined)
-    .then(() => writeWorkflowFileLocked(abs, data));
+  const next = previous.catch(() => undefined).then(() => writeWorkflowFileLocked(abs, data));
   writeLocks.set(abs, next);
   try {
     await next;

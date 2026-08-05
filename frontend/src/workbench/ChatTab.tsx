@@ -13,15 +13,8 @@ import {
 import { ChatMarkdown } from "./ChatMarkdown";
 import { chatRuntime, useChatTurn } from "./chat-runtime";
 import { buildUnifiedDiff, type DiffRowType } from "./file-diff";
-import type {
-  AiAutoAllow,
-  OsheepSettings,
-  ReasoningEffort,
-} from "./settings";
-import {
-  DEFAULT_AUTO_ALLOW,
-  DEFAULT_CLI_PROVIDER,
-} from "./settings";
+import type { AiAutoAllow, OsheepSettings, ReasoningEffort } from "./settings";
+import { DEFAULT_AUTO_ALLOW, DEFAULT_CLI_PROVIDER } from "./settings";
 
 const SCROLL_STICKY_PX = 24;
 
@@ -154,12 +147,18 @@ export function ChatTab({
     if (!ta) return;
     ta.style.height = "auto";
     const next = Math.min(ta.scrollHeight, 220);
-    ta.style.height = next + "px";
+    ta.style.height = `${next}px`;
   }, [input]);
 
   const scrollStateSignature = useMemo(
-    () => buildScrollStateSignature(session, view.status, view.pendingConfirm?.call.id, view.pendingSteps),
-    [session, view.status, view.pendingConfirm, view.pendingSteps]
+    () =>
+      buildScrollStateSignature(
+        session,
+        view.status,
+        view.pendingConfirm?.call.id,
+        view.pendingSteps,
+      ),
+    [session, view.status, view.pendingConfirm, view.pendingSteps],
   );
 
   useLayoutEffect(() => {
@@ -266,20 +265,17 @@ export function ChatTab({
   const handleAskAnswer = async (answer: string) => {
     if (!session) return;
     const last = session.messages[session.messages.length - 1];
-    if (!last || last.role !== "assistant") return;
+    if (last?.role !== "assistant") return;
     const steps = last.steps ?? [];
     const lastStep = steps[steps.length - 1];
     if (lastStep?.kind !== "ask") return;
 
     // Update the ask step with the answer
     const updatedSteps = steps.map((s, i) =>
-      i === steps.length - 1 && s.kind === "ask" ? { ...s, answer } : s
+      i === steps.length - 1 && s.kind === "ask" ? { ...s, answer } : s,
     );
     const updatedMessage = { ...last, steps: updatedSteps };
-    const updatedMessages = [
-      ...session.messages.slice(0, -1),
-      updatedMessage,
-    ];
+    const updatedMessages = [...session.messages.slice(0, -1), updatedMessage];
     const updatedSession = { ...session, messages: updatedMessages };
 
     try {
@@ -295,7 +291,7 @@ export function ChatTab({
   const pendingAsk = useMemo(() => {
     if (!session || sending) return null;
     const last = session.messages[session.messages.length - 1];
-    if (!last || last.role !== "assistant") return null;
+    if (last?.role !== "assistant") return null;
     const steps = last.steps ?? [];
     const lastStep = steps[steps.length - 1];
     if (lastStep?.kind === "ask" && !lastStep.answer) return lastStep;
@@ -303,8 +299,7 @@ export function ChatTab({
   }, [session, sending]);
 
   if (loading) return <div className="empty-hint">加载中…</div>;
-  if (!session)
-    return <div className="empty-hint">{loadError ?? "未能加载该对话"}</div>;
+  if (!session) return <div className="empty-hint">{loadError ?? "未能加载该对话"}</div>;
 
   const onComposerKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -327,23 +322,14 @@ export function ChatTab({
         <div className="chat-tab__messages-inner">
           {session.messages.length === 0 && !sending && (
             <div className="chat-tab__welcome">
-              <div className="chat-tab__welcome-title">
-                {session.title || "新对话"}
-              </div>
+              <div className="chat-tab__welcome-title">{session.title || "新对话"}</div>
               <div className="chat-tab__welcome-hint">
-                {readyToSend
-                  ? "向 osheep code 描述你的任务"
-                  : sendBlockReason}
+                {readyToSend ? "向 osheep code 描述你的任务" : sendBlockReason}
               </div>
             </div>
           )}
           {session.messages.map((m, i) => (
-            <MessageBlock
-              key={i}
-              message={m}
-              sessionId={sessionId}
-              onOpenAiDiff={onOpenAiDiff}
-            />
+            <MessageBlock key={i} message={m} sessionId={sessionId} onOpenAiDiff={onOpenAiDiff} />
           ))}
           {sending && (
             <PendingAssistant
@@ -378,18 +364,12 @@ export function ChatTab({
           categoryLabel={view.pendingConfirm.category.label}
           onAllow={() => chatRuntime.resolveConfirm(sessionId, "allow")}
           onDeny={() => chatRuntime.resolveConfirm(sessionId, "deny")}
-          onFeedback={(text) =>
-            chatRuntime.resolveConfirm(sessionId, { kind: "feedback", text })
-          }
+          onFeedback={(text) => chatRuntime.resolveConfirm(sessionId, { kind: "feedback", text })}
         />
       ) : null}
 
       {pendingAsk && (
-        <AskPromptDialog
-          ask={pendingAsk}
-          disabled={!readyToSend}
-          onAnswer={handleAskAnswer}
-        />
+        <AskPromptDialog ask={pendingAsk} disabled={!readyToSend} onAnswer={handleAskAnswer} />
       )}
 
       {autoAllowOpen && (
@@ -402,11 +382,7 @@ export function ChatTab({
 
       <div className="chat-tab__composer-wrap">
         <div
-          className={
-            "chat-composer" +
-            (sending ? " is-busy" : "") +
-            (!readyToSend ? " is-blocked" : "")
-          }
+          className={`chat-composer${sending ? " is-busy" : ""}${!readyToSend ? " is-blocked" : ""}`}
         >
           <textarea
             ref={textareaRef}
@@ -476,10 +452,10 @@ export function ChatTab({
                     !readyToSend
                       ? sendBlockReason
                       : !input.trim()
-                      ? "请先输入内容"
-                      : sending
-                      ? "停止当前任务并发送新消息（Enter）"
-                      : "发送（Enter）"
+                        ? "请先输入内容"
+                        : sending
+                          ? "停止当前任务并发送新消息（Enter）"
+                          : "发送（Enter）"
                   }
                 >
                   <ArrowUpIcon />
@@ -513,8 +489,7 @@ function MessageBlock({
     return (
       <div className="chat-msg chat-msg--user">
         <div className="chat-msg__chip">
-          <span className="chat-msg__chip-dot chat-msg__chip-dot--user" />
-          你
+          <span className="chat-msg__chip-dot chat-msg__chip-dot--user" />你
         </div>
         <div className="chat-msg__content">
           <ChatMarkdown source={message.content} />
@@ -526,8 +501,8 @@ function MessageBlock({
   // Check if content is already in a text step to avoid duplication
   // Use strict comparison with trimmed content
   const hasTextStep = steps.some(
-    s => s.kind === "text" && s.text && message.content &&
-    s.text.trim() === message.content.trim()
+    (s) =>
+      s.kind === "text" && s.text && message.content && s.text.trim() === message.content.trim(),
   );
   // Also check if the content is empty or whitespace-only
   const hasContent = message.content && message.content.trim().length > 0;
@@ -569,7 +544,7 @@ function buildScrollStateSignature(
   session: SessionRecord | null,
   status: string,
   confirmId: string | undefined,
-  pendingSteps: ChatStep[]
+  pendingSteps: ChatStep[],
 ): string {
   const last = session?.messages[session.messages.length - 1];
   const lastStep = last?.steps?.[last.steps.length - 1];
@@ -593,13 +568,7 @@ function stepSignature(step: ChatStep): string {
     return `thought:${step.id}:${step.text.length}:${step.endedAt ?? ""}`;
   }
   if (step.kind === "tool") {
-    return [
-      "tool",
-      step.id,
-      step.status,
-      step.error ?? "",
-      valueSignature(step.result),
-    ].join(":");
+    return ["tool", step.id, step.status, step.error ?? "", valueSignature(step.result)].join(":");
   }
   if (step.kind === "ask") {
     return `ask:${step.id ?? ""}:${step.question}:${step.options.join("\n")}`;
@@ -661,11 +630,7 @@ function PendingAssistant({
   );
 }
 
-function isStreamingStep(
-  step: ChatStep,
-  status: string,
-  isLast: boolean
-): boolean {
+function isStreamingStep(step: ChatStep, status: string, isLast: boolean): boolean {
   if (status === "awaiting-confirm") return false;
   if (step.kind === "thought") return step.endedAt === undefined;
   if (step.kind === "tool") return step.status === "running";
@@ -717,13 +682,13 @@ function StepRow({
         if (/^[-*+]\s+\[[ x~]\]/i.test(trimmed)) return trimmed;
         // Item already in `[ ] foo` form (legacy parser output) — re-attach
         // the bullet so marked picks it up.
-        if (/^\[[ x~]\]/i.test(trimmed)) return "- " + trimmed;
+        if (/^\[[ x~]\]/i.test(trimmed)) return `- ${trimmed}`;
         // Bare line — assume "not done".
         return `- [ ] ${trimmed}`;
       })
       .join("\n");
     return (
-      <div className={"chat-step chat-step--plan" + (streaming ? " is-streaming" : "")}>
+      <div className={`chat-step chat-step--plan${streaming ? " is-streaming" : ""}`}>
         <span className="chat-step__icon chat-step__icon--plan" />
         <div className="chat-step__body">
           <div className="chat-step__label">Tasks</div>
@@ -740,7 +705,7 @@ function StepRow({
       return null;
     }
     return (
-      <div className={"chat-step chat-step--ask" + (streaming ? " is-streaming" : "")}>
+      <div className={`chat-step chat-step--ask${streaming ? " is-streaming" : ""}`}>
         <span className="chat-step__icon chat-step__icon--ask" />
         <div className="chat-step__body">
           <span className="chat-step__label">Ask</span>
@@ -774,7 +739,7 @@ function StepRow({
   }
   if (step.kind === "thought") {
     return (
-      <div className={"chat-step chat-step--thought" + (streaming ? " is-streaming" : "")}>
+      <div className={`chat-step chat-step--thought${streaming ? " is-streaming" : ""}`}>
         <span className="chat-step__icon chat-step__icon--thought" />
         <div className="chat-step__body">
           <span className="chat-step__label">Thought</span>
@@ -787,7 +752,7 @@ function StepRow({
   }
   if (step.kind === "verify") {
     return (
-      <div className={"chat-step chat-step--verify" + (streaming ? " is-streaming" : "")}>
+      <div className={`chat-step chat-step--verify${streaming ? " is-streaming" : ""}`}>
         <span className="chat-step__icon chat-step__icon--verify">
           <CheckIcon />
         </span>
@@ -801,7 +766,7 @@ function StepRow({
   }
   if (step.kind === "text") {
     return (
-      <div className={"chat-step chat-step--text" + (streaming ? " is-streaming" : "")}>
+      <div className={`chat-step chat-step--text${streaming ? " is-streaming" : ""}`}>
         <span className="chat-step__icon chat-step__icon--text" />
         <div className="chat-step__body">
           <ChatMarkdown source={step.text} compact />
@@ -813,14 +778,14 @@ function StepRow({
     step.status === "ok"
       ? "chat-step__icon--ok"
       : step.status === "err"
-      ? "chat-step__icon--err"
-      : step.status === "denied"
-      ? "chat-step__icon--err"
-      : step.status === "cached"
-      ? "chat-step__icon--cached"
-      : step.status === "queued"
-      ? "chat-step__icon--queued"
-      : "chat-step__icon--running";
+        ? "chat-step__icon--err"
+        : step.status === "denied"
+          ? "chat-step__icon--err"
+          : step.status === "cached"
+            ? "chat-step__icon--cached"
+            : step.status === "queued"
+              ? "chat-step__icon--queued"
+              : "chat-step__icon--running";
   return (
     <ToolStepRow
       step={step}
@@ -853,17 +818,13 @@ function ToolStepRow({
   const isDone = step.status === "ok" || step.status === "cached";
   const fileDiff = isDone ? extractFileDiff(step) : null;
   const runIo =
-    step.tool === "run" && (isDone || step.status === "err")
-      ? extractRunIo(step)
-      : null;
+    step.tool === "run" && (isDone || step.status === "err") ? extractRunIo(step) : null;
   // While a write/run is queued or mid-execution we have no backend result
   // yet — preview the proposed change/command from the model's tool args so
   // the user sees it inline (not only in the approval bar).
   const isPending = step.status === "queued" || step.status === "running";
   const editPreview =
-    isPending && step.tool === "write" && !fileDiff
-      ? extractEditConfirmPreview(step.args)
-      : null;
+    isPending && step.tool === "write" && !fileDiff ? extractEditConfirmPreview(step.args) : null;
   const multiEditPreview =
     isPending && step.tool === "write" && !fileDiff && !editPreview
       ? extractMultiEditConfirmPreview(step.args)
@@ -874,8 +835,7 @@ function ToolStepRow({
     step.tool === "write" && !fileDiff && !editPreview && !multiEditPreview
       ? extractWriteContentPreview(step.args)
       : null;
-  const runPreview =
-    isPending && step.tool === "run" ? extractRunPreview(step.args) : null;
+  const runPreview = isPending && step.tool === "run" ? extractRunPreview(step.args) : null;
   const [expanded, setExpanded] = useState(false);
   const [diffCollapsed, setDiffCollapsed] = useState(false);
   const label = labelForTool(step.tool, step.args);
@@ -885,8 +845,8 @@ function ToolStepRow({
   const resultText = step.result
     ? prettyToolResult(step.tool, step.result)
     : step.error
-    ? step.error
-    : "";
+      ? step.error
+      : "";
   const openFullDiff = () => {
     if (!fileDiff) return;
     onOpenAiDiff({
@@ -898,15 +858,10 @@ function ToolStepRow({
     });
   };
   const hasInlineCard =
-    !!fileDiff ||
-    !!editPreview ||
-    !!multiEditPreview ||
-    !!writePreview ||
-    !!runIo ||
-    !!runPreview;
+    !!fileDiff || !!editPreview || !!multiEditPreview || !!writePreview || !!runIo || !!runPreview;
   return (
-    <div className={"chat-step chat-step--tool" + (streaming ? " is-streaming" : "")}>
-      <span className={"chat-step__icon " + iconClass}>
+    <div className={`chat-step chat-step--tool${streaming ? " is-streaming" : ""}`}>
+      <span className={`chat-step__icon ${iconClass}`}>
         {step.status === "ok" && <CheckIcon />}
         {(step.status === "err" || step.status === "denied") && <CrossIcon />}
         {step.status === "cached" && <CachedIcon />}
@@ -937,9 +892,7 @@ function ToolStepRow({
             <span
               className={
                 "chat-step__diff-summary chat-step__exit" +
-                (runIo.errorMessage || (runIo.exitCode ?? 1) !== 0
-                  ? " chat-step__exit--bad"
-                  : "")
+                (runIo.errorMessage || (runIo.exitCode ?? 1) !== 0 ? " chat-step__exit--bad" : "")
               }
             >
               {runIo.errorMessage ? "失败" : `exit ${runIo.exitCode ?? "?"}`}
@@ -952,10 +905,10 @@ function ToolStepRow({
                 {step.status === "queued"
                   ? "排队中"
                   : step.status === "running"
-                  ? "处理中"
-                  : isDone
-                  ? "已写入"
-                  : "预览"}
+                    ? "处理中"
+                    : isDone
+                      ? "已写入"
+                      : "预览"}
               </span>
             )}
         </button>
@@ -978,10 +931,7 @@ function ToolStepRow({
           />
         )}
         {editPreview && !fileDiff && !diffCollapsed && (
-          <EditPreviewCard
-            preview={editPreview}
-            onCollapse={() => setDiffCollapsed(true)}
-          />
+          <EditPreviewCard preview={editPreview} onCollapse={() => setDiffCollapsed(true)} />
         )}
         {multiEditPreview && !fileDiff && !editPreview && !diffCollapsed && (
           <MultiEditPreviewCard
@@ -989,17 +939,13 @@ function ToolStepRow({
             onCollapse={() => setDiffCollapsed(true)}
           />
         )}
-        {writePreview &&
-          !fileDiff &&
-          !editPreview &&
-          !multiEditPreview &&
-          !diffCollapsed && (
-            <WritePreviewCard
-              preview={writePreview}
-              done={isDone}
-              onCollapse={() => setDiffCollapsed(true)}
-            />
-          )}
+        {writePreview && !fileDiff && !editPreview && !multiEditPreview && !diffCollapsed && (
+          <WritePreviewCard
+            preview={writePreview}
+            done={isDone}
+            onCollapse={() => setDiffCollapsed(true)}
+          />
+        )}
         {expanded && !hasInlineCard && resultText && (
           <pre className="chat-step__tool-output">{resultText}</pre>
         )}
@@ -1028,21 +974,24 @@ function FileDiffThumbnail({
 }) {
   const unified = useMemo(
     () => buildUnifiedDiff(diff.before, diff.after, { context: 3, maxRows: 60 }),
-    [diff.before, diff.after]
+    [diff.before, diff.after],
   );
   const meta =
     diff.kind === "multi_edit"
       ? `${diff.editsCount} edits`
       : typeof diff.startLine === "number"
-      ? `:${diff.startLine}`
-      : "";
+        ? `:${diff.startLine}`
+        : "";
   return (
     <div className="edit-diff">
       <div className="edit-diff__head">
         <span className="edit-diff__path">
           {filePath}
           {meta && <span className="edit-diff__line"> {meta}</span>}
-          <span className="edit-diff__line"> +{diff.added} / -{diff.removed}</span>
+          <span className="edit-diff__line">
+            {" "}
+            +{diff.added} / -{diff.removed}
+          </span>
         </span>
         <div className="edit-diff__head-actions">
           <button
@@ -1072,7 +1021,7 @@ function FileDiffThumbnail({
       </div>
       <div className="edit-diff__body">
         {unified.rows.map((row, i) => (
-          <div key={i} className={"edit-diff__row " + diffRowClass(row.type)}>
+          <div key={i} className={`edit-diff__row ${diffRowClass(row.type)}`}>
             <span className="edit-diff__num">{row.type === "gap" ? "" : row.num}</span>
             <span className="edit-diff__sign">
               {row.type === "add" ? "+" : row.type === "del" ? "-" : ""}
@@ -1121,11 +1070,13 @@ function RunIoCard({ io, onCollapse }: { io: RunIo; onCollapse?: () => void }) {
   return (
     <div className="run-io">
       <div className="run-io__head">
-        <span className="run-io__prompt" aria-hidden>$</span>
+        <span className="run-io__prompt" aria-hidden>
+          $
+        </span>
         <span className="run-io__cmd">{io.command || "(command)"}</span>
         <div className="run-io__head-actions">
           {dur && <span className="run-io__dur">{dur}</span>}
-          <span className={"run-io__exit" + (bad ? " run-io__exit--bad" : "")}>
+          <span className={`run-io__exit${bad ? " run-io__exit--bad" : ""}`}>
             {io.errorMessage ? "失败" : `exit ${io.exitCode ?? "?"}`}
           </span>
           {onCollapse && (
@@ -1145,18 +1096,20 @@ function RunIoCard({ io, onCollapse }: { io: RunIo; onCollapse?: () => void }) {
       </div>
       <div className="run-io__body">
         {io.cwd && <div className="run-io__meta">cwd: {io.cwd}</div>}
-        {io.errorMessage && (
-          <div className="run-io__line run-io__line--err">{io.errorMessage}</div>
-        )}
+        {io.errorMessage && <div className="run-io__line run-io__line--err">{io.errorMessage}</div>}
         {shownOut.map((ln, i) => (
-          <div key={"o" + i} className="run-io__line">{ln || " "}</div>
+          <div key={`o${i}`} className="run-io__line">
+            {ln || " "}
+          </div>
         ))}
         {outClipped > 0 && (
           <div className="run-io__line run-io__more">… 还有 {outClipped} 行 stdout</div>
         )}
         {shownErr.length > 0 && <div className="run-io__stream-label">stderr</div>}
         {shownErr.map((ln, i) => (
-          <div key={"e" + i} className="run-io__line run-io__line--err">{ln || " "}</div>
+          <div key={`e${i}`} className="run-io__line run-io__line--err">
+            {ln || " "}
+          </div>
         ))}
         {errClipped > 0 && (
           <div className="run-io__line run-io__more">… 还有 {errClipped} 行 stderr</div>
@@ -1180,7 +1133,9 @@ function RunPreviewCard({
   return (
     <div className="run-io run-io--pending">
       <div className="run-io__head">
-        <span className="run-io__prompt" aria-hidden>$</span>
+        <span className="run-io__prompt" aria-hidden>
+          $
+        </span>
         <span className="run-io__cmd">{preview.command}</span>
         <div className="run-io__head-actions">
           <span className="run-io__exit run-io__exit--pending">
@@ -1259,7 +1214,7 @@ function EditPreviewCard({
       </div>
       <div className="edit-diff__body">
         {showOld.map((ln, i) => (
-          <div key={"o" + i} className="edit-diff__row edit-diff__row--del">
+          <div key={`o${i}`} className="edit-diff__row edit-diff__row--del">
             <span className="edit-diff__sign">-</span>
             <span className="edit-diff__text">{ln}</span>
           </div>
@@ -1271,7 +1226,7 @@ function EditPreviewCard({
           </div>
         )}
         {showNew.map((ln, i) => (
-          <div key={"n" + i} className="edit-diff__row edit-diff__row--add">
+          <div key={`n${i}`} className="edit-diff__row edit-diff__row--add">
             <span className="edit-diff__sign">+</span>
             <span className="edit-diff__text">{ln}</span>
           </div>
@@ -1359,7 +1314,7 @@ function MultiEditPreviewBlock({
         <span className="edit-diff__entry-num">#{index + 1}</span>
       </div>
       {showOld.map((ln, i) => (
-        <div key={"o" + i} className="edit-diff__row edit-diff__row--del">
+        <div key={`o${i}`} className="edit-diff__row edit-diff__row--del">
           <span className="edit-diff__sign">-</span>
           <span className="edit-diff__text">{ln}</span>
         </div>
@@ -1371,7 +1326,7 @@ function MultiEditPreviewBlock({
         </div>
       )}
       {showNew.map((ln, i) => (
-        <div key={"n" + i} className="edit-diff__row edit-diff__row--add">
+        <div key={`n${i}`} className="edit-diff__row edit-diff__row--add">
           <span className="edit-diff__sign">+</span>
           <span className="edit-diff__text">{ln}</span>
         </div>
@@ -1399,15 +1354,10 @@ function WritePreviewCard({
   const MAX = 18;
   const shown = lines.slice(0, MAX);
   const clipped = lines.length - shown.length;
-  const verb = preview.kind === "append_file"
-    ? done
-      ? "已追加"
-      : "即将追加"
-    : done
-    ? "已写入"
-    : "即将写入";
+  const verb =
+    preview.kind === "append_file" ? (done ? "已追加" : "即将追加") : done ? "已写入" : "即将写入";
   return (
-    <div className={"edit-diff write-preview" + (done ? "" : " edit-diff--pending")}>
+    <div className={`edit-diff write-preview${done ? "" : " edit-diff--pending"}`}>
       <div className="edit-diff__head">
         <span className="edit-diff__path">
           {preview.path}
@@ -1633,10 +1583,8 @@ function extractMultiEditDiff(result: unknown): MultiEditDiff | null {
       oldString: y.oldString,
       newString: y.newString,
       startLine: y.startLine,
-      endLineBefore:
-        typeof y.endLineBefore === "number" ? y.endLineBefore : y.startLine,
-      endLineAfter:
-        typeof y.endLineAfter === "number" ? y.endLineAfter : y.startLine,
+      endLineBefore: typeof y.endLineBefore === "number" ? y.endLineBefore : y.startLine,
+      endLineAfter: typeof y.endLineAfter === "number" ? y.endLineAfter : y.startLine,
       added: y.added,
       removed: y.removed,
     });
@@ -1697,17 +1645,13 @@ function SlashMenu({
           <span className="chat-composer__slash-hint">敬请期待</span>
         </button>
         <div className="chat-composer__slash-section">Settings</div>
-        <button
-          className="chat-composer__slash-item"
-          onClick={onOpenSettings}
-        >
+        <button className="chat-composer__slash-item" onClick={onOpenSettings}>
           Open settings
           <span className="chat-composer__slash-hint">编辑器 / CLI 说明</span>
         </button>
       </div>
     </>
   );
-
 }
 
 // Auto-allow panel (redesigned)
@@ -1785,7 +1729,9 @@ function AutoAllowPanel({
   return (
     <div className="auto-allow-panel-v2">
       <div className="auto-allow-panel-v2__title">
-        <span className="auto-allow-panel-v2__title-icon"><ShieldIcon /></span>
+        <span className="auto-allow-panel-v2__title-icon">
+          <ShieldIcon />
+        </span>
         自动执行的命令类型
       </div>
       <div className="auto-allow-panel-v2__subtitle">
@@ -1799,9 +1745,7 @@ function AutoAllowPanel({
               type="checkbox"
               className="auto-allow-panel-v2__check"
               checked={!!local[e.key]}
-              onChange={(ev) =>
-                setLocal({ ...local, [e.key]: ev.target.checked })
-              }
+              onChange={(ev) => setLocal({ ...local, [e.key]: ev.target.checked })}
             />
             <span className="auto-allow-panel-v2__row-icon">{e.icon}</span>
             <div className="auto-allow-panel-v2__row-body">
@@ -1812,11 +1756,13 @@ function AutoAllowPanel({
         </div>
       ))}
       <div className="auto-allow-panel-v2__foot">
-        命令分类基于命令首字符串识别（如 `curl` → Network、`git ...` → Git），
-        具体规则见 frontend/src/workbench/run-classify.ts。
+        命令分类基于命令首字符串识别（如 `curl` → Network、`git ...` → Git）， 具体规则见
+        frontend/src/workbench/run-classify.ts。
       </div>
       <div className="auto-allow-panel-v2__actions">
-        <button className="ghost-btn" onClick={onClose}>取消</button>
+        <button className="ghost-btn" onClick={onClose}>
+          取消
+        </button>
         <button
           className="primary-btn"
           onClick={() => {
@@ -1865,7 +1811,6 @@ function ToolConfirmBar({
               className="tool-confirm__feedback-input"
               value={feedbackText}
               placeholder="手动输入给 AI 的指示…"
-              autoFocus
               onChange={(e) => setFeedbackText(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter") submitFeedback();
@@ -1883,12 +1828,13 @@ function ToolConfirmBar({
         )}
       </div>
       <div className="tool-confirm__actions">
-        <button className="tool-confirm__button" onClick={onAllow}>是</button>
-        <button className="tool-confirm__button" onClick={onDeny}>否</button>
-        <button
-          className="tool-confirm__button"
-          onClick={() => setFeedbackOpen((v) => !v)}
-        >
+        <button className="tool-confirm__button" onClick={onAllow}>
+          是
+        </button>
+        <button className="tool-confirm__button" onClick={onDeny}>
+          否
+        </button>
+        <button className="tool-confirm__button" onClick={() => setFeedbackOpen((v) => !v)}>
           其他
         </button>
       </div>
@@ -2027,7 +1973,7 @@ function extractEditConfirmPreview(args: unknown): EditConfirmPreviewData | null
 }
 
 function extractWriteContentPreview(
-  args: unknown
+  args: unknown,
 ): { kind: "write_file" | "append_file"; path: string; content: string } | null {
   if (!args || typeof args !== "object") return null;
   const a = args as { kind?: unknown; path?: unknown; content?: unknown };
@@ -2036,9 +1982,7 @@ function extractWriteContentPreview(
   return { kind: a.kind, path: a.path, content: a.content };
 }
 
-function extractMultiEditConfirmPreview(
-  args: unknown
-): MultiEditConfirmPreviewData | null {
+function extractMultiEditConfirmPreview(args: unknown): MultiEditConfirmPreviewData | null {
   if (!args || typeof args !== "object") return null;
   const a = args as {
     kind?: unknown;
@@ -2064,15 +2008,13 @@ function extractMultiEditConfirmPreview(
 
 function toolLineMeta(
   step: Extract<ChatStep, { kind: "tool" }>,
-  fileDiff: FileDiff | null
+  fileDiff: FileDiff | null,
 ): string {
   if (step.tool === "read" && step.args && typeof step.args === "object") {
     const a = step.args as { kind?: unknown; startLine?: unknown; lineCount?: unknown };
     if (a.kind === "file" && typeof a.startLine === "number") {
       const end =
-        typeof a.lineCount === "number"
-          ? a.startLine + Math.max(1, a.lineCount) - 1
-          : null;
+        typeof a.lineCount === "number" ? a.startLine + Math.max(1, a.lineCount) - 1 : null;
       return end ? `read line ${a.startLine}-${end}` : `read line ${a.startLine}`;
     }
   }
@@ -2125,8 +2067,7 @@ function summarizeTool(t: ToolKind, args: unknown): string {
   if (t === "read") {
     if (a.kind === "file" && typeof a.path === "string") return a.path;
     if (a.kind === "list" && typeof a.path === "string") return `list ${a.path || "/"}`;
-    if (a.kind === "search" && typeof a.query === "string")
-      return `search "${a.query}"`;
+    if (a.kind === "search" && typeof a.query === "string") return `search "${a.query}"`;
     return JSON.stringify(a);
   }
   // write — emit `path` plus a kind-specific tail. We deliberately suppress
@@ -2135,12 +2076,7 @@ function summarizeTool(t: ToolKind, args: unknown): string {
   // dedicated +N/-M counter and the thumbnail-diff card cover what the user
   // needs to see, so we keep the inline summary to just the path.
   const kind = typeof a.kind === "string" ? a.kind : "";
-  const path =
-    typeof a.path === "string"
-      ? a.path
-      : typeof a.to === "string"
-      ? a.to
-      : "";
+  const path = typeof a.path === "string" ? a.path : typeof a.to === "string" ? a.to : "";
   if (kind === "edit_file") return path;
   if (kind === "multi_edit") {
     const editsLen = Array.isArray(a.edits) ? a.edits.length : 0;
@@ -2154,8 +2090,7 @@ function summarizeTool(t: ToolKind, args: unknown): string {
     const ek = typeof a.entryKind === "string" ? a.entryKind : "file";
     return `${ek} ${path}`;
   }
-  const sizeHint =
-    typeof a.content === "string" ? ` (+${a.content.length} chars)` : "";
+  const sizeHint = typeof a.content === "string" ? ` (+${a.content.length} chars)` : "";
   return `${path}${sizeHint}`.trim() || kind || "write";
 }
 
@@ -2163,9 +2098,9 @@ function prettyToolResult(t: ToolKind, result: unknown): string {
   if (isCachedToolResult(result)) {
     const parts: string[] = [];
     parts.push(result.message || "Duplicate tool call skipped; reused cached result.");
-    if (result.previousError) parts.push("previous error: " + result.previousError);
+    if (result.previousError) parts.push(`previous error: ${result.previousError}`);
     if (result.previous !== undefined) {
-      parts.push("--- previous result ---\n" + prettyUnknown(result.previous));
+      parts.push(`--- previous result ---\n${prettyUnknown(result.previous)}`);
     }
     return parts.join("\n");
   }
@@ -2180,10 +2115,10 @@ function prettyToolResult(t: ToolKind, result: unknown): string {
     };
     const parts: string[] = [];
     parts.push(
-      `exit=${r.exitCode ?? "null"}${r.signal ? `, signal=${r.signal}` : ""}, ${r.durationMs ?? 0}ms${r.shell ? `, shell=${r.shell}` : ""}`
+      `exit=${r.exitCode ?? "null"}${r.signal ? `, signal=${r.signal}` : ""}, ${r.durationMs ?? 0}ms${r.shell ? `, shell=${r.shell}` : ""}`,
     );
-    if (r.stdout) parts.push("--- stdout ---\n" + r.stdout);
-    if (r.stderr) parts.push("--- stderr ---\n" + r.stderr);
+    if (r.stdout) parts.push(`--- stdout ---\n${r.stdout}`);
+    if (r.stderr) parts.push(`--- stderr ---\n${r.stderr}`);
     return parts.join("\n");
   }
   if (t === "read") {
@@ -2375,7 +2310,12 @@ function GlobeIcon() {
   return (
     <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden>
       <circle cx="8" cy="8" r="5.5" stroke="currentColor" strokeWidth="1.3" fill="none" />
-      <path d="M2.5 8h11M8 2.5c2.2 2 2.2 9 0 11M8 2.5c-2.2 2-2.2 9 0 11" stroke="currentColor" strokeWidth="1.1" fill="none" />
+      <path
+        d="M2.5 8h11M8 2.5c2.2 2 2.2 9 0 11M8 2.5c-2.2 2-2.2 9 0 11"
+        stroke="currentColor"
+        strokeWidth="1.1"
+        fill="none"
+      />
     </svg>
   );
 }
@@ -2401,7 +2341,12 @@ function BranchIcon() {
       <circle cx="4.5" cy="3" r="1.6" stroke="currentColor" strokeWidth="1.2" fill="none" />
       <circle cx="4.5" cy="13" r="1.6" stroke="currentColor" strokeWidth="1.2" fill="none" />
       <circle cx="11.5" cy="8" r="1.6" stroke="currentColor" strokeWidth="1.2" fill="none" />
-      <path d="M4.5 4.6v6.8M4.5 6c0 2.2 2 3 3.5 3h2" stroke="currentColor" strokeWidth="1.2" fill="none" />
+      <path
+        d="M4.5 4.6v6.8M4.5 6c0 2.2 2 3 3.5 3h2"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        fill="none"
+      />
     </svg>
   );
 }
@@ -2425,8 +2370,24 @@ function CheckCircleIcon() {
 function TerminalIcon() {
   return (
     <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden>
-      <rect x="1.8" y="3.5" width="12.4" height="9" rx="1.5" stroke="currentColor" strokeWidth="1.2" fill="none" />
-      <path d="M4.5 6.5l2.2 2-2.2 2M8 10.5h3.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+      <rect
+        x="1.8"
+        y="3.5"
+        width="12.4"
+        height="9"
+        rx="1.5"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        fill="none"
+      />
+      <path
+        d="M4.5 6.5l2.2 2-2.2 2M8 10.5h3.5"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        fill="none"
+      />
     </svg>
   );
 }

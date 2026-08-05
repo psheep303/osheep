@@ -1,9 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  searchWorkspace,
-  type SearchFileMatch,
-  type SearchResult,
-} from "./api";
+import { type SearchFileMatch, type SearchResult, searchWorkspace } from "./api";
 
 interface SearchViewProps {
   workspaceId: string | null;
@@ -90,7 +86,7 @@ export function SearchView({ workspaceId, onOpenMatch }: SearchViewProps) {
         }, 300);
       }
     },
-    [workspaceId, query, mods, include, exclude]
+    [workspaceId, query, mods, include, exclude],
   );
 
   useEffect(() => {
@@ -111,8 +107,7 @@ export function SearchView({ workspaceId, onOpenMatch }: SearchViewProps) {
     }
   };
 
-  const toggleMod = (k: keyof ModState) =>
-    setMods((m) => ({ ...m, [k]: !m[k] }));
+  const toggleMod = (k: keyof ModState) => setMods((m) => ({ ...m, [k]: !m[k] }));
 
   const visibleMatches = useMemo<SearchFileMatch[]>(() => {
     if (!result) return [];
@@ -125,10 +120,7 @@ export function SearchView({ workspaceId, onOpenMatch }: SearchViewProps) {
       .filter((m) => m.lines.length > 0);
   }, [result, hiddenFiles, hiddenLines]);
 
-  const totalMatches = visibleMatches.reduce(
-    (sum, f) => sum + f.lines.length,
-    0
-  );
+  const totalMatches = visibleMatches.reduce((sum, f) => sum + f.lines.length, 0);
 
   return (
     <div className="side-view search-view">
@@ -139,7 +131,7 @@ export function SearchView({ workspaceId, onOpenMatch }: SearchViewProps) {
       <div className="search-view__form">
         <div className="search-view__input-row">
           <button
-            className={"search-view__toggle" + (showFilters ? " is-active" : "")}
+            className={`search-view__toggle${showFilters ? " is-active" : ""}`}
             onClick={() => setShowFilters((v) => !v)}
             title={showFilters ? "收起 替换 / 过滤" : "展开 替换 / 过滤"}
             aria-label="展开过滤"
@@ -242,9 +234,7 @@ export function SearchView({ workspaceId, onOpenMatch }: SearchViewProps) {
                 <span className="search-view__chevron">
                   <ChevronIcon open={!collapsed} />
                 </span>
-                <span className="search-view__file-name">
-                  {basename(file.path)}
-                </span>
+                <span className="search-view__file-name">{basename(file.path)}</span>
                 <span className="search-view__file-path">{dirname(file.path)}</span>
                 <span className="search-view__file-count">{file.lines.length}</span>
                 <button
@@ -266,9 +256,7 @@ export function SearchView({ workspaceId, onOpenMatch }: SearchViewProps) {
                       <div
                         key={key}
                         className="search-view__line"
-                        onClick={() =>
-                          onOpenMatch(file.path, ln.line, ln.column)
-                        }
+                        onClick={() => onOpenMatch(file.path, ln.line, ln.column)}
                         title={`${file.path}:${ln.line}:${ln.column}`}
                       >
                         <span className="search-view__line-num">{ln.line}</span>
@@ -302,15 +290,7 @@ export function SearchView({ workspaceId, onOpenMatch }: SearchViewProps) {
   );
 }
 
-function HighlightedPreview({
-  text,
-  start,
-  end,
-}: {
-  text: string;
-  start: number;
-  end: number;
-}) {
+function HighlightedPreview({ text, start, end }: { text: string; start: number; end: number }) {
   if (start < 0 || end <= start || end > text.length) {
     return <>{text}</>;
   }
@@ -338,7 +318,7 @@ function ModButton({
 }) {
   return (
     <button
-      className={"search-view__mod" + (active ? " is-active" : "")}
+      className={`search-view__mod${active ? " is-active" : ""}`}
       title={title}
       onClick={onClick}
       aria-pressed={active}

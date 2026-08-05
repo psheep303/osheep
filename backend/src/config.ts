@@ -1,6 +1,6 @@
-import * as path from "node:path";
-import * as os from "node:os";
 import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
 export interface Config {
@@ -11,13 +11,21 @@ export interface Config {
   maxTerminalSessions: number;
   terminalIdleTimeoutMs: number;
   agentStallTimeoutMs: number;
-  corsOrigin: string;
+  corsOrigins: string[];
+  authToken?: string;
   templatesRoot: string;
   systemTemplatesRoot: string;
   developerMode: boolean;
   frontendRoot?: string;
   allowExternalWorkspacePaths: boolean;
   workspaceRootConfigFile?: string;
+}
+
+function readEnvList(key: string): string[] {
+  return (process.env[key] ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
 }
 
 function readEnvInt(key: string, fallback: number): number {
@@ -39,7 +47,7 @@ function resolveWorkspacesRoot(raw: string | undefined): string {
       // Fall back to the default when the first-run settings file is absent.
     }
   }
-  if (raw && raw.trim()) return path.resolve(raw);
+  if (raw?.trim()) return path.resolve(raw);
   return path.resolve(process.cwd(), "workspaces");
 }
 
@@ -51,20 +59,21 @@ export const config: Config = {
   maxTerminalSessions: readEnvInt("MAX_TERMINAL_SESSIONS", 16),
   terminalIdleTimeoutMs: readEnvInt("TERMINAL_IDLE_TIMEOUT_MS", 0),
   agentStallTimeoutMs: readEnvInt("AGENT_STALL_TIMEOUT_MS", 30 * 60 * 1000),
-  corsOrigin: process.env.CORS_ORIGIN ?? "*",
+  corsOrigins: readEnvList("CORS_ORIGIN"),
+  authToken: process.env.OSHEEP_AUTH_TOKEN?.trim() || undefined,
   templatesRoot: path.resolve(
-    process.env.OSHEEP_TEMPLATES_ROOT ?? path.join(os.homedir(), ".osheep", "templates")
+    process.env.OSHEEP_TEMPLATES_ROOT ?? path.join(os.homedir(), ".osheep", "templates"),
   ),
   systemTemplatesRoot: path.resolve(
     process.env.OSHEEP_SYSTEM_TEMPLATES_ROOT ??
-      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "template-library", "system")
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "template-library", "system"),
   ),
   developerMode: /^(1|true|yes)$/i.test(process.env.OSHEEP_DEVELOPER_MODE ?? ""),
   frontendRoot: process.env.OSHEEP_FRONTEND_ROOT?.trim()
     ? path.resolve(process.env.OSHEEP_FRONTEND_ROOT)
     : undefined,
   allowExternalWorkspacePaths: /^(1|true|yes)$/i.test(
-    process.env.OSHEEP_ALLOW_EXTERNAL_WORKSPACE_PATHS ?? ""
+    process.env.OSHEEP_ALLOW_EXTERNAL_WORKSPACE_PATHS ?? "",
   ),
   workspaceRootConfigFile: process.env.OSHEEP_WORKSPACE_ROOT_CONFIG
     ? path.resolve(process.env.OSHEEP_WORKSPACE_ROOT_CONFIG)
@@ -72,8 +81,4 @@ export const config: Config = {
 };
 
 export const platform: "windows" | "macos" | "linux" =
-  os.platform() === "win32"
-    ? "windows"
-    : os.platform() === "darwin"
-    ? "macos"
-    : "linux";
+  os.platform() === "win32" ? "windows" : os.platform() === "darwin" ? "macos" : "linux";

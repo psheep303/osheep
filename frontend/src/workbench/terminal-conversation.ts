@@ -5,15 +5,16 @@ export type AgentTerminalConversationKind = "claude-cli" | "codex-cli";
 
 export function cleanAgentTerminalConversation(
   raw: string,
-  kind?: AgentTerminalConversationKind
+  kind?: AgentTerminalConversationKind,
 ): string {
   if (!raw.trim()) return "";
   const seen = new Set<string>();
   const output: string[] = [];
   const lines = plainText(raw).split("\n");
-  const codexStart = kind === "codex-cli"
-    ? lines.findIndex((line) => isCodexConversationStart(normalizeLine(line).trim()))
-    : -1;
+  const codexStart =
+    kind === "codex-cli"
+      ? lines.findIndex((line) => isCodexConversationStart(normalizeLine(line).trim()))
+      : -1;
   const conversationLines = codexStart >= 0 ? lines.slice(codexStart) : lines;
 
   for (const sourceLine of conversationLines) {
@@ -91,7 +92,11 @@ function isTerminalChrome(line: string, kind?: AgentTerminalConversationKind): b
   if (kind === "codex-cli") {
     if (isCodexProgressFragment(line)) return true;
     if (/^[╭╮╰╯│┌┐└┘]/.test(line)) return true;
-    if (/^(?:You are in\s+|Do you trust the contents|Working with untrusted contents|Trusting the directory|prompt injection\b|\d+\.\s+No, quit|Press enter to continue)/i.test(line)) {
+    if (
+      /^(?:You are in\s+|Do you trust the contents|Working with untrusted contents|Trusting the directory|prompt injection\b|\d+\.\s+No, quit|Press enter to continue)/i.test(
+        line,
+      )
+    ) {
       return true;
     }
     if (/^(?:gpt-[\w.-]+(?:\s+\w+)?|minimal|low|medium|high|xhigh)\s*·\s*/i.test(line)) {

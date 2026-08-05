@@ -1,7 +1,27 @@
-import type { FastifyInstance } from "fastify";
 import * as fs from "node:fs/promises";
+import type { FastifyInstance } from "fastify";
+import {
+  type CliProviderKind,
+  cliModelShortcuts,
+  isCliProviderKind,
+  runCliChat,
+} from "../ai-cli.js";
+import { execRun } from "../ai-exec.js";
+import {
+  type AgentEffort,
+  type AgentMode,
+  type ClaudePermissionMode,
+  type CodexApproval,
+  type CodexSandbox,
+  continueAgentTerminal,
+  finishAgentTerminalSuccess,
+  injectAgentTerminalPrompt,
+  pauseAgentTerminal,
+  runAgentTerminal,
+  setAgentTerminalAutoContinue,
+  setAgentTerminalAutoSuccess,
+} from "../ai-terminal.js";
 import { errors } from "../errors.js";
-import { resolveWorkspace, resolveWorkspacePath } from "../workspace.js";
 import {
   createEntry,
   deleteEntry,
@@ -10,28 +30,9 @@ import {
   readFileText,
   writeFileText,
 } from "../fs-ops.js";
+import { detectAiCli } from "../runtime-tools.js";
 import { searchWorkspace } from "../search.js";
-import { execRun } from "../ai-exec.js";
-import {
-  cliModelShortcuts,
-  isCliProviderKind,
-  runCliChat,
-  type CliProviderKind,
-} from "../ai-cli.js";
-import {
-  continueAgentTerminal,
-  finishAgentTerminalSuccess,
-  injectAgentTerminalPrompt,
-  pauseAgentTerminal,
-  runAgentTerminal,
-  setAgentTerminalAutoContinue,
-  setAgentTerminalAutoSuccess,
-  type AgentEffort,
-  type AgentMode,
-  type ClaudePermissionMode,
-  type CodexApproval,
-  type CodexSandbox,
-} from "../ai-terminal.js";
+import { resolveWorkspace, resolveWorkspacePath } from "../workspace.js";
 
 type ProviderKind = CliProviderKind | "unsupported";
 
@@ -49,7 +50,7 @@ function toPosix(p: string): string {
 
 async function readAiFileText(
   workspaceRoot: string,
-  relPath: string
+  relPath: string,
 ): Promise<{
   path: string;
   content: string;
@@ -58,7 +59,7 @@ async function readAiFileText(
   truncated: boolean;
 }> {
   const abs = resolveWorkspacePath(workspaceRoot, relPath);
-  let stat;
+  let stat: Awaited<ReturnType<typeof fs.stat>>;
   try {
     stat = await fs.stat(abs);
   } catch {
@@ -112,7 +113,7 @@ function toPositiveInt(value: unknown): number | null {
 function sliceLines(
   content: string,
   startLine: number | null,
-  lineCount: number | null
+  lineCount: number | null,
 ): {
   content: string;
   startLine: number;
@@ -178,7 +179,7 @@ function buildEditDiff(
   before: string,
   after: string,
   oldString: string,
-  newString: string
+  newString: string,
 ): EditDiffPayload {
   // Single match guaranteed by caller (occurrences === 1).
   const idx = before.indexOf(oldString);
@@ -205,17 +206,11 @@ function buildEditDiff(
  * to locate the first non-empty line of `oldString` elsewhere in the file and
  * appends "可能位置: line A, B, …" with up to 5 candidates.
  */
-function formatEditMissHint(
-  before: string,
-  oldString: string,
-  pathDisplay: string
-): string {
+function formatEditMissHint(before: string, oldString: string, pathDisplay: string): string {
   const trimmedSearch = oldString.replace(/^\s+/, "");
   const firstLineEnd = trimmedSearch.indexOf("\n");
   const firstLine =
-    firstLineEnd >= 0
-      ? trimmedSearch.slice(0, firstLineEnd).trim()
-      : trimmedSearch.trim();
+    firstLineEnd >= 0 ? trimmedSearch.slice(0, firstLineEnd).trim() : trimmedSearch.trim();
   if (!firstLine || firstLine.length < 4) {
     return `oldString 在 ${pathDisplay} 中未匹配`;
   }
@@ -232,11 +227,7 @@ function formatEditMissHint(
     .join(", ")}（基于 oldString 首行）`;
 }
 
-function formatEditAmbiguousHint(
-  before: string,
-  oldString: string,
-  occurrences: number
-): string {
+function formatEditAmbiguousHint(before: string, oldString: string, occurrences: number): string {
   const lines: number[] = [];
   let from = 0;
   while (lines.length < 8) {
@@ -332,15 +323,18 @@ function terminalPromptFromMessages(messages: ChatMessageIn[]): string {
   return messages
     .map((m) => {
       const role = m.role === "tool" ? `tool:${m.tool_call_id ?? "result"}` : m.role;
-      return messages.length === 1 && m.role === "user"
-        ? m.content
-        : `### ${role}\n${m.content}`;
+      return messages.length === 1 && m.role === "user" ? m.content : `### ${role}\n${m.content}`;
     })
     .join("\n\n")
     .trim();
 }
 
 export async function registerAiRoutes(app: FastifyInstance) {
+  app.get("/api/ai/cli-status", async () => ({
+    claude: detectAiCli("claude"),
+    codex: detectAiCli("codex"),
+  }));
+
   app.post<{
     Params: { id: string };
     Body: { kind?: ProviderKind };
@@ -462,7 +456,7 @@ export async function registerAiRoutes(app: FastifyInstance) {
     await resolveWorkspace(req.params.id);
     const result = setAgentTerminalAutoContinue(
       req.params.sessionId,
-      req.body?.autoContinue !== false
+      req.body?.autoContinue !== false,
     );
     return { ok: true, ...result };
   });
@@ -474,7 +468,7 @@ export async function registerAiRoutes(app: FastifyInstance) {
     await resolveWorkspace(req.params.id);
     const result = setAgentTerminalAutoSuccess(
       req.params.sessionId,
-      req.body?.autoSuccess !== false
+      req.body?.autoSuccess !== false,
     );
     return { ok: true, ...result };
   });
@@ -706,7 +700,7 @@ export async function registerAiRoutes(app: FastifyInstance) {
       if (typeof b.content !== "string") throw errors.invalidQuery("缺少 content");
       if (isObviousWritePlaceholder(b.content)) {
         throw errors.invalidQuery(
-          "write_file content 看起来是占位符；请先读取文件并提供完整内容，或改用 edit_file"
+          "write_file content 看起来是占位符；请先读取文件并提供完整内容，或改用 edit_file",
         );
       }
       const out = await writeFileText(ws.path, b.path, b.content, b.createParents !== false);
@@ -788,12 +782,12 @@ export async function registerAiRoutes(app: FastifyInstance) {
         const occurrences = current.split(oldString).length - 1;
         if (occurrences === 0) {
           throw errors.invalidQuery(
-            `multi_edit edits[${i}] 失败：${formatEditMissHint(current, oldString, pathDisplay)}`
+            `multi_edit edits[${i}] 失败：${formatEditMissHint(current, oldString, pathDisplay)}`,
           );
         }
         if (occurrences > 1) {
           throw errors.invalidQuery(
-            `multi_edit edits[${i}] 失败：${formatEditAmbiguousHint(current, oldString, occurrences)}`
+            `multi_edit edits[${i}] 失败：${formatEditAmbiguousHint(current, oldString, occurrences)}`,
           );
         }
         const next = current.replace(oldString, newString);
@@ -867,7 +861,7 @@ export async function registerAiRoutes(app: FastifyInstance) {
       b.command,
       typeof b.cwd === "string" ? b.cwd : "",
       typeof b.timeoutMs === "number" ? b.timeoutMs : 60_000,
-      typeof b.shell === "string" ? b.shell : undefined
+      typeof b.shell === "string" ? b.shell : undefined,
     );
     return result;
   });
@@ -925,7 +919,7 @@ export async function registerAiRoutes(app: FastifyInstance) {
           onLog: (entry) => {
             send("log", entry);
           },
-        }
+        },
       );
       send("result", result);
     } catch (e) {

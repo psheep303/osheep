@@ -4,15 +4,7 @@ import { config } from "./config.js";
 import { errors } from "./errors.js";
 import { resolveWorkspacePath } from "./workspace.js";
 
-const IGNORED_DIRS = new Set([
-  "node_modules",
-  ".git",
-  "dist",
-  "build",
-  ".next",
-  ".vite",
-  ".cache",
-]);
+const IGNORED_DIRS = new Set(["node_modules", ".git", "dist", "build", ".next", ".vite", ".cache"]);
 
 export interface FsEntry {
   name: string;
@@ -28,16 +20,16 @@ function toPosix(p: string): string {
 
 function joinPosix(parent: string, name: string): string {
   if (!parent) return name;
-  return parent + "/" + name;
+  return `${parent}/${name}`;
 }
 
 export async function listTree(
   workspaceRoot: string,
   relPath: string,
-  includeHidden: boolean
+  includeHidden: boolean,
 ): Promise<FsEntry[]> {
   const abs = resolveWorkspacePath(workspaceRoot, relPath);
-  let stat;
+  let stat: Awaited<ReturnType<typeof fs.stat>>;
   try {
     stat = await fs.stat(abs);
   } catch {
@@ -76,7 +68,7 @@ export async function listTree(
 
 export async function readFileText(
   workspaceRoot: string,
-  relPath: string
+  relPath: string,
 ): Promise<{
   path: string;
   content: string;
@@ -85,7 +77,7 @@ export async function readFileText(
   mtime: number;
 }> {
   const abs = resolveWorkspacePath(workspaceRoot, relPath);
-  let stat;
+  let stat: Awaited<ReturnType<typeof fs.stat>>;
   try {
     stat = await fs.stat(abs);
   } catch {
@@ -109,7 +101,7 @@ export async function writeFileText(
   workspaceRoot: string,
   relPath: string,
   content: string,
-  createParents: boolean
+  createParents: boolean,
 ): Promise<{ path: string; size: number; mtime: number }> {
   if (typeof content !== "string") throw errors.invalidPath("content 必须为字符串");
   const bytes = Buffer.byteLength(content, "utf-8");
@@ -131,8 +123,7 @@ export async function writeFileText(
   }
 
   // Atomic-ish replace: write tmp then rename
-  const tmp =
-    abs + ".osheep.tmp." + Date.now() + "." + Math.random().toString(36).slice(2);
+  const tmp = `${abs}.osheep.tmp.${Date.now()}.${Math.random().toString(36).slice(2)}`;
   await fs.writeFile(tmp, content, "utf-8");
   try {
     await fs.rename(tmp, abs);
@@ -147,7 +138,7 @@ export async function writeFileText(
 export async function createEntry(
   workspaceRoot: string,
   relPath: string,
-  kind: "file" | "directory"
+  kind: "file" | "directory",
 ): Promise<{ path: string; kind: "file" | "directory" }> {
   const abs = resolveWorkspacePath(workspaceRoot, relPath);
   const parent = path.dirname(abs);
@@ -179,7 +170,7 @@ export async function createEntry(
 export async function moveEntry(
   workspaceRoot: string,
   fromRel: string,
-  toRel: string
+  toRel: string,
 ): Promise<{ from: string; to: string }> {
   const fromAbs = resolveWorkspacePath(workspaceRoot, fromRel);
   const toAbs = resolveWorkspacePath(workspaceRoot, toRel);
@@ -207,11 +198,11 @@ export async function moveEntry(
 export async function copyEntry(
   workspaceRoot: string,
   fromRel: string,
-  toRel: string
+  toRel: string,
 ): Promise<{ from: string; to: string }> {
   const fromAbs = resolveWorkspacePath(workspaceRoot, fromRel);
   const toAbs = resolveWorkspacePath(workspaceRoot, toRel);
-  let st;
+  let st: Awaited<ReturnType<typeof fs.stat>>;
   try {
     st = await fs.stat(fromAbs);
   } catch {
@@ -239,13 +230,13 @@ export async function copyEntry(
 export async function deleteEntry(
   workspaceRoot: string,
   relPath: string,
-  recursive: boolean
+  recursive: boolean,
 ): Promise<{ path: string }> {
   const abs = resolveWorkspacePath(workspaceRoot, relPath);
   if (abs === path.resolve(workspaceRoot)) {
     throw errors.invalidPath("不能删除工作区根");
   }
-  let st;
+  let st: Awaited<ReturnType<typeof fs.stat>>;
   try {
     st = await fs.stat(abs);
   } catch {

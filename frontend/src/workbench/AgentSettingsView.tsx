@@ -1,10 +1,13 @@
-import { useState, type ReactNode } from "react";
+import { lazy, type ReactNode, Suspense, useState } from "react";
 import { AgentAdvancedSettingsView } from "./AgentAdvancedSettingsView";
-import { AiSettingsView } from "./AiSettingsView";
-import { ClaudePluginsView } from "./ClaudePluginsView";
-import { CodexPluginsView } from "./CodexPluginsView";
 import { AgentSessionsView } from "./AgentSessionsView";
 import type { AgentSessionSummary } from "./api";
+import { ClaudePluginsView } from "./ClaudePluginsView";
+import { CodexPluginsView } from "./CodexPluginsView";
+
+const AiSettingsView = lazy(() =>
+  import("./AiSettingsView").then((module) => ({ default: module.AiSettingsView })),
+);
 
 interface AgentSection<T extends string> {
   id: T;
@@ -121,24 +124,25 @@ function AgentShell<T extends string>({
       </div>
 
       <div className="agent-settings__nav" role="tablist" aria-label={`${title} sections`}>
-        {sections.filter((section) => !section.hidden).map((section) => (
-          <button
-            key={section.id}
-            type="button"
-            role="tab"
-            className={
-              "agent-settings__nav-item" +
-              (activeSection === section.id ? " is-active" : "")
-            }
-            aria-selected={activeSection === section.id}
-            onClick={() => onSelect(section.id)}
-          >
-            <span>{section.label}</span>
-          </button>
-        ))}
+        {sections
+          .filter((section) => !section.hidden)
+          .map((section) => (
+            <button
+              key={section.id}
+              type="button"
+              role="tab"
+              className={`agent-settings__nav-item${activeSection === section.id ? " is-active" : ""}`}
+              aria-selected={activeSection === section.id}
+              onClick={() => onSelect(section.id)}
+            >
+              <span>{section.label}</span>
+            </button>
+          ))}
       </div>
 
-      <div className="agent-settings__body">{children}</div>
+      <div className="agent-settings__body">
+        <Suspense fallback={<div className="tab-loading-fallback" />}>{children}</Suspense>
+      </div>
     </div>
   );
 }

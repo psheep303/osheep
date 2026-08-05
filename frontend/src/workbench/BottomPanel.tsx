@@ -1,6 +1,8 @@
-import { useEffect, useState } from "react";
-import { PlanView } from "./PlanView";
-import { Terminal, type AgentTerminalLaunchRequest } from "./Terminal";
+import { lazy, Suspense, useEffect, useState } from "react";
+import type { AgentTerminalLaunchRequest } from "./Terminal";
+
+const PlanView = lazy(() => import("./PlanView").then((module) => ({ default: module.PlanView })));
+const Terminal = lazy(() => import("./Terminal").then((module) => ({ default: module.Terminal })));
 
 type BottomTab = "terminal" | "log" | "plan";
 
@@ -27,21 +29,19 @@ export function BottomPanel({
     <div className="bottom-panel">
       <div className="bottom-panel__tabs">
         <div
-          className={
-            "bottom-panel__tab" + (tab === "terminal" ? " is-active" : "")
-          }
+          className={`bottom-panel__tab${tab === "terminal" ? " is-active" : ""}`}
           onClick={() => setTab("terminal")}
         >
           终端
         </div>
         <div
-          className={"bottom-panel__tab" + (tab === "log" ? " is-active" : "")}
+          className={`bottom-panel__tab${tab === "log" ? " is-active" : ""}`}
           onClick={() => setTab("log")}
         >
           日志
         </div>
         <div
-          className={"bottom-panel__tab" + (tab === "plan" ? " is-active" : "")}
+          className={`bottom-panel__tab${tab === "plan" ? " is-active" : ""}`}
           onClick={() => setTab("plan")}
         >
           计划
@@ -65,19 +65,21 @@ export function BottomPanel({
         </button>
       </div>
       <div className="bottom-panel__body">
-        {tab === "terminal" && (
-          <Terminal
-            workspaceId={workspaceId}
-            launchRequest={terminalLaunchRequest}
-            onLaunchHandled={onTerminalLaunchHandled}
-          />
-        )}
-        {tab === "log" && (
-          <div className="muted" style={{ padding: "10px 16px" }}>
-            任务执行日志将在后续阶段接入。
-          </div>
-        )}
-        {tab === "plan" && <PlanView workspaceId={workspaceId} />}
+        <Suspense fallback={<div className="tab-loading-fallback" />}>
+          {tab === "terminal" && (
+            <Terminal
+              workspaceId={workspaceId}
+              launchRequest={terminalLaunchRequest}
+              onLaunchHandled={onTerminalLaunchHandled}
+            />
+          )}
+          {tab === "log" && (
+            <div className="muted" style={{ padding: "10px 16px" }}>
+              任务执行日志将在后续阶段接入。
+            </div>
+          )}
+          {tab === "plan" && <PlanView workspaceId={workspaceId} />}
+        </Suspense>
       </div>
     </div>
   );

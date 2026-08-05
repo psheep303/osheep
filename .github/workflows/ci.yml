@@ -1,0 +1,143 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  repository-hygiene:
+    name: Repository hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Check tracked files and reachable history
+        run: node scripts/check-public-repo.mjs --history
+
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request' && github.event.repository.visibility == 'public'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Review dependency changes
+        uses: actions/dependency-review-action@v4
+
+  linux-web:
+    name: Linux web and clean install
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Install Linux build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential python3 git
+
+      - name: Verify documented Linux installation and web development
+        run: bash scripts/verify-linux.sh
+
+  windows-web:
+    name: Windows web regression
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Install backend
+        run: npm.cmd --prefix backend ci
+
+      - name: Verify backend
+        run: |
+          npm.cmd --prefix backend run lint
+          npm.cmd --prefix backend run typecheck
+          npm.cmd --prefix backend test
+          npm.cmd --prefix backend run build
+
+      - name: Install frontend
+        run: npm.cmd --prefix frontend ci
+
+      - name: Verify frontend
+        run: |
+          npm.cmd --prefix frontend run lint
+          npm.cmd --prefix frontend run typecheck
+          npm.cmd --prefix frontend test
+          npm.cmd --prefix frontend run build
+
+  desktop:
+    name: Desktop Rust
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Install web dependencies
+        run: |
+          npm.cmd --prefix backend ci
+          npm.cmd --prefix frontend ci
+
+      - name: Prepare desktop resources
+        run: .\desktop\scripts\prepare-release.ps1
+
+      - name: Install Rust components
+        run: rustup component add rustfmt clippy
+
+      - name: Format
+        run: cargo fmt --check
+        working-directory: desktop/src-tauri
+
+      - name: Clippy
+        run: cargo clippy --locked -- -D warnings
+        working-directory: desktop/src-tauri
+
+      - name: Test
+        run: cargo test --locked
+        working-directory: desktop/src-tauri

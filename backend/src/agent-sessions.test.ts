@@ -1,14 +1,14 @@
-import test from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import test from "node:test";
 import {
+  type AgentSessionRoots,
   deleteAgentSession,
   deleteAgentSessionsInProject,
   isAgentSessionInProject,
   listAgentSessions,
-  type AgentSessionRoots,
 } from "./agent-sessions.js";
 
 test("project scope filters sessions and batch delete rejects sibling projects", async () => {
@@ -25,18 +25,27 @@ test("project scope filters sessions and batch delete rejects sibling projects",
 
     const sessions = await listAgentSessions("codex", fixture.roots);
     const visible = sessions.filter((session) =>
-      isAgentSessionInProject(session, fixture.projectPath)
+      isAgentSessionInProject(session, fixture.projectPath),
     );
-    assert.deepEqual(visible.map((session) => session.id), [currentId]);
+    assert.deepEqual(
+      visible.map((session) => session.id),
+      [currentId],
+    );
 
     const result = await deleteAgentSessionsInProject(
       "codex",
       [currentId, siblingId],
       fixture.projectPath,
-      fixture.roots
+      fixture.roots,
     );
-    assert.deepEqual(result.deleted.map((session) => session.id), [currentId]);
-    assert.deepEqual(result.failed.map((failure) => failure.id), [siblingId]);
+    assert.deepEqual(
+      result.deleted.map((session) => session.id),
+      [currentId],
+    );
+    assert.deepEqual(
+      result.failed.map((failure) => failure.id),
+      [siblingId],
+    );
     await assert.rejects(fs.stat(currentFile), { code: "ENOENT" });
     assert.equal((await fs.stat(siblingFile)).isFile(), true);
   } finally {
@@ -53,7 +62,7 @@ test("Codex sessions use metadata, prompt text, and the title index", async () =
     "2026",
     "07",
     "17",
-    `rollout-2026-07-17T10-00-00-${id}.jsonl`
+    `rollout-2026-07-17T10-00-00-${id}.jsonl`,
   );
   try {
     await writeLines(sessionPath, [
@@ -89,7 +98,7 @@ test("Codex sessions use metadata, prompt text, and the title index", async () =
     await assert.rejects(fs.stat(sessionPath), { code: "ENOENT" });
     assert.doesNotMatch(
       await fs.readFile(path.join(fixture.roots.codexHome, "session_index.jsonl"), "utf8"),
-      new RegExp(id)
+      new RegExp(id),
     );
   } finally {
     await fs.rm(fixture.root, { recursive: true, force: true });
@@ -124,7 +133,7 @@ test("Claude session deletion removes transcript artifacts and index entries", a
           { sessionId: "ffffffff-1111-4222-8333-444444444444", summary: "Keep me" },
         ],
       }),
-      "utf8"
+      "utf8",
     );
 
     const sessions = await listAgentSessions("claude", fixture.roots);
@@ -139,9 +148,10 @@ test("Claude session deletion removes transcript artifacts and index entries", a
     const index = JSON.parse(await fs.readFile(indexPath, "utf8")) as {
       entries: Array<{ sessionId: string }>;
     };
-    assert.deepEqual(index.entries.map((entry) => entry.sessionId), [
-      "ffffffff-1111-4222-8333-444444444444",
-    ]);
+    assert.deepEqual(
+      index.entries.map((entry) => entry.sessionId),
+      ["ffffffff-1111-4222-8333-444444444444"],
+    );
   } finally {
     await fs.rm(fixture.root, { recursive: true, force: true });
   }
@@ -169,23 +179,19 @@ async function writeLines(filePath: string, values: unknown[]): Promise<void> {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(
     filePath,
-    values.map((value) => JSON.stringify(value)).join("\n") + "\n",
-    "utf8"
+    `${values.map((value) => JSON.stringify(value)).join("\n")}\n`,
+    "utf8",
   );
 }
 
-function codexSessionPath(
-  roots: AgentSessionRoots,
-  id: string,
-  time: string
-): string {
+function codexSessionPath(roots: AgentSessionRoots, id: string, time: string): string {
   return path.join(
     roots.codexHome,
     "sessions",
     "2026",
     "07",
     "17",
-    `rollout-2026-07-17T${time}-${id}.jsonl`
+    `rollout-2026-07-17T${time}-${id}.jsonl`,
   );
 }
 

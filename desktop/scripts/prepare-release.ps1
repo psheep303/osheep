@@ -13,6 +13,17 @@ if (-not $NodeBinary) {
 }
 $NodeBinary = (Resolve-Path $NodeBinary).Path
 
+$nodeArch = & $NodeBinary -p "process.arch"
+$nodeArchExitCode = $LASTEXITCODE
+if ($nodeArchExitCode -ne 0) {
+  throw "Failed to query bundled Node architecture from '$NodeBinary' (exit code $nodeArchExitCode)"
+}
+$nodeArch = "$nodeArch".Trim()
+if ($nodeArch -notin @('x64', 'arm64')) {
+  throw "Unsupported bundled Node architecture '$nodeArch'; Windows desktop supports x64 and arm64"
+}
+$requiredPrebuild = "win32-$nodeArch"
+
 if (Test-Path $stage) {
   $resolvedStage = (Resolve-Path $stage).Path
   if (-not $resolvedStage.StartsWith($desktop, [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -35,8 +46,42 @@ Copy-Item $NodeBinary (Join-Path $stage 'node\node.exe')
 
 Write-Host 'Installing production-only backend dependencies into desktop stage...'
 Push-Location $stageBackend
-try { & npm.cmd ci --omit=dev --no-audit --no-fund } finally { Pop-Location }
+try {
+  & npm.cmd ci --omit=dev --no-audit --no-fund
+  $npmExitCode = $LASTEXITCODE
+} finally {
+  Pop-Location
+}
+if ($npmExitCode -ne 0) { throw "npm ci failed with exit code $npmExitCode" }
+
+Write-Host 'Pruning desktop stage...'
+$ptyRoot = Join-Path $stageBackend 'node_modules\node-pty'
+$prebuilds = Join-Path $ptyRoot 'prebuilds'
+$requiredPrebuildPath = Join-Path $prebuilds $requiredPrebuild
+if (-not (Test-Path -LiteralPath $requiredPrebuildPath -PathType Container)) {
+  throw "Required node-pty prebuild '$requiredPrebuild' was not found at '$requiredPrebuildPath'"
+}
+Get-ChildItem $prebuilds -Directory |
+  Where-Object { $_.Name -ne $requiredPrebuild } |
+  Remove-Item -Recurse -Force
+foreach ($dir in 'third_party', 'deps', 'src') {
+  $path = Join-Path $ptyRoot $dir
+  if (Test-Path $path) { Remove-Item -LiteralPath $path -Recurse -Force }
+}
+
+Push-Location $stageBackend
+try {
+  & (Join-Path $stage 'node\node.exe') -e "require('node-pty'); console.log('node-pty OK')"
+  $nodePtyExitCode = $LASTEXITCODE
+} finally {
+  Pop-Location
+}
+if ($nodePtyExitCode -ne 0) { throw 'node-pty failed to load after pruning' }
+
+Remove-Item -LiteralPath (Join-Path $stageBackend 'package-lock.json') -Force -ErrorAction SilentlyContinue
+Get-ChildItem (Join-Path $stageBackend 'dist') -Recurse -Filter '*.test.js' -ErrorAction SilentlyContinue |
+  Remove-Item -Force
 
 $nodeSizeMb = [math]::Round((Get-Item (Join-Path $stage 'node\node.exe')).Length / 1MB, 1)
 $stageSizeMb = [math]::Round((Get-ChildItem $stage -File -Recurse | Measure-Object Length -Sum).Sum / 1MB, 1)
-Write-Host "Desktop stage ready: $stageSizeMb MB (Node runtime: $nodeSizeMb MB)"
+Write-Host "Desktop stage ready: $stageSizeMb MB (Node runtime: $nodeSizeMb MB; target architecture: $nodeArch; node-pty prebuild: $requiredPrebuild)"

@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { platform } from "./config.js";
+import { detectAiCli } from "./runtime-tools.js";
 
 export type CliProviderKind = "claude-cli" | "codex-cli";
 
@@ -44,7 +45,7 @@ export function cliModelShortcuts(kind: CliProviderKind): string[] {
 export async function runCliChat(opts: CliChatOptions): Promise<CliChatResult> {
   const outputCapture = opts.kind === "codex-cli" ? await createOutputCapture() : null;
   const invocation = normalizeInvocation(
-    buildInvocation(opts.kind, opts.model, outputCapture?.file)
+    buildInvocation(opts.kind, opts.model, outputCapture?.file),
   );
   const prompt = buildCliPrompt(opts.kind, opts.messages);
   const parser = new CliOutputParser(opts.onDelta);
@@ -125,17 +126,17 @@ export async function runCliChat(opts: CliChatOptions): Promise<CliChatResult> {
         await cleanupOutputCapture(outputCapture);
 
         settle(() => {
-        if (killedByAbort || opts.signal?.aborted) {
-          resolve({ content, stderr, exitCode: null, signal: "SIGTERM" });
-          return;
-        }
-        if (code !== 0) {
-          const detail = stderr.trim() || content.trim() || `exit code ${code}`;
-          reject(new Error(`${labelFor(opts.kind)} failed: ${detail}`));
-          return;
-        }
-        resolve({ content, stderr, exitCode: code, signal: sig as NodeJS.Signals | null });
-      });
+          if (killedByAbort || opts.signal?.aborted) {
+            resolve({ content, stderr, exitCode: null, signal: "SIGTERM" });
+            return;
+          }
+          if (code !== 0) {
+            const detail = stderr.trim() || content.trim() || `exit code ${code}`;
+            reject(new Error(`${labelFor(opts.kind)} failed: ${detail}`));
+            return;
+          }
+          resolve({ content, stderr, exitCode: code, signal: sig as NodeJS.Signals | null });
+        });
       })().catch((e) => settle(() => reject(e)));
     });
 
@@ -149,7 +150,7 @@ export async function runCliChat(opts: CliChatOptions): Promise<CliChatResult> {
 function buildInvocation(
   kind: CliProviderKind,
   model: string,
-  outputLastMessagePath?: string
+  outputLastMessagePath?: string,
 ): { command: string; args: string[] } {
   const useModel = model && model !== "default";
   if (kind === "claude-cli") {
@@ -162,7 +163,7 @@ function buildInvocation(
       "acceptEdits",
     ];
     if (useModel) args.push("--model", model);
-    return { command: platform === "windows" ? "claude.exe" : "claude", args };
+    return { command: detectAiCli("claude").command, args };
   }
 
   const args = [
@@ -179,7 +180,7 @@ function buildInvocation(
     args.push("--output-last-message", outputLastMessagePath);
   }
   args.push("-");
-  return { command: platform === "windows" ? "codex.cmd" : "codex", args };
+  return { command: detectAiCli("codex").command, args };
 }
 
 async function createOutputCapture(): Promise<{ dir: string; file: string }> {
@@ -208,7 +209,7 @@ async function cleanupOutputCapture(capture: { dir: string } | null): Promise<vo
 function finalizeContent(
   parsedContent: string,
   finalMessage: string,
-  onDelta?: (chunk: string) => void
+  onDelta?: (chunk: string) => void,
 ): string {
   const parsed = parsedContent.trim();
   const final = finalMessage.trim();
@@ -228,14 +229,11 @@ function finalizeContent(
   return joined;
 }
 
-function normalizeInvocation(invocation: {
+function normalizeInvocation(invocation: { command: string; args: string[] }): {
   command: string;
   args: string[];
-}): { command: string; args: string[] } {
-  if (
-    platform === "windows" &&
-    /\.(?:cmd|bat)$/i.test(invocation.command)
-  ) {
+} {
+  if (platform === "windows" && /\.(?:cmd|bat)$/i.test(invocation.command)) {
     return {
       command: process.env.ComSpec ?? "cmd.exe",
       args: ["/d", "/s", "/c", invocation.command, ...invocation.args],
@@ -373,7 +371,7 @@ class CliOutputParser {
     if (!this.fallbackText) {
       this.fallbackText = trimmed;
     } else if (!this.fallbackText.includes(trimmed)) {
-      this.fallbackText += "\n" + trimmed;
+      this.fallbackText += `\n${trimmed}`;
     }
   }
 }

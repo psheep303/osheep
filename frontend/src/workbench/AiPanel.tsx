@@ -1,16 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ContextMenu, type CtxMenuSection } from "./ContextMenu";
 import {
   createWorkflow as apiCreateWorkflow,
   deleteWorkflow as apiDeleteWorkflow,
   getWorkflow as apiGetWorkflow,
   listWorkflows as apiListWorkflows,
-  saveWorkflowAsTemplate as apiSaveWorkflowAsTemplate,
-  saveWorkflowAsSystemTemplate as apiSaveWorkflowAsSystemTemplate,
   saveWorkflow as apiSaveWorkflow,
+  saveWorkflowAsSystemTemplate as apiSaveWorkflowAsSystemTemplate,
+  saveWorkflowAsTemplate as apiSaveWorkflowAsTemplate,
   type WorkflowRecord,
   type WorkflowSummary,
 } from "./api";
+import { ContextMenu, type CtxMenuSection } from "./ContextMenu";
 
 interface AiPanelProps {
   workspaceId: string | null;
@@ -88,9 +88,7 @@ export function AiPanel({
   const filtered = useMemo(() => {
     if (!searchText.trim()) return workflows;
     const q = searchText.trim().toLowerCase();
-    return workflows.filter((workflow) =>
-      workflow.title.toLowerCase().includes(q)
-    );
+    return workflows.filter((workflow) => workflow.title.toLowerCase().includes(q));
   }, [workflows, searchText]);
 
   const handleNew = async () => {
@@ -130,7 +128,7 @@ export function AiPanel({
     try {
       const workflow = await apiCreateWorkflow(
         workspaceId,
-        workflowCopy(copiedWorkflow, workflows)
+        workflowCopy(copiedWorkflow, workflows),
       );
       await reload();
       onOpenWorkflow(workflow.id);
@@ -220,7 +218,7 @@ export function AiPanel({
   };
 
   const menuWorkflow = workflowMenu
-    ? workflows.find((workflow) => workflow.id === workflowMenu.workflowId) ?? null
+    ? (workflows.find((workflow) => workflow.id === workflowMenu.workflowId) ?? null)
     : null;
   const workflowMenuSections: CtxMenuSection[] = menuWorkflow
     ? [
@@ -341,9 +339,7 @@ export function AiPanel({
       )}
       {notice && <div className="ai-panel__notice">{notice}</div>}
 
-      {!workspaceId && (
-        <div className="ai-panel__empty">Open a workspace first</div>
-      )}
+      {!workspaceId && <div className="ai-panel__empty">Open a workspace first</div>}
 
       {workspaceId && loading && workflows.length === 0 && (
         <div className="ai-panel__empty">Loading...</div>
@@ -426,7 +422,7 @@ function WorkflowItem({
 }: WorkflowItemProps) {
   return (
     <div
-      className={"ai-panel__item" + (active ? " is-active" : "")}
+      className={`ai-panel__item${active ? " is-active" : ""}`}
       onClick={() => {
         if (!renaming) onOpen();
       }}
@@ -437,15 +433,11 @@ function WorkflowItem({
       }}
       title={renaming ? undefined : running ? `${workflow.title} (running)` : workflow.title}
     >
-      <span
-        className={"ai-panel__item-status" + (running ? " is-running" : "")}
-        aria-hidden
-      />
+      <span className={`ai-panel__item-status${running ? " is-running" : ""}`} aria-hidden />
       {renaming ? (
         <input
           className="ai-panel__item-rename"
           value={renameDraft}
-          autoFocus
           onClick={(event) => event.stopPropagation()}
           onChange={(event) => onRenameChange(event.target.value)}
           onBlur={onRenameCommit}
@@ -460,9 +452,7 @@ function WorkflowItem({
           }}
         />
       ) : (
-        <span className="ai-panel__item-title">
-          {workflow.title || "New workflow"}
-        </span>
+        <span className="ai-panel__item-title">{workflow.title || "New workflow"}</span>
       )}
       <span className="ai-panel__item-time">
         {running ? "RUNNING" : formatRelative(workflow.updatedAt)}
@@ -483,7 +473,7 @@ function WorkflowItem({
 
 function workflowCopy(
   source: WorkflowRecord,
-  workflows: WorkflowSummary[]
+  workflows: WorkflowSummary[],
 ): Partial<WorkflowRecord> {
   const title = nextCopyTitle(source.title || "Workflow", workflows);
   return {
@@ -594,14 +584,7 @@ function ImportIcon() {
 function SearchIcon() {
   return (
     <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden>
-      <circle
-        cx="7"
-        cy="7"
-        r="4.5"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        fill="none"
-      />
+      <circle cx="7" cy="7" r="4.5" stroke="currentColor" strokeWidth="1.4" fill="none" />
       <path
         d="M10.5 10.5L14 14"
         stroke="currentColor"

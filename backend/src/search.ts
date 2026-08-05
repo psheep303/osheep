@@ -2,15 +2,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { errors } from "./errors.js";
 
-const IGNORED_DIRS = new Set([
-  "node_modules",
-  ".git",
-  "dist",
-  "build",
-  ".next",
-  ".vite",
-  ".cache",
-]);
+const IGNORED_DIRS = new Set(["node_modules", ".git", "dist", "build", ".next", ".vite", ".cache"]);
 
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 const SNIFF_BYTES = 8 * 1024;
@@ -98,14 +90,14 @@ function globToRegex(glob: string): RegExp {
       re += "\\.";
       i += 1;
     } else if ("+()|^$[]{}\\".includes(c)) {
-      re += "\\" + c;
+      re += `\\${c}`;
       i += 1;
     } else {
       re += c;
       i += 1;
     }
   }
-  return new RegExp("^" + re + "$");
+  return new RegExp(`^${re}$`);
 }
 
 function matchesAny(relPath: string, patterns: RegExp[]): boolean {
@@ -127,7 +119,11 @@ function looksBinary(buf: Buffer): boolean {
   return suspicious / Math.max(1, len) > 0.3;
 }
 
-function trimPreview(line: string, matchStart: number, matchEnd: number): {
+function trimPreview(
+  line: string,
+  matchStart: number,
+  matchEnd: number,
+): {
   preview: string;
   matchStart: number;
   matchEnd: number;
@@ -157,7 +153,7 @@ function trimPreview(line: string, matchStart: number, matchEnd: number): {
 
 async function* walk(
   rootAbs: string,
-  excludePatterns: RegExp[]
+  excludePatterns: RegExp[],
 ): AsyncGenerator<{ abs: string; rel: string }> {
   const stack: { abs: string; rel: string }[] = [{ abs: rootAbs, rel: "" }];
   while (stack.length) {
@@ -173,7 +169,7 @@ async function* walk(
         if (IGNORED_DIRS.has(e.name)) continue;
         const childRel = rel ? `${rel}/${e.name}` : e.name;
         if (matchesAny(childRel, excludePatterns)) continue;
-        if (matchesAny(childRel + "/", excludePatterns)) continue;
+        if (matchesAny(`${childRel}/`, excludePatterns)) continue;
         stack.push({ abs: path.join(abs, e.name), rel: childRel });
       } else if (e.isFile()) {
         const childRel = rel ? `${rel}/${e.name}` : e.name;
@@ -186,7 +182,7 @@ async function* walk(
 
 export async function searchWorkspace(
   workspaceRoot: string,
-  opts: SearchOptions
+  opts: SearchOptions,
 ): Promise<SearchResult> {
   const started = Date.now();
   if (!opts.query) {
@@ -209,7 +205,7 @@ export async function searchWorkspace(
       continue;
     }
 
-    let stat;
+    let stat: Awaited<ReturnType<typeof fs.stat>>;
     try {
       stat = await fs.stat(file.abs);
     } catch {

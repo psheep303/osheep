@@ -10,11 +10,7 @@ interface SettingsViewProps {
 const MIN_FONT = 8;
 const MAX_FONT = 64;
 
-export function SettingsView({
-  settings,
-  onChange,
-  hasProject,
-}: SettingsViewProps) {
+export function SettingsView({ settings, onChange, hasProject }: SettingsViewProps) {
   const commitFontSize = (raw: string): number => {
     const n = parseInt(raw, 10);
     const fallback = settings.editor.fontSize;
@@ -86,8 +82,7 @@ export function SettingsView({
         <div className="settings-view__group">
           <div className="settings-view__group-title">AI</div>
           <div className="settings-view__item-desc">
-            osheep 现在直接调用本机 Codex CLI。模型、认证和其它 CLI
-            选项请在 CLI 自己的配置中维护。
+            osheep 现在直接调用本机 Codex CLI。模型、认证和其它 CLI 选项请在 CLI 自己的配置中维护。
           </div>
         </div>
       </div>
@@ -154,9 +149,7 @@ function Segmented<T extends string | number>({
           key={String(opt.value)}
           type="button"
           disabled={disabled}
-          className={
-            "settings-view__seg" + (opt.value === value ? " is-active" : "")
-          }
+          className={`settings-view__seg${opt.value === value ? " is-active" : ""}`}
           onClick={() => onChange(opt.value)}
         >
           {opt.label}

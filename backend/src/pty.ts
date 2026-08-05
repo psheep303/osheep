@@ -1,10 +1,10 @@
-import * as nodePty from "node-pty";
-import * as path from "node:path";
-import * as fs from "node:fs";
 import { randomBytes } from "node:crypto";
-import { platform, config } from "./config.js";
+import * as path from "node:path";
+import * as nodePty from "node-pty";
+import { config, platform } from "./config.js";
 import { errors } from "./errors.js";
 import { buildBashGuard, buildCmdGuard, buildPowerShellGuard } from "./pty-guard.js";
+import { findExecutable } from "./runtime-tools.js";
 import type { WorkspaceInfo } from "./workspace.js";
 
 export interface ShellProfile {
@@ -48,35 +48,10 @@ export interface TerminalSession {
 const sessions = new Map<string, TerminalSession>();
 let cachedProfiles: ShellProfile[] | null = null;
 
-function fileExists(p: string): boolean {
-  try {
-    return fs.statSync(p).isFile();
-  } catch {
-    return false;
-  }
-}
-
-function whichSync(name: string): string | null {
-  const PATH = process.env.PATH ?? "";
-  const sep = platform === "windows" ? ";" : ":";
-  const exts =
-    platform === "windows"
-      ? (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";")
-      : [""];
-  for (const dir of PATH.split(sep)) {
-    if (!dir) continue;
-    for (const ext of exts) {
-      const candidate = path.join(dir, name + ext);
-      if (fileExists(candidate)) return candidate;
-    }
-  }
-  return null;
-}
-
-function detectProfiles(): ShellProfile[] {
+export function detectProfiles(): ShellProfile[] {
   const profiles: ShellProfile[] = [];
   if (platform === "windows") {
-    const pwsh = whichSync("powershell");
+    const pwsh = findExecutable("powershell");
     if (pwsh) {
       profiles.push({
         id: "powershell",
@@ -85,7 +60,7 @@ function detectProfiles(): ShellProfile[] {
         args: ["-NoLogo"],
       });
     }
-    const cmd = whichSync("cmd");
+    const cmd = findExecutable("cmd");
     if (cmd) {
       profiles.push({ id: "cmd", label: "Command Prompt", executable: cmd, args: [] });
     }
@@ -93,7 +68,7 @@ function detectProfiles(): ShellProfile[] {
       "C:\\Program Files\\Git\\bin\\bash.exe",
       "C:\\Program Files (x86)\\Git\\bin\\bash.exe",
     ];
-    const gitBash = gitBashCandidates.find(fileExists);
+    const gitBash = gitBashCandidates.find((candidate) => findExecutable(candidate));
     if (gitBash) {
       profiles.push({
         id: "bash",
@@ -103,9 +78,9 @@ function detectProfiles(): ShellProfile[] {
       });
     }
   } else {
-    const bash = whichSync("bash");
+    const bash = findExecutable("bash");
     if (bash) profiles.push({ id: "bash", label: "bash", executable: bash, args: [] });
-    const zsh = whichSync("zsh");
+    const zsh = findExecutable("zsh");
     if (zsh) profiles.push({ id: "zsh", label: "zsh", executable: zsh, args: [] });
   }
   return profiles;
@@ -121,7 +96,7 @@ export function findProfile(id: string): ShellProfile | null {
 }
 
 function newSessionId(): string {
-  return "t_" + randomBytes(4).toString("hex");
+  return `t_${randomBytes(4).toString("hex")}`;
 }
 
 function clampSize(n: unknown, fallback: number): number {
@@ -300,7 +275,7 @@ function cleanupSession(s: TerminalSession, _reason: string): void {
 
 export function attachSink(
   s: TerminalSession,
-  sink: (frame: string) => void
+  sink: (frame: string) => void,
 ): { detach: () => void; replayed: string } {
   s.sink = sink;
   const replayed = s.scrollback;
@@ -315,7 +290,7 @@ export function attachSink(
 
 export function addTap(
   s: TerminalSession,
-  tap: (frame: string) => void
+  tap: (frame: string) => void,
 ): { detach: () => void; replayed: string } {
   s.taps.add(tap);
   const replayed = s.scrollback;
@@ -339,8 +314,7 @@ export function writeRawInput(s: TerminalSession, data: string): void {
 
 // ─── Workspace boundary enforcement for `cd` ───
 
-const CD_RE =
-  /^(?:cd|chdir|sl|set-location|pushd)\b(?:\s+\/d)?\s+([^;|&`$\n]+?)\s*$/i;
+const CD_RE = /^(?:cd|chdir|sl|set-location|pushd)\b(?:\s+\/d)?\s+([^;|&`$\n]+?)\s*$/i;
 
 function parseCdTarget(line: string): string | null {
   const stripped = line.replace(/^\s+/, "");
@@ -378,7 +352,7 @@ function sendWarningFrame(s: TerminalSession, text: string): void {
       JSON.stringify({
         type: "output",
         data: `\r\n\x1b[33m${text}\x1b[0m\r\n`,
-      })
+      }),
     );
   }
 }
@@ -410,10 +384,7 @@ function handleInputData(s: TerminalSession, data: string): void {
           if (!isWithinWorkspacesRoot(newCwd, s.workspacesRoot)) {
             // Block: cancel the typed line in PTY, surface a warning frame
             s.pty.write("\x03");
-            sendWarningFrame(
-              s,
-              `警告：超出 workspaces (${s.workspacesRoot})，已忽略 "${target}"`
-            );
+            sendWarningFrame(s, `警告：超出 workspaces (${s.workspacesRoot})，已忽略 "${target}"`);
             continue; // do not forward the Enter
           }
           // Inside boundary — accept and remember
@@ -456,11 +427,7 @@ function handleInputData(s: TerminalSession, data: string): void {
   flush();
 }
 
-export function resizeSession(
-  s: TerminalSession,
-  cols: number,
-  rows: number
-): void {
+export function resizeSession(s: TerminalSession, cols: number, rows: number): void {
   const c = clampSize(cols, s.cols);
   const r = clampSize(rows, s.rows);
   s.cols = c;

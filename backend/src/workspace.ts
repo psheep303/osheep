@@ -51,7 +51,7 @@ export async function setWorkspacesRoot(rawPath: string): Promise<string> {
     throw errors.invalidPath("workspaces 根目录必须是绝对路径");
   }
   const candidate = path.resolve(rawPath);
-  let stat;
+  let stat: Awaited<ReturnType<typeof fs.stat>>;
   try {
     stat = await fs.stat(candidate);
   } catch {
@@ -66,7 +66,7 @@ export async function setWorkspacesRoot(rawPath: string): Promise<string> {
     await fs.writeFile(
       config.workspaceRootConfigFile,
       JSON.stringify({ root: config.workspacesRoot }, null, 2),
-      "utf8"
+      "utf8",
     );
   }
   return config.workspacesRoot;
@@ -111,9 +111,7 @@ export function resolveWorkspacePath(workspaceRoot: string, rel: string): string
 
   const joined = path.resolve(workspaceRoot, ...segments);
   const rootResolved = path.resolve(workspaceRoot);
-  const rootWithSep = rootResolved.endsWith(path.sep)
-    ? rootResolved
-    : rootResolved + path.sep;
+  const rootWithSep = rootResolved.endsWith(path.sep) ? rootResolved : rootResolved + path.sep;
   if (joined !== rootResolved && !joined.startsWith(rootWithSep)) {
     throw errors.pathOutside();
   }
@@ -131,7 +129,7 @@ export async function ensureOsheepLayout(workspaceRoot: string): Promise<void> {
     await fs.writeFile(
       settingsPath,
       JSON.stringify({ editor: { fontSize: 14, tabSize: 2 } }, null, 2),
-      "utf8"
+      "utf8",
     );
   }
 }

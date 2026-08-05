@@ -1,0 +1,255 @@
+/* ==== Terminal ==== */
+
+.terminal {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg-editor);
+  font-family: "Cascadia Mono", Consolas, "Courier New", monospace;
+}
+
+.terminal--empty {
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.terminal__main {
+  flex: 1 1 auto;
+  display: flex;
+  min-height: 0;
+}
+
+.terminal__panes {
+  flex: 1 1 auto;
+  position: relative;
+  min-width: 0;
+  background: var(--bg-editor);
+  overflow: hidden;
+}
+
+.terminal__placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.terminal__error {
+  background: #5a1d1d;
+  color: var(--fg-error);
+  padding: 4px 12px;
+  font-size: 12px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  flex-shrink: 0;
+}
+
+/* ==== Per-session panel, stacked; only the active one is visible ==== */
+
+.term-session {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg-editor);
+  padding: 4px 4px 4px 8px;
+}
+
+.term-session.is-hidden {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.term-session__error {
+  background: #5a1d1d;
+  color: var(--fg-error);
+  padding: 4px 12px;
+  font-size: 12px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  flex-shrink: 0;
+  margin-bottom: 4px;
+}
+
+.term-session__host {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.term-session__host .xterm {
+  height: 100%;
+}
+
+.term-session__host .xterm-viewport {
+  background: transparent !important;
+}
+
+.term-session__overlay-btn {
+  position: absolute;
+  bottom: 8px;
+  right: 16px;
+  background: var(--bg-shell);
+  color: var(--fg-default);
+  border: 1px solid var(--border-edge);
+  border-radius: var(--radius-sm);
+  padding: 3px 10px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+/* ==== Sidebar listing active sessions ==== */
+
+.terminal__sidebar {
+  width: 180px;
+  flex-shrink: 0;
+  background: var(--bg-shell);
+  border-left: 1px solid var(--border-faint);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.terminal__sidebar-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 28px;
+  padding: 0 6px;
+  border-bottom: 1px solid var(--border-faint);
+  position: relative;
+}
+
+.terminal__sidebar-list {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.terminal__sidebar-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 6px 0 10px;
+  cursor: pointer;
+  color: var(--fg-default);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 12px;
+  transition: background-color var(--duration-fast) ease, color var(--duration-fast) ease,
+    border-color var(--duration-fast) ease;
+}
+
+.terminal__sidebar-item:hover {
+  background: var(--bg-hover);
+}
+
+.terminal__sidebar-item.is-active {
+  background: #37373d;
+  color: var(--fg-strong);
+}
+
+.terminal__sidebar-icon {
+  display: inline-flex;
+  width: 12px;
+  flex-shrink: 0;
+  color: var(--fg-muted);
+}
+
+.terminal__sidebar-item.is-active .terminal__sidebar-icon {
+  color: var(--fg-strong);
+}
+
+.terminal__sidebar-name {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.terminal__sidebar-close {
+  background: transparent;
+  border: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+  line-height: 1;
+  opacity: 0;
+  transition: background-color var(--duration-fast) ease, color var(--duration-fast) ease,
+    opacity var(--duration-fast) ease;
+}
+
+.terminal__sidebar-item:hover .terminal__sidebar-close,
+.terminal__sidebar-item.is-active .terminal__sidebar-close {
+  opacity: 0.8;
+}
+
+.terminal__sidebar-close:hover {
+  background: var(--bg-hover);
+  color: var(--fg-strong);
+  opacity: 1;
+}
+
+.terminal__menu {
+  position: absolute;
+  top: 28px;
+  left: 0;
+  min-width: 200px;
+  background: var(--surface-2);
+  border: 1px solid #454545;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  z-index: 50;
+  padding: 4px 0;
+  font-size: 13px;
+}
+
+.terminal__menu-header {
+  padding: 4px 14px 6px;
+  color: var(--fg-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-bottom: 1px solid var(--border-faint);
+  margin-bottom: 4px;
+}
+
+.terminal__menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--fg-default);
+  padding: 4px 14px;
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background-color var(--duration-fast) ease, color var(--duration-fast) ease;
+}
+
+.terminal__menu-item:hover {
+  background: var(--accent);
+  color: var(--fg-strong);
+}
+
+.terminal__menu-item.is-active {
+  color: var(--fg-strong);
+}
+
+.terminal__menu-item.is-active::before {
+  content: "鉁?";
+  margin-right: 4px;
+}
+
+.terminal__menu-item.is-empty {
+  color: var(--fg-faint);
+  font-style: italic;
+  cursor: default;
+  pointer-events: none;
+}
+

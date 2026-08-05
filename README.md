@@ -1,53 +1,83 @@
 # Osheep
 
-Osheep 是一个以 AI 工作流为中心的本地开发工作台。它把代码编辑、终端、搜索、Git、工作流模板以及 Codex / Claude Code 集成放进同一个界面，支持以 Web 应用或 Windows 桌面应用运行。
+[![CI](https://github.com/psheep303/osheep/actions/workflows/ci.yml/badge.svg)](https://github.com/psheep303/osheep/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-> 项目仍处于早期开发阶段，接口、配置格式和交互可能发生不兼容变更。当前优先支持单机、单用户场景，请勿直接将后端暴露到不可信网络。
+English | [简体中文](README.zh-CN.md)
 
-## 功能
+Osheep is a local development workbench built around AI workflows. It brings code editing, terminals, search, Git, workflow templates, and Codex / Claude Code integration into a single interface. The web app runs on Linux and Windows, while the desktop app currently targets Windows.
 
-- 基于 Monaco Editor 的文件浏览与代码编辑
-- 基于 xterm.js 和 node-pty 的集成终端
-- 项目内搜索、Git 状态、差异与提交历史查看
-- 可编排、可复用的 AI 工作流和模板库
-- Codex 与 Claude Code 的配置、会话和插件管理
-- React / Vite Web 前端与 Tauri 2 Windows 桌面壳
-- 本地优先：工作区、AI CLI 配置和凭据保留在运行 Osheep 的机器上
+> The project is still in early development; APIs, configuration formats, and interactions may change in incompatible ways. Single-machine, single-user scenarios are the current priority — do not expose the backend directly to untrusted networks.
 
-## 架构
+## Features
+
+- File browsing and code editing powered by Monaco Editor
+- Integrated terminal based on xterm.js and node-pty
+- In-project search, Git status, diffs, and commit history
+- Composable, reusable AI workflows and a template library
+- Configuration, session, and plugin management for Codex and Claude Code
+- Linux/Windows web development with a Tauri 2 Windows desktop shell
+- Local-first: workspaces, AI CLI configuration, and credentials stay on the machine running Osheep
+
+## Architecture
 
 ```text
 React + Vite
      |
      | HTTP / WebSocket
      v
-Fastify + node-pty  ----> 文件系统 / Git / AI CLI
+Fastify + node-pty  ----> File system / Git / AI CLI
      ^
      |
-Tauri 2 + WebView2（Windows 桌面版）
+Tauri 2 + WebView2 (Windows desktop)
 ```
 
-桌面版会将 Node.js 后端作为 sidecar 启动，并由后端提供构建后的前端资源。Rust 进程只负责桌面窗口和后端子进程的生命周期。
+The desktop app launches the Node.js backend as a sidecar, and the backend serves the built frontend assets. The Rust process is only responsible for the desktop window and the lifecycle of the backend child process.
 
-## 环境要求
+## Requirements
 
-Web 开发需要：
+For web development you need:
 
-- Node.js 20 或更高版本（建议使用当前 LTS）
+- Node.js 20 or later (the current LTS is recommended)
 - npm
 - Git
-- Windows 上编译 `node-pty` 所需的 C++ 构建工具
-- 可选：已安装并登录的 Codex CLI 或 Claude Code CLI
+- `build-essential` and Python 3 to compile `node-pty` on Linux
+- The C++ build tools required to compile `node-pty` on Windows
+- Optional: Codex CLI or Claude Code CLI, installed and signed in
 
-构建 Windows 桌面版还需要：
+Building the Windows desktop app additionally requires:
 
-- Rust stable 与 Cargo
-- Visual Studio 2022 Build Tools，并安装“使用 C++ 的桌面开发”工作负载
+- Rust stable and Cargo
+- Visual Studio 2022 Build Tools with the "Desktop development with C++" workload
 - Microsoft Edge WebView2 Runtime
 
-## 快速开始
+## Quick start
 
-克隆项目并安装依赖：
+On Ubuntu 22.04/24.04, install the system dependencies first:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y build-essential python3 git
+```
+
+After installing Node.js 20+, clone the project and install dependencies:
+
+```bash
+git clone https://github.com/psheep303/osheep.git
+cd osheep
+npm --prefix backend ci
+npm --prefix frontend ci
+```
+
+Start both web development processes from the repository root on Linux:
+
+```bash
+bash ./dev.sh
+```
+
+The script manages both processes in one terminal. Use `--backend-only`, `--frontend-only`, `--developer`, or `--install` as needed; `Ctrl+C` stops both processes.
+
+On Windows, install and start with PowerShell:
 
 ```powershell
 git clone https://github.com/psheep303/osheep.git
@@ -60,39 +90,37 @@ npm ci
 cd ..
 ```
 
-在 Windows PowerShell 中启动前后端：
-
 ```powershell
 .\dev.ps1
 ```
 
-启动器会打开两个 PowerShell 窗口：
+After startup, open:
 
-- 前端：<http://127.0.0.1:5173>
-- 后端：<http://127.0.0.1:4178>
-- 健康检查：<http://127.0.0.1:4178/api/health>
+- Frontend: <http://127.0.0.1:5173>
+- Backend: <http://127.0.0.1:4178>
+- Health check: <http://127.0.0.1:4178/api/health>
 
-也可以分别启动：
+On either platform, you can also start them separately:
 
-```powershell
+```bash
 cd backend
 npm run dev
 ```
 
-```powershell
+```bash
 cd frontend
 npm run dev
 ```
 
-内置工作流模板的作者模式使用：
+For author mode of the built-in workflow templates, use:
 
 ```powershell
 .\dev-developer.cmd
 ```
 
-## Windows 桌面版
+## Windows desktop app
 
-检查 Tauri 环境：
+Check the Tauri environment:
 
 ```powershell
 cd desktop
@@ -100,73 +128,81 @@ npm ci
 npx tauri info
 ```
 
-从仓库根目录启动桌面开发版或构建 NSIS 安装包：
+Start the desktop dev build or build the NSIS installer from the repository root:
 
 ```powershell
 .\desktop-dev.cmd
 .\desktop-build.cmd
 ```
 
-安装包输出到 `desktop/src-tauri/target/release/bundle/nsis/`。更完整的打包、日志和远程模式说明见 [desktop/README.md](desktop/README.md)。
+The installer is written to `desktop/src-tauri/target/release/bundle/nsis/`. See [desktop/README.md](desktop/README.md) for full packaging, logging, and remote-mode instructions.
 
-## 配置
+## Configuration
 
-后端从环境变量读取运行配置。可复制 [backend/.env.example](backend/.env.example) 作为参考，但程序不会自动加载 `.env` 文件；请通过 shell、进程管理器或部署平台注入变量。
+The backend reads its runtime configuration from environment variables. You can copy [backend/.env.example](backend/.env.example) as a reference, but the app does not load `.env` files automatically; inject variables via your shell, process manager, or deployment platform.
 
-| 变量 | 默认值 | 说明 |
+| Variable | Default | Description |
 | --- | --- | --- |
-| `OSHEEP_HOST` | `127.0.0.1` | 后端监听地址 |
-| `OSHEEP_PORT` | `4178` | 后端监听端口 |
-| `WORKSPACES_ROOT` | `backend/workspaces` | 工作区父目录 |
-| `MAX_FILE_SIZE_BYTES` | `5242880` | 单文件读写上限 |
-| `MAX_TERMINAL_SESSIONS` | `16` | 最大并发终端数 |
-| `TERMINAL_IDLE_TIMEOUT_MS` | `0` | 终端空闲超时，`0` 表示禁用 |
-| `AGENT_STALL_TIMEOUT_MS` | `1800000` | AI CLI 无输出超时，`0` 表示禁用 |
-| `CORS_ORIGIN` | `*` | 允许的前端来源 |
-| `OSHEEP_TEMPLATES_ROOT` | `~/.osheep/templates` | 运行时模板目录 |
-| `OSHEEP_CLAUDE_CONFIG_DIR` | `~/.claude` | Claude Code 配置目录 |
-| `OSHEEP_CODEX_CONFIG_DIR` | `~/.codex` | Codex 配置目录 |
+| `OSHEEP_HOST` | `127.0.0.1` | Backend listen address |
+| `OSHEEP_PORT` | `4178` | Backend listen port |
+| `WORKSPACES_ROOT` | `backend/workspaces` | Parent directory for workspaces |
+| `MAX_FILE_SIZE_BYTES` | `5242880` | Per-file read/write size limit |
+| `MAX_TERMINAL_SESSIONS` | `16` | Maximum concurrent terminals |
+| `TERMINAL_IDLE_TIMEOUT_MS` | `0` | Terminal idle timeout, `0` disables it |
+| `AGENT_STALL_TIMEOUT_MS` | `1800000` | AI CLI no-output timeout, `0` disables it |
+| `CORS_ORIGIN` | Loopback origins | Comma-separated additional trusted frontend origins |
+| `OSHEEP_AUTH_TOKEN` | Random local value | Shared access token required for non-loopback listening |
+| `OSHEEP_TEMPLATES_ROOT` | `~/.osheep/templates` | Runtime template directory |
+| `OSHEEP_CLAUDE_CONFIG_DIR` | `~/.claude` | Claude Code configuration directory |
+| `OSHEEP_CODEX_CONFIG_DIR` | `~/.codex` | Codex configuration directory |
 
-如果要从其他设备访问，请先增加身份认证、使用 HTTPS、收紧 `CORS_ORIGIN`，并限制防火墙规则。后端提供文件写入、Git 和终端执行能力，不应裸露在公网。
+Local mode automatically establishes an Origin-restricted `HttpOnly` session; APIs and terminal WebSockets reject unauthorized pages. Non-loopback listening requires both a random `OSHEEP_AUTH_TOKEN` of at least 32 characters and explicit `CORS_ORIGIN` values, and must use HTTPS. Open `https://host/#osheep-token=TOKEN` once to exchange the token for a session; the token is then removed from the address bar. This shared token is intended for controlled single-user deployments and does not replace multi-user authentication, reverse-proxy access control, or firewall rules.
 
-## 数据与密钥
+## Data and secrets
 
-- 不要提交 `.env`、`backend/.osheep/`、`.codex/`、`.claude/`、私钥、证书私钥或云服务凭据。
-- Osheep 的 AI 设置可能包含明文 API Key。只在受信任的本机使用，并确保配置目录权限合理。
-- `.gitignore` 只能防止新的误提交，无法从 Git 历史中删除已经提交的秘密。发生误提交后应立即吊销密钥，再清理历史。
-- 提交前可运行 `git status --ignored` 和密钥扫描工具检查待发布内容。
+- Never commit `.env`, `backend/.osheep/`, `.codex/`, `.claude/`, private keys, certificate keys, or cloud credentials.
+- Osheep's AI settings may contain plaintext API keys. Use them only on a trusted local machine and keep the permissions of the configuration directories sensible.
+- `.gitignore` only prevents new accidental commits; it cannot remove secrets already committed to Git history. If a secret leaks, revoke the key immediately, then clean up the history.
+- Before committing, run `node scripts/check-public-repo.mjs`; before making the repository public, also scan the complete Git history with Gitleaks.
 
-安全问题的私密报告方式见 [SECURITY.md](SECURITY.md)。
+See [SECURITY.md](SECURITY.md) for how to report security issues privately.
 
-## 项目结构
+## Project structure
 
 ```text
-backend/                 Fastify API、PTY、Git 与 AI CLI 集成
-frontend/                React/Vite 工作台
-desktop/                 Tauri 2 桌面壳与发布脚本
-backend/template-library 内置工作流模板
-.osheep/docs/            产品与技术设计文档
-docs/                    功能说明、设计记录与归档报告
+backend/                 Fastify API, PTY, Git, and AI CLI integration
+frontend/                React/Vite workbench
+desktop/                 Tauri 2 desktop shell and release scripts
+backend/template-library Built-in workflow templates
+.osheep/docs/            Product and technical design documents
+docs/                    User-facing and maintainer-facing feature notes
 ```
 
-## 验证
+## Verification
 
-```powershell
-cd backend
-npm run build
-npm test
+On Linux, run the same clean installation, Bash/Git/node-pty/AI CLI detection, test, and build flow used by CI:
 
-cd ..\frontend
-npm run build
-npm run test:workflow-behavior
+```bash
+bash scripts/verify-linux.sh
 ```
 
-部分界面约束还提供独立检查脚本，详见 [frontend/package.json](frontend/package.json)。
+Platform-neutral local verification commands are:
 
-## 参与贡献
+```bash
+npm --prefix backend run lint
+npm --prefix backend run typecheck
+npm --prefix backend test
+npm --prefix backend run build
+npm --prefix frontend run lint
+npm --prefix frontend run typecheck
+npm --prefix frontend test
+npm --prefix frontend run build
+```
 
-问题反馈和 Pull Request 都欢迎。开始前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)，安全漏洞请不要提交公开 Issue。
+## Contributing
 
-## 许可证
+Issues and pull requests are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) before you start, and do not report security vulnerabilities in public issues.
 
-本项目基于 [MIT License](LICENSE) 开源。
+## License
+
+This project is open-sourced under the [MIT License](LICENSE).

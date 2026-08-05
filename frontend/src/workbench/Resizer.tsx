@@ -9,20 +9,13 @@ interface ResizerProps {
   onResizeEnd?: () => void;
 }
 
-export function Resizer({
-  axis,
-  onResize,
-  onResizeStart,
-  onResizeEnd,
-}: ResizerProps) {
+export function Resizer({ axis, onResize, onResizeStart, onResizeEnd }: ResizerProps) {
   const lastRef = useRef(0);
 
   const onMouseDown = (e: React.MouseEvent) => {
     e.preventDefault();
     lastRef.current = axis === "x" ? e.clientX : e.clientY;
-    document.body.classList.add(
-      axis === "x" ? "is-resizing-x" : "is-resizing-y"
-    );
+    document.body.classList.add(axis === "x" ? "is-resizing-x" : "is-resizing-y");
     onResizeStart?.();
 
     const onMove = (ev: MouseEvent) => {
@@ -41,11 +34,5 @@ export function Resizer({
     window.addEventListener("mouseup", onUp);
   };
 
-  return (
-    <div
-      className={`resizer resizer--${axis}`}
-      onMouseDown={onMouseDown}
-      role="separator"
-    />
-  );
+  return <div className={`resizer resizer--${axis}`} onMouseDown={onMouseDown} role="separator" />;
 }

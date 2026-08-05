@@ -1,6 +1,9 @@
-import { useEffect, useState } from "react";
-import { MarkdownPreview } from "./MarkdownPreview";
-import { PLAN_DIR, readDirShallow, readFileText, type FsNode } from "./fs";
+import { lazy, Suspense, useEffect, useState } from "react";
+import { type FsNode, PLAN_DIR, readDirShallow, readFileText } from "./fs";
+
+const MarkdownPreview = lazy(() =>
+  import("./MarkdownPreview").then((module) => ({ default: module.MarkdownPreview })),
+);
 
 interface PlanViewProps {
   workspaceId: string | null;
@@ -23,7 +26,7 @@ export function PlanView({ workspaceId }: PlanViewProps) {
     (async () => {
       try {
         const entries = (await readDirShallow(workspaceId, PLAN_DIR)).filter(
-          (n) => n.kind === "file"
+          (n) => n.kind === "file",
         );
         if (cancelled) return;
         setFiles(entries);
@@ -63,9 +66,7 @@ export function PlanView({ workspaceId }: PlanViewProps) {
   }, [workspaceId, selectedPath]);
 
   if (!workspaceId) {
-    return (
-      <div className="plan-view plan-view--empty muted">请先选择工作区</div>
-    );
+    return <div className="plan-view plan-view--empty muted">请先选择工作区</div>;
   }
 
   return (
@@ -78,10 +79,7 @@ export function PlanView({ workspaceId }: PlanViewProps) {
           files.map((f) => (
             <div
               key={f.path}
-              className={
-                "plan-view__item" +
-                (f.path === selectedPath ? " is-active" : "")
-              }
+              className={`plan-view__item${f.path === selectedPath ? " is-active" : ""}`}
               onClick={() => setSelectedPath(f.path)}
               title={f.name}
             >
@@ -94,7 +92,9 @@ export function PlanView({ workspaceId }: PlanViewProps) {
         {error ? (
           <div className="plan-view__error">{error}</div>
         ) : selectedPath ? (
-          <MarkdownPreview source={content} />
+          <Suspense fallback={<div className="tab-loading-fallback" />}>
+            <MarkdownPreview source={content} />
+          </Suspense>
         ) : (
           <div className="muted plan-view__placeholder">从左侧选择一份计划</div>
         )}

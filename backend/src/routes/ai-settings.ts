@@ -1,16 +1,16 @@
 import type { FastifyInstance } from "fastify";
-import { errors } from "../errors.js";
 import {
+  type AiProvider,
+  type AiSettingsApp,
   deleteAiProvider,
   importLiveProvider,
   readLiveSettings,
   snapshotAiSettings,
   switchAiProvider,
-  type AiProvider,
-  type AiSettingsApp,
   upsertAiProvider,
   writeAiSettings,
 } from "../ai-settings.js";
+import { errors } from "../errors.js";
 
 function parseApp(value: unknown): AiSettingsApp {
   if (value === "claude" || value === "codex") return value;
@@ -38,12 +38,10 @@ export async function registerAiSettingsRoutes(app: FastifyInstance) {
     Body: { app?: unknown; id?: unknown; name?: unknown };
   }>("/api/ai-settings/import-live", async (req) => {
     const appId = parseApp(req.body?.app);
-    const id = typeof req.body?.id === "string" && req.body.id.trim()
-      ? req.body.id.trim()
-      : "default";
-    const name = typeof req.body?.name === "string" && req.body.name.trim()
-      ? req.body.name.trim()
-      : undefined;
+    const id =
+      typeof req.body?.id === "string" && req.body.id.trim() ? req.body.id.trim() : "default";
+    const name =
+      typeof req.body?.name === "string" && req.body.name.trim() ? req.body.name.trim() : undefined;
     return importLiveProvider(appId, id, name);
   });
 
@@ -61,12 +59,7 @@ export async function registerAiSettingsRoutes(app: FastifyInstance) {
   }>("/api/ai-settings/providers/:id", async (req) => {
     const appId = parseApp(req.body?.app);
     if (!req.body?.provider) throw errors.invalidQuery("provider is required");
-    return upsertAiProvider(
-      appId,
-      req.body.provider,
-      req.params.id,
-      req.body.apply === true
-    );
+    return upsertAiProvider(appId, req.body.provider, req.params.id, req.body.apply === true);
   });
 
   app.delete<{

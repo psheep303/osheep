@@ -1,20 +1,15 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityBar, type ViewId } from "./ActivityBar";
 import { ClaudeCodeAgentView, CodexAgentView } from "./AgentSettingsView";
 import { AiPanel } from "./AiPanel";
-import { BottomPanel } from "./BottomPanel";
-import { DiffPane } from "./DiffPane";
-import { EditorPane, type GotoTarget } from "./EditorPane";
-import { FileTree } from "./FileTree";
-import { GitView } from "./GitView";
-import { MarkdownPreview } from "./MarkdownPreview";
-import { Resizer } from "./Resizer";
-import { SearchView } from "./SearchView";
-import { SettingsView } from "./SettingsView";
-import { WorkflowTab } from "./WorkflowTab";
-import { TemplateDetail, TemplateView } from "./TemplateView";
-import { WorkspacePicker } from "./WorkspacePicker";
-import { DEFAULT_SETTINGS, type OsheepSettings } from "./settings";
+import {
+  type AgentSessionSummary,
+  type GitStatus,
+  getGitDiff,
+  getGitStatus,
+  getTemplateCapabilities,
+} from "./api";
+import type { GotoTarget } from "./EditorPane";
 import {
   type FsNode,
   loadOsheepSettings,
@@ -22,16 +17,38 @@ import {
   saveOsheepSettings,
   writeFileText,
 } from "./fs";
-import {
-  getGitDiff,
-  getGitStatus,
-  getTemplateCapabilities,
-  type AgentSessionSummary,
-  type GitStatus,
-} from "./api";
-import type { AgentTerminalLaunchRequest } from "./Terminal";
 import { buildDecorations } from "./git-decorations";
+import { Resizer } from "./Resizer";
+import { SettingsView } from "./SettingsView";
+import { DEFAULT_SETTINGS, type OsheepSettings } from "./settings";
+import type { AgentTerminalLaunchRequest } from "./Terminal";
+import { WorkspacePicker } from "./WorkspacePicker";
 import "./workbench.css";
+
+const BottomPanel = lazy(() =>
+  import("./BottomPanel").then((module) => ({ default: module.BottomPanel })),
+);
+const DiffPane = lazy(() => import("./DiffPane").then((module) => ({ default: module.DiffPane })));
+const EditorPane = lazy(() =>
+  import("./EditorPane").then((module) => ({ default: module.EditorPane })),
+);
+const FileTree = lazy(() => import("./FileTree").then((module) => ({ default: module.FileTree })));
+const GitView = lazy(() => import("./GitView").then((module) => ({ default: module.GitView })));
+const MarkdownPreview = lazy(() =>
+  import("./MarkdownPreview").then((module) => ({ default: module.MarkdownPreview })),
+);
+const SearchView = lazy(() =>
+  import("./SearchView").then((module) => ({ default: module.SearchView })),
+);
+const TemplateDetail = lazy(() =>
+  import("./TemplateView").then((module) => ({ default: module.TemplateDetail })),
+);
+const TemplateView = lazy(() =>
+  import("./TemplateView").then((module) => ({ default: module.TemplateView })),
+);
+const WorkflowTab = lazy(() =>
+  import("./WorkflowTab").then((module) => ({ default: module.WorkflowTab })),
+);
 
 interface FileTab {
   kind: "file";
@@ -186,27 +203,28 @@ export function Workbench() {
       setSettings(next);
       if (workspaceId) void saveOsheepSettings(workspaceId, next);
     },
-    [workspaceId]
+    [workspaceId],
   );
 
-  const onChooseWorkspace = useCallback((workspace: { id: string; name: string }) => {
-    setError(null);
-    setWorkspaceId(workspace.id);
-    setWorkspaceName(workspace.name);
-    setTabs([]);
-    setActivePath(null);
-    setSelectedTreePath(null);
-    setPicking(false);
-    if (leftWidth === 0) setLeftWidth(lastLeftWidthRef.current);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [leftWidth]);
+  const onChooseWorkspace = useCallback(
+    (workspace: { id: string; name: string }) => {
+      setError(null);
+      setWorkspaceId(workspace.id);
+      setWorkspaceName(workspace.name);
+      setTabs([]);
+      setActivePath(null);
+      setSelectedTreePath(null);
+      setPicking(false);
+      if (leftWidth === 0) setLeftWidth(lastLeftWidthRef.current);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    },
+    [leftWidth],
+  );
 
   const openFile = useCallback(
     async (node: FsNode) => {
       if (node.kind !== "file" || !workspaceId) return;
-      const existing = tabs.find(
-        (t) => t.kind === "file" && t.path === node.path
-      );
+      const existing = tabs.find((t) => t.kind === "file" && t.path === node.path);
       if (existing) {
         setActivePath(node.path);
         return;
@@ -232,7 +250,7 @@ export function Workbench() {
       ]);
       setActivePath(node.path);
     },
-    [tabs, workspaceId]
+    [tabs, workspaceId],
   );
 
   const openFileAt = useCallback(
@@ -243,14 +261,10 @@ export function Workbench() {
         column,
         nonce: Date.now() + Math.random(),
       };
-      const existing = tabs.find(
-        (t) => t.kind === "file" && t.path === filePath
-      );
+      const existing = tabs.find((t) => t.kind === "file" && t.path === filePath);
       if (existing) {
         setTabs((prev) =>
-          prev.map((t) =>
-            t.kind === "file" && t.path === filePath ? { ...t, goto: target } : t
-          )
+          prev.map((t) => (t.kind === "file" && t.path === filePath ? { ...t, goto: target } : t)),
         );
         setActivePath(filePath);
         return;
@@ -277,15 +291,11 @@ export function Workbench() {
       ]);
       setActivePath(filePath);
     },
-    [tabs, workspaceId]
+    [tabs, workspaceId],
   );
 
   const openDiffTab = useCallback(
-    async (
-      filePath: string,
-      base: "HEAD" | "INDEX",
-      head: "INDEX" | "WORKTREE"
-    ) => {
+    async (filePath: string, base: "HEAD" | "INDEX", head: "INDEX" | "WORKTREE") => {
       if (!workspaceId) return;
       const diffId = `__diff__:${base}:${head}:${filePath}`;
       const existing = tabs.find((t) => t.path === diffId);
@@ -313,7 +323,7 @@ export function Workbench() {
         setError((e as Error).message);
       }
     },
-    [tabs, workspaceId]
+    [tabs, workspaceId],
   );
 
   const openSettingsTab = useCallback(() => {
@@ -329,92 +339,72 @@ export function Workbench() {
     setAiRefreshSignal((v) => v + 1);
   }, []);
 
-  const openWorkflowTab = useCallback((
-    workflowId: string,
-    templateBinding?: WorkflowTabState["templateBinding"]
-  ) => {
-    const path = workflowPath(workflowId);
+  const openWorkflowTab = useCallback(
+    (workflowId: string, templateBinding?: WorkflowTabState["templateBinding"]) => {
+      const path = workflowPath(workflowId);
+      setTabs((prev) => {
+        if (prev.some((t) => t.path === path)) {
+          return templateBinding
+            ? prev.map((tab) =>
+                tab.path === path && tab.kind === "workflow" ? { ...tab, templateBinding } : tab,
+              )
+            : prev;
+        }
+        return [...prev, { kind: "workflow", path, workflowId, templateBinding }];
+      });
+      setActivePath(path);
+    },
+    [],
+  );
+
+  const openTemplateTab = useCallback((source: "system" | "user", templateId: string) => {
+    const path = templatePath(source, templateId);
     setTabs((prev) => {
-      if (prev.some((t) => t.path === path)) {
-        return templateBinding
-          ? prev.map((tab) =>
-              tab.path === path && tab.kind === "workflow"
-                ? { ...tab, templateBinding }
-                : tab
-            )
-          : prev;
-      }
-      return [...prev, { kind: "workflow", path, workflowId, templateBinding }];
+      if (prev.some((tab) => tab.path === path)) return prev;
+      return [...prev, { kind: "template", path, source, templateId }];
     });
     setActivePath(path);
   }, []);
 
-  const openTemplateTab = useCallback(
-    (source: "system" | "user", templateId: string) => {
-      const path = templatePath(source, templateId);
-      setTabs((prev) => {
-        if (prev.some((tab) => tab.path === path)) return prev;
-        return [...prev, { kind: "template", path, source, templateId }];
-      });
-      setActivePath(path);
-    },
-    []
-  );
-
   const onPathRenamed = useCallback(
     (oldPath: string, newPath: string) => {
-      const matches = (p: string) => p === oldPath || p.startsWith(oldPath + "/");
-      const remap = (p: string) =>
-        p === oldPath ? newPath : newPath + p.slice(oldPath.length);
+      const matches = (p: string) => p === oldPath || p.startsWith(`${oldPath}/`);
+      const remap = (p: string) => (p === oldPath ? newPath : newPath + p.slice(oldPath.length));
       setTabs((prev) =>
-        prev.map((t) =>
-          t.kind === "file" && matches(t.path)
-            ? { ...t, path: remap(t.path) }
-            : t
-        )
+        prev.map((t) => (t.kind === "file" && matches(t.path) ? { ...t, path: remap(t.path) } : t)),
       );
       if (activePath && matches(activePath)) setActivePath(remap(activePath));
     },
-    [activePath]
+    [activePath],
   );
 
   const onPathDeleted = useCallback(
     (path: string) => {
-      const matches = (candidate: string) =>
-        candidate === path || candidate.startsWith(path + "/");
+      const matches = (candidate: string) => candidate === path || candidate.startsWith(`${path}/`);
       const tabMatches = (tab: Tab) =>
         (tab.kind === "file" && matches(tab.path)) ||
         (tab.kind === "diff" && matches(tab.filePath));
       setTabs((prev) => {
         const firstRemovedIndex = prev.findIndex(tabMatches);
-        const activeRemoved = prev.some(
-          (tab) => tab.path === activePath && tabMatches(tab)
-        );
+        const activeRemoved = prev.some((tab) => tab.path === activePath && tabMatches(tab));
         const next = prev.filter((tab) => !tabMatches(tab));
         if (activeRemoved) {
           const fallback =
-            next[firstRemovedIndex] ??
-            next[firstRemovedIndex - 1] ??
-            next[next.length - 1] ??
-            null;
+            next[firstRemovedIndex] ?? next[firstRemovedIndex - 1] ?? next[next.length - 1] ?? null;
           setActivePath(fallback?.path ?? null);
         }
         return next;
       });
-      setSelectedTreePath((selected) =>
-        selected && matches(selected) ? null : selected
-      );
+      setSelectedTreePath((selected) => (selected && matches(selected) ? null : selected));
     },
-    [activePath]
+    [activePath],
   );
 
   const togglePreview = useCallback((path: string) => {
     setTabs((prev) =>
       prev.map((t) =>
-        t.kind === "file" && t.path === path
-          ? { ...t, previewMode: !t.previewMode }
-          : t
-      )
+        t.kind === "file" && t.path === path ? { ...t, previewMode: !t.previewMode } : t,
+      ),
     );
   }, []);
 
@@ -425,17 +415,17 @@ export function Workbench() {
         prev.map((t) =>
           t.kind === "file" && t.path === activePath && !t.deleted
             ? { ...t, content: value, dirty: value !== t.savedContent }
-            : t
-        )
+            : t,
+        ),
       );
     },
-    [activePath]
+    [activePath],
   );
 
   const saveActive = useCallback(async () => {
     if (!activePath || !workspaceId) return;
     const tab = tabs.find((t) => t.path === activePath);
-    if (!tab || tab.kind !== "file" || tab.deleted) return;
+    if (tab?.kind !== "file" || tab.deleted) return;
     try {
       await writeFileText(workspaceId, tab.path, tab.content);
     } catch (e) {
@@ -446,8 +436,8 @@ export function Workbench() {
       prev.map((t) =>
         t.kind === "file" && t.path === activePath
           ? { ...t, savedContent: t.content, dirty: false }
-          : t
-      )
+          : t,
+      ),
     );
     refreshGitStatus();
   }, [activePath, tabs, workspaceId, refreshGitStatus]);
@@ -458,43 +448,35 @@ export function Workbench() {
         const idx = prev.findIndex((t) => t.path === path);
         const next = prev.filter((t) => t.path !== path);
         if (activePath === path) {
-          const fallback =
-            next[idx] ?? next[idx - 1] ?? next[next.length - 1] ?? null;
+          const fallback = next[idx] ?? next[idx - 1] ?? next[next.length - 1] ?? null;
           setActivePath(fallback ? fallback.path : null);
         }
         return next;
       });
     },
-    [activePath]
+    [activePath],
   );
 
   const closeTemplateArtifacts = useCallback(
     (source: "system" | "user", templateId: string) => {
       const matches = (tab: Tab) =>
-        (tab.kind === "template" &&
-          tab.source === source &&
-          tab.templateId === templateId) ||
+        (tab.kind === "template" && tab.source === source && tab.templateId === templateId) ||
         (tab.kind === "workflow" &&
           tab.templateBinding?.source === source &&
           tab.templateBinding.id === templateId);
       setTabs((prev) => {
         const firstRemovedIndex = prev.findIndex(matches);
-        const activeRemoved = prev.some(
-          (tab) => tab.path === activePath && matches(tab)
-        );
+        const activeRemoved = prev.some((tab) => tab.path === activePath && matches(tab));
         const next = prev.filter((tab) => !matches(tab));
         if (activeRemoved) {
           const fallback =
-            next[firstRemovedIndex] ??
-            next[firstRemovedIndex - 1] ??
-            next[next.length - 1] ??
-            null;
+            next[firstRemovedIndex] ?? next[firstRemovedIndex - 1] ?? next[next.length - 1] ?? null;
           setActivePath(fallback?.path ?? null);
         }
         return next;
       });
     },
-    [activePath]
+    [activePath],
   );
 
   const onSelectView = (id: ViewId) => {
@@ -548,23 +530,24 @@ export function Workbench() {
     setTerminalLaunchRequest(null);
   };
 
-  const resumeAgentSession = useCallback((session: Pick<AgentSessionSummary, "app" | "id" | "title">) => {
-    if (!workspaceId) return;
-    setTerminalLaunchRequest({
-      key: Date.now() + Math.random(),
-      app: session.app,
-      sessionId: session.id,
-      title: session.title,
-      workspaceId,
-    });
-    setBottomActivated(true);
-    setBottomHeight((height) => height || 300);
-  }, [workspaceId]);
+  const resumeAgentSession = useCallback(
+    (session: Pick<AgentSessionSummary, "app" | "id" | "title">) => {
+      if (!workspaceId) return;
+      setTerminalLaunchRequest({
+        key: Date.now() + Math.random(),
+        app: session.app,
+        sessionId: session.id,
+        title: session.title,
+        workspaceId,
+      });
+      setBottomActivated(true);
+      setBottomHeight((height) => height || 300);
+    },
+    [workspaceId],
+  );
 
   const handleTerminalLaunch = useCallback((key: number) => {
-    setTerminalLaunchRequest((current) =>
-      current?.key === key ? null : current
-    );
+    setTerminalLaunchRequest((current) => (current?.key === key ? null : current));
   }, []);
 
   const activeTab = tabs.find((t) => t.path === activePath) ?? null;
@@ -598,11 +581,7 @@ export function Workbench() {
       {error && (
         <div className="banner-error">
           {error}
-          <button
-            className="banner-error__close"
-            onClick={() => setError(null)}
-            title="关闭"
-          >
+          <button className="banner-error__close" onClick={() => setError(null)} title="关闭">
             ×
           </button>
         </div>
@@ -618,95 +597,80 @@ export function Workbench() {
 
         {!leftCollapsed && (
           <div className="side" style={{ width: leftWidth }}>
-            {activeView === "workflow" && (
-              <AiPanel
-                workspaceId={workspaceId}
-                onOpenWorkflow={openWorkflowTab}
-                activeWorkflowId={
-                  activeTab?.kind === "workflow" ? activeTab.workflowId : null
-                }
-                refreshSignal={aiRefreshSignal}
-                onWorkflowDeleted={(workflowId) =>
-                  closeTab(workflowPath(workflowId))
-                }
-                developerMode={developerMode}
-                onTemplatesChanged={() =>
-                  setTemplateRefreshSignal((signal) => signal + 1)
-                }
-              />
-            )}
-            {activeView === "template" && (
-              <TemplateView
-                activeTemplateId={
-                  activeTab?.kind === "template" ? activeTab.templateId : null
-                }
-                onOpenTemplate={openTemplateTab}
-                onTemplateDeleted={(source, templateId) =>
-                  closeTemplateArtifacts(source, templateId)
-                }
-                developerMode={developerMode}
-                refreshSignal={templateRefreshSignal}
-              />
-            )}
-            {activeView === "explorer" &&
-              (workspaceId ? (
-                <FileTree
+            <Suspense fallback={<div className="tab-loading-fallback" />}>
+              {activeView === "workflow" && (
+                <AiPanel
                   workspaceId={workspaceId}
-                  workspaceName={workspaceName ?? workspaceId}
-                  selectedPath={selectedTreePath}
-                  onSelect={setSelectedTreePath}
-                  onOpenFile={openFile}
-                  onPathRenamed={onPathRenamed}
-                  onPathDeleted={onPathDeleted}
-                  decorations={decorations}
-                  onFsChange={refreshGitStatus}
-                  refreshSignal={fileTreeVersion}
+                  onOpenWorkflow={openWorkflowTab}
+                  activeWorkflowId={activeTab?.kind === "workflow" ? activeTab.workflowId : null}
+                  refreshSignal={aiRefreshSignal}
+                  onWorkflowDeleted={(workflowId) => closeTab(workflowPath(workflowId))}
+                  developerMode={developerMode}
+                  onTemplatesChanged={() => setTemplateRefreshSignal((signal) => signal + 1)}
                 />
-              ) : (
-                <div className="side-view">
-                  <div className="side-view__header">
-                    <span className="side-view__title">资源管理器</span>
-                  </div>
-                  <div className="side-view__body side-view__body--padded">
-                    <div className="muted">
-                      所有文件由后端 osheep-backend 提供
+              )}
+              {activeView === "template" && (
+                <TemplateView
+                  activeTemplateId={activeTab?.kind === "template" ? activeTab.templateId : null}
+                  onOpenTemplate={openTemplateTab}
+                  onTemplateDeleted={(source, templateId) =>
+                    closeTemplateArtifacts(source, templateId)
+                  }
+                  developerMode={developerMode}
+                  refreshSignal={templateRefreshSignal}
+                />
+              )}
+              {activeView === "explorer" &&
+                (workspaceId ? (
+                  <FileTree
+                    workspaceId={workspaceId}
+                    workspaceName={workspaceName ?? workspaceId}
+                    selectedPath={selectedTreePath}
+                    onSelect={setSelectedTreePath}
+                    onOpenFile={openFile}
+                    onPathRenamed={onPathRenamed}
+                    onPathDeleted={onPathDeleted}
+                    decorations={decorations}
+                    onFsChange={refreshGitStatus}
+                    refreshSignal={fileTreeVersion}
+                  />
+                ) : (
+                  <div className="side-view">
+                    <div className="side-view__header">
+                      <span className="side-view__title">资源管理器</span>
+                    </div>
+                    <div className="side-view__body side-view__body--padded">
+                      <div className="muted">所有文件由后端 osheep-backend 提供</div>
                     </div>
                   </div>
-                </div>
-              ))}
-            {activeView === "search" && (
-              <SearchView
-                workspaceId={workspaceId}
-                onOpenMatch={(p, line, col) => void openFileAt(p, line, col)}
-              />
-            )}
-            {activeView === "git" && (
-              <GitView
-                workspaceId={workspaceId}
-                status={gitStatus}
-                onRefreshStatus={refreshGitStatus}
-                onOpenDiff={(p, base, head) => void openDiffTab(p, base, head)}
-              />
-            )}
-            {activeView === "claude-code" && (
-              <ClaudeCodeAgentView
-                workspaceId={workspaceId}
-                onResumeSession={resumeAgentSession}
-              />
-            )}
-            {activeView === "codex" && (
-              <CodexAgentView
-                workspaceId={workspaceId}
-                onResumeSession={resumeAgentSession}
-              />
-            )}
+                ))}
+              {activeView === "search" && (
+                <SearchView
+                  workspaceId={workspaceId}
+                  onOpenMatch={(p, line, col) => void openFileAt(p, line, col)}
+                />
+              )}
+              {activeView === "git" && (
+                <GitView
+                  workspaceId={workspaceId}
+                  status={gitStatus}
+                  onRefreshStatus={refreshGitStatus}
+                  onOpenDiff={(p, base, head) => void openDiffTab(p, base, head)}
+                />
+              )}
+              {activeView === "claude-code" && (
+                <ClaudeCodeAgentView
+                  workspaceId={workspaceId}
+                  onResumeSession={resumeAgentSession}
+                />
+              )}
+              {activeView === "codex" && (
+                <CodexAgentView workspaceId={workspaceId} onResumeSession={resumeAgentSession} />
+              )}
+            </Suspense>
           </div>
         )}
-        <Resizer
-          axis="x"
-          onResizeStart={onLeftStart}
-          onResize={onLeftResize}
-        />
+        <Resizer axis="x" onResizeStart={onLeftStart} onResize={onLeftResize} />
 
         <div className="main">
           <div className="editor-area">
@@ -718,24 +682,24 @@ export function Workbench() {
                     t.kind === "settings"
                       ? "设置"
                       : t.kind === "workflow"
-                      ? "Workflow"
-                      : t.kind === "template"
-                      ? "Template"
-                      : t.kind === "diff"
-                      ? `${basename(t.filePath)} (${diffLabel(t)})`
-                      : t.path.split("/").pop();
+                        ? "Workflow"
+                        : t.kind === "template"
+                          ? "Template"
+                          : t.kind === "diff"
+                            ? `${basename(t.filePath)} (${diffLabel(t)})`
+                            : t.path.split("/").pop();
                   const tabTitle =
                     t.kind === "file"
                       ? isDeleted
                         ? `${t.path}（已被删除）`
                         : t.path
                       : t.kind === "diff"
-                      ? `${t.filePath} · ${diffLabel(t)}`
-                      : t.kind === "workflow"
-                      ? `Workflow ${t.workflowId}`
-                      : t.kind === "template"
-                      ? `Template ${t.templateId}`
-                      : "设置";
+                        ? `${t.filePath} · ${diffLabel(t)}`
+                        : t.kind === "workflow"
+                          ? `Workflow ${t.workflowId}`
+                          : t.kind === "template"
+                            ? `Template ${t.templateId}`
+                            : "设置";
                   return (
                     <div
                       key={t.path}
@@ -775,108 +739,104 @@ export function Workbench() {
               )}
             </div>
             <div className="editor-host">
-              {activeFileTab ? (
-                isMarkdownPath(activeFileTab.path) && activeFileTab.previewMode ? (
-                  <div className="editor-host__preview">
-                    <MarkdownPreview source={activeFileTab.content} />
-                  </div>
-                ) : (
-                  <div className="editor-host__source">
-                    <EditorPane
-                      path={activeFileTab.path}
-                      value={activeFileTab.content}
-                      fontSize={settings.editor.fontSize}
-                      tabSize={settings.editor.tabSize}
-                      onChange={updateActive}
-                      onSave={saveActive}
-                      goto={activeFileTab.goto ?? null}
-                    />
-                  </div>
-                )
-              ) : activeDiffTab ? (
-                <div className="editor-host__source">
-                  {activeDiffTab.binary ? (
-                    <div className="empty-hint">该文件为二进制，无法显示 diff</div>
+              <Suspense fallback={<div className="tab-loading-fallback" />}>
+                {activeFileTab ? (
+                  isMarkdownPath(activeFileTab.path) && activeFileTab.previewMode ? (
+                    <div className="editor-host__preview">
+                      <MarkdownPreview source={activeFileTab.content} />
+                    </div>
                   ) : (
-                    <DiffPane
-                      path={activeDiffTab.filePath}
-                      fontSize={settings.editor.fontSize}
-                      leftContent={activeDiffTab.leftContent}
-                      rightContent={activeDiffTab.rightContent}
-                    />
-                  )}
-                </div>
-              ) : activeTab?.kind === "settings" ? (
-                <SettingsView
-                  settings={settings}
-                  onChange={updateSettings}
-                  hasProject={!!workspaceId}
-                />
-              ) : activeTab?.kind === "workflow" ? (
-                workspaceId ? (
-                  <WorkflowTab
-                    workspaceId={workspaceId}
-                    workflowId={activeTab.workflowId}
-                    onWorkflowChanged={bumpAiRefresh}
-                    onFilesChanged={bumpFileTree}
-                    onResumeSession={resumeAgentSession}
-                    onTemplateBinding={(templateBinding) =>
-                      setTabs((current) =>
-                        current.map((tab) =>
-                          tab.kind === "workflow" &&
-                          tab.workflowId === activeTab.workflowId
-                            ? { ...tab, templateBinding }
-                            : tab
+                    <div className="editor-host__source">
+                      <EditorPane
+                        path={activeFileTab.path}
+                        value={activeFileTab.content}
+                        fontSize={settings.editor.fontSize}
+                        tabSize={settings.editor.tabSize}
+                        onChange={updateActive}
+                        onSave={saveActive}
+                        goto={activeFileTab.goto ?? null}
+                      />
+                    </div>
+                  )
+                ) : activeDiffTab ? (
+                  <div className="editor-host__source">
+                    {activeDiffTab.binary ? (
+                      <div className="empty-hint">该文件为二进制，无法显示 diff</div>
+                    ) : (
+                      <DiffPane
+                        path={activeDiffTab.filePath}
+                        fontSize={settings.editor.fontSize}
+                        leftContent={activeDiffTab.leftContent}
+                        rightContent={activeDiffTab.rightContent}
+                      />
+                    )}
+                  </div>
+                ) : activeTab?.kind === "settings" ? (
+                  <SettingsView
+                    settings={settings}
+                    onChange={updateSettings}
+                    hasProject={!!workspaceId}
+                  />
+                ) : activeTab?.kind === "workflow" ? (
+                  workspaceId ? (
+                    <WorkflowTab
+                      workspaceId={workspaceId}
+                      workflowId={activeTab.workflowId}
+                      onWorkflowChanged={bumpAiRefresh}
+                      onFilesChanged={bumpFileTree}
+                      onResumeSession={resumeAgentSession}
+                      onTemplateBinding={(templateBinding) =>
+                        setTabs((current) =>
+                          current.map((tab) =>
+                            tab.kind === "workflow" && tab.workflowId === activeTab.workflowId
+                              ? { ...tab, templateBinding }
+                              : tab,
+                          ),
                         )
-                      )
-                    }
+                      }
+                    />
+                  ) : (
+                    <div className="empty-hint">请先打开工作区</div>
+                  )
+                ) : activeTab?.kind === "template" ? (
+                  <TemplateDetail
+                    workspaceId={workspaceId}
+                    source={activeTab.source}
+                    templateId={activeTab.templateId}
+                    onOpenWorkflow={(workflowId, templateBinding) => {
+                      openWorkflowTab(workflowId, templateBinding);
+                      setActiveView("workflow");
+                    }}
+                    onWorkflowCreated={bumpAiRefresh}
+                    developerMode={developerMode}
+                    onTemplateChanged={() => setTemplateRefreshSignal((signal) => signal + 1)}
                   />
                 ) : (
-                  <div className="empty-hint">请先打开工作区</div>
-                )
-              ) : activeTab?.kind === "template" ? (
-                <TemplateDetail
-                  workspaceId={workspaceId}
-                  source={activeTab.source}
-                  templateId={activeTab.templateId}
-                  onOpenWorkflow={(workflowId, templateBinding) => {
-                    openWorkflowTab(workflowId, templateBinding);
-                    setActiveView("workflow");
-                  }}
-                  onWorkflowCreated={bumpAiRefresh}
-                  developerMode={developerMode}
-                  onTemplateChanged={() =>
-                    setTemplateRefreshSignal((signal) => signal + 1)
-                  }
-                />
-              ) : (
-                <div className="empty-hint">在左侧选择文件以开始编辑</div>
-              )}
+                  <div className="empty-hint">在左侧选择文件以开始编辑</div>
+                )}
+              </Suspense>
             </div>
           </div>
 
-          <Resizer
-            axis="y"
-            onResizeStart={onBottomStart}
-            onResize={onBottomResize}
-          />
+          <Resizer axis="y" onResizeStart={onBottomStart} onResize={onBottomResize} />
           {bottomActivated && (
             <div
-              className={"bottom" + (bottomCollapsed ? " is-hidden" : "")}
+              className={`bottom${bottomCollapsed ? " is-hidden" : ""}`}
               style={{
                 height: bottomCollapsed ? 0 : bottomHeight,
               }}
             >
-              <BottomPanel
-                workspaceId={workspaceId}
-                onClose={hardCloseBottom}
-                terminalLaunchRequest={terminalLaunchRequest}
-                onTerminalLaunchHandled={handleTerminalLaunch}
-              />
+              <Suspense fallback={<div className="tab-loading-fallback" />}>
+                <BottomPanel
+                  workspaceId={workspaceId}
+                  onClose={hardCloseBottom}
+                  terminalLaunchRequest={terminalLaunchRequest}
+                  onTerminalLaunchHandled={handleTerminalLaunch}
+                />
+              </Suspense>
             </div>
           )}
         </div>
-
       </div>
 
       {picking && (
@@ -892,11 +852,7 @@ export function Workbench() {
 
 function isMarkdownPath(path: string): boolean {
   const lower = path.toLowerCase();
-  return (
-    lower.endsWith(".md") ||
-    lower.endsWith(".markdown") ||
-    lower.endsWith(".mdx")
-  );
+  return lower.endsWith(".md") || lower.endsWith(".markdown") || lower.endsWith(".mdx");
 }
 
 function basename(p: string): string {
@@ -910,13 +866,7 @@ function diffLabel(t: DiffTab): string {
   return `${t.base} → ${t.head}`;
 }
 
-function PreviewToggle({
-  previewMode,
-  onToggle,
-}: {
-  previewMode: boolean;
-  onToggle: () => void;
-}) {
+function PreviewToggle({ previewMode, onToggle }: { previewMode: boolean; onToggle: () => void }) {
   return (
     <button
       className="preview-toggle"

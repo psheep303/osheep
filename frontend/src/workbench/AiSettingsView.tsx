@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  type AiSettingsApp,
+  type AiSettingsProvider,
+  type AiSettingsSnapshot,
   deleteAiSettingsProvider,
   getAiSettings,
   importAiLiveProvider,
   saveAiProvider,
   switchAiSettingsProvider,
-  type AiSettingsApp,
-  type AiSettingsProvider,
-  type AiSettingsSnapshot,
 } from "./api";
 
 interface ProviderCardProps {
@@ -19,19 +19,29 @@ interface ProviderCardProps {
   onDuplicate: () => void;
 }
 
-function ProviderCard({ provider, isCurrent, onClick, onSwitch, onDelete, onDuplicate }: ProviderCardProps) {
+function ProviderCard({
+  provider,
+  isCurrent,
+  onClick,
+  onSwitch,
+  onDelete,
+  onDuplicate,
+}: ProviderCardProps) {
   const getIcon = (name: string) => {
     const initial = name.charAt(0).toUpperCase();
     const colors = [
-      "#f59e0b", "#10b981", "#3b82f6", "#8b5cf6",
-      "#ec4899", "#ef4444", "#06b6d4", "#84cc16"
+      "#f59e0b",
+      "#10b981",
+      "#3b82f6",
+      "#8b5cf6",
+      "#ec4899",
+      "#ef4444",
+      "#06b6d4",
+      "#84cc16",
     ];
     const bgColor = provider.iconColor || colors[name.charCodeAt(0) % colors.length];
     return (
-      <div
-        className="ai-settings__icon"
-        style={{ backgroundColor: bgColor }}
-      >
+      <div className="ai-settings__icon" style={{ backgroundColor: bgColor }}>
         {initial}
       </div>
     );
@@ -49,35 +59,28 @@ function ProviderCard({ provider, isCurrent, onClick, onSwitch, onDelete, onDupl
   return (
     <div className={`ai-settings__card ${isCurrent ? "is-current" : ""}`}>
       <div className="ai-settings__card-gradient" />
-      <button
-        type="button"
-        className="ai-settings__card-main"
-        onClick={onClick}
-      >
+      <button type="button" className="ai-settings__card-main" onClick={onClick}>
         {getIcon(provider.name)}
         <div className="ai-settings__card-info">
           <div className="ai-settings__card-header">
             <h3 className="ai-settings__card-title">{provider.name}</h3>
             {provider.category === "official" && (
-              <span className="ai-settings__badge ai-settings__badge--gray">
-                不支持路由
-              </span>
+              <span className="ai-settings__badge ai-settings__badge--gray">不支持路由</span>
             )}
             {isCurrent && (
-              <span className="ai-settings__badge ai-settings__badge--green">
-                当前
-              </span>
+              <span className="ai-settings__badge ai-settings__badge--green">当前</span>
             )}
           </div>
-          {url && (
-            <div className="ai-settings__card-url">{url}</div>
-          )}
+          {url && <div className="ai-settings__card-url">{url}</div>}
         </div>
       </button>
       <div className="ai-settings__card-actions">
         <button
           className="ai-settings__action-btn"
-          onClick={(e) => { e.stopPropagation(); onSwitch(); }}
+          onClick={(e) => {
+            e.stopPropagation();
+            onSwitch();
+          }}
           disabled={isCurrent}
           title={isCurrent ? "当前已启用" : "启用"}
         >
@@ -85,14 +88,20 @@ function ProviderCard({ provider, isCurrent, onClick, onSwitch, onDelete, onDupl
         </button>
         <button
           className="ai-settings__icon-btn"
-          onClick={(e) => { e.stopPropagation(); onDuplicate(); }}
+          onClick={(e) => {
+            e.stopPropagation();
+            onDuplicate();
+          }}
           title="复制"
         >
           <CopyIcon />
         </button>
         <button
           className="ai-settings__icon-btn ai-settings__icon-btn--danger"
-          onClick={(e) => { e.stopPropagation(); onDelete(); }}
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete();
+          }}
           disabled={isCurrent}
           title={isCurrent ? "无法删除当前使用的 provider" : "删除"}
         >
@@ -128,13 +137,7 @@ interface ProviderDetailProps {
   error: string | null;
 }
 
-function ProviderDetail({
-  app,
-  provider,
-  onSave,
-  busy,
-  error,
-}: ProviderDetailProps) {
+function ProviderDetail({ app, provider, onSave, busy, error }: ProviderDetailProps) {
   const [id, setId] = useState("");
   const [name, setName] = useState("");
   const [category, setCategory] = useState("custom");
@@ -161,9 +164,8 @@ function ProviderDetail({
       } else {
         const settings = asRecord(provider.settingsConfig);
         const auth = asRecord(settings?.auth) ?? defaultCodexAuth();
-        const configText = typeof settings?.config === "string"
-          ? settings.config
-          : defaultCodexConfig();
+        const configText =
+          typeof settings?.config === "string" ? settings.config : defaultCodexConfig();
         const authText = prettyJson(auth);
         setCodexAuthText(authText);
         setCodexConfigText(configText);
@@ -266,7 +268,7 @@ function ProviderDetail({
           <BackIcon />
         </button>
         <h2 className="ai-settings__detail-title">
-          {isNew ? "新建 Provider" : provider?.name ?? name}
+          {isNew ? "新建 Provider" : (provider?.name ?? name)}
         </h2>
       </div>
 
@@ -505,7 +507,7 @@ function defaultCodexConfig(
   model = "",
   providerName = "custom",
   baseUrl = "",
-  wireApi = "responses"
+  wireApi = "responses",
 ): string {
   return [
     `model_provider = "${escapeTomlString(modelProvider)}"`,
@@ -605,7 +607,13 @@ function updateCodexConfigText(text: string, form: CodexFormData, providerName: 
   const modelProvider = form.modelProvider.trim() || "custom";
   let next = text.trim()
     ? text
-    : defaultCodexConfig(modelProvider, form.model, providerName || modelProvider, form.baseUrl, form.wireApi);
+    : defaultCodexConfig(
+        modelProvider,
+        form.model,
+        providerName || modelProvider,
+        form.baseUrl,
+        form.wireApi,
+      );
   next = setTomlTopLevelString(next, "model_provider", modelProvider);
   next = setTomlTopLevelString(next, "model", form.model);
   next = setCodexProviderStringField(next, modelProvider, "name", providerName || modelProvider);
@@ -664,14 +672,14 @@ function setCodexProviderStringField(
   text: string,
   providerId: string,
   field: string,
-  value: string
+  value: string,
 ): string {
   const trimmed = text.replace(/\s+$/g, "");
   const header = `[model_providers.${tomlTableKey(providerId)}]`;
   if (!trimmed) return `${header}\n${field} = "${escapeTomlString(value)}"`;
 
   const lines = trimmed.split(/\r?\n/);
-  let start = findCodexProviderSectionStart(lines, providerId);
+  const start = findCodexProviderSectionStart(lines, providerId);
   if (start < 0) {
     return `${trimmed}\n\n${header}\n${field} = "${escapeTomlString(value)}"`;
   }
@@ -787,7 +795,7 @@ export function AiSettingsView({ app }: AiSettingsViewProps) {
 
   const handleDetailSave = (provider: AiSettingsProvider) => {
     void run(async () => {
-      const originalId = selectedId === "__new__" ? undefined : selectedId ?? undefined;
+      const originalId = selectedId === "__new__" ? undefined : (selectedId ?? undefined);
       const next = await saveAiProvider(app, provider, originalId, false);
       setSnapshot(next);
       setSelectedId(null);
@@ -859,8 +867,8 @@ export function AiSettingsView({ app }: AiSettingsViewProps) {
 
       <div className="ai-settings__path">
         {app === "claude"
-          ? paths?.claude.settings ?? "~/.claude/settings.json"
-          : paths?.codex.config ?? "~/.codex/config.toml"}
+          ? (paths?.claude.settings ?? "~/.claude/settings.json")
+          : (paths?.codex.config ?? "~/.codex/config.toml")}
       </div>
 
       <div className="ai-settings__toolbar">
@@ -918,7 +926,16 @@ function Field({ label, hint, required, children }: FieldProps) {
 
 function RefreshIcon() {
   return (
-    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+    <svg
+      viewBox="0 0 16 16"
+      width="14"
+      height="14"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
       <path d="M13 3v4H9" />
       <path d="M3 13V9h4" />
       <path d="M12.2 6A4.5 4.5 0 0 0 4.5 4.8L3 6" />
@@ -929,7 +946,16 @@ function RefreshIcon() {
 
 function BackIcon() {
   return (
-    <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+    <svg
+      viewBox="0 0 16 16"
+      width="16"
+      height="16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
       <path d="M10 12L6 8l4-4" />
     </svg>
   );
@@ -937,7 +963,16 @@ function BackIcon() {
 
 function CopyIcon() {
   return (
-    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+    <svg
+      viewBox="0 0 16 16"
+      width="14"
+      height="14"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
       <rect x="4" y="4" width="8" height="8" rx="1" />
       <path d="M2 8V2h6" />
     </svg>
@@ -946,7 +981,16 @@ function CopyIcon() {
 
 function TrashIcon() {
   return (
-    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+    <svg
+      viewBox="0 0 16 16"
+      width="14"
+      height="14"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
       <path d="M3 4h10" />
       <path d="M5 4V3a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v1" />
       <path d="M6 7v4" />

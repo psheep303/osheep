@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { config } from "./config.js";
@@ -94,29 +95,29 @@ function cleanNode(node: WorkflowNode): WorkflowNode {
 function sanitizeStoredTemplate(
   raw: unknown,
   fallbackId: string,
-  source: TemplateSource
+  source: TemplateSource,
 ): StoredWorkflowTemplate {
   if (!raw || typeof raw !== "object") throw errors.invalidPath("template is invalid");
   const value = raw as Partial<StoredWorkflowTemplate> & { icon?: unknown };
-  const id = typeof value.id === "string" && TEMPLATE_ID_RE.test(value.id)
-    ? value.id
-    : fallbackId;
+  const id = typeof value.id === "string" && TEMPLATE_ID_RE.test(value.id) ? value.id : fallbackId;
   const createdAt = typeof value.createdAt === "number" ? value.createdAt : Date.now();
-  const iconFile = typeof value.iconFile === "string" &&
-    path.basename(value.iconFile) === value.iconFile
+  const iconFile =
+    typeof value.iconFile === "string" && path.basename(value.iconFile) === value.iconFile
       ? value.iconFile
       : undefined;
   return {
     id,
     source,
-    title: typeof value.title === "string" && value.title.trim()
-      ? value.title.trim()
-      : "Workflow template",
-    description: typeof value.description === "string"
-      ? value.description
-      : source === "system"
-        ? "Built-in workflow template"
-        : "Custom workflow template",
+    title:
+      typeof value.title === "string" && value.title.trim()
+        ? value.title.trim()
+        : "Workflow template",
+    description:
+      typeof value.description === "string"
+        ? value.description
+        : source === "system"
+          ? "Built-in workflow template"
+          : "Custom workflow template",
     readme: typeof value.readme === "string" ? value.readme : "",
     iconFile,
     createdAt,
@@ -156,13 +157,6 @@ function summary(template: StoredWorkflowTemplate): WorkflowTemplateSummary {
   };
 }
 
-async function ensureLibrary(opts: Required<TemplateStoreOptions>): Promise<void> {
-  await fs.mkdir(sourceDir(opts.root, "system"), { recursive: true });
-  await fs.mkdir(sourceDir(opts.root, "user"), { recursive: true });
-  await migrateLegacyUserTemplates(opts.root);
-  await syncBundledSystemTemplates(opts.root, opts.systemSourceRoot);
-}
-
 async function migrateLegacyUserTemplates(root: string): Promise<void> {
   let entries: string[];
   try {
@@ -189,10 +183,106 @@ async function migrateLegacyUserTemplates(root: string): Promise<void> {
   }
 }
 
-async function syncBundledSystemTemplates(
+const templateLibraryQueues = new Map<string, Promise<void>>();
+
+async function sourceSignature(systemSourceRoot: string): Promise<string | null> {
+  const files: string[] = [];
+
+  async function visit(dir: string): Promise<void> {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await visit(full);
+      } else if (entry.isFile()) {
+        files.push(full);
+      }
+    }
+  }
+
+  try {
+    await visit(systemSourceRoot);
+    if (!files.length) return null;
+
+    const hash = createHash("sha1");
+    for (const file of files) {
+      const relative = path.relative(systemSourceRoot, file).split(path.sep).join("/");
+      const data = await fs.readFile(file);
+      hash.update(`${Buffer.byteLength(relative)}:${relative}${data.length}:`);
+      hash.update(data);
+    }
+    return hash.digest("hex");
+  } catch {
+    return null;
+  }
+}
+
+async function canonicalSyncPath(value: string): Promise<string> {
+  let current = path.resolve(value);
+  const missingSegments: string[] = [];
+
+  while (true) {
+    try {
+      return path.join(await fs.realpath(current), ...missingSegments);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      const parent = path.dirname(current);
+      if (parent === current) return path.join(current, ...missingSegments);
+      missingSegments.unshift(path.basename(current));
+      current = parent;
+    }
+  }
+}
+
+async function templateLibraryDestinationKey(root: string): Promise<string> {
+  const destination = await canonicalSyncPath(sourceDir(root, "system"));
+  return process.platform === "win32" ? destination.toLowerCase() : destination;
+}
+
+async function withTemplateLibrary<T>(
+  opts: Required<TemplateStoreOptions>,
+  callback: () => Promise<T>,
+): Promise<T> {
+  const destinationKey = await templateLibraryDestinationKey(opts.root);
+  const previousTail = templateLibraryQueues.get(destinationKey) ?? Promise.resolve();
+  const operation = previousTail.then(async () => {
+    await fs.mkdir(sourceDir(opts.root, "system"), { recursive: true });
+    await fs.mkdir(sourceDir(opts.root, "user"), { recursive: true });
+    await migrateLegacyUserTemplates(opts.root);
+    await syncBundledSystemTemplatesOnce(opts.root, opts.systemSourceRoot);
+    return callback();
+  });
+  const tail = operation.then(
+    () => undefined,
+    () => undefined,
+  );
+  templateLibraryQueues.set(destinationKey, tail);
+
+  try {
+    return await operation;
+  } finally {
+    if (templateLibraryQueues.get(destinationKey) === tail) {
+      templateLibraryQueues.delete(destinationKey);
+    }
+  }
+}
+
+async function syncBundledSystemTemplatesOnce(
   root: string,
-  systemSourceRoot: string
+  systemSourceRoot: string,
 ): Promise<void> {
+  const signature = await sourceSignature(systemSourceRoot);
+  if (!signature) return;
+
+  const markerFile = path.join(root, ".system-sync.json");
+  try {
+    const marker = JSON.parse(await fs.readFile(markerFile, "utf8")) as { signature?: string };
+    if (marker.signature === signature) return;
+  } catch {
+    // Missing or invalid markers are repaired by a full sync below.
+  }
+
   let entries: Array<{ name: string; isDirectory(): boolean }>;
   try {
     entries = await fs.readdir(systemSourceRoot, { withFileTypes: true });
@@ -200,29 +290,26 @@ async function syncBundledSystemTemplates(
     return;
   }
   const templateDirs = entries.filter(
-    (entry) => entry.isDirectory() && TEMPLATE_ID_RE.test(entry.name)
+    (entry) => entry.isDirectory() && TEMPLATE_ID_RE.test(entry.name),
   );
   if (!templateDirs.length) return;
   const runtimeRoot = sourceDir(root, "system");
   await fs.rm(runtimeRoot, { recursive: true, force: true });
   await fs.mkdir(runtimeRoot, { recursive: true });
   for (const entry of templateDirs) {
-    await fs.cp(
-      path.join(systemSourceRoot, entry.name),
-      path.join(runtimeRoot, entry.name),
-      { recursive: true }
-    );
+    await fs.cp(path.join(systemSourceRoot, entry.name), path.join(runtimeRoot, entry.name), {
+      recursive: true,
+    });
   }
+  await fs.writeFile(markerFile, JSON.stringify({ signature }), "utf8");
 }
 
 async function readStoredTemplate(
   source: TemplateSource,
   id: string,
   opts: Required<TemplateStoreOptions>,
-  ensure = true
 ): Promise<StoredWorkflowTemplate> {
   validateTemplateId(id);
-  if (ensure) await ensureLibrary(opts);
   try {
     const text = await fs.readFile(templateFile(opts.root, source, id), "utf8");
     return sanitizeStoredTemplate(JSON.parse(text), id, source);
@@ -235,30 +322,19 @@ async function readStoredTemplate(
   }
 }
 
-async function writeStoredTemplate(
-  template: StoredWorkflowTemplate,
-  root: string
-): Promise<void> {
+async function writeStoredTemplate(template: StoredWorkflowTemplate, root: string): Promise<void> {
   const dir = templateDir(root, template.source, template.id);
   await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(
-    path.join(dir, TEMPLATE_FILE),
-    JSON.stringify(template, null, 2),
-    "utf8"
-  );
+  await fs.writeFile(path.join(dir, TEMPLATE_FILE), JSON.stringify(template, null, 2), "utf8");
 }
 
 async function writeSystemSourceTemplate(
   template: StoredWorkflowTemplate,
-  systemSourceRoot: string
+  systemSourceRoot: string,
 ): Promise<void> {
   const dir = systemSourceDir(systemSourceRoot, template.id);
   await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(
-    path.join(dir, TEMPLATE_FILE),
-    JSON.stringify(template, null, 2),
-    "utf8"
-  );
+  await fs.writeFile(path.join(dir, TEMPLATE_FILE), JSON.stringify(template, null, 2), "utf8");
 }
 
 function requireDeveloperMode(opts: Required<TemplateStoreOptions>): void {
@@ -270,14 +346,15 @@ function requireDeveloperMode(opts: Required<TemplateStoreOptions>): void {
 function storedFromWorkflow(
   workflow: WorkflowRecord,
   source: TemplateSource,
-  previous?: StoredWorkflowTemplate
+  previous?: StoredWorkflowTemplate,
 ): StoredWorkflowTemplate {
   const now = Date.now();
   return {
     id: previous?.id ?? `tpl_${randomPart(12)}`,
     source,
     title: workflow.title || "Workflow template",
-    description: previous?.description ??
+    description:
+      previous?.description ??
       (source === "system" ? "Built-in workflow template" : "Custom workflow template"),
     readme: workflow.readme ?? "",
     iconFile: previous?.iconFile,
@@ -288,109 +365,116 @@ function storedFromWorkflow(
   };
 }
 
-export async function listWorkflowTemplates(
-  value: TemplateStoreOptions = {}
-): Promise<{
+export async function listWorkflowTemplates(value: TemplateStoreOptions = {}): Promise<{
   system: WorkflowTemplateSummary[];
   user: WorkflowTemplateSummary[];
   developerMode: boolean;
 }> {
   const opts = options(value);
-  await ensureLibrary(opts);
-  const readSource = async (source: TemplateSource) => {
-    const result: WorkflowTemplateSummary[] = [];
-    const entries = await fs.readdir(sourceDir(opts.root, source), { withFileTypes: true });
-    for (const entry of entries) {
-      if (!entry.isDirectory() || !TEMPLATE_ID_RE.test(entry.name)) continue;
-      try {
-        result.push(summary(await readStoredTemplate(source, entry.name, opts, false)));
-      } catch {
-        // Ignore one invalid template without hiding the rest of the library.
+  return withTemplateLibrary(opts, async () => {
+    const readSource = async (source: TemplateSource) => {
+      const result: WorkflowTemplateSummary[] = [];
+      const entries = await fs.readdir(sourceDir(opts.root, source), { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isDirectory() || !TEMPLATE_ID_RE.test(entry.name)) continue;
+        try {
+          result.push(summary(await readStoredTemplate(source, entry.name, opts)));
+        } catch {
+          // Ignore one invalid template without hiding the rest of the library.
+        }
       }
-    }
-    result.sort((a, b) => b.updatedAt - a.updatedAt || a.title.localeCompare(b.title));
-    return result;
-  };
-  return {
-    system: await readSource("system"),
-    user: await readSource("user"),
-    developerMode: opts.developerMode,
-  };
+      result.sort((a, b) => b.updatedAt - a.updatedAt || a.title.localeCompare(b.title));
+      return result;
+    };
+    return {
+      system: await readSource("system"),
+      user: await readSource("user"),
+      developerMode: opts.developerMode,
+    };
+  });
 }
 
 export async function getWorkflowTemplate(
   source: TemplateSource,
   id: string,
-  value: TemplateStoreOptions = {}
+  value: TemplateStoreOptions = {},
 ): Promise<WorkflowTemplate> {
   const opts = options(value);
-  return publicTemplate(await readStoredTemplate(source, id, opts));
+  return withTemplateLibrary(opts, async () =>
+    publicTemplate(await readStoredTemplate(source, id, opts)),
+  );
 }
 
 export async function saveWorkflowAsTemplate(
   workflow: WorkflowRecord,
   source: TemplateSource = "user",
-  value: TemplateStoreOptions = {}
+  value: TemplateStoreOptions = {},
 ): Promise<WorkflowTemplate> {
   const opts = options(value);
   if (source === "system") requireDeveloperMode(opts);
-  await ensureLibrary(opts);
-  const template = storedFromWorkflow(workflow, source);
-  await writeStoredTemplate(template, opts.root);
-  if (source === "system") {
-    await writeSystemSourceTemplate(template, opts.systemSourceRoot);
-  }
-  return publicTemplate(template);
+  return withTemplateLibrary(opts, async () => {
+    const template = storedFromWorkflow(workflow, source);
+    await writeStoredTemplate(template, opts.root);
+    if (source === "system") {
+      await writeSystemSourceTemplate(template, opts.systemSourceRoot);
+    }
+    return publicTemplate(template);
+  });
 }
 
 export async function updateTemplateFromWorkflow(
   workflow: WorkflowRecord,
-  value: TemplateStoreOptions = {}
+  value: TemplateStoreOptions = {},
 ): Promise<WorkflowTemplate | null> {
-  const binding = workflow.templateBinding;
-  if (!binding) return null;
   const opts = options(value);
-  if (binding.source === "system") requireDeveloperMode(opts);
-  const previous = await readStoredTemplate(binding.source, binding.id, opts);
-  const template = storedFromWorkflow(workflow, binding.source, previous);
-  await writeStoredTemplate(template, opts.root);
-  if (binding.source === "system") {
-    await writeSystemSourceTemplate(template, opts.systemSourceRoot);
-  }
-  return publicTemplate(template);
+  return withTemplateLibrary(opts, async () => {
+    const binding = workflow.templateBinding;
+    if (!binding) return null;
+    if (binding.source === "system") requireDeveloperMode(opts);
+    const previous = await readStoredTemplate(binding.source, binding.id, opts);
+    const template = storedFromWorkflow(workflow, binding.source, previous);
+    await writeStoredTemplate(template, opts.root);
+    if (binding.source === "system") {
+      await writeSystemSourceTemplate(template, opts.systemSourceRoot);
+    }
+    return publicTemplate(template);
+  });
 }
 
 export async function updateWorkflowTemplateIcon(
   source: TemplateSource,
   id: string,
   icon: string,
-  value: TemplateStoreOptions = {}
+  value: TemplateStoreOptions = {},
 ): Promise<WorkflowTemplate> {
   const opts = options(value);
   if (source === "system") requireDeveloperMode(opts);
-  const template = await readStoredTemplate(source, id, opts);
-  const updated = await writeTemplateIcon(template, icon, opts.root);
-  if (source === "system") {
-    await writeSystemSourceTemplate(updated, opts.systemSourceRoot);
-    await copyIconToSystemSource(updated, opts.root, opts.systemSourceRoot);
-  }
-  return publicTemplate(updated);
+  return withTemplateLibrary(opts, async () => {
+    const template = await readStoredTemplate(source, id, opts);
+    const updated = await writeTemplateIcon(template, icon, opts.root);
+    if (source === "system") {
+      await writeSystemSourceTemplate(updated, opts.systemSourceRoot);
+      await copyIconToSystemSource(updated, opts.root, opts.systemSourceRoot);
+    }
+    return publicTemplate(updated);
+  });
 }
 
 async function writeTemplateIcon(
   template: StoredWorkflowTemplate,
   dataUrl: string,
-  root: string
+  root: string,
 ): Promise<StoredWorkflowTemplate> {
   const match = /^data:image\/(png|jpeg|webp|gif|svg\+xml);base64,([a-z0-9+/=]+)$/i.exec(dataUrl);
   if (!match) throw errors.invalidPath("template icon must be an image data URL");
   const data = Buffer.from(match[2]!, "base64");
   if (data.length > MAX_ICON_BYTES) throw errors.invalidPath("template icon is too large");
-  const extension = match[1]!.toLowerCase() === "jpeg"
-    ? "jpg"
-    : match[1]!.toLowerCase() === "svg+xml"
-      ? "svg"
-      : match[1]!.toLowerCase();
+  const extension =
+    match[1]!.toLowerCase() === "jpeg"
+      ? "jpg"
+      : match[1]!.toLowerCase() === "svg+xml"
+        ? "svg"
+        : match[1]!.toLowerCase();
   const iconFile = `icon.${extension}`;
   const dir = templateDir(root, template.source, template.id);
   await fs.mkdir(dir, { recursive: true });
@@ -406,58 +490,61 @@ async function writeTemplateIcon(
 async function copyIconToSystemSource(
   template: StoredWorkflowTemplate,
   root: string,
-  systemSourceRoot: string
+  systemSourceRoot: string,
 ): Promise<void> {
   if (!template.iconFile) return;
   const targetDir = systemSourceDir(systemSourceRoot, template.id);
   await fs.mkdir(targetDir, { recursive: true });
   await fs.copyFile(
     path.join(templateDir(root, "system", template.id), template.iconFile),
-    path.join(targetDir, template.iconFile)
+    path.join(targetDir, template.iconFile),
   );
 }
 
 export async function getWorkflowTemplateIcon(
   source: TemplateSource,
   id: string,
-  value: TemplateStoreOptions = {}
+  value: TemplateStoreOptions = {},
 ): Promise<{ data: Buffer; mime: string }> {
   const opts = options(value);
-  const template = await readStoredTemplate(source, id, opts);
-  if (!template.iconFile) throw errors.notFound("template icon not found");
-  const extension = path.extname(template.iconFile).toLowerCase();
-  const mime = extension === ".png"
-    ? "image/png"
-    : extension === ".jpg" || extension === ".jpeg"
-      ? "image/jpeg"
-      : extension === ".webp"
-        ? "image/webp"
-        : extension === ".gif"
-          ? "image/gif"
-          : extension === ".svg"
-            ? "image/svg+xml"
-            : "application/octet-stream";
-  return {
-    data: await fs.readFile(
-      path.join(templateDir(opts.root, source, id), template.iconFile)
-    ),
-    mime,
-  };
+  return withTemplateLibrary(opts, async () => {
+    const template = await readStoredTemplate(source, id, opts);
+    if (!template.iconFile) throw errors.notFound("template icon not found");
+    const extension = path.extname(template.iconFile).toLowerCase();
+    const mime =
+      extension === ".png"
+        ? "image/png"
+        : extension === ".jpg" || extension === ".jpeg"
+          ? "image/jpeg"
+          : extension === ".webp"
+            ? "image/webp"
+            : extension === ".gif"
+              ? "image/gif"
+              : extension === ".svg"
+                ? "image/svg+xml"
+                : "application/octet-stream";
+    return {
+      data: await fs.readFile(path.join(templateDir(opts.root, source, id), template.iconFile)),
+      mime,
+    };
+  });
 }
 
 export async function deleteWorkflowTemplate(
   source: TemplateSource,
   id: string,
-  value: TemplateStoreOptions = {}
+  value: TemplateStoreOptions = {},
 ): Promise<void> {
   const opts = options(value);
   if (source === "system") requireDeveloperMode(opts);
-  await readStoredTemplate(source, id, opts);
-  await fs.rm(templateDir(opts.root, source, id), { recursive: true, force: true });
-  if (source === "system") {
-    await fs.rm(systemSourceDir(opts.systemSourceRoot, id), {
-      recursive: true,
-      force: true,
-    });
-  }
+  await withTemplateLibrary(opts, async () => {
+    await readStoredTemplate(source, id, opts);
+    await fs.rm(templateDir(opts.root, source, id), { recursive: true, force: true });
+    if (source === "system") {
+      await fs.rm(systemSourceDir(opts.systemSourceRoot, id), {
+        recursive: true,
+        force: true,
+      });
+    }
+  });
 }

@@ -7,8 +7,7 @@ export function buildOsheepCodePrompt(ctx: {
   platform: "windows" | "macos" | "linux";
   nowIso: string;
 }): string {
-  return PROMPT_BODY
-    .replace("{{workspaceId}}", ctx.workspaceId)
+  return PROMPT_BODY.replace("{{workspaceId}}", ctx.workspaceId)
     .replace("{{platform}}", ctx.platform)
     .replace("{{nowIso}}", ctx.nowIso);
 }

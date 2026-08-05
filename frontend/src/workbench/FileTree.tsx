@@ -1,11 +1,4 @@
-import {
-  createContext,
-  useContext,
-  useEffect,
-  useRef,
-  useState,
-  type CSSProperties,
-} from "react";
+import { type CSSProperties, createContext, useContext, useEffect, useRef, useState } from "react";
 import { ContextMenu, type CtxMenuSection } from "./ContextMenu";
 import { FileIcon } from "./FileIcon";
 import type { FsNode } from "./fs";
@@ -19,7 +12,7 @@ import {
   removeEntry,
   renameEntry,
 } from "./fs";
-import { statusColor, type FileDecoration } from "./git-decorations";
+import { type FileDecoration, statusColor } from "./git-decorations";
 
 type DraftKind = "file" | "folder";
 
@@ -77,7 +70,7 @@ interface FileTreeProps {
 
 function joinPath(parent: string, name: string): string {
   if (!parent) return name;
-  return parent + "/" + name;
+  return `${parent}/${name}`;
 }
 
 function parentOf(p: string): string {
@@ -91,10 +84,7 @@ function basename(p: string): string {
 }
 
 function isAncestorOrSelf(maybeAncestor: string, descendant: string): boolean {
-  return (
-    maybeAncestor === descendant ||
-    descendant.startsWith(maybeAncestor + "/")
-  );
+  return maybeAncestor === descendant || descendant.startsWith(`${maybeAncestor}/`);
 }
 
 export function FileTree({
@@ -171,12 +161,7 @@ export function FileTree({
   const doRootPaste = async () => {
     if (!clipboard) return;
     try {
-      const targetName = await findFreeName(
-        workspaceId,
-        "",
-        clipboard.name,
-        clipboard.entryKind
-      );
+      const targetName = await findFreeName(workspaceId, "", clipboard.name, clipboard.entryKind);
       if (clipboard.kind === "cut") {
         if (parentOf(clipboard.path) === "") {
           setClipboard(null);
@@ -190,7 +175,7 @@ export function FileTree({
       setClipboard(null);
       bumpTree();
     } catch (err) {
-      window.alert("粘贴失败：" + (err as Error).message);
+      window.alert(`粘贴失败：${(err as Error).message}`);
     }
   };
 
@@ -208,7 +193,7 @@ export function FileTree({
       onPathRenamed(srcPath, dest);
       bumpTree();
     } catch (err) {
-      window.alert("移动失败：" + (err as Error).message);
+      window.alert(`移动失败：${(err as Error).message}`);
     }
   };
 
@@ -299,10 +284,7 @@ export function FileTree({
           </span>
         </div>
         <div
-          className={
-            "side-view__body file-tree" +
-            (rootDropActive ? " is-drop-target-root" : "")
-          }
+          className={`side-view__body file-tree${rootDropActive ? " is-drop-target-root" : ""}`}
           onClick={(e) => e.stopPropagation()}
           onContextMenu={onRootContextMenu}
           onDragOver={onRootDragOver}
@@ -351,10 +333,7 @@ interface MenuState {
   ctx: MenuCtx;
 }
 
-function buildMenuSections(
-  ctx: MenuCtx,
-  clipboard: ClipboardItem | null
-): CtxMenuSection[] {
+function buildMenuSections(ctx: MenuCtx, clipboard: ClipboardItem | null): CtxMenuSection[] {
   const sections: CtxMenuSection[] = [];
 
   if (ctx.node.kind === "directory") {
@@ -473,9 +452,7 @@ function TreeNode({ node, depth }: TreeNodeProps) {
   };
 
   const doDelete = async () => {
-    const ok = window.confirm(
-      `确定要删除 "${node.name}" 吗？此操作不可撤销。`
-    );
+    const ok = window.confirm(`确定要删除 "${node.name}" 吗？此操作不可撤销。`);
     if (!ok) return;
     try {
       await removeEntry(ctx.workspaceId, node.path);
@@ -507,19 +484,13 @@ function TreeNode({ node, depth }: TreeNodeProps) {
   const doPaste = async () => {
     const cb = ctx.clipboard;
     if (!cb) return;
-    const targetDir =
-      node.kind === "directory" ? node.path : parentOf(node.path);
+    const targetDir = node.kind === "directory" ? node.path : parentOf(node.path);
     if (cb.kind === "cut" && parentOf(cb.path) === targetDir) {
       ctx.setClipboard(null);
       return;
     }
     try {
-      const targetName = await findFreeName(
-        ctx.workspaceId,
-        targetDir,
-        cb.name,
-        cb.entryKind
-      );
+      const targetName = await findFreeName(ctx.workspaceId, targetDir, cb.name, cb.entryKind);
       const destPath = joinPath(targetDir, targetName);
       if (cb.kind === "cut") {
         await moveEntryTo(ctx.workspaceId, cb.path, destPath);
@@ -530,7 +501,7 @@ function TreeNode({ node, depth }: TreeNodeProps) {
       ctx.setClipboard(null);
       ctx.bumpTree();
     } catch (err) {
-      window.alert("粘贴失败：" + (err as Error).message);
+      window.alert(`粘贴失败：${(err as Error).message}`);
     }
   };
 
@@ -606,15 +577,10 @@ function TreeNode({ node, depth }: TreeNodeProps) {
 
   const deco = ctx.decorations.get(node.path);
   const nameColor =
-    node.kind === "file" && deco?.selfStatus
-      ? statusColor(deco.selfStatus)
-      : undefined;
+    node.kind === "file" && deco?.selfStatus ? statusColor(deco.selfStatus) : undefined;
   const dotColor =
-    node.kind === "directory" && deco?.childStatus
-      ? statusColor(deco.childStatus)
-      : undefined;
-  const badgeLetter =
-    node.kind === "file" && deco?.selfStatus ? deco.selfStatus : null;
+    node.kind === "directory" && deco?.childStatus ? statusColor(deco.childStatus) : undefined;
+  const badgeLetter = node.kind === "file" && deco?.selfStatus ? deco.selfStatus : null;
 
   return (
     <div>
@@ -641,19 +607,12 @@ function TreeNode({ node, depth }: TreeNodeProps) {
             (expanded ? " is-open" : "")
           }
         >
-          {node.kind === "directory" ? (
-            <ChevronIcon />
-          ) : (
-            <FileIcon name={node.name} />
-          )}
+          {node.kind === "directory" ? <ChevronIcon /> : <FileIcon name={node.name} />}
         </span>
         {renaming ? (
           <RenameInput initial={node.name} onSubmit={submitRename} />
         ) : (
-          <span
-            className="tree-row__name"
-            style={nameColor ? { color: nameColor } : undefined}
-          >
+          <span className="tree-row__name" style={nameColor ? { color: nameColor } : undefined}>
             {node.name}
           </span>
         )}
@@ -686,11 +645,7 @@ function TreeNode({ node, depth }: TreeNodeProps) {
               (badgeLetter ? " tree-row__badge--letter" : " tree-row__badge--dot")
             }
             style={{ color: nameColor ?? dotColor }}
-            title={
-              badgeLetter
-                ? `Git: ${badgeLetter}`
-                : `Git 变更: ${deco?.childStatus}`
-            }
+            title={badgeLetter ? `Git: ${badgeLetter}` : `Git 变更: ${deco?.childStatus}`}
           >
             {badgeLetter ?? "●"}
           </span>
@@ -699,9 +654,7 @@ function TreeNode({ node, depth }: TreeNodeProps) {
       {expanded && (
         <div
           className="tree-children"
-          style={
-            { "--guide-x": `${8 + depth * 12 + 8}px` } as CSSProperties
-          }
+          style={{ "--guide-x": `${8 + depth * 12 + 8}px` } as CSSProperties}
         >
           {draft && (
             <DraftRow
@@ -720,13 +673,7 @@ function TreeNode({ node, depth }: TreeNodeProps) {
   );
 }
 
-function RenameInput({
-  initial,
-  onSubmit,
-}: {
-  initial: string;
-  onSubmit: (name: string) => void;
-}) {
+function RenameInput({ initial, onSubmit }: { initial: string; onSubmit: (name: string) => void }) {
   const [value, setValue] = useState(initial);
   const ref = useRef<HTMLInputElement>(null);
 
@@ -774,15 +721,8 @@ function DraftRow({
   }, []);
 
   return (
-    <div
-      className="tree-row tree-row--draft"
-      style={{ paddingLeft: 8 + depth * 12 }}
-    >
-      <span
-        className={
-          "tree-row__icon" + (kind === "folder" ? " is-chevron" : "")
-        }
-      >
+    <div className="tree-row tree-row--draft" style={{ paddingLeft: 8 + depth * 12 }}>
+      <span className={`tree-row__icon${kind === "folder" ? " is-chevron" : ""}`}>
         {kind === "folder" ? <ChevronIcon /> : <FileIcon name={value || "new"} />}
       </span>
       <input
@@ -820,13 +760,7 @@ function IconBtn({
 
 function ChevronIcon() {
   return (
-    <svg
-      viewBox="0 0 16 16"
-      width="14"
-      height="14"
-      fill="currentColor"
-      aria-hidden="true"
-    >
+    <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" aria-hidden="true">
       <path d="M6 3.5l5 4.5-5 4.5V3.5z" />
     </svg>
   );

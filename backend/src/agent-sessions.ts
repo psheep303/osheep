@@ -1,5 +1,5 @@
-import * as fs from "node:fs/promises";
 import type { Dirent } from "node:fs";
+import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 
@@ -44,30 +44,27 @@ export function getAgentSessionRoots(): AgentSessionRoots {
     claudeHome: path.resolve(
       process.env.OSHEEP_CLAUDE_CONFIG_DIR ||
         process.env.CLAUDE_CONFIG_DIR ||
-        path.join(home, ".claude")
+        path.join(home, ".claude"),
     ),
     codexHome: path.resolve(
-      process.env.OSHEEP_CODEX_CONFIG_DIR ||
-        process.env.CODEX_HOME ||
-        path.join(home, ".codex")
+      process.env.OSHEEP_CODEX_CONFIG_DIR || process.env.CODEX_HOME || path.join(home, ".codex"),
     ),
   };
 }
 
 export async function listAgentSessions(
   app: AgentSessionApp,
-  roots: AgentSessionRoots = getAgentSessionRoots()
+  roots: AgentSessionRoots = getAgentSessionRoots(),
 ): Promise<AgentSessionSummary[]> {
-  const records = app === "codex"
-    ? await listCodexSessionRecords(roots)
-    : await listClaudeSessionRecords(roots);
+  const records =
+    app === "codex" ? await listCodexSessionRecords(roots) : await listClaudeSessionRecords(roots);
   return records.map(stripPrivateFields);
 }
 
 export async function getAgentSession(
   app: AgentSessionApp,
   id: string,
-  roots: AgentSessionRoots = getAgentSessionRoots()
+  roots: AgentSessionRoots = getAgentSessionRoots(),
 ): Promise<AgentSessionSummary | null> {
   const record = await findAgentSessionRecord(app, id, roots);
   return record ? stripPrivateFields(record) : null;
@@ -76,7 +73,7 @@ export async function getAgentSession(
 export async function deleteAgentSession(
   app: AgentSessionApp,
   id: string,
-  roots: AgentSessionRoots = getAgentSessionRoots()
+  roots: AgentSessionRoots = getAgentSessionRoots(),
 ): Promise<AgentSessionSummary | null> {
   const record = await findAgentSessionRecord(app, id, roots);
   if (!record) return null;
@@ -87,7 +84,7 @@ export async function deleteAgentSession(
 
 export function isAgentSessionInProject(
   session: AgentSessionSummary,
-  projectRoot: string
+  projectRoot: string,
 ): boolean {
   const relative = path.relative(path.resolve(projectRoot), path.resolve(session.cwd));
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
@@ -97,16 +94,15 @@ export async function deleteAgentSessionsInProject(
   app: AgentSessionApp,
   ids: string[],
   projectRoot: string,
-  roots: AgentSessionRoots = getAgentSessionRoots()
+  roots: AgentSessionRoots = getAgentSessionRoots(),
 ): Promise<AgentSessionBatchDeleteResult> {
   const uniqueIds = [...new Set(ids)];
-  const records = app === "codex"
-    ? await listCodexSessionRecords(roots)
-    : await listClaudeSessionRecords(roots);
+  const records =
+    app === "codex" ? await listCodexSessionRecords(roots) : await listClaudeSessionRecords(roots);
   const allowed = new Map(
     records
       .filter((record) => isAgentSessionInProject(record, projectRoot))
-      .map((record) => [record.id, record])
+      .map((record) => [record.id, record]),
   );
   const deleted: AgentSessionSummary[] = [];
   const failed: Array<{ id: string; message: string }> = [];
@@ -130,9 +126,8 @@ export async function deleteAgentSessionsInProject(
 async function deleteAgentSessionRecord(
   app: AgentSessionApp,
   record: AgentSessionRecord,
-  roots: AgentSessionRoots
+  roots: AgentSessionRoots,
 ): Promise<void> {
-
   await fs.unlink(record.filePath);
   if (record.auxiliaryPath) {
     await fs.rm(record.auxiliaryPath, { recursive: true, force: true });
@@ -147,7 +142,7 @@ async function deleteAgentSessionRecord(
 async function findAgentSessionRecord(
   app: AgentSessionApp,
   id: string,
-  roots: AgentSessionRoots
+  roots: AgentSessionRoots,
 ): Promise<AgentSessionRecord | null> {
   if (!SESSION_ID_RE.test(id)) return null;
   return app === "codex"
@@ -157,7 +152,7 @@ async function findAgentSessionRecord(
 
 async function findCodexSessionRecord(
   roots: AgentSessionRoots,
-  id: string
+  id: string,
 ): Promise<AgentSessionRecord | null> {
   const files = await collectJsonlFiles(path.join(roots.codexHome, "sessions"));
   const filePath = files.find((file) => sessionIdFromFilename(file) === id);
@@ -167,7 +162,7 @@ async function findCodexSessionRecord(
 
 async function findClaudeSessionRecord(
   roots: AgentSessionRoots,
-  id: string
+  id: string,
 ): Promise<AgentSessionRecord | null> {
   const projectsRoot = path.join(roots.claudeHome, "projects");
   for (const projectDir of await readDirSafe(projectsRoot)) {
@@ -183,9 +178,7 @@ async function findClaudeSessionRecord(
   return null;
 }
 
-async function listCodexSessionRecords(
-  roots: AgentSessionRoots
-): Promise<AgentSessionRecord[]> {
+async function listCodexSessionRecords(roots: AgentSessionRoots): Promise<AgentSessionRecord[]> {
   const sessionsRoot = path.join(roots.codexHome, "sessions");
   const [files, titles] = await Promise.all([
     collectJsonlFiles(sessionsRoot),
@@ -199,9 +192,7 @@ async function listCodexSessionRecords(
   return sortRecords(records);
 }
 
-async function listClaudeSessionRecords(
-  roots: AgentSessionRoots
-): Promise<AgentSessionRecord[]> {
+async function listClaudeSessionRecords(roots: AgentSessionRoots): Promise<AgentSessionRecord[]> {
   const projectsRoot = path.join(roots.claudeHome, "projects");
   const projectDirs = await readDirSafe(projectsRoot);
   const records: AgentSessionRecord[] = [];
@@ -222,12 +213,9 @@ async function listClaudeSessionRecords(
 
 async function readCodexSession(
   filePath: string,
-  titles: Map<string, CodexTitle>
+  titles: Map<string, CodexTitle>,
 ): Promise<AgentSessionRecord | null> {
-  const [stat, prefix] = await Promise.all([
-    fs.stat(filePath),
-    readFilePrefix(filePath),
-  ]);
+  const [stat, prefix] = await Promise.all([fs.stat(filePath), readFilePrefix(filePath)]);
   let id = sessionIdFromFilename(filePath);
   let cwd = "";
   let createdAt: number | null = null;
@@ -246,21 +234,13 @@ async function readCodexSession(
       continue;
     }
     if (!cwd && type === "turn_context") cwd = stringValue(payload.cwd);
-    if (
-      !fallbackTitle &&
-      type === "event_msg" &&
-      stringValue(payload.type) === "user_message"
-    ) {
+    if (!fallbackTitle && type === "event_msg" && stringValue(payload.type) === "user_message") {
       fallbackTitle = cleanPromptContext(stringValue(payload.message));
     }
     if (!fallbackTitle && type === "response_item") {
       fallbackTitle = userMessageTitle(payload);
     }
-    if (
-      !fallbackTitle &&
-      type === "event_msg" &&
-      stringValue(payload.type) === "user_message"
-    ) {
+    if (!fallbackTitle && type === "event_msg" && stringValue(payload.type) === "user_message") {
       fallbackTitle = cleanPromptContext(stringValue(payload.message));
     }
   }
@@ -282,12 +262,9 @@ async function readCodexSession(
 
 async function readClaudeSession(
   filePath: string,
-  fallbackId: string
+  fallbackId: string,
 ): Promise<AgentSessionRecord | null> {
-  const [stat, prefix] = await Promise.all([
-    fs.stat(filePath),
-    readFilePrefix(filePath),
-  ]);
+  const [stat, prefix] = await Promise.all([fs.stat(filePath), readFilePrefix(filePath)]);
   let id = fallbackId;
   let cwd = "";
   let customTitle = "";

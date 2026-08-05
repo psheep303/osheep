@@ -32,10 +32,7 @@ test("non-git workspace tracking detects file writes", async () => {
     const baseline = await captureWorkspaceChanges(root);
     await fs.writeFile(path.join(root, "existing.txt"), "after-content", "utf8");
     await fs.writeFile(path.join(root, "added.txt"), "new", "utf8");
-    assert.deepEqual(await changedWorkspaceFiles(root, baseline), [
-      "added.txt",
-      "existing.txt",
-    ]);
+    assert.deepEqual(await changedWorkspaceFiles(root, baseline), ["added.txt", "existing.txt"]);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }

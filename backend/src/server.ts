@@ -1,33 +1,46 @@
-import Fastify from "fastify";
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
+import Fastify from "fastify";
 import { config } from "./config.js";
 import { ApiError } from "./errors.js";
-import { ensureWorkspacesRoot } from "./workspace.js";
-import { registerWorkspaceRoutes } from "./routes/workspaces.js";
-import { registerTerminalRoutes } from "./routes/terminals.js";
-import { registerSearchRoutes } from "./routes/search.js";
-import { registerGitRoutes } from "./routes/git.js";
+import { registerAgentSessionRoutes } from "./routes/agent-sessions.js";
 import { registerAgentRoutes } from "./routes/agents.js";
-import { registerSessionRoutes } from "./routes/sessions.js";
-import { registerWorkflowRoutes } from "./routes/workflows.js";
 import { registerAiRoutes } from "./routes/ai.js";
 import { registerAiSettingsRoutes } from "./routes/ai-settings.js";
-import { registerMcpRoutes } from "./routes/mcp.js";
 import { registerClaudePluginRoutes } from "./routes/claude-plugins.js";
 import { registerCodexPluginRoutes } from "./routes/codex-plugins.js";
-import { registerAgentSessionRoutes } from "./routes/agent-sessions.js";
+import { registerGitRoutes } from "./routes/git.js";
+import { registerMcpRoutes } from "./routes/mcp.js";
+import { registerSearchRoutes } from "./routes/search.js";
+import { registerSessionRoutes } from "./routes/sessions.js";
 import { registerTemplateRoutes } from "./routes/templates.js";
+import { registerTerminalRoutes } from "./routes/terminals.js";
+import { registerWorkflowRoutes } from "./routes/workflows.js";
+import { registerWorkspaceRoutes } from "./routes/workspaces.js";
+import { createSecurity } from "./security.js";
 import { registerStaticSite } from "./static-site.js";
+import { ensureWorkspacesRoot } from "./workspace.js";
 
 export async function buildServer() {
+  const security = createSecurity({
+    host: config.host,
+    corsOrigins: config.corsOrigins,
+    authToken: config.authToken,
+  });
   const app = Fastify({
-    logger: { transport: { target: "pino-pretty", options: { colorize: true } } },
+    logger:
+      process.env.NODE_ENV === "production"
+        ? true
+        : { transport: { target: "pino-pretty", options: { colorize: true } } },
     bodyLimit: 16 * 1024 * 1024,
   });
 
-  await app.register(cors, { origin: config.corsOrigin });
+  await app.register(cors, {
+    credentials: true,
+    origin: (origin, callback) => callback(null, security.isTrustedOrigin(origin)),
+  });
   await app.register(websocket);
+  await security.register(app);
 
   app.setErrorHandler((err, _req, reply) => {
     if (err instanceof ApiError) {

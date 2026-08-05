@@ -6,8 +6,8 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { platform } from "./config.js";
-import { resolveWorkspacePath } from "./workspace.js";
 import { errors } from "./errors.js";
+import { resolveWorkspacePath } from "./workspace.js";
 
 type ShellId = "powershell" | "pwsh" | "cmd" | "bash";
 
@@ -52,8 +52,7 @@ const MAX_OUTPUT = 256 * 1024;
 const DEFAULT_TIMEOUT_MS = 60_000;
 const MAX_TIMEOUT_MS = 600_000;
 
-const POSIX_HINT_RE =
-  /(^|\s)(grep|sed|awk|head|tail|xargs|printf)\b|(^|\s)find\s+\./i;
+const POSIX_HINT_RE = /(^|\s)(grep|sed|awk|head|tail|xargs|printf)\b|(^|\s)find\s+\./i;
 const SAFE_FALLBACK_HEADS = new Set([
   "cat",
   "dir",
@@ -222,15 +221,15 @@ function splitCommand(command: string): string[] {
   const out: string[] = [];
   let cur = "";
   let quote: "'" | '"' | null = null;
-  let escape = false;
+  let escaping = false;
   for (const ch of command.trim()) {
-    if (escape) {
+    if (escaping) {
       cur += ch;
-      escape = false;
+      escaping = false;
       continue;
     }
     if (ch === "\\") {
-      escape = true;
+      escaping = true;
       cur += ch;
       continue;
     }
@@ -270,11 +269,7 @@ function isSafeToFallback(command: string): boolean {
   return false;
 }
 
-function shouldTryNextShell(
-  command: string,
-  result: RunResult,
-  attempted: number
-): boolean {
+function shouldTryNextShell(command: string, result: RunResult, attempted: number): boolean {
   if (result.exitCode === 0) return false;
   if (attempted <= 0) return false;
   if (!isSafeToFallback(command)) return false;
@@ -295,7 +290,7 @@ async function runOnce(
   command: string,
   cwdRel: string,
   timeout: number,
-  options: ExecRunOptions = {}
+  options: ExecRunOptions = {},
 ): Promise<RunResult> {
   const absCwd = resolveWorkspacePath(workspaceRoot, cwdRel || "");
   const start = Date.now();
@@ -411,17 +406,14 @@ export async function execRun(
   cwdRel: string,
   timeoutMs: number,
   shellId?: string,
-  options: ExecRunOptions = {}
+  options: ExecRunOptions = {},
 ): Promise<RunResult> {
   if (typeof command !== "string" || !command.trim()) {
     throw errors.invalidQuery("command cannot be empty");
   }
   // Validate cwd before spawning anything.
   resolveWorkspacePath(workspaceRoot, cwdRel || "");
-  const timeout = Math.min(
-    Math.max(1000, Number(timeoutMs) || DEFAULT_TIMEOUT_MS),
-    MAX_TIMEOUT_MS
-  );
+  const timeout = Math.min(Math.max(1000, Number(timeoutMs) || DEFAULT_TIMEOUT_MS), MAX_TIMEOUT_MS);
 
   const candidates = shellCandidates(command, shellId);
   if (candidates.length === 0) {
@@ -431,14 +423,7 @@ export async function execRun(
   const attempts: RunAttempt[] = [];
   let last: RunResult | null = null;
   for (let i = 0; i < candidates.length; i += 1) {
-    const result = await runOnce(
-      candidates[i]!,
-      workspaceRoot,
-      command,
-      cwdRel,
-      timeout,
-      options
-    );
+    const result = await runOnce(candidates[i]!, workspaceRoot, command, cwdRel, timeout, options);
     attempts.push({
       shell: result.shell,
       exitCode: result.exitCode,

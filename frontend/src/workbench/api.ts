@@ -15,17 +15,83 @@ export class ApiClientError extends Error {
   }
 }
 
-async function request<T>(
-  method: string,
-  url: string,
-  body?: unknown
-): Promise<T> {
+const etagCache = new Map<string, { etag: string; body: unknown }>();
+let apiSessionPromise: Promise<void> | null = null;
+
+export function resetApiSession(): void {
+  apiSessionPromise = null;
+}
+
+function fragmentAccessToken(): string | undefined {
+  if (typeof window === "undefined") return undefined;
+  const params = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+  const token = params.get("osheep-token")?.trim() || undefined;
+  if (!token) return undefined;
+
+  params.delete("osheep-token");
+  const hash = params.toString();
+  window.history.replaceState(
+    null,
+    "",
+    `${window.location.pathname}${window.location.search}${hash ? `#${hash}` : ""}`,
+  );
+  return token;
+}
+
+export async function ensureApiSession(): Promise<void> {
+  if (apiSessionPromise) return apiSessionPromise;
+  const token = fragmentAccessToken();
+  apiSessionPromise = (async () => {
+    const headers = token ? { authorization: `Bearer ${token}` } : undefined;
+    const response = await fetch("/api/auth/session", {
+      method: "POST",
+      credentials: "same-origin",
+      headers,
+    });
+    if (response.ok) return;
+
+    const parsed = (await response.json().catch(() => null)) as ApiErrorBody | null;
+    throw new ApiClientError(
+      response.status,
+      parsed?.error?.code ?? `HTTP_${response.status}`,
+      parsed?.error?.message ?? `无法建立 Osheep 会话 (${response.status})`,
+    );
+  })().catch((error) => {
+    apiSessionPromise = null;
+    throw error;
+  });
+  return apiSessionPromise;
+}
+
+async function apiFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+  await ensureApiSession();
+  const requestInit = { ...init, credentials: "same-origin" as const };
+  let response = await fetch(input, requestInit);
+  if (response.status !== 401) return response;
+
+  resetApiSession();
+  await ensureApiSession();
+  response = await fetch(input, requestInit);
+  return response;
+}
+
+async function request<T>(method: string, url: string, body?: unknown): Promise<T> {
   const init: RequestInit = { method };
+  const cached = method === "GET" ? etagCache.get(url) : undefined;
+  if (cached) {
+    init.headers = { "if-none-match": cached.etag };
+  }
   if (body !== undefined) {
     init.headers = { "content-type": "application/json" };
     init.body = JSON.stringify(body);
   }
-  const res = await fetch(url, init);
+
+  let res = await apiFetch(url, init);
+  if (res.status === 304) {
+    if (cached) return cached.body as T;
+    res = await apiFetch(url, { method: "GET" });
+  }
+
   const text = await res.text();
   let parsed: unknown = null;
   if (text) {
@@ -39,9 +105,13 @@ async function request<T>(
     const err = (parsed as ApiErrorBody | null)?.error;
     throw new ApiClientError(
       res.status,
-      err?.code ?? "HTTP_" + res.status,
-      err?.message ?? `请求失败 ${res.status}`
+      err?.code ?? `HTTP_${res.status}`,
+      err?.message ?? `请求失败 ${res.status}`,
     );
+  }
+  if (method === "GET") {
+    const etag = res.headers.get("etag");
+    if (etag) etagCache.set(url, { etag, body: parsed });
   }
   return parsed as T;
 }
@@ -97,9 +167,7 @@ export interface AgentSessionSummary {
 // ─── Workspaces ───
 
 export async function listWorkspaces(): Promise<Workspace[]> {
-  const { workspaces } = await http.get<{ workspaces: Workspace[] }>(
-    "/api/workspaces"
-  );
+  const { workspaces } = await http.get<{ workspaces: Workspace[] }>("/api/workspaces");
   return workspaces;
 }
 
@@ -119,19 +187,17 @@ const wsUrl = (id: string, suffix: string, query?: Record<string, string>) => {
 export async function listTree(
   workspaceId: string,
   path: string,
-  includeHidden = false
+  includeHidden = false,
 ): Promise<FsEntry[]> {
   const q: Record<string, string> = { path };
   if (includeHidden) q.includeHidden = "true";
-  const { entries } = await http.get<{ entries: FsEntry[] }>(
-    wsUrl(workspaceId, "/tree", q)
-  );
+  const { entries } = await http.get<{ entries: FsEntry[] }>(wsUrl(workspaceId, "/tree", q));
   return entries;
 }
 
 export async function readFile(
   workspaceId: string,
-  path: string
+  path: string,
 ): Promise<{ content: string; size: number; mtime: number }> {
   return await http.get(wsUrl(workspaceId, "/file", { path }));
 }
@@ -140,7 +206,7 @@ export async function writeFile(
   workspaceId: string,
   path: string,
   content: string,
-  createParents = true
+  createParents = true,
 ): Promise<{ size: number; mtime: number }> {
   return await http.put(wsUrl(workspaceId, "/file"), {
     path,
@@ -152,58 +218,40 @@ export async function writeFile(
 export async function createEntry(
   workspaceId: string,
   path: string,
-  kind: "file" | "directory"
+  kind: "file" | "directory",
 ): Promise<void> {
   await http.post(wsUrl(workspaceId, "/entry"), { path, kind });
 }
 
-export async function moveEntry(
-  workspaceId: string,
-  from: string,
-  to: string
-): Promise<void> {
+export async function moveEntry(workspaceId: string, from: string, to: string): Promise<void> {
   await http.post(wsUrl(workspaceId, "/move"), { from, to });
 }
 
-export async function copyEntry(
-  workspaceId: string,
-  from: string,
-  to: string
-): Promise<void> {
+export async function copyEntry(workspaceId: string, from: string, to: string): Promise<void> {
   await http.post(wsUrl(workspaceId, "/copy"), { from, to });
 }
 
 export async function deleteEntry(
   workspaceId: string,
   path: string,
-  recursive = true
+  recursive = true,
 ): Promise<void> {
   await http.delete(
     wsUrl(workspaceId, "/entry", {
       path,
       recursive: recursive ? "true" : "false",
-    })
+    }),
   );
 }
 
 // ─── Settings ───
 
-export async function getSettings<T = unknown>(
-  workspaceId: string
-): Promise<T> {
-  return await http.get<T>(
-    `/api/workspaces/${encodeURIComponent(workspaceId)}/settings`
-  );
+export async function getSettings<T = unknown>(workspaceId: string): Promise<T> {
+  return await http.get<T>(`/api/workspaces/${encodeURIComponent(workspaceId)}/settings`);
 }
 
-export async function putSettings(
-  workspaceId: string,
-  value: unknown
-): Promise<void> {
-  await http.put(
-    `/api/workspaces/${encodeURIComponent(workspaceId)}/settings`,
-    value
-  );
+export async function putSettings(workspaceId: string, value: unknown): Promise<void> {
+  await http.put(`/api/workspaces/${encodeURIComponent(workspaceId)}/settings`, value);
 }
 
 // ─── Terminal ───
@@ -256,9 +304,7 @@ export async function getAiSettings(): Promise<AiSettingsSnapshot> {
   return await http.get("/api/ai-settings");
 }
 
-export async function importAiLiveProvider(
-  app: AiSettingsApp
-): Promise<AiSettingsSnapshot> {
+export async function importAiLiveProvider(app: AiSettingsApp): Promise<AiSettingsSnapshot> {
   return await http.post("/api/ai-settings/import-live", { app });
 }
 
@@ -266,30 +312,29 @@ export async function saveAiProvider(
   app: AiSettingsApp,
   provider: AiSettingsProvider,
   originalId?: string,
-  apply = false
+  apply = false,
 ): Promise<AiSettingsSnapshot> {
   if (originalId) {
-    return await http.put(
-      `/api/ai-settings/providers/${encodeURIComponent(originalId)}`,
-      { app, provider, apply }
-    );
+    return await http.put(`/api/ai-settings/providers/${encodeURIComponent(originalId)}`, {
+      app,
+      provider,
+      apply,
+    });
   }
   return await http.post("/api/ai-settings/providers", { app, provider, apply });
 }
 
 export async function deleteAiSettingsProvider(
   app: AiSettingsApp,
-  id: string
+  id: string,
 ): Promise<AiSettingsSnapshot> {
   const qs = new URLSearchParams({ app }).toString();
-  return await http.delete(
-    `/api/ai-settings/providers/${encodeURIComponent(id)}?${qs}`
-  );
+  return await http.delete(`/api/ai-settings/providers/${encodeURIComponent(id)}?${qs}`);
 }
 
 export async function switchAiSettingsProvider(
   app: AiSettingsApp,
-  id: string
+  id: string,
 ): Promise<AiSettingsSnapshot> {
   return await http.post("/api/ai-settings/switch", { app, id });
 }
@@ -316,11 +361,11 @@ export async function killTerminal(id: string): Promise<void> {
 
 export async function listAgentSessions(
   app: AgentSessionApp,
-  workspaceId: string
+  workspaceId: string,
 ): Promise<AgentSessionSummary[]> {
   const query = new URLSearchParams({ app, workspaceId }).toString();
   const { sessions } = await http.get<{ sessions: AgentSessionSummary[] }>(
-    `/api/agent-sessions?${query}`
+    `/api/agent-sessions?${query}`,
   );
   return sessions;
 }
@@ -328,23 +373,23 @@ export async function listAgentSessions(
 export async function deleteAgentSession(
   app: AgentSessionApp,
   id: string,
-  workspaceId: string
+  workspaceId: string,
 ): Promise<void> {
   const query = new URLSearchParams({ workspaceId }).toString();
   await http.delete(
-    `/api/agent-sessions/${encodeURIComponent(app)}/${encodeURIComponent(id)}?${query}`
+    `/api/agent-sessions/${encodeURIComponent(app)}/${encodeURIComponent(id)}?${query}`,
   );
 }
 
 export async function batchDeleteAgentSessions(
   app: AgentSessionApp,
   ids: string[],
-  workspaceId: string
+  workspaceId: string,
 ): Promise<{ deleted: AgentSessionSummary[]; failed: Array<{ id: string; message: string }> }> {
-  return await http.post(
-    `/api/agent-sessions/${encodeURIComponent(app)}/batch-delete`,
-    { ids, workspaceId }
-  );
+  return await http.post(`/api/agent-sessions/${encodeURIComponent(app)}/batch-delete`, {
+    ids,
+    workspaceId,
+  });
 }
 
 export async function createAgentSessionTerminal(input: {
@@ -357,14 +402,14 @@ export async function createAgentSessionTerminal(input: {
 }): Promise<TerminalCreateResp> {
   return await http.post(
     `/api/agent-sessions/${encodeURIComponent(input.app)}/${encodeURIComponent(
-      input.sessionId
+      input.sessionId,
     )}/terminal`,
     {
       workspaceId: input.workspaceId,
       shell: input.shell,
       cols: input.cols,
       rows: input.rows,
-    }
+    },
   );
 }
 
@@ -385,7 +430,7 @@ export async function findFreeName(
   workspaceId: string,
   dir: string,
   baseName: string,
-  kind: "file" | "directory"
+  kind: "file" | "directory",
 ): Promise<string> {
   const siblings = await listTree(workspaceId, dir, true);
   const taken = new Set(siblings.map((e) => e.name));
@@ -407,7 +452,7 @@ export function dirOf(path: string): string {
 
 export function joinPath(parent: string, name: string): string {
   if (!parent) return name;
-  return parent + "/" + name;
+  return `${parent}/${name}`;
 }
 
 // ─── Search ───
@@ -445,7 +490,7 @@ export interface SearchResult {
 export async function searchWorkspace(
   workspaceId: string,
   query: string,
-  opts: SearchOptions = {}
+  opts: SearchOptions = {},
 ): Promise<SearchResult> {
   const q: Record<string, string> = { query };
   if (opts.caseSensitive) q.caseSensitive = "true";
@@ -454,12 +499,9 @@ export async function searchWorkspace(
   if (opts.include) q.include = opts.include;
   if (opts.exclude) q.exclude = opts.exclude;
   if (opts.maxFiles) q.maxFiles = String(opts.maxFiles);
-  if (opts.maxMatchesPerFile)
-    q.maxMatchesPerFile = String(opts.maxMatchesPerFile);
+  if (opts.maxMatchesPerFile) q.maxMatchesPerFile = String(opts.maxMatchesPerFile);
   const qs = new URLSearchParams(q).toString();
-  return await http.get(
-    `/api/workspaces/${encodeURIComponent(workspaceId)}/search?${qs}`
-  );
+  return await http.get(`/api/workspaces/${encodeURIComponent(workspaceId)}/search?${qs}`);
 }
 
 // ─── Git ───
@@ -507,31 +549,22 @@ export async function getGitStatus(workspaceId: string): Promise<GitStatus> {
   return await http.get(gitUrl(workspaceId, "/status"));
 }
 
-export async function gitStage(
-  workspaceId: string,
-  paths: string[]
-): Promise<void> {
+export async function gitStage(workspaceId: string, paths: string[]): Promise<void> {
   await http.post(gitUrl(workspaceId, "/stage"), { paths });
 }
 
-export async function gitUnstage(
-  workspaceId: string,
-  paths: string[]
-): Promise<void> {
+export async function gitUnstage(workspaceId: string, paths: string[]): Promise<void> {
   await http.post(gitUrl(workspaceId, "/unstage"), { paths });
 }
 
 export async function gitDiscard(
   workspaceId: string,
-  paths: string[]
+  paths: string[],
 ): Promise<{ discarded: string[] }> {
   return await http.post(gitUrl(workspaceId, "/discard"), { paths });
 }
 
-export async function gitCommit(
-  workspaceId: string,
-  message: string
-): Promise<{ head: string }> {
+export async function gitCommit(workspaceId: string, message: string): Promise<{ head: string }> {
   return await http.post(gitUrl(workspaceId, "/commit"), { message });
 }
 
@@ -543,7 +576,7 @@ export async function getGitDiff(
   workspaceId: string,
   path: string,
   base: "HEAD" | "INDEX" = "HEAD",
-  head: "INDEX" | "WORKTREE" = "WORKTREE"
+  head: "INDEX" | "WORKTREE" = "WORKTREE",
 ): Promise<GitDiff> {
   const qs = new URLSearchParams({ path, base, head }).toString();
   return await http.get(gitUrl(workspaceId, `/diff?${qs}`));
@@ -555,24 +588,15 @@ export interface GitRemote {
 }
 
 export async function listGitRemotes(workspaceId: string): Promise<GitRemote[]> {
-  const { remotes } = await http.get<{ remotes: GitRemote[] }>(
-    gitUrl(workspaceId, "/remotes")
-  );
+  const { remotes } = await http.get<{ remotes: GitRemote[] }>(gitUrl(workspaceId, "/remotes"));
   return remotes;
 }
 
-export async function addGitRemote(
-  workspaceId: string,
-  name: string,
-  url: string
-): Promise<void> {
+export async function addGitRemote(workspaceId: string, name: string, url: string): Promise<void> {
   await http.post(gitUrl(workspaceId, "/remotes"), { name, url });
 }
 
-export async function removeGitRemote(
-  workspaceId: string,
-  name: string
-): Promise<void> {
+export async function removeGitRemote(workspaceId: string, name: string): Promise<void> {
   await http.delete(gitUrl(workspaceId, `/remotes/${encodeURIComponent(name)}`));
 }
 
@@ -611,7 +635,7 @@ export async function getGitLog(
   workspaceId: string,
   limit = 200,
   offset = 0,
-  ref = "HEAD"
+  ref = "HEAD",
 ): Promise<GitLog> {
   const qs = new URLSearchParams({
     limit: String(limit),
@@ -638,16 +662,14 @@ export interface GitBranchesResp {
   branches: GitBranch[];
 }
 
-export async function listGitBranches(
-  workspaceId: string
-): Promise<GitBranchesResp> {
+export async function listGitBranches(workspaceId: string): Promise<GitBranchesResp> {
   return await http.get(gitUrl(workspaceId, "/branches"));
 }
 
 export async function gitCheckout(
   workspaceId: string,
   ref: string,
-  opts: { create?: boolean; fromRef?: string | null } = {}
+  opts: { create?: boolean; fromRef?: string | null } = {},
 ): Promise<void> {
   await http.post(gitUrl(workspaceId, "/checkout"), {
     ref,
@@ -659,14 +681,14 @@ export async function gitCheckout(
 export async function gitFetch(
   workspaceId: string,
   remote: string | null = null,
-  prune = false
+  prune = false,
 ): Promise<void> {
   await http.post(gitUrl(workspaceId, "/fetch"), { remote, prune });
 }
 
 export async function gitPull(
   workspaceId: string,
-  opts: { remote?: string | null; branch?: string | null; ffOnly?: boolean } = {}
+  opts: { remote?: string | null; branch?: string | null; ffOnly?: boolean } = {},
 ): Promise<void> {
   await http.post(gitUrl(workspaceId, "/pull"), {
     remote: opts.remote ?? null,
@@ -682,7 +704,7 @@ export async function gitPush(
     branch?: string | null;
     setUpstream?: boolean;
     force?: boolean;
-  } = {}
+  } = {},
 ): Promise<void> {
   await http.post(gitUrl(workspaceId, "/push"), {
     remote: opts.remote ?? null,
@@ -705,34 +727,23 @@ const agentsUrl = (id: string, suffix = "") =>
   `/api/workspaces/${encodeURIComponent(id)}/agents${suffix}`;
 
 export async function listAgents(workspaceId: string): Promise<AgentRecord[]> {
-  const { agents } = await http.get<{ agents: AgentRecord[] }>(
-    agentsUrl(workspaceId)
-  );
+  const { agents } = await http.get<{ agents: AgentRecord[] }>(agentsUrl(workspaceId));
   return agents;
 }
 
-export async function createAgent(
-  workspaceId: string,
-  agent: AgentRecord
-): Promise<void> {
+export async function createAgent(workspaceId: string, agent: AgentRecord): Promise<void> {
   await http.post(agentsUrl(workspaceId), agent);
 }
 
 export async function updateAgent(
   workspaceId: string,
   originalName: string,
-  agent: AgentRecord
+  agent: AgentRecord,
 ): Promise<void> {
-  await http.put(
-    agentsUrl(workspaceId, `/${encodeURIComponent(originalName)}`),
-    agent
-  );
+  await http.put(agentsUrl(workspaceId, `/${encodeURIComponent(originalName)}`), agent);
 }
 
-export async function deleteAgent(
-  workspaceId: string,
-  name: string
-): Promise<void> {
+export async function deleteAgent(workspaceId: string, name: string): Promise<void> {
   await http.delete(agentsUrl(workspaceId, `/${encodeURIComponent(name)}`));
 }
 
@@ -793,48 +804,31 @@ export interface SessionSummary {
 const sessionsUrl = (id: string, suffix = "") =>
   `/api/workspaces/${encodeURIComponent(id)}/sessions${suffix}`;
 
-export async function listSessions(
-  workspaceId: string
-): Promise<SessionSummary[]> {
-  const { sessions } = await http.get<{ sessions: SessionSummary[] }>(
-    sessionsUrl(workspaceId)
-  );
+export async function listSessions(workspaceId: string): Promise<SessionSummary[]> {
+  const { sessions } = await http.get<{ sessions: SessionSummary[] }>(sessionsUrl(workspaceId));
   return sessions;
 }
 
-export async function getSession(
-  workspaceId: string,
-  sessionId: string
-): Promise<SessionRecord> {
-  return await http.get(
-    sessionsUrl(workspaceId, `/${encodeURIComponent(sessionId)}`)
-  );
+export async function getSession(workspaceId: string, sessionId: string): Promise<SessionRecord> {
+  return await http.get(sessionsUrl(workspaceId, `/${encodeURIComponent(sessionId)}`));
 }
 
 export async function createSession(
   workspaceId: string,
-  partial: Partial<SessionRecord> = {}
+  partial: Partial<SessionRecord> = {},
 ): Promise<SessionRecord> {
   return await http.post(sessionsUrl(workspaceId), partial);
 }
 
 export async function saveSession(
   workspaceId: string,
-  record: SessionRecord
+  record: SessionRecord,
 ): Promise<SessionRecord> {
-  return await http.put(
-    sessionsUrl(workspaceId, `/${encodeURIComponent(record.id)}`),
-    record
-  );
+  return await http.put(sessionsUrl(workspaceId, `/${encodeURIComponent(record.id)}`), record);
 }
 
-export async function deleteSession(
-  workspaceId: string,
-  sessionId: string
-): Promise<void> {
-  await http.delete(
-    sessionsUrl(workspaceId, `/${encodeURIComponent(sessionId)}`)
-  );
+export async function deleteSession(workspaceId: string, sessionId: string): Promise<void> {
+  await http.delete(sessionsUrl(workspaceId, `/${encodeURIComponent(sessionId)}`));
 }
 
 // Codex Plugins
@@ -884,22 +878,17 @@ export async function getCodexPlugins(): Promise<CodexPluginSnapshot> {
   return await http.get("/api/codex-plugins");
 }
 
-export async function installCodexPluginApi(
-  selector: string
-): Promise<CodexPluginSnapshot> {
-  const result = await http.post<{ snapshot: CodexPluginSnapshot }>(
-    "/api/codex-plugins/install",
-    { selector }
-  );
+export async function installCodexPluginApi(selector: string): Promise<CodexPluginSnapshot> {
+  const result = await http.post<{ snapshot: CodexPluginSnapshot }>("/api/codex-plugins/install", {
+    selector,
+  });
   return result.snapshot;
 }
 
-export async function uninstallCodexPluginApi(
-  selector: string
-): Promise<CodexPluginSnapshot> {
+export async function uninstallCodexPluginApi(selector: string): Promise<CodexPluginSnapshot> {
   const result = await http.post<{ snapshot: CodexPluginSnapshot }>(
     "/api/codex-plugins/uninstall",
-    { selector }
+    { selector },
   );
   return result.snapshot;
 }
@@ -912,30 +901,24 @@ export async function createLocalCodexPluginApi(input: {
   return await http.post("/api/codex-plugins/local", input);
 }
 
-export async function importLocalCodexPluginApi(
-  path: string
-): Promise<CodexPluginSnapshot> {
+export async function importLocalCodexPluginApi(path: string): Promise<CodexPluginSnapshot> {
   return await http.post("/api/codex-plugins/import-local", { path });
 }
 
 export async function removeLocalCodexPluginApi(
   name: string,
-  deleteSource: boolean
+  deleteSource: boolean,
 ): Promise<CodexPluginSnapshot> {
   const qs = new URLSearchParams({
     deleteSource: deleteSource ? "true" : "false",
   }).toString();
-  return await http.delete(
-    `/api/codex-plugins/local/${encodeURIComponent(name)}?${qs}`
-  );
+  return await http.delete(`/api/codex-plugins/local/${encodeURIComponent(name)}?${qs}`);
 }
 
-export async function addCodexMarketplaceApi(
-  source: string
-): Promise<CodexPluginSnapshot> {
+export async function addCodexMarketplaceApi(source: string): Promise<CodexPluginSnapshot> {
   const result = await http.post<{ snapshot: CodexPluginSnapshot }>(
     "/api/codex-plugins/marketplaces",
-    { source }
+    { source },
   );
   return result.snapshot;
 }
@@ -992,52 +975,41 @@ export async function getClaudePlugins(): Promise<ClaudePluginSnapshot> {
   return await http.get("/api/claude-plugins");
 }
 
-export async function installClaudePluginApi(
-  selector: string
-): Promise<ClaudePluginSnapshot> {
+export async function installClaudePluginApi(selector: string): Promise<ClaudePluginSnapshot> {
   const result = await http.post<{ snapshot: ClaudePluginSnapshot }>(
     "/api/claude-plugins/install",
-    { selector }
+    { selector },
   );
   return result.snapshot;
 }
 
-export async function uninstallClaudePluginApi(
-  selector: string
-): Promise<ClaudePluginSnapshot> {
+export async function uninstallClaudePluginApi(selector: string): Promise<ClaudePluginSnapshot> {
   const result = await http.post<{ snapshot: ClaudePluginSnapshot }>(
     "/api/claude-plugins/uninstall",
-    { selector }
+    { selector },
   );
   return result.snapshot;
 }
 
-export async function enableClaudePluginApi(
-  selector: string
-): Promise<ClaudePluginSnapshot> {
-  const result = await http.post<{ snapshot: ClaudePluginSnapshot }>(
-    "/api/claude-plugins/enable",
-    { selector }
-  );
+export async function enableClaudePluginApi(selector: string): Promise<ClaudePluginSnapshot> {
+  const result = await http.post<{ snapshot: ClaudePluginSnapshot }>("/api/claude-plugins/enable", {
+    selector,
+  });
   return result.snapshot;
 }
 
-export async function disableClaudePluginApi(
-  selector: string
-): Promise<ClaudePluginSnapshot> {
+export async function disableClaudePluginApi(selector: string): Promise<ClaudePluginSnapshot> {
   const result = await http.post<{ snapshot: ClaudePluginSnapshot }>(
     "/api/claude-plugins/disable",
-    { selector }
+    { selector },
   );
   return result.snapshot;
 }
 
-export async function addClaudeMarketplaceApi(
-  source: string
-): Promise<ClaudePluginSnapshot> {
+export async function addClaudeMarketplaceApi(source: string): Promise<ClaudePluginSnapshot> {
   const result = await http.post<{ snapshot: ClaudePluginSnapshot }>(
     "/api/claude-plugins/marketplaces",
-    { source }
+    { source },
   );
   return result.snapshot;
 }
@@ -1069,12 +1041,7 @@ export type WorkflowNodeKind =
   | "codex-plugin"
   | "claude-plugin";
 export type WorkflowNodeStatus = "idle" | "running" | "success" | "error";
-export type WorkflowRunStatus =
-  | "idle"
-  | "running"
-  | "success"
-  | "error"
-  | "stopped";
+export type WorkflowRunStatus = "idle" | "running" | "success" | "error" | "stopped";
 
 export interface WorkflowNode {
   id: string;
@@ -1139,68 +1106,51 @@ export interface WorkflowSummary {
 const workflowsUrl = (id: string, suffix = "") =>
   `/api/workspaces/${encodeURIComponent(id)}/workflows${suffix}`;
 
-export async function listWorkflows(
-  workspaceId: string
-): Promise<WorkflowSummary[]> {
-  const { workflows } = await http.get<{ workflows: WorkflowSummary[] }>(
-    workflowsUrl(workspaceId)
-  );
+export async function listWorkflows(workspaceId: string): Promise<WorkflowSummary[]> {
+  const { workflows } = await http.get<{ workflows: WorkflowSummary[] }>(workflowsUrl(workspaceId));
   return workflows;
 }
 
 export async function getWorkflow(
   workspaceId: string,
-  workflowId: string
+  workflowId: string,
 ): Promise<WorkflowRecord> {
-  return await http.get(
-    workflowsUrl(workspaceId, `/${encodeURIComponent(workflowId)}`)
-  );
+  return await http.get(workflowsUrl(workspaceId, `/${encodeURIComponent(workflowId)}`));
 }
 
 export async function createWorkflow(
   workspaceId: string,
-  partial: Partial<WorkflowRecord> = {}
+  partial: Partial<WorkflowRecord> = {},
 ): Promise<WorkflowRecord> {
   return await http.post(workflowsUrl(workspaceId), partial);
 }
 
 export async function saveWorkflow(
   workspaceId: string,
-  record: WorkflowRecord
+  record: WorkflowRecord,
 ): Promise<WorkflowRecord> {
-  return await http.put(
-    workflowsUrl(workspaceId, `/${encodeURIComponent(record.id)}`),
-    record
-  );
+  return await http.put(workflowsUrl(workspaceId, `/${encodeURIComponent(record.id)}`), record);
 }
 
 export async function runWorkflow(
   workspaceId: string,
   workflowId: string,
-  nodeIds?: string[]
+  nodeIds?: string[],
 ): Promise<{ runId: string; workflow: WorkflowRecord }> {
-  return await http.post(
-    workflowsUrl(workspaceId, `/${encodeURIComponent(workflowId)}/run`),
-    { nodeIds }
-  );
+  return await http.post(workflowsUrl(workspaceId, `/${encodeURIComponent(workflowId)}/run`), {
+    nodeIds,
+  });
 }
 
 export async function stopWorkflow(
   workspaceId: string,
-  workflowId: string
+  workflowId: string,
 ): Promise<{ ok: boolean; stopped: boolean }> {
-  return await http.post(
-    workflowsUrl(workspaceId, `/${encodeURIComponent(workflowId)}/stop`)
-  );
+  return await http.post(workflowsUrl(workspaceId, `/${encodeURIComponent(workflowId)}/stop`));
 }
 
-export async function deleteWorkflow(
-  workspaceId: string,
-  workflowId: string
-): Promise<void> {
-  await http.delete(
-    workflowsUrl(workspaceId, `/${encodeURIComponent(workflowId)}`)
-  );
+export async function deleteWorkflow(workspaceId: string, workflowId: string): Promise<void> {
+  await http.delete(workflowsUrl(workspaceId, `/${encodeURIComponent(workflowId)}`));
 }
 
 // ─── AI proxy ───
@@ -1246,58 +1196,50 @@ export async function getTemplateCapabilities(): Promise<{
 
 export async function getWorkflowTemplate(
   source: TemplateSource,
-  templateId: string
+  templateId: string,
 ): Promise<WorkflowTemplate> {
-  return await http.get(
-    `/api/templates/${source}/${encodeURIComponent(templateId)}`
-  );
+  return await http.get(`/api/templates/${source}/${encodeURIComponent(templateId)}`);
 }
 
 export async function saveWorkflowAsTemplate(
   workspaceId: string,
-  workflowId: string
+  workflowId: string,
 ): Promise<WorkflowTemplate> {
-  return await http.post(
-    workflowsUrl(workspaceId, `/${encodeURIComponent(workflowId)}/template`)
-  );
+  return await http.post(workflowsUrl(workspaceId, `/${encodeURIComponent(workflowId)}/template`));
 }
 
 export async function saveWorkflowAsSystemTemplate(
   workspaceId: string,
-  workflowId: string
+  workflowId: string,
 ): Promise<WorkflowTemplate> {
   return await http.post(
-    workflowsUrl(
-      workspaceId,
-      `/${encodeURIComponent(workflowId)}/system-template`
-    )
+    workflowsUrl(workspaceId, `/${encodeURIComponent(workflowId)}/system-template`),
   );
 }
 
 export async function editWorkflowTemplate(
   workspaceId: string,
   source: TemplateSource,
-  templateId: string
+  templateId: string,
 ): Promise<WorkflowRecord> {
   return await http.post(
-    `/api/workspaces/${encodeURIComponent(workspaceId)}/templates/${source}/${encodeURIComponent(templateId)}/edit`
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/templates/${source}/${encodeURIComponent(templateId)}/edit`,
   );
 }
 
 export async function updateWorkflowTemplateIcon(
   source: TemplateSource,
   templateId: string,
-  icon: string
+  icon: string,
 ): Promise<WorkflowTemplate> {
-  return await http.put(
-    `/api/templates/${source}/${encodeURIComponent(templateId)}/icon`,
-    { icon }
-  );
+  return await http.put(`/api/templates/${source}/${encodeURIComponent(templateId)}/icon`, {
+    icon,
+  });
 }
 
 export async function deleteWorkflowTemplate(
   source: TemplateSource,
-  templateId: string
+  templateId: string,
 ): Promise<void> {
   await http.delete(`/api/templates/${source}/${encodeURIComponent(templateId)}`);
 }
@@ -1341,7 +1283,7 @@ const mcpUrl = (id: string, suffix: string) =>
 
 export async function discoverRemoteMcp(
   workspaceId: string,
-  input: RemoteMcpConnectionInput
+  input: RemoteMcpConnectionInput,
 ): Promise<RemoteMcpDiscovery> {
   return await http.post(mcpUrl(workspaceId, "/discover"), input);
 }
@@ -1351,7 +1293,7 @@ export async function callRemoteMcp(
   input: RemoteMcpConnectionInput & {
     name: string;
     arguments?: Record<string, unknown>;
-  }
+  },
 ): Promise<RemoteMcpCallResult> {
   return await http.post(mcpUrl(workspaceId, "/call"), input);
 }
@@ -1365,11 +1307,11 @@ export interface AiChatMessage {
 
 export async function fetchProviderModels(
   workspaceId: string,
-  kind: "claude-cli" | "codex-cli" = "claude-cli"
+  kind: "claude-cli" | "codex-cli" = "claude-cli",
 ): Promise<string[]> {
   const { models } = await http.post<{ models: string[] }>(
     `/api/workspaces/${encodeURIComponent(workspaceId)}/ai/models`,
-    { kind }
+    { kind },
   );
   return models;
 }
@@ -1380,12 +1322,9 @@ export async function aiChat(
     model: string;
     messages: AiChatMessage[];
     kind?: "claude-cli" | "codex-cli";
-  }
+  },
 ): Promise<{ content: string }> {
-  return await http.post(
-    `/api/workspaces/${encodeURIComponent(workspaceId)}/ai/chat`,
-    input
-  );
+  return await http.post(`/api/workspaces/${encodeURIComponent(workspaceId)}/ai/chat`, input);
 }
 
 /**
@@ -1409,15 +1348,13 @@ async function aiChatStreamOnce(
   onDelta: (chunk: string) => void,
   signal?: AbortSignal,
   onReasoningDelta?: (chunk: string) => void,
-  onLog?: (entry: { stream: "stdout" | "stderr"; content: string }) => void
+  onLog?: (entry: { stream: "stdout" | "stderr"; content: string }) => void,
 ): Promise<{ content: string; aborted: boolean }> {
-  const url = `/api/workspaces/${encodeURIComponent(
-    workspaceId
-  )}/ai/chat/stream`;
+  const url = `/api/workspaces/${encodeURIComponent(workspaceId)}/ai/chat/stream`;
 
   let res: Response;
   try {
-    res = await fetch(url, {
+    res = await apiFetch(url, {
       method: "POST",
       signal,
       headers: {
@@ -1482,7 +1419,10 @@ async function aiChatStreamOnce(
           stream?: "stdout" | "stderr";
           content?: string;
         };
-        if ((obj.stream === "stdout" || obj.stream === "stderr") && typeof obj.content === "string") {
+        if (
+          (obj.stream === "stdout" || obj.stream === "stderr") &&
+          typeof obj.content === "string"
+        ) {
           onLog?.({ stream: obj.stream, content: obj.content });
         }
       } catch {
@@ -1521,7 +1461,7 @@ async function aiChatStreamOnce(
         } else if (line.startsWith("data:")) {
           // Append (in case of multi-line data  - rare here but safe)
           const piece = line.slice(5).trimStart();
-          dataLine = dataLine ? dataLine + "\n" + piece : piece;
+          dataLine = dataLine ? `${dataLine}\n${piece}` : piece;
         }
       }
     }
@@ -1558,7 +1498,7 @@ export async function aiChatStream(
   onDelta: (chunk: string) => void,
   signal?: AbortSignal,
   onReasoningDelta?: (chunk: string) => void,
-  onLog?: (entry: { stream: "stdout" | "stderr"; content: string }) => void
+  onLog?: (entry: { stream: "stdout" | "stderr"; content: string }) => void,
 ): Promise<{ content: string; aborted: boolean }> {
   const maxRetries = 3;
   const maxAttempts = 1 + maxRetries;
@@ -1578,7 +1518,7 @@ export async function aiChatStream(
           emitted = true;
           onReasoningDelta?.(chunk);
         },
-        onLog
+        onLog,
       );
       return result;
     } catch (e) {
@@ -1597,18 +1537,18 @@ export interface AiTerminalFrame {
   sessionId?: string;
   data?: string;
   status?:
-      | "starting"
-      | "waiting-for-input"
-      | "ready"
-      | "prompt-injected"
-      | "prompt-sent"
-      | "prompt-timeout"
-      | "waiting-for-choice"
-      | "ready-for-success"
-      | "auto-error"
-      | "auto-finished"
-      | "manual-success"
-      | "exited";
+    | "starting"
+    | "waiting-for-input"
+    | "ready"
+    | "prompt-injected"
+    | "prompt-sent"
+    | "prompt-timeout"
+    | "waiting-for-choice"
+    | "ready-for-success"
+    | "auto-error"
+    | "auto-finished"
+    | "manual-success"
+    | "exited";
   code?: number | null;
   signal?: number | string | null;
 }
@@ -1661,12 +1601,12 @@ export async function aiChatTerminalStream(
     resumeConversation?: boolean;
   },
   onFrame: (frame: AiTerminalFrame) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
 ): Promise<{ result: AiTerminalResult | null; aborted: boolean }> {
   const url = `/api/workspaces/${encodeURIComponent(workspaceId)}/ai/chat/terminal`;
   let res: Response;
   try {
-    res = await fetch(url, {
+    res = await apiFetch(url, {
       method: "POST",
       signal,
       headers: {
@@ -1748,7 +1688,7 @@ export async function aiChatTerminalStream(
           event = line.slice(6).trim();
         } else if (line.startsWith("data:")) {
           const piece = line.slice(5).trimStart();
-          dataLine = dataLine ? dataLine + "\n" + piece : piece;
+          dataLine = dataLine ? `${dataLine}\n${piece}` : piece;
         }
       }
     }
@@ -1776,72 +1716,66 @@ export async function aiChatTerminalStream(
 export async function injectAiTerminalPrompt(
   workspaceId: string,
   sessionId: string,
-  options?: { submit?: boolean }
+  options?: { submit?: boolean },
 ): Promise<void> {
   await http.post(
     `/api/workspaces/${encodeURIComponent(workspaceId)}/ai/chat/terminal/${encodeURIComponent(
-      sessionId
+      sessionId,
     )}/inject`,
-    options ?? {}
+    options ?? {},
   );
 }
 
 export async function setAiTerminalAutoContinue(
   workspaceId: string,
   sessionId: string,
-  autoContinue: boolean
+  autoContinue: boolean,
 ): Promise<void> {
   await http.post(
     `/api/workspaces/${encodeURIComponent(workspaceId)}/ai/chat/terminal/${encodeURIComponent(
-      sessionId
+      sessionId,
     )}/auto-continue`,
-    { autoContinue }
+    { autoContinue },
   );
 }
 
 export async function setAiTerminalAutoSuccess(
   workspaceId: string,
   sessionId: string,
-  autoSuccess: boolean
+  autoSuccess: boolean,
 ): Promise<void> {
   await http.post(
     `/api/workspaces/${encodeURIComponent(workspaceId)}/ai/chat/terminal/${encodeURIComponent(
-      sessionId
+      sessionId,
     )}/auto-success`,
-    { autoSuccess }
+    { autoSuccess },
   );
 }
 
-export async function pauseAiTerminal(
-  workspaceId: string,
-  sessionId: string
-): Promise<void> {
+export async function pauseAiTerminal(workspaceId: string, sessionId: string): Promise<void> {
   await http.post(
     `/api/workspaces/${encodeURIComponent(workspaceId)}/ai/chat/terminal/${encodeURIComponent(
-      sessionId
-    )}/pause`
+      sessionId,
+    )}/pause`,
   );
 }
 
 export async function finishAiTerminalSuccess(
   workspaceId: string,
-  sessionId: string
+  sessionId: string,
 ): Promise<void> {
   await http.post(
     `/api/workspaces/${encodeURIComponent(workspaceId)}/ai/chat/terminal/${encodeURIComponent(
-      sessionId
-    )}/success`
+      sessionId,
+    )}/success`,
   );
 }
 
-export async function continueAiTerminal(
-  workspaceId: string,
-  sessionId: string
-): Promise<void> {
+export async function continueAiTerminal(workspaceId: string, sessionId: string): Promise<void> {
   await http.post(
     `/api/workspaces/${encodeURIComponent(workspaceId)}/ai/chat/terminal/${encodeURIComponent(
-      sessionId
-    )}/continue`
+      sessionId,
+    )}/continue`,
   );
 }
 
@@ -1863,7 +1797,7 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
         window.clearTimeout(id);
         resolve();
       },
-      { once: true }
+      { once: true },
     );
   });
 }
@@ -1878,7 +1812,11 @@ export interface ReadFileArgs {
   startLine?: number;
   lineCount?: number;
 }
-export interface ReadListArgs { kind: "list"; path: string; includeHidden?: boolean }
+export interface ReadListArgs {
+  kind: "list";
+  path: string;
+  includeHidden?: boolean;
+}
 export interface ReadSearchArgs {
   kind: "search";
   query: string;
@@ -1893,7 +1831,11 @@ export interface WriteFileArgs {
   content: string;
   createParents?: boolean;
 }
-export interface AppendFileArgs { kind: "append_file"; path: string; content: string }
+export interface AppendFileArgs {
+  kind: "append_file";
+  path: string;
+  content: string;
+}
 export interface EditFileArgs {
   kind: "edit_file";
   path: string;
@@ -1905,8 +1847,16 @@ export interface MultiEditArgs {
   path: string;
   edits: Array<{ oldString: string; newString: string }>;
 }
-export interface MoveArgs { kind: "move"; from: string; to: string }
-export interface DeleteArgs { kind: "delete"; path: string; recursive?: boolean }
+export interface MoveArgs {
+  kind: "move";
+  from: string;
+  to: string;
+}
+export interface DeleteArgs {
+  kind: "delete";
+  path: string;
+  recursive?: boolean;
+}
 export interface CreateArgs {
   kind: "create";
   path: string;
@@ -2010,34 +1960,16 @@ export interface MultiEditResult {
   diff: MultiEditDiff;
 }
 
-export async function execRead(
-  workspaceId: string,
-  args: ReadArgs
-): Promise<unknown> {
-  return await http.post(
-    `/api/workspaces/${encodeURIComponent(workspaceId)}/ai/exec/read`,
-    args
-  );
+export async function execRead(workspaceId: string, args: ReadArgs): Promise<unknown> {
+  return await http.post(`/api/workspaces/${encodeURIComponent(workspaceId)}/ai/exec/read`, args);
 }
 
-export async function execWrite(
-  workspaceId: string,
-  args: WriteArgs
-): Promise<unknown> {
-  return await http.post(
-    `/api/workspaces/${encodeURIComponent(workspaceId)}/ai/exec/write`,
-    args
-  );
+export async function execWrite(workspaceId: string, args: WriteArgs): Promise<unknown> {
+  return await http.post(`/api/workspaces/${encodeURIComponent(workspaceId)}/ai/exec/write`, args);
 }
 
-export async function execRun(
-  workspaceId: string,
-  args: RunArgs
-): Promise<RunResult> {
-  return await http.post(
-    `/api/workspaces/${encodeURIComponent(workspaceId)}/ai/exec/run`,
-    args
-  );
+export async function execRun(workspaceId: string, args: RunArgs): Promise<RunResult> {
+  return await http.post(`/api/workspaces/${encodeURIComponent(workspaceId)}/ai/exec/run`, args);
 }
 
 export async function execRunStream(
@@ -2046,12 +1978,12 @@ export async function execRunStream(
   options: {
     signal?: AbortSignal;
     onLog?: (entry: { stream: "stdout" | "stderr"; content: string; shell?: string }) => void;
-  } = {}
+  } = {},
 ): Promise<{ result: RunResult | null; aborted: boolean }> {
   const url = `/api/workspaces/${encodeURIComponent(workspaceId)}/ai/exec/run/stream`;
   let res: Response;
   try {
-    res = await fetch(url, {
+    res = await apiFetch(url, {
       method: "POST",
       signal: options.signal,
       headers: {
@@ -2096,7 +2028,10 @@ export async function execRunStream(
           content?: string;
           shell?: string;
         };
-        if ((obj.stream === "stdout" || obj.stream === "stderr") && typeof obj.content === "string") {
+        if (
+          (obj.stream === "stdout" || obj.stream === "stderr") &&
+          typeof obj.content === "string"
+        ) {
           options.onLog?.({ stream: obj.stream, content: obj.content, shell: obj.shell });
         }
       } catch {
@@ -2140,7 +2075,7 @@ export async function execRunStream(
           event = line.slice(6).trim();
         } else if (line.startsWith("data:")) {
           const piece = line.slice(5).trimStart();
-          dataLine = dataLine ? dataLine + "\n" + piece : piece;
+          dataLine = dataLine ? `${dataLine}\n${piece}` : piece;
         }
       }
     }
@@ -2188,11 +2123,7 @@ export interface OsheepCodeStreamHandlers {
    */
   onThought?: (id: string, text: string) => void;
   onTextDelta?: (chunk: string) => void;
-  onToolCall?: (call: {
-    id: string;
-    tool: ToolKind;
-    args: unknown;
-  }) => void;
+  onToolCall?: (call: { id: string; tool: ToolKind; args: unknown }) => void;
   onAsk?: (ask: { id: string; question: string; options: string[] }) => void;
   onVerify?: (text: string) => void;
 }
@@ -2401,9 +2332,7 @@ class TagStreamParser {
    *   "skip"  - pattern didn't match cleanly; let normal text handling resume
    */
   private tryConsumeBareToolCall(): "ok" | "wait" | "skip" {
-    const m = this.buffer.match(
-      /^\s*(Read|Write|Run|read|write|run)\s*\r?\n\s*\{/
-    );
+    const m = this.buffer.match(/^\s*(Read|Write|Run|read|write|run)\s*\r?\n\s*\{/);
     if (!m) return "skip";
     const openIdx = m[0].length - 1; // index of `{` in the buffer
     const closeIdx = findMatchingBrace(this.buffer, openIdx);
@@ -2515,7 +2444,7 @@ class TagStreamParser {
         .split(/\n+/)
         .map((l) => l.replace(/\s+$/, ""))
         .map((l) => l.replace(/^\s+/, ""))
-        .map((l) => l.replace(/^[\d]+[\.\)、]\s*(?=\[)/, "- "))
+        .map((l) => l.replace(/^[\d]+[.)、]\s*(?=\[)/, "- "))
         .filter((l) => l.length > 0);
       this.h.onPlan?.(items);
     } else if (this.state === "in_thought") {
@@ -2562,9 +2491,7 @@ class TagStreamParser {
  *     `A.` / `B.` / `1.` / `-` etc. as options. This catches models that
  *     forget the JSON shape (rare but cheap to support).
  */
-function parseAskBody(
-  raw: string
-): { question: string; options: string[] } | null {
+function parseAskBody(raw: string): { question: string; options: string[] } | null {
   const trimmed = raw.trim();
   if (!trimmed) return null;
   // JSON path
@@ -2574,8 +2501,7 @@ function parseAskBody(
         question?: unknown;
         options?: unknown;
       };
-      const question =
-        typeof obj.question === "string" ? obj.question.trim() : "";
+      const question = typeof obj.question === "string" ? obj.question.trim() : "";
       const opts = Array.isArray(obj.options)
         ? obj.options
             .filter((o): o is string => typeof o === "string")
@@ -2648,16 +2574,16 @@ function findMatchingBrace(s: string, openIdx: number): number {
   if (s[openIdx] !== "{") return -1;
   let depth = 0;
   let inStr = false;
-  let escape = false;
+  let escaping = false;
   for (let i = openIdx; i < s.length; i += 1) {
     const c = s[i]!;
-    if (escape) {
-      escape = false;
+    if (escaping) {
+      escaping = false;
       continue;
     }
     if (inStr) {
       if (c === "\\") {
-        escape = true;
+        escaping = true;
         continue;
       }
       if (c === '"') {
@@ -2693,7 +2619,7 @@ export async function aiChatStreamOsheepCode(
     reasoning?: { effort: "off" | "minimal" | "low" | "medium" | "high" };
   },
   handlers: OsheepCodeStreamHandlers,
-  signal?: AbortSignal
+  signal?: AbortSignal,
 ): Promise<{ rawAcc: string; aborted: boolean }> {
   const parser = new TagStreamParser(handlers);
   let rawAcc = "";
@@ -2707,7 +2633,7 @@ export async function aiChatStreamOsheepCode(
     signal,
     (delta) => {
       parser.feedReasoning(delta);
-    }
+    },
   );
   parser.finish();
   // `content` and `rawAcc` should match; keep `rawAcc` since it's the one we

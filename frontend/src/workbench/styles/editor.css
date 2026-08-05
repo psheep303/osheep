@@ -1,0 +1,331 @@
+/* ==== Main / Editor ==== */
+
+.main {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg-editor);
+}
+
+.editor-area {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.tabs {
+  display: flex;
+  align-items: stretch;
+  background: var(--bg-shell);
+  height: 35px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border-faint);
+  overflow: hidden;
+}
+
+.tabs__list {
+  flex: 1 1 auto;
+  display: flex;
+  overflow-x: auto;
+  overflow-y: hidden;
+  min-width: 0;
+}
+
+.tabs__list::-webkit-scrollbar {
+  height: 3px;
+}
+
+.tabs__trailing {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  border-left: 1px solid var(--border-faint);
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px 0 12px;
+  background: var(--bg-shell);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  color: rgba(255, 255, 255, 0.5);
+  height: 35px;
+  border-right: 1px solid var(--border-faint);
+}
+
+.tab.is-active {
+  background: var(--bg-editor);
+  color: var(--fg-strong);
+  position: relative;
+}
+
+.tab.is-active::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: var(--accent);
+}
+
+.tab.is-deleted .tab__name {
+  text-decoration: line-through;
+  font-style: italic;
+  opacity: 0.7;
+}
+
+.tab__close {
+  opacity: 0;
+  font-size: 16px;
+  width: 16px;
+  text-align: center;
+  border-radius: var(--radius-sm);
+  line-height: 1;
+  transition: background-color var(--duration-fast) ease, color var(--duration-fast) ease,
+    opacity var(--duration-fast) ease;
+}
+.tab:hover .tab__close,
+.tab.is-active .tab__close {
+  opacity: 0.7;
+}
+.tab__close:hover {
+  opacity: 1 !important;
+  background: var(--bg-hover);
+  color: var(--fg-strong);
+}
+
+.editor-host {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  background: var(--bg-editor);
+  position: relative;
+}
+
+.editor-host__source,
+.editor-host__preview {
+  position: relative;
+  height: 100%;
+  width: 100%;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.editor-host__preview {
+  overflow: auto;
+}
+
+.preview-toggle {
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: var(--fg-default);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background-color var(--duration-fast) ease, color var(--duration-fast) ease,
+    border-color var(--duration-fast) ease;
+}
+.preview-toggle:hover {
+  background: var(--bg-hover);
+  color: var(--fg-strong);
+}
+
+.empty-hint {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--fg-faint);
+  font-size: 13px;
+  padding: 20px;
+  text-align: center;
+}
+
+.muted {
+  color: var(--fg-faint);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* ==== Bottom Panel ==== */
+
+.bottom {
+  background: var(--bg-shell);
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  border-top: 1px solid var(--border-faint);
+}
+
+/* When collapsed via toggle/drag, we keep the panel mounted so terminal
+   sessions survive 鈥?visibility is just turned off and height clamped to 0. */
+.bottom.is-hidden {
+  border-top-color: transparent;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.bottom-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.bottom-panel__tabs {
+  display: flex;
+  align-items: center;
+  height: 35px;
+  padding: 0 12px;
+  gap: 14px;
+  flex-shrink: 0;
+}
+
+.bottom-panel__tab {
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.5);
+  cursor: pointer;
+  padding: 4px 0;
+}
+.bottom-panel__tab.is-active {
+  color: var(--fg-strong);
+  border-bottom: 1px solid var(--fg-strong);
+}
+
+.bottom-panel__close {
+  margin-left: auto;
+}
+
+.bottom-panel__body {
+  flex: 1 1 auto;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  font-size: 12px;
+}
+
+/* ==== Resizers ==== */
+
+.resizer {
+  flex-shrink: 0;
+  background: var(--border-faint);
+  transition: background 0.12s ease 0.05s;
+  position: relative;
+  z-index: 5;
+}
+
+.resizer--x {
+  width: 1px;
+  cursor: col-resize;
+}
+
+.resizer--x::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -3px;
+  right: -3px;
+}
+
+.resizer--y {
+  height: 1px;
+  cursor: row-resize;
+}
+
+.resizer--y::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -3px;
+  bottom: -3px;
+}
+
+.resizer:hover {
+  background: var(--accent);
+}
+
+/* ==== Context Menu ==== */
+
+.ctx-menu {
+  position: fixed;
+  z-index: 1000;
+  background: var(--surface-2);
+  border: 1px solid #454545;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.36),
+    0 8px 24px rgba(0, 0, 0, 0.24);
+  min-width: 320px;
+  padding: 4px 0;
+  font-size: 13px;
+  user-select: none;
+  color: var(--fg-default);
+}
+
+.ctx-menu__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 26px;
+  height: 26px;
+  cursor: pointer;
+  gap: 24px;
+  transition: background-color var(--duration-fast) ease, color var(--duration-fast) ease;
+}
+
+.ctx-menu__item:hover:not(.is-disabled) {
+  background: var(--accent);
+  color: var(--fg-strong);
+}
+
+.ctx-menu__item:hover:not(.is-disabled) .ctx-menu__shortcut {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.ctx-menu__item.is-disabled {
+  color: #6e6e6e;
+  cursor: default;
+}
+
+.ctx-menu__item.is-danger:hover:not(.is-disabled) {
+  background: #c4314b;
+}
+
+.ctx-menu__label {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ctx-menu__shortcut {
+  color: #9d9d9d;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.ctx-menu__sep {
+  height: 1px;
+  background: var(--border-subtle);
+  margin: 4px 0;
+}
+
