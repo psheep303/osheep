@@ -11,13 +11,21 @@ export interface Config {
   maxTerminalSessions: number;
   terminalIdleTimeoutMs: number;
   agentStallTimeoutMs: number;
-  corsOrigin: string;
+  corsOrigins: string[];
+  authToken?: string;
   templatesRoot: string;
   systemTemplatesRoot: string;
   developerMode: boolean;
   frontendRoot?: string;
   allowExternalWorkspacePaths: boolean;
   workspaceRootConfigFile?: string;
+}
+
+function readEnvList(key: string): string[] {
+  return (process.env[key] ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
 }
 
 function readEnvInt(key: string, fallback: number): number {
@@ -51,7 +59,8 @@ export const config: Config = {
   maxTerminalSessions: readEnvInt("MAX_TERMINAL_SESSIONS", 16),
   terminalIdleTimeoutMs: readEnvInt("TERMINAL_IDLE_TIMEOUT_MS", 0),
   agentStallTimeoutMs: readEnvInt("AGENT_STALL_TIMEOUT_MS", 30 * 60 * 1000),
-  corsOrigin: process.env.CORS_ORIGIN ?? "*",
+  corsOrigins: readEnvList("CORS_ORIGIN"),
+  authToken: process.env.OSHEEP_AUTH_TOKEN?.trim() || undefined,
   templatesRoot: path.resolve(
     process.env.OSHEEP_TEMPLATES_ROOT ?? path.join(os.homedir(), ".osheep", "templates"),
   ),

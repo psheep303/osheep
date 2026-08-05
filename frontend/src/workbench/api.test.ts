@@ -1,12 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { http } from "./api.ts";
+import { http, resetApiSession } from "./api.ts";
+
+function isSessionRequest(input: RequestInfo | URL): boolean {
+  return String(input) === "/api/auth/session";
+}
 
 test("GET revalidation transparently reuses the cached body on 304", async () => {
   const originalFetch = globalThis.fetch;
   const requests: RequestInit[] = [];
   let call = 0;
-  globalThis.fetch = async (_input, init) => {
+  resetApiSession();
+  globalThis.fetch = async (input, init) => {
+    if (isSessionRequest(input)) return new Response(JSON.stringify({ ok: true }));
     requests.push(init ?? {});
     call += 1;
     if (call === 1) {
@@ -32,7 +38,9 @@ test("a cacheless 304 retries without a conditional header", async () => {
   const originalFetch = globalThis.fetch;
   const requests: RequestInit[] = [];
   let call = 0;
-  globalThis.fetch = async (_input, init) => {
+  resetApiSession();
+  globalThis.fetch = async (input, init) => {
+    if (isSessionRequest(input)) return new Response(JSON.stringify({ ok: true }));
     requests.push(init ?? {});
     call += 1;
     if (call === 1) return new Response(null, { status: 304 });
@@ -56,7 +64,9 @@ test("a cacheless 304 retries without a conditional header", async () => {
 test("mutating requests do not use GET validators", async () => {
   const originalFetch = globalThis.fetch;
   const requests: RequestInit[] = [];
-  globalThis.fetch = async (_input, init) => {
+  resetApiSession();
+  globalThis.fetch = async (input, init) => {
+    if (isSessionRequest(input)) return new Response(JSON.stringify({ ok: true }));
     requests.push(init ?? {});
     return new Response(JSON.stringify({ ok: true }), {
       status: 200,
@@ -67,6 +77,38 @@ test("mutating requests do not use GET validators", async () => {
   try {
     await http.post("/api/cache-hit", { value: 2 });
     assert.equal(new Headers(requests[0]?.headers).get("if-none-match"), null);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("an expired session is renewed once before retrying the API request", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: string[] = [];
+  let apiCalls = 0;
+  resetApiSession();
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    calls.push(url);
+    if (isSessionRequest(input)) return new Response(JSON.stringify({ ok: true }));
+    apiCalls += 1;
+    if (apiCalls === 1) return new Response(null, { status: 401 });
+    return new Response(JSON.stringify({ renewed: true }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+
+  try {
+    assert.deepEqual(await http.get<{ renewed: boolean }>("/api/session-renewal"), {
+      renewed: true,
+    });
+    assert.deepEqual(calls, [
+      "/api/auth/session",
+      "/api/session-renewal",
+      "/api/auth/session",
+      "/api/session-renewal",
+    ]);
   } finally {
     globalThis.fetch = originalFetch;
   }

@@ -127,19 +127,20 @@ npx tauri info
 | `MAX_TERMINAL_SESSIONS` | `16` | 最大并发终端数 |
 | `TERMINAL_IDLE_TIMEOUT_MS` | `0` | 终端空闲超时，`0` 表示禁用 |
 | `AGENT_STALL_TIMEOUT_MS` | `1800000` | AI CLI 无输出超时，`0` 表示禁用 |
-| `CORS_ORIGIN` | `*` | 允许的前端来源 |
+| `CORS_ORIGIN` | 本地回环来源 | 逗号分隔的额外可信前端来源 |
+| `OSHEEP_AUTH_TOKEN` | 本地随机生成 | 非本地监听时必需的共享访问令牌 |
 | `OSHEEP_TEMPLATES_ROOT` | `~/.osheep/templates` | 运行时模板目录 |
 | `OSHEEP_CLAUDE_CONFIG_DIR` | `~/.claude` | Claude Code 配置目录 |
 | `OSHEEP_CODEX_CONFIG_DIR` | `~/.codex` | Codex 配置目录 |
 
-如果要从其他设备访问，请先增加身份认证、使用 HTTPS、收紧 `CORS_ORIGIN`，并限制防火墙规则。后端提供文件写入、Git 和终端执行能力，不应裸露在公网。
+本地模式会自动建立受 Origin 限制的 `HttpOnly` 会话，API 和终端 WebSocket 不接受未授权页面访问。非本地监听必须同时配置至少 32 字符的随机 `OSHEEP_AUTH_TOKEN` 和明确的 `CORS_ORIGIN`，并使用 HTTPS；首次访问使用 `https://host/#osheep-token=TOKEN` 交换会话，令牌随后会从地址栏移除。共享令牌只适合受控的单用户部署，不能替代多用户认证、反向代理访问控制和防火墙规则。
 
 ## 数据与密钥
 
 - 不要提交 `.env`、`backend/.osheep/`、`.codex/`、`.claude/`、私钥、证书私钥或云服务凭据。
 - Osheep 的 AI 设置可能包含明文 API Key。只在受信任的本机使用，并确保配置目录权限合理。
 - `.gitignore` 只能防止新的误提交，无法从 Git 历史中删除已经提交的秘密。发生误提交后应立即吊销密钥，再清理历史。
-- 提交前可运行 `git status --ignored` 和密钥扫描工具检查待发布内容。
+- 提交前运行 `node scripts/check-public-repo.mjs`，公开前再用 Gitleaks 扫描完整 Git 历史。
 
 安全问题的私密报告方式见 [SECURITY.md](SECURITY.md)。
 
@@ -151,7 +152,7 @@ frontend/                React/Vite 工作台
 desktop/                 Tauri 2 桌面壳与发布脚本
 backend/template-library 内置工作流模板
 .osheep/docs/            产品与技术设计文档
-docs/                    功能说明、设计记录与归档报告
+docs/                    面向用户和维护者的功能说明
 ```
 
 ## 验证

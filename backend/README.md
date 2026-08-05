@@ -22,9 +22,21 @@ npm start          # 生产：node dist/index.js
 | `MAX_TERMINAL_SESSIONS` | 并发 PTY 上限 | `16` |
 | `TERMINAL_IDLE_TIMEOUT_MS` | 终端无活动超时；`0` 表示禁用 | `0` (禁用) |
 | `AGENT_STALL_TIMEOUT_MS` | Claude/Codex 连续无终端输出时判定卡住；不限制总运行时长，`0` 表示禁用 | `1800000` (30 分钟) |
-| `CORS_ORIGIN` | 允许的前端来源 | `*` |
+| `CORS_ORIGIN` | 逗号分隔的额外可信前端来源 | 本地回环来源 |
+| `OSHEEP_AUTH_TOKEN` | 非本地监听时用于首次会话交换的共享令牌 | 本地随机生成 |
 
 `WORKSPACES_ROOT` 下每个一级子目录就是一个 workspace，目录名为 `workspaceId`。
+
+## 访问保护
+
+本地模式只信任 `localhost`、`127.0.0.0/8` 和 `::1` 页面。前端首次访问
+`POST /api/auth/session` 后取得 `HttpOnly; SameSite=Strict` 会话 Cookie，其他 API 和终端
+WebSocket 均要求该 Cookie；跨站浏览器请求会在建立会话前被拒绝。
+
+当 `OSHEEP_HOST` 不是回环地址时，后端会拒绝在缺少至少 32 字符的 `OSHEEP_AUTH_TOKEN` 或显式
+`CORS_ORIGIN` 的情况下启动。远程入口应使用 HTTPS，并通过
+`https://host/#osheep-token=TOKEN` 首次交换令牌。该共享令牌只适合受控的单用户部署，
+不能替代多用户身份认证、反向代理访问控制或网络隔离。
 
 ## API 概览
 

@@ -17,10 +17,16 @@ import { registerTemplateRoutes } from "./routes/templates.js";
 import { registerTerminalRoutes } from "./routes/terminals.js";
 import { registerWorkflowRoutes } from "./routes/workflows.js";
 import { registerWorkspaceRoutes } from "./routes/workspaces.js";
+import { createSecurity } from "./security.js";
 import { registerStaticSite } from "./static-site.js";
 import { ensureWorkspacesRoot } from "./workspace.js";
 
 export async function buildServer() {
+  const security = createSecurity({
+    host: config.host,
+    corsOrigins: config.corsOrigins,
+    authToken: config.authToken,
+  });
   const app = Fastify({
     logger:
       process.env.NODE_ENV === "production"
@@ -29,8 +35,12 @@ export async function buildServer() {
     bodyLimit: 16 * 1024 * 1024,
   });
 
-  await app.register(cors, { origin: config.corsOrigin });
+  await app.register(cors, {
+    credentials: true,
+    origin: (origin, callback) => callback(null, security.isTrustedOrigin(origin)),
+  });
   await app.register(websocket);
+  await security.register(app);
 
   app.setErrorHandler((err, _req, reply) => {
     if (err instanceof ApiError) {
