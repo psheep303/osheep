@@ -1,0 +1,2 @@
+# Reviewed false positive: the removed document used a literal example key placeholder.
+65919956817d13cda7a6fe4c19e1fefcfd59b924:docs/reports/SOLUTIONS_GUIDE.md:curl-auth-header:195

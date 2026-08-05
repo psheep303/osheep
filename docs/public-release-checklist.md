@@ -6,7 +6,12 @@ Complete this checklist before changing the GitHub repository visibility to publ
 
 - Merge the intended release branch into `main` through a reviewed pull request.
 - Run `node scripts/check-public-repo.mjs --history` from a clone with every remote branch fetched.
+<<<<<<< HEAD
 - Run Gitleaks or an equivalent dedicated scanner against all branches and tags.
+=======
+- Run Gitleaks or an equivalent dedicated scanner against all branches and tags. Review every
+  entry in `.gitleaksignore` against the referenced revision before accepting the result.
+>>>>>>> f8ab8cb9c231718f45a8ef0e4809380436214a5a
 - Review every remote branch, tag, issue, pull request, Actions log, release, and wiki page.
 - Confirm that commit author names and email addresses are safe to publish.
 - Remove internal reports from reachable history when deletion from the current tree is insufficient.
