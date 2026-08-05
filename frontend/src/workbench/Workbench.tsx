@@ -1,4 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useUiPreferences } from "../i18n/UiPreferences";
 import { ActivityBar, type ViewId } from "./ActivityBar";
 import { ClaudeCodeAgentView, CodexAgentView } from "./AgentSettingsView";
 import { AiPanel } from "./AiPanel";
@@ -109,6 +110,7 @@ const BOTTOM_THRESHOLD = 60;
 const SIDE_MAX = 600;
 
 export function Workbench() {
+  const { t } = useUiPreferences();
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
   const [workspaceName, setWorkspaceName] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);
@@ -233,7 +235,7 @@ export function Workbench() {
       try {
         text = await readFileText(workspaceId, node.path);
       } catch (e) {
-        setError((e as Error).message);
+        setError(t("error.readFile", { detail: (e as Error).message }));
         return;
       }
       setTabs((prev) => [
@@ -250,7 +252,7 @@ export function Workbench() {
       ]);
       setActivePath(node.path);
     },
-    [tabs, workspaceId],
+    [tabs, workspaceId, t],
   );
 
   const openFileAt = useCallback(
@@ -273,7 +275,7 @@ export function Workbench() {
       try {
         text = await readFileText(workspaceId, filePath);
       } catch (e) {
-        setError((e as Error).message);
+        setError(t("error.readFile", { detail: (e as Error).message }));
         return;
       }
       setTabs((prev) => [
@@ -291,7 +293,7 @@ export function Workbench() {
       ]);
       setActivePath(filePath);
     },
-    [tabs, workspaceId],
+    [tabs, workspaceId, t],
   );
 
   const openDiffTab = useCallback(
@@ -320,10 +322,10 @@ export function Workbench() {
         ]);
         setActivePath(diffId);
       } catch (e) {
-        setError((e as Error).message);
+        setError(t("error.loadDiff", { detail: (e as Error).message }));
       }
     },
-    [tabs, workspaceId],
+    [tabs, workspaceId, t],
   );
 
   const openSettingsTab = useCallback(() => {
@@ -429,7 +431,7 @@ export function Workbench() {
     try {
       await writeFileText(workspaceId, tab.path, tab.content);
     } catch (e) {
-      setError((e as Error).message);
+      setError(t("error.writeFile", { detail: (e as Error).message }));
       return;
     }
     setTabs((prev) =>
@@ -440,7 +442,7 @@ export function Workbench() {
       ),
     );
     refreshGitStatus();
-  }, [activePath, tabs, workspaceId, refreshGitStatus]);
+  }, [activePath, tabs, workspaceId, refreshGitStatus, t]);
 
   const closeTab = useCallback(
     (path: string) => {
@@ -563,9 +565,9 @@ export function Workbench() {
         <button
           className="titlebar__project-btn"
           onClick={() => setPicking(true)}
-          title={workspaceId ? "切换工作区" : "选择工作区"}
+          title={t(workspaceId ? "workspace.switch" : "workspace.select")}
         >
-          {workspaceName ?? "选择工作区"}
+          {workspaceName ?? t("workspace.select")}
         </button>
         <div className="titlebar__actions">
           <button
@@ -573,7 +575,7 @@ export function Workbench() {
             onClick={saveActive}
             disabled={!activeFileTab?.dirty || activeFileTab?.deleted}
           >
-            保存
+            {t("workspace.save")}
           </button>
         </div>
       </div>
@@ -581,7 +583,11 @@ export function Workbench() {
       {error && (
         <div className="banner-error">
           {error}
-          <button className="banner-error__close" onClick={() => setError(null)} title="关闭">
+          <button
+            className="banner-error__close"
+            onClick={() => setError(null)}
+            title={t("common.close")}
+          >
             ×
           </button>
         </div>
@@ -637,10 +643,10 @@ export function Workbench() {
                 ) : (
                   <div className="side-view">
                     <div className="side-view__header">
-                      <span className="side-view__title">资源管理器</span>
+                      <span className="side-view__title">{t("nav.explorer")}</span>
                     </div>
                     <div className="side-view__body side-view__body--padded">
-                      <div className="muted">所有文件由后端 osheep-backend 提供</div>
+                      <div className="muted">{t("workspace.explorerHint")}</div>
                     </div>
                   </div>
                 ))}
@@ -676,51 +682,51 @@ export function Workbench() {
           <div className="editor-area">
             <div className="tabs">
               <div className="tabs__list">
-                {tabs.map((t) => {
-                  const isDeleted = t.kind === "file" && t.deleted;
+                {tabs.map((tab) => {
+                  const isDeleted = tab.kind === "file" && tab.deleted;
                   const label =
-                    t.kind === "settings"
-                      ? "设置"
-                      : t.kind === "workflow"
-                        ? "Workflow"
-                        : t.kind === "template"
-                          ? "Template"
-                          : t.kind === "diff"
-                            ? `${basename(t.filePath)} (${diffLabel(t)})`
-                            : t.path.split("/").pop();
+                    tab.kind === "settings"
+                      ? t("common.settings")
+                      : tab.kind === "workflow"
+                        ? t("nav.workflow")
+                        : tab.kind === "template"
+                          ? t("nav.templates")
+                          : tab.kind === "diff"
+                            ? `${basename(tab.filePath)} (${diffLabel(tab)})`
+                            : tab.path.split("/").pop();
                   const tabTitle =
-                    t.kind === "file"
+                    tab.kind === "file"
                       ? isDeleted
-                        ? `${t.path}（已被删除）`
-                        : t.path
-                      : t.kind === "diff"
-                        ? `${t.filePath} · ${diffLabel(t)}`
-                        : t.kind === "workflow"
-                          ? `Workflow ${t.workflowId}`
-                          : t.kind === "template"
-                            ? `Template ${t.templateId}`
-                            : "设置";
+                        ? `${tab.path}${t("editor.deleted")}`
+                        : tab.path
+                      : tab.kind === "diff"
+                        ? `${tab.filePath} · ${diffLabel(tab)}`
+                        : tab.kind === "workflow"
+                          ? `${t("nav.workflow")} ${tab.workflowId}`
+                          : tab.kind === "template"
+                            ? `${t("nav.templates")} ${tab.templateId}`
+                            : t("common.settings");
                   return (
                     <div
-                      key={t.path}
+                      key={tab.path}
                       className={
                         "tab" +
-                        (t.path === activePath ? " is-active" : "") +
+                        (tab.path === activePath ? " is-active" : "") +
                         (isDeleted ? " is-deleted" : "") +
-                        (t.kind === "diff" ? " is-diff" : "")
+                        (tab.kind === "diff" ? " is-diff" : "")
                       }
-                      onClick={() => setActivePath(t.path)}
+                      onClick={() => setActivePath(tab.path)}
                       title={tabTitle}
                     >
                       <span className="tab__name">
                         {label}
-                        {t.kind === "file" && t.dirty ? " ●" : ""}
+                        {tab.kind === "file" && tab.dirty ? " *" : ""}
                       </span>
                       <span
                         className="tab__close"
                         onClick={(e) => {
                           e.stopPropagation();
-                          closeTab(t.path);
+                          closeTab(tab.path);
                         }}
                       >
                         ×
@@ -761,7 +767,7 @@ export function Workbench() {
                 ) : activeDiffTab ? (
                   <div className="editor-host__source">
                     {activeDiffTab.binary ? (
-                      <div className="empty-hint">该文件为二进制，无法显示 diff</div>
+                      <div className="empty-hint">{t("editor.binaryDiff")}</div>
                     ) : (
                       <DiffPane
                         path={activeDiffTab.filePath}
@@ -796,7 +802,7 @@ export function Workbench() {
                       }
                     />
                   ) : (
-                    <div className="empty-hint">请先打开工作区</div>
+                    <div className="empty-hint">{t("workspace.openFirst")}</div>
                   )
                 ) : activeTab?.kind === "template" ? (
                   <TemplateDetail
@@ -812,7 +818,7 @@ export function Workbench() {
                     onTemplateChanged={() => setTemplateRefreshSignal((signal) => signal + 1)}
                   />
                 ) : (
-                  <div className="empty-hint">在左侧选择文件以开始编辑</div>
+                  <div className="empty-hint">{t("editor.selectFile")}</div>
                 )}
               </Suspense>
             </div>
@@ -867,10 +873,11 @@ function diffLabel(t: DiffTab): string {
 }
 
 function PreviewToggle({ previewMode, onToggle }: { previewMode: boolean; onToggle: () => void }) {
+  const { t } = useUiPreferences();
   return (
     <button
       className="preview-toggle"
-      title={previewMode ? "切换到源码" : "打开预览"}
+      title={t(previewMode ? "editor.preview.source" : "editor.preview.open")}
       onClick={onToggle}
     >
       {previewMode ? (

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useUiPreferences } from "../i18n/UiPreferences";
 import {
   addGitRemote,
   type GitBranch,
@@ -35,6 +36,7 @@ const MAX_SPLIT = 1;
 type CommitMode = "commit" | "commit-push" | "commit-sync";
 
 export function GitView({ workspaceId, status, onRefreshStatus, onOpenDiff }: GitViewProps) {
+  const { t } = useUiPreferences();
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [busyLabel, setBusyLabel] = useState<string | null>(null);
@@ -90,10 +92,10 @@ export function GitView({ workspaceId, status, onRefreshStatus, onOpenDiff }: Gi
     return (
       <div className="side-view git-view">
         <div className="side-view__header">
-          <span className="side-view__title">源代码管理</span>
+          <span className="side-view__title">{t("git.title")}</span>
         </div>
         <div className="side-view__body side-view__body--padded">
-          <div className="muted">请先选择工作区</div>
+          <div className="muted">{t("git.openFirst")}</div>
         </div>
       </div>
     );
@@ -103,13 +105,13 @@ export function GitView({ workspaceId, status, onRefreshStatus, onOpenDiff }: Gi
     return (
       <div className="side-view git-view">
         <div className="side-view__header">
-          <span className="side-view__title">源代码管理</span>
-          <button className="icon-btn" title="刷新" onClick={refreshAll}>
+          <span className="side-view__title">{t("git.title")}</span>
+          <button className="icon-btn" title={t("git.refresh")} onClick={refreshAll}>
             <RefreshIcon />
           </button>
         </div>
         <div className="side-view__body side-view__body--padded">
-          <div className="muted">当前工作区不是 Git 仓库</div>
+          <div className="muted">{t("git.notRepo")}</div>
           <button
             className="primary-btn"
             style={{ marginTop: 12 }}
@@ -127,7 +129,7 @@ export function GitView({ workspaceId, status, onRefreshStatus, onOpenDiff }: Gi
               }
             }}
           >
-            {initializing ? "初始化中…" : "初始化仓库 (git init)"}
+            {t(initializing ? "git.initializing" : "git.init")}
           </button>
           {error && (
             <div className="git-view__error" style={{ marginTop: 12 }}>
@@ -158,21 +160,21 @@ export function GitView({ workspaceId, status, onRefreshStatus, onOpenDiff }: Gi
   const detached = !!status?.detached;
 
   const doCommit = (mode: CommitMode) =>
-    void run("提交中…", async () => {
+    void run(t("git.committing"), async () => {
       await gitCommit(workspaceId, message);
       setMessage("");
       if (mode === "commit-sync") {
-        setBusyLabel("同步中…");
+        setBusyLabel(t("git.syncing"));
         if (behind > 0) await gitPull(workspaceId, {});
         await gitPush(workspaceId, hasUpstream ? {} : autoPushOpts(remotes, status));
       } else if (mode === "commit-push") {
-        setBusyLabel("推送中…");
+        setBusyLabel(t("git.pushing"));
         await gitPush(workspaceId, hasUpstream ? {} : autoPushOpts(remotes, status));
       }
     });
 
   const doSync = () =>
-    void run("同步中…", async () => {
+    void run(t("git.syncing"), async () => {
       if (!hasUpstream) {
         await gitPush(workspaceId, autoPushOpts(remotes, status));
         return;
@@ -182,19 +184,19 @@ export function GitView({ workspaceId, status, onRefreshStatus, onOpenDiff }: Gi
     });
 
   const doPublish = () =>
-    void run("发布分支中…", async () => {
+    void run(t("git.publishing"), async () => {
       await gitPush(workspaceId, autoPushOpts(remotes, status));
     });
 
   const doFetch = () =>
-    void run("拉取中…", async () => {
+    void run(t("git.pulling"), async () => {
       await gitFetch(workspaceId, null, false);
     });
 
   return (
     <div className="side-view git-view">
       <div className="side-view__header git-view__header">
-        <span className="side-view__title">源代码管理</span>
+        <span className="side-view__title">{t("git.title")}</span>
         <RemotesButton
           count={remotes.length}
           open={remotesOpen}
@@ -203,7 +205,7 @@ export function GitView({ workspaceId, status, onRefreshStatus, onOpenDiff }: Gi
             setBranchOpen(false);
           }}
         />
-        <button className="icon-btn" title="刷新" onClick={refreshAll} disabled={busy}>
+        <button className="icon-btn" title={t("git.refresh")} onClick={refreshAll} disabled={busy}>
           <RefreshIcon />
         </button>
       </div>
@@ -228,7 +230,7 @@ export function GitView({ workspaceId, status, onRefreshStatus, onOpenDiff }: Gi
               setRemotesOpen(false);
             }}
             disabled={detached || busy}
-            title={detached ? "Detached HEAD" : "切换或创建分支"}
+            title={detached ? "Detached HEAD" : t("git.switchBranch")}
           >
             <BranchIcon />
             <span className="git-view__branch-name">{status.branch}</span>
@@ -262,7 +264,7 @@ export function GitView({ workspaceId, status, onRefreshStatus, onOpenDiff }: Gi
       <div className="git-view__commit">
         <textarea
           className="git-view__msg"
-          placeholder="提交信息（必填）"
+          placeholder={t("git.commitPlaceholder")}
           value={message}
           onChange={(e) => setMessage(e.target.value)}
           rows={2}
@@ -281,7 +283,11 @@ export function GitView({ workspaceId, status, onRefreshStatus, onOpenDiff }: Gi
       {error && (
         <div className="git-view__error">
           {error}
-          <button className="banner-error__close" onClick={() => setError(null)} title="关闭">
+          <button
+            className="banner-error__close"
+            onClick={() => setError(null)}
+            title={t("common.close")}
+          >
             ×
           </button>
         </div>
@@ -292,14 +298,16 @@ export function GitView({ workspaceId, status, onRefreshStatus, onOpenDiff }: Gi
           <>
             {staged.length > 0 && (
               <GitSection
-                title="暂存的更改"
+                title={t("git.staged")}
                 count={staged.length}
                 changes={staged}
                 kind="staged"
                 onClickFile={(c) => onOpenDiff(c.path, "HEAD", "INDEX")}
-                onAction={(c) => void run("处理中…", () => gitUnstage(workspaceId, [c.path]))}
+                onAction={(c) =>
+                  void run(t("git.processing"), () => gitUnstage(workspaceId, [c.path]))
+                }
                 onBulk={() =>
-                  void run("处理中…", () =>
+                  void run(t("git.processing"), () =>
                     gitUnstage(
                       workspaceId,
                       staged.map((c) => c.path),
@@ -310,19 +318,21 @@ export function GitView({ workspaceId, status, onRefreshStatus, onOpenDiff }: Gi
               />
             )}
             <GitSection
-              title="更改"
+              title={t("git.changes")}
               count={unstaged.length}
               changes={unstaged}
               kind="unstaged"
               onClickFile={(c) => onOpenDiff(c.path, "INDEX", "WORKTREE")}
-              onAction={(c) => void run("处理中…", () => gitStage(workspaceId, [c.path]))}
+              onAction={(c) => void run(t("git.processing"), () => gitStage(workspaceId, [c.path]))}
               onDiscard={async (c) => {
                 const ok = window.confirm(`确定要撤销对 ${c.path} 的修改吗？此操作不可逆。`);
                 if (!ok) return;
-                await run("撤销中…", () => gitDiscard(workspaceId, [c.path]).then(() => undefined));
+                await run(t("git.discarding"), () =>
+                  gitDiscard(workspaceId, [c.path]).then(() => undefined),
+                );
               }}
               onBulk={() =>
-                void run("处理中…", () =>
+                void run(t("git.processing"), () =>
                   gitStage(
                     workspaceId,
                     unstaged.map((c) => c.path),
@@ -332,7 +342,7 @@ export function GitView({ workspaceId, status, onRefreshStatus, onOpenDiff }: Gi
               busy={busy}
             />
             {staged.length === 0 && unstaged.length === 0 && (
-              <div className="git-view__empty">没有变更</div>
+              <div className="git-view__empty">{t("git.noChanges")}</div>
             )}
           </>
         }

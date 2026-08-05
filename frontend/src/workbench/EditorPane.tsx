@@ -1,7 +1,8 @@
 import "./monaco-setup";
-import Editor, { type BeforeMount, type OnMount } from "@monaco-editor/react";
+import Editor, { type OnMount } from "@monaco-editor/react";
 import type * as Monaco from "monaco-editor";
 import { useEffect, useRef } from "react";
+import { useUiPreferences } from "../i18n/UiPreferences";
 import { languageFromPath } from "./language";
 import { monacoEditorColors } from "./theme";
 
@@ -21,14 +22,14 @@ interface EditorPaneProps {
   goto?: GotoTarget | null;
 }
 
-const beforeMount: BeforeMount = (monaco) => {
-  monaco.editor.defineTheme("osheep-dark", {
-    base: "vs-dark",
+function defineMonacoTheme(monaco: typeof import("monaco-editor"), theme: "light" | "dark") {
+  monaco.editor.defineTheme(`osheep-${theme}`, {
+    base: theme === "light" ? "vs" : "vs-dark",
     inherit: true,
     rules: [],
-    colors: monacoEditorColors(),
+    colors: monacoEditorColors(theme),
   });
-};
+}
 
 export function EditorPane({
   path,
@@ -39,10 +40,12 @@ export function EditorPane({
   onSave,
   goto,
 }: EditorPaneProps) {
+  const { resolvedTheme } = useUiPreferences();
   const onSaveRef = useRef(onSave);
   onSaveRef.current = onSave;
 
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
+  const monacoRef = useRef<typeof import("monaco-editor") | null>(null);
   const appliedNonceRef = useRef<number | null>(null);
 
   const applyGoto = (target: GotoTarget) => {
@@ -58,12 +61,21 @@ export function EditorPane({
 
   const handleMount: OnMount = (editor, monaco) => {
     editorRef.current = editor;
+    monacoRef.current = monaco;
+    defineMonacoTheme(monaco, resolvedTheme);
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => onSaveRef.current());
     if (goto && appliedNonceRef.current !== goto.nonce) {
       // Defer until next tick so the model is fully attached.
       window.setTimeout(() => applyGoto(goto), 0);
     }
   };
+
+  useEffect(() => {
+    const monaco = monacoRef.current;
+    if (!monaco) return;
+    defineMonacoTheme(monaco, resolvedTheme);
+    monaco.editor.setTheme(`osheep-${resolvedTheme}`);
+  }, [resolvedTheme]);
 
   useEffect(() => {
     if (!goto) return;
@@ -75,11 +87,11 @@ export function EditorPane({
   return (
     <Editor
       height="100%"
-      theme="osheep-dark"
+      theme={`osheep-${resolvedTheme}`}
       path={path}
       language={languageFromPath(path)}
       value={value}
-      beforeMount={beforeMount}
+      beforeMount={(monaco) => defineMonacoTheme(monaco, resolvedTheme)}
       onChange={(v) => onChange(v ?? "")}
       onMount={handleMount}
       options={{

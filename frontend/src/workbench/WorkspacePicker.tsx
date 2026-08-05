@@ -1,4 +1,5 @@
 import { type FormEvent, useCallback, useEffect, useState } from "react";
+import { useUiPreferences } from "../i18n/UiPreferences";
 import {
   createWorkspace,
   getWorkspacesRoot,
@@ -15,6 +16,7 @@ interface Props {
 }
 
 export function WorkspacePicker({ currentId, onChoose, onCancel }: Props) {
+  const { t } = useUiPreferences();
   const desktopShell = isDesktopShell();
   const [items, setItems] = useState<Workspace[] | null>(null);
   const [rootPath, setRootPath] = useState<string | null>(null);
@@ -85,7 +87,7 @@ export function WorkspacePicker({ currentId, onChoose, onCancel }: Props) {
         onClick={(e) => e.stopPropagation()}
       >
         <div className="modal__header">
-          <span className="modal__title">选择工作区</span>
+          <span className="modal__title">{t("workspace.select")}</span>
           <button
             type="button"
             className="tb-btn workspace-picker__add"
@@ -95,8 +97,8 @@ export function WorkspacePicker({ currentId, onChoose, onCancel }: Props) {
               setError(null);
             }}
             disabled={!rootPath || opening || creating}
-            title="在当前 workspaces 文件夹中新建工作区"
-            aria-label="新建工作区"
+            title={t("workspace.createHere")}
+            aria-label={t("workspace.create")}
           >
             +
           </button>
@@ -107,29 +109,29 @@ export function WorkspacePicker({ currentId, onChoose, onCancel }: Props) {
               onClick={() => void chooseRootFolder()}
               disabled={opening || creating}
             >
-              {opening ? "打开中..." : "选择 workspaces 文件夹"}
+              {t(opening ? "workspace.opening" : "workspace.chooseFolder")}
             </button>
           )}
-          <button className="icon-btn" onClick={onCancel} title="关闭">
+          <button className="icon-btn" onClick={onCancel} title={t("common.close")}>
             ×
           </button>
         </div>
         <div className="modal__body">
           <div className="workspace-picker__root">
-            <span className="workspace-picker__root-label">工作区根目录</span>
-            <code title={rootPath ?? ""}>{rootPath ?? "尚未选择"}</code>
+            <span className="workspace-picker__root-label">{t("workspace.root")}</span>
+            <code title={rootPath ?? ""}>{rootPath ?? t("workspace.notSelected")}</code>
           </div>
           {createOpen && (
             <form className="workspace-picker__create" onSubmit={submitNewWorkspace}>
               <input
                 value={newName}
                 onChange={(event) => setNewName(event.target.value)}
-                placeholder="新工作区名称"
+                placeholder={t("workspace.newName")}
                 maxLength={64}
                 disabled={creating}
               />
               <button type="submit" className="tb-btn" disabled={!newName.trim() || creating}>
-                {creating ? "创建中..." : "创建"}
+                {t(creating ? "workspace.creating" : "workspace.createAction")}
               </button>
               <button
                 type="button"
@@ -139,18 +141,18 @@ export function WorkspacePicker({ currentId, onChoose, onCancel }: Props) {
                   setNewName("");
                 }}
                 disabled={creating}
-                title="取消"
+                title={t("common.cancel")}
               >
                 ×
               </button>
             </form>
           )}
-          {error && <div className="modal__error">无法读取工作区：{error}</div>}
-          {items === null && !error && <div className="muted">加载中...</div>}
+          {error && (
+            <div className="modal__error">{t("workspace.readError", { detail: error })}</div>
+          )}
+          {items === null && !error && <div className="muted">{t("common.loading")}</div>}
           {items !== null && items.length === 0 && (
-            <div className="muted workspace-picker__empty">
-              当前 workspaces 文件夹下还没有工作区，点击左侧 + 创建一个。
-            </div>
+            <div className="muted workspace-picker__empty">{t("workspace.empty")}</div>
           )}
           {items !== null && items.length > 0 && (
             <div className="workspace-list">

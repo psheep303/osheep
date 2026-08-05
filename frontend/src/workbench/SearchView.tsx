@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useUiPreferences } from "../i18n/UiPreferences";
 import { type SearchFileMatch, type SearchResult, searchWorkspace } from "./api";
 
 interface SearchViewProps {
@@ -19,6 +20,7 @@ const DEFAULT_MOD: ModState = {
 };
 
 export function SearchView({ workspaceId, onOpenMatch }: SearchViewProps) {
+  const { t } = useUiPreferences();
   const [query, setQuery] = useState("");
   const [mods, setMods] = useState<ModState>(DEFAULT_MOD);
   const [showFilters, setShowFilters] = useState(false);
@@ -72,7 +74,7 @@ export function SearchView({ workspaceId, onOpenMatch }: SearchViewProps) {
           setCollapsedFiles(new Set());
         } catch (e) {
           if (seq !== seqRef.current) return;
-          setError((e as Error).message);
+          setError(t("error.search", { detail: (e as Error).message }));
           setResult(null);
         } finally {
           if (seq === seqRef.current) setLoading(false);
@@ -86,7 +88,7 @@ export function SearchView({ workspaceId, onOpenMatch }: SearchViewProps) {
         }, 300);
       }
     },
-    [workspaceId, query, mods, include, exclude],
+    [workspaceId, query, mods, include, exclude, t],
   );
 
   useEffect(() => {
@@ -125,7 +127,7 @@ export function SearchView({ workspaceId, onOpenMatch }: SearchViewProps) {
   return (
     <div className="side-view search-view">
       <div className="side-view__header">
-        <span className="side-view__title">搜索</span>
+        <span className="side-view__title">{t("search.title")}</span>
       </div>
 
       <div className="search-view__form">
@@ -133,8 +135,8 @@ export function SearchView({ workspaceId, onOpenMatch }: SearchViewProps) {
           <button
             className={`search-view__toggle${showFilters ? " is-active" : ""}`}
             onClick={() => setShowFilters((v) => !v)}
-            title={showFilters ? "收起 替换 / 过滤" : "展开 替换 / 过滤"}
-            aria-label="展开过滤"
+            title={t(showFilters ? "search.collapseFilters" : "search.expandFilters")}
+            aria-label={t("search.expandFilters")}
           >
             <ChevronIcon open={showFilters} />
           </button>
@@ -143,7 +145,7 @@ export function SearchView({ workspaceId, onOpenMatch }: SearchViewProps) {
               ref={queryInputRef}
               className="search-view__input"
               type="text"
-              placeholder="搜索"
+              placeholder={t("search.placeholder")}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={onQueryKey}
@@ -152,20 +154,20 @@ export function SearchView({ workspaceId, onOpenMatch }: SearchViewProps) {
             <div className="search-view__mods">
               <ModButton
                 label="Aa"
-                title="区分大小写"
+                title={t("search.caseSensitive")}
                 active={mods.caseSensitive}
                 onClick={() => toggleMod("caseSensitive")}
               />
               <ModButton
                 label="ab"
-                title="全词匹配"
+                title={t("search.wholeWord")}
                 active={mods.wholeWord}
                 onClick={() => toggleMod("wholeWord")}
                 underline
               />
               <ModButton
                 label=".*"
-                title="正则"
+                title={t("search.regex")}
                 active={mods.regex}
                 onClick={() => toggleMod("regex")}
               />
@@ -178,7 +180,7 @@ export function SearchView({ workspaceId, onOpenMatch }: SearchViewProps) {
             <input
               className="search-view__input search-view__input--filter"
               type="text"
-              placeholder="包含 (例: src/**/*.ts, *.md)"
+              placeholder={t("search.include")}
               value={include}
               onChange={(e) => setInclude(e.target.value)}
               spellCheck={false}
@@ -186,7 +188,7 @@ export function SearchView({ workspaceId, onOpenMatch }: SearchViewProps) {
             <input
               className="search-view__input search-view__input--filter"
               type="text"
-              placeholder="排除"
+              placeholder={t("search.exclude")}
               value={exclude}
               onChange={(e) => setExclude(e.target.value)}
               spellCheck={false}
@@ -197,19 +199,24 @@ export function SearchView({ workspaceId, onOpenMatch }: SearchViewProps) {
 
       <div className="search-view__status">
         {!workspaceId ? (
-          <span className="muted">请先选择工作区</span>
+          <span className="muted">{t("search.openFirst")}</span>
         ) : loading ? (
-          <span className="muted">搜索中…</span>
+          <span className="muted">{t("search.searching")}</span>
         ) : !query ? (
-          <span className="muted">输入关键词以搜索</span>
+          <span className="muted">{t("search.enterQuery")}</span>
         ) : error ? (
           <span className="search-view__error">{error}</span>
         ) : result ? (
           <span className="muted">
             {totalMatches === 0
-              ? "没有结果"
-              : `${totalMatches} 个结果 · ${visibleMatches.length} 个文件`}
-            {result.truncated && <span className="search-view__warn"> · 结果已截断</span>}
+              ? t("search.noResults")
+              : t("search.resultSummary", {
+                  matches: totalMatches,
+                  files: visibleMatches.length,
+                })}
+            {result.truncated && (
+              <span className="search-view__warn"> · {t("search.truncated")}</span>
+            )}
           </span>
         ) : null}
       </div>
@@ -239,7 +246,7 @@ export function SearchView({ workspaceId, onOpenMatch }: SearchViewProps) {
                 <span className="search-view__file-count">{file.lines.length}</span>
                 <button
                   className="search-view__dismiss"
-                  title="从结果中移除"
+                  title={t("search.dismissFile")}
                   onClick={(e) => {
                     e.stopPropagation();
                     setHiddenFiles((prev) => new Set(prev).add(file.path));
@@ -269,7 +276,7 @@ export function SearchView({ workspaceId, onOpenMatch }: SearchViewProps) {
                         </span>
                         <button
                           className="search-view__dismiss"
-                          title="移除该命中"
+                          title={t("search.dismissMatch")}
                           onClick={(e) => {
                             e.stopPropagation();
                             setHiddenLines((prev) => new Set(prev).add(key));

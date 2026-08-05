@@ -2,6 +2,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { useEffect, useRef, useState } from "react";
 import "@xterm/xterm/css/xterm.css";
+import { useUiPreferences } from "../i18n/UiPreferences";
 import {
   type AgentSessionApp,
   createAgentSessionTerminal,
@@ -34,6 +35,7 @@ export function TerminalSession({
   active,
   onClose,
 }: TerminalSessionProps) {
+  const { resolvedTheme, t } = useUiPreferences();
   const hostRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<XTerm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -55,7 +57,7 @@ export function TerminalSession({
         cursorBlink: true,
         fontFamily: "Cascadia Mono, Consolas, Courier New, monospace",
         fontSize: 13,
-        theme: xtermTheme(),
+        theme: xtermTheme(resolvedTheme),
         scrollback: 5000,
       });
       const fit = new FitAddon();
@@ -116,7 +118,7 @@ export function TerminalSession({
       let cancelled = false;
       let ws: WebSocket | null = null;
 
-      term.writeln(`\x1b[2m[osheep] 连接到后端 PTY (${profile.label})…\x1b[0m`);
+      term.writeln(`\x1b[2m[osheep] connecting to backend PTY (${profile.label})...\x1b[0m`);
 
       (async () => {
         let session: TerminalCreateResp;
@@ -139,7 +141,7 @@ export function TerminalSession({
         } catch (e) {
           if (cancelled) return;
           setStatus("closed");
-          setError(`创建终端失败：${(e as Error).message}`);
+          setError(t("error.createTerminal", { detail: (e as Error).message }));
           return;
         }
         if (cancelled) {
@@ -173,7 +175,7 @@ export function TerminalSession({
               term.write(msg.data);
             } else if (msg.type === "exit") {
               term.writeln(
-                `\r\n\x1b[2m[osheep] 进程退出 code=${msg.code} signal=${msg.signal ?? "null"}\x1b[0m`,
+                `\r\n\x1b[2m[osheep] process exited code=${msg.code} signal=${msg.signal ?? "null"}\x1b[0m`,
               );
               setStatus("closed");
             } else if (msg.type === "error") {
@@ -191,7 +193,7 @@ export function TerminalSession({
         };
         ws.onerror = () => {
           if (cancelled) return;
-          setError("WebSocket 错误");
+          setError(t("error.websocket"));
         };
       })();
 
@@ -253,6 +255,11 @@ export function TerminalSession({
     };
   }, [workspaceId, profile, agentSession]);
 
+  useEffect(() => {
+    const term = xtermRef.current;
+    if (term) term.options.theme = xtermTheme(resolvedTheme);
+  }, [resolvedTheme]);
+
   // When this session becomes visible, force a fit + focus.
   useEffect(() => {
     if (!active) return;
@@ -286,8 +293,12 @@ export function TerminalSession({
       {error && <div className="term-session__error">{error}</div>}
       <div className="term-session__host" ref={hostRef} />
       {!active && status === "closed" && (
-        <button className="term-session__overlay-btn" onClick={onClose} title="关闭已结束的会话">
-          关闭
+        <button
+          className="term-session__overlay-btn"
+          onClick={onClose}
+          title={t("terminal.closeEnded")}
+        >
+          {t("common.close")}
         </button>
       )}
     </div>

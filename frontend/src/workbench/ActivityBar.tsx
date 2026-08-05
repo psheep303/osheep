@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { useUiPreferences } from "../i18n/UiPreferences";
 import { ClaudeLogo, OpenAILogo } from "./BrandIcons";
 
 export type ViewId =
@@ -19,33 +20,36 @@ interface ActivityBarProps {
 
 interface Item {
   id: ViewId;
-  label: string;
+  labelKey?: "nav.workflow" | "nav.templates" | "nav.explorer" | "nav.search" | "nav.git";
+  label?: string;
   icon: ReactNode;
 }
 
 const ITEMS: Item[] = [
-  { id: "workflow", label: "Workflow", icon: <WorkflowIcon /> },
-  { id: "template", label: "Templates", icon: <TemplateIcon /> },
-  { id: "explorer", label: "资源管理器", icon: <FilesIcon /> },
-  { id: "search", label: "搜索", icon: <SearchIcon /> },
-  { id: "git", label: "源代码管理", icon: <GitIcon /> },
+  { id: "workflow", labelKey: "nav.workflow", icon: <WorkflowIcon /> },
+  { id: "template", labelKey: "nav.templates", icon: <TemplateIcon /> },
+  { id: "explorer", labelKey: "nav.explorer", icon: <FilesIcon /> },
+  { id: "search", labelKey: "nav.search", icon: <SearchIcon /> },
+  { id: "git", labelKey: "nav.git", icon: <GitIcon /> },
   { id: "claude-code", label: "Claude Code", icon: <ClaudeLogo /> },
   { id: "codex", label: "Codex", icon: <OpenAILogo /> },
 ];
 
 export function ActivityBar({ activeView, collapsed, onSelect, onOpenSettings }: ActivityBarProps) {
+  const { t } = useUiPreferences();
   return (
     <div className="activity-bar">
       <div className="activity-bar__group">
         {ITEMS.map((it) => {
           const active = it.id === activeView && !collapsed;
+          const label = it.labelKey ? t(it.labelKey) : (it.label ?? "");
           return (
             <button
               key={it.id}
               className={`activity-bar__item${active ? " is-active" : ""}`}
               onClick={() => onSelect(it.id)}
-              title={it.label}
-              aria-label={it.label}
+              title={label}
+              aria-label={label}
             >
               <span className="activity-bar__icon">{it.icon}</span>
             </button>
@@ -55,8 +59,8 @@ export function ActivityBar({ activeView, collapsed, onSelect, onOpenSettings }:
       <div className="activity-bar__group activity-bar__group--bottom">
         <button
           className="activity-bar__item"
-          title="设置"
-          aria-label="设置"
+          title={t("nav.settings")}
+          aria-label={t("nav.settings")}
           onClick={onOpenSettings}
         >
           <span className="activity-bar__icon">

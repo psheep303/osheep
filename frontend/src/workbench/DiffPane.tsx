@@ -1,5 +1,7 @@
 import "./monaco-setup";
-import { type BeforeMount, DiffEditor } from "@monaco-editor/react";
+import { DiffEditor } from "@monaco-editor/react";
+import { useEffect, useRef } from "react";
+import { useUiPreferences } from "../i18n/UiPreferences";
 import { languageFromPath } from "./language";
 import { monacoDiffColors } from "./theme";
 
@@ -12,25 +14,36 @@ interface DiffPaneProps {
   rightLabel?: string;
 }
 
-const beforeMount: BeforeMount = (monaco) => {
-  monaco.editor.defineTheme("osheep-dark", {
-    base: "vs-dark",
+function defineMonacoTheme(monaco: typeof import("monaco-editor"), theme: "light" | "dark") {
+  monaco.editor.defineTheme(`osheep-${theme}`, {
+    base: theme === "light" ? "vs" : "vs-dark",
     inherit: true,
     rules: [],
-    colors: monacoDiffColors(),
+    colors: monacoDiffColors(theme),
   });
-};
+}
 
 export function DiffPane({ path, fontSize, leftContent, rightContent }: DiffPaneProps) {
+  const { resolvedTheme } = useUiPreferences();
+  const monacoRef = useRef<typeof import("monaco-editor") | null>(null);
+  useEffect(() => {
+    const monaco = monacoRef.current;
+    if (!monaco) return;
+    defineMonacoTheme(monaco, resolvedTheme);
+    monaco.editor.setTheme(`osheep-${resolvedTheme}`);
+  }, [resolvedTheme]);
   const lang = languageFromPath(path);
   return (
     <DiffEditor
       height="100%"
-      theme="osheep-dark"
+      theme={`osheep-${resolvedTheme}`}
       original={leftContent}
       modified={rightContent}
       language={lang}
-      beforeMount={beforeMount}
+      beforeMount={(monaco) => {
+        monacoRef.current = monaco;
+        defineMonacoTheme(monaco, resolvedTheme);
+      }}
       options={{
         fontSize,
         readOnly: true,

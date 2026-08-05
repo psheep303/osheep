@@ -42,7 +42,8 @@ const checks = [
     pass:
       /className="titlebar__project-btn"/.test(workbench) &&
       /onClick=\{\(\)\s*=>\s*setPicking\(true\)\}/.test(workbench) &&
-      /\{workspaceName\s+\?\?\s+"[^"]+"\}/.test(workbench),
+      (/\{workspaceName\s+\?\?\s+"[^"]+"\}/.test(workbench) ||
+        /\{workspaceName\s+\?\?\s+t\("workspace\.select"\)\}/.test(workbench)),
   },
   {
     name: "titlebar actions only keep save",

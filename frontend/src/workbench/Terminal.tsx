@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useUiPreferences } from "../i18n/UiPreferences";
 import { type AgentSessionApp, getProfiles, type ShellProfile } from "./api";
 import { TerminalSession } from "./TerminalSession";
 
@@ -36,6 +37,7 @@ interface TerminalProps {
 let SESSION_COUNTER = 0;
 
 export function Terminal({ workspaceId, launchRequest = null, onLaunchHandled }: TerminalProps) {
+  const { t } = useUiPreferences();
   const [profilesState, setProfilesState] = useState<ProfilesState | null>(null);
   const [profilesError, setProfilesError] = useState<string | null>(null);
   const [sessions, setSessions] = useState<SessionEntry[]>([]);
@@ -59,7 +61,7 @@ export function Terminal({ workspaceId, launchRequest = null, onLaunchHandled }:
         }
       } catch (e) {
         if (!cancelled) {
-          setProfilesError(`无法获取后端 shell 列表：${(e as Error).message}`);
+          setProfilesError(t("error.shellProfiles", { detail: (e as Error).message }));
         }
       }
     })();
@@ -67,7 +69,7 @@ export function Terminal({ workspaceId, launchRequest = null, onLaunchHandled }:
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [t]);
 
   // Auto-spawn one session when the panel becomes usable
   useEffect(() => {
@@ -160,11 +162,7 @@ export function Terminal({ workspaceId, launchRequest = null, onLaunchHandled }:
           : "?";
 
   if (!workspaceId && sessions.length === 0 && !launchRequest) {
-    return (
-      <div className="terminal terminal--empty muted">
-        请先选择工作区，终端会在该工作区根目录启动
-      </div>
-    );
+    return <div className="terminal terminal--empty muted">{t("terminal.openFirst")}</div>;
   }
 
   return (
@@ -175,8 +173,8 @@ export function Terminal({ workspaceId, launchRequest = null, onLaunchHandled }:
           {sessions.length === 0 && !profilesError && (
             <div className="terminal__placeholder muted">
               {profilesState?.profiles.length === 0
-                ? "后端未探测到任何 shell"
-                : "正在创建终端会话…"}
+                ? t("terminal.noShell")
+                : t("terminal.creating")}
             </div>
           )}
           {sessions.map((s) => (
@@ -194,7 +192,11 @@ export function Terminal({ workspaceId, launchRequest = null, onLaunchHandled }:
           <div className="terminal__sidebar-actions">
             <button
               className="icon-btn"
-              title={activeProfile ? `新建 ${activeProfile.label} 终端` : "新建终端"}
+              title={
+                activeProfile
+                  ? t("terminal.newFor", { profile: activeProfile.label })
+                  : t("terminal.new")
+              }
               onClick={() => {
                 const profile =
                   activeProfile ??
@@ -218,7 +220,7 @@ export function Terminal({ workspaceId, launchRequest = null, onLaunchHandled }:
             </button>
             <button
               className="icon-btn"
-              title="选择 profile 并新建"
+              title={t("terminal.chooseProfile")}
               onClick={() => setMenuOpen((v) => !v)}
               disabled={!profilesState || profilesState.profiles.length === 0}
             >
@@ -228,9 +230,11 @@ export function Terminal({ workspaceId, launchRequest = null, onLaunchHandled }:
             </button>
             {menuOpen && (
               <div className="terminal__menu">
-                <div className="terminal__menu-header">新建终端（{osLabel}）</div>
+                <div className="terminal__menu-header">{t("terminal.newOn", { os: osLabel })}</div>
                 {(profilesState?.profiles ?? []).length === 0 && (
-                  <div className="terminal__menu-item is-empty">后端未探测到可用 shell</div>
+                  <div className="terminal__menu-item is-empty">
+                    {t("terminal.noAvailableShell")}
+                  </div>
                 )}
                 {profilesState?.profiles.map((p) => (
                   <button
@@ -273,7 +277,7 @@ export function Terminal({ workspaceId, launchRequest = null, onLaunchHandled }:
                 <span className="terminal__sidebar-name">{s.title}</span>
                 <button
                   className="terminal__sidebar-close"
-                  title="关闭终端"
+                  title={t("terminal.close")}
                   onClick={(e) => {
                     e.stopPropagation();
                     closeSession(s.localId);

@@ -1,4 +1,5 @@
 import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { useUiPreferences } from "../i18n/UiPreferences";
 import { type GitCommit, getGitLog } from "./api";
 import { gitGraphPalette, gitGraphRefColors } from "./theme";
 
@@ -40,6 +41,7 @@ const { ref: HISTORY_ITEM_REF_COLOR, remoteRef: HISTORY_ITEM_REMOTE_REF_COLOR } 
 const GRAPH_COLORS = gitGraphPalette();
 
 export function GitGraph({ workspaceId, refreshKey }: GitGraphProps) {
+  const { t } = useUiPreferences();
   const [commits, setCommits] = useState<GitCommit[]>([]);
   const [head, setHead] = useState<string | null>(null);
   const [currentRef, setCurrentRef] = useState<string | null>(null);
@@ -62,7 +64,7 @@ export function GitGraph({ workspaceId, refreshKey }: GitGraphProps) {
       })
       .catch((reason) => {
         if (cancelled) return;
-        setError((reason as Error).message);
+        setError(t("error.gitHistory", { detail: (reason as Error).message }));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -70,7 +72,7 @@ export function GitGraph({ workspaceId, refreshKey }: GitGraphProps) {
     return () => {
       cancelled = true;
     };
-  }, [workspaceId, refreshKey]);
+  }, [workspaceId, refreshKey, t]);
 
   const rows = useMemo(
     () => toHistoryRows(commits, head, currentRef, currentRemoteRef),
@@ -81,10 +83,10 @@ export function GitGraph({ workspaceId, refreshKey }: GitGraphProps) {
 
   return (
     <div className="git-graph">
-      {loading && <div className="git-graph__hint muted">加载提交历史…</div>}
+      {loading && <div className="git-graph__hint muted">{t("git.loadingHistory")}</div>}
       {error && <div className="git-graph__error">{error}</div>}
       {!loading && !error && commits.length === 0 && (
-        <div className="git-graph__hint muted">没有提交</div>
+        <div className="git-graph__hint muted">{t("git.noCommits")}</div>
       )}
       {rows.map((row) => (
         <GraphRow

@@ -1,4 +1,5 @@
-:root {
+:root,
+:root[data-theme="dark"] {
   color-scheme: dark;
   scrollbar-color: #3f3f46 #111113;
   scrollbar-width: thin;
@@ -37,6 +38,23 @@
   --surface-1: #181818; --surface-2: #1f1f1f; --surface-3: #262626; --surface-4: #303030;
   --surface-control: #313131;
   --border-subtle: #2b2b2b; --border-strong: #3c3c3c; --border-control: #343434;
+  --overlay-subtle: rgba(255, 255, 255, 0.04); --overlay-hover: rgba(255, 255, 255, 0.07); --overlay-strong: rgba(255, 255, 255, 0.12);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  scrollbar-color: #b8bcc2 #f2f3f5;
+  --bg-shell: #f3f4f6; --bg-editor: #ffffff; --bg-hover: #e9edf2; --bg-selection: #cfe8ff; --bg-active: #ffffff;
+  --fg-default: #26313d; --fg-muted: #5d6875; --fg-faint: #87919d; --fg-strong: #17212b; --fg-error: #b42318;
+  --accent: #0b6fc4; --accent-soft: rgba(11, 111, 196, 0.13);
+  --border-faint: #e3e7eb; --border-edge: #cbd2d9;
+  --shadow-1: 0 2px 8px rgba(28, 39, 51, 0.12); --shadow-2: 0 8px 24px rgba(28, 39, 51, 0.16);
+  --color-error: #b42318; --color-warning: #9a6700; --color-warning-strong: #7a5300;
+  --color-success: #18794e; --color-success-strong: #146c45; --color-info: #1769aa;
+  --color-link: #0b63b6; --color-link-strong: #07549b;
+  --surface-1: #f3f4f6; --surface-2: #ffffff; --surface-3: #f7f8fa; --surface-4: #edf0f3; --surface-control: #ffffff;
+  --border-subtle: #e3e7eb; --border-strong: #b8c1ca; --border-control: #cbd2d9;
+  --overlay-subtle: rgba(38, 49, 61, 0.035); --overlay-hover: rgba(38, 49, 61, 0.075); --overlay-strong: rgba(38, 49, 61, 0.12);
 }
 
 * {
@@ -99,16 +117,16 @@ body.is-resizing-y * {
   height: 10px;
 }
 ::-webkit-scrollbar-track {
-  background: #111113;
+  background: var(--surface-1);
 }
 ::-webkit-scrollbar-thumb {
-  background: #3f3f46;
+  background: var(--border-edge);
   border: 2px solid transparent;
   background-clip: padding-box;
   border-radius: 5px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #52525b;
+  background: var(--fg-faint);
   background-clip: padding-box;
 }
 ::-webkit-scrollbar-corner {

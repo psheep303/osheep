@@ -15,6 +15,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { useUiPreferences } from "../i18n/UiPreferences";
 import {
   type AgentSessionApp,
   type AiTerminalClaudePermissionMode,
@@ -3208,6 +3209,7 @@ function WorkflowAgentTerminal({
   terminalStatus?: string;
   initialAutoSuccess: boolean;
 }) {
+  const { resolvedTheme } = useUiPreferences();
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<XTerm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -3228,7 +3230,7 @@ function WorkflowAgentTerminal({
       fontFamily: "Geist Mono, SFMono-Regular, Cascadia Mono, Consolas, Courier New, monospace",
       fontSize: 12.5,
       scrollback: 8000,
-      theme: workflowXtermTheme(),
+      theme: workflowXtermTheme(resolvedTheme),
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -3300,6 +3302,11 @@ function WorkflowAgentTerminal({
       fitRef.current = null;
     };
   }, [sessionId]);
+
+  useEffect(() => {
+    const term = termRef.current;
+    if (term) term.options.theme = workflowXtermTheme(resolvedTheme);
+  }, [resolvedTheme]);
 
   const updateAutoSuccess = async (enabled: boolean) => {
     setAutoSuccess(enabled);

@@ -81,6 +81,18 @@ test("theme helpers preserve exact fallbacks without a DOM", () => {
   assert.deepEqual(gitGraphRefColors(), { ref: "#3794ff", remoteRef: "#b180d7" });
 });
 
+test("explicit light palettes stay readable without a DOM", () => {
+  assert.equal(monacoEditorColors("light")["editor.background"], "#ffffff");
+  assert.equal(monacoEditorColors("light")["editor.foreground"], "#26313d");
+  assert.deepEqual(xtermTheme("light"), {
+    background: "#ffffff",
+    foreground: "#26313d",
+    cursor: "#1f2933",
+    selectionBackground: "#c5def5",
+  });
+  assert.equal(workflowXtermTheme("light").background, "#ffffff");
+});
+
 test("cssVar trims DOM values and falls back for empty tokens", () => {
   withMockDom({ "--rgb": "  rgb(1, 2, 3)  ", "--empty": "  " }, () => {
     assert.equal(cssVar("--rgb", "#fallback"), "rgb(1, 2, 3)");
