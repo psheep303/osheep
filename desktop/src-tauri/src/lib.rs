@@ -302,7 +302,10 @@ fn local_backend_command(app: &tauri::AppHandle, port: u16) -> io::Result<Comman
         )
         .env(
             "OSHEEP_WORKSPACE_ROOT_CONFIG",
-            data_dir.join("workspace-root.json").to_string_lossy().as_ref(),
+            data_dir
+                .join("workspace-root.json")
+                .to_string_lossy()
+                .as_ref(),
         )
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
@@ -347,11 +350,7 @@ fn startup_error_script(message: &str) -> String {
     )
 }
 
-fn schedule_startup_error(
-    handle: &tauri::AppHandle,
-    backend: &BackendProcess,
-    message: String,
-) {
+fn schedule_startup_error(handle: &tauri::AppHandle, backend: &BackendProcess, message: String) {
     if backend.is_stopping() {
         return;
     }
@@ -547,7 +546,10 @@ mod tests {
     fn startup_ui_dispatches_error_immediately_after_shell_load() {
         let ui = StartupUi::default();
         assert_eq!(ui.mark_shell_loaded(), None);
-        assert_eq!(ui.queue_error("startup failed".into()), Some("startup failed".into()));
+        assert_eq!(
+            ui.queue_error("startup failed".into()),
+            Some("startup failed".into())
+        );
     }
 
     #[cfg(target_os = "windows")]

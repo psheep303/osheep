@@ -127,21 +127,22 @@ The backend reads its runtime configuration from environment variables. You can 
 | `MAX_TERMINAL_SESSIONS` | `16` | Maximum concurrent terminals |
 | `TERMINAL_IDLE_TIMEOUT_MS` | `0` | Terminal idle timeout, `0` disables it |
 | `AGENT_STALL_TIMEOUT_MS` | `1800000` | AI CLI no-output timeout, `0` disables it |
-| `CORS_ORIGIN` | `*` | Allowed frontend origins |
+| `CORS_ORIGIN` | Loopback origins | Comma-separated additional trusted frontend origins |
+| `OSHEEP_AUTH_TOKEN` | Random local value | Shared access token required for non-loopback listening |
 | `OSHEEP_TEMPLATES_ROOT` | `~/.osheep/templates` | Runtime template directory |
 | `OSHEEP_CLAUDE_CONFIG_DIR` | `~/.claude` | Claude Code configuration directory |
 | `OSHEEP_CODEX_CONFIG_DIR` | `~/.codex` | Codex configuration directory |
 
-If you need access from other devices, add authentication first, use HTTPS, tighten `CORS_ORIGIN`, and restrict firewall rules. The backend can write files, run Git, and execute terminals — it must never be exposed to the public internet.
+Local mode automatically establishes an Origin-restricted `HttpOnly` session; APIs and terminal WebSockets reject unauthorized pages. Non-loopback listening requires both a random `OSHEEP_AUTH_TOKEN` of at least 32 characters and explicit `CORS_ORIGIN` values, and must use HTTPS. Open `https://host/#osheep-token=TOKEN` once to exchange the token for a session; the token is then removed from the address bar. This shared token is intended for controlled single-user deployments and does not replace multi-user authentication, reverse-proxy access control, or firewall rules.
 
 ## Data and secrets
 
 - Never commit `.env`, `backend/.osheep/`, `.codex/`, `.claude/`, private keys, certificate keys, or cloud credentials.
 - Osheep's AI settings may contain plaintext API keys. Use them only on a trusted local machine and keep the permissions of the configuration directories sensible.
 - `.gitignore` only prevents new accidental commits; it cannot remove secrets already committed to Git history. If a secret leaks, revoke the key immediately, then clean up the history.
-- Before committing, you can run `git status --ignored` and a secret scanner to check what is about to be published.
+- Before committing, run `node scripts/check-public-repo.mjs`; before making the repository public, also scan the complete Git history with Gitleaks.
 
-See [SECURITY.md](SECURITY.md) for how to report security issues privately.
+See [SECURITY.en.md](SECURITY.en.md) for how to report security issues privately.
 
 ## Project structure
 
@@ -151,7 +152,7 @@ frontend/                React/Vite workbench
 desktop/                 Tauri 2 desktop shell and release scripts
 backend/template-library Built-in workflow templates
 .osheep/docs/            Product and technical design documents
-docs/                    Feature notes, design records, and archived reports
+docs/                    User-facing and maintainer-facing feature notes
 ```
 
 ## Verification
@@ -170,7 +171,7 @@ Some UI constraints also have dedicated check scripts; see [frontend/package.jso
 
 ## Contributing
 
-Issues and pull requests are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) before you start, and do not report security vulnerabilities in public issues.
+Issues and pull requests are welcome. Please read [CONTRIBUTING.en.md](CONTRIBUTING.en.md) before you start, and do not report security vulnerabilities in public issues.
 
 ## License
 

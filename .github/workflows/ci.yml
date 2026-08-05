@@ -9,6 +9,34 @@ permissions:
   contents: read
 
 jobs:
+  repository-hygiene:
+    name: Repository hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Check tracked files and reachable history
+        run: node scripts/check-public-repo.mjs --history
+
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request' && github.event.repository.visibility == 'public'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Review dependency changes
+        uses: actions/dependency-review-action@v4
+
   backend:
     name: Backend
     runs-on: windows-latest
@@ -75,6 +103,12 @@ jobs:
       - name: Terminal conversation test
         run: npm.cmd run test:terminal-conversation
 
+      - name: API test
+        run: npm.cmd run test:api
+
+      - name: Vite chunk test
+        run: npm.cmd run test:vite-manual-chunks
+
       - name: Workbench CSS reader test
         run: npm.cmd run test:workbench-css-reader
 
@@ -92,3 +126,26 @@ jobs:
 
       - name: Build
         run: npx.cmd vite build
+
+  desktop:
+    name: Desktop Rust
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: desktop/src-tauri
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust components
+        run: rustup component add rustfmt clippy
+
+      - name: Format
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --locked -- -D warnings
+
+      - name: Test
+        run: cargo test --locked

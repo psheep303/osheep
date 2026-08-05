@@ -1,5 +1,7 @@
 # 参与贡献
 
+[English](CONTRIBUTING.en.md) | 简体中文
+
 感谢你参与 Osheep。项目仍在快速迭代，较大的功能改动建议先创建 Issue，说明使用场景、行为边界和实现方向，避免重复工作。
 
 ## 行为准则
@@ -32,6 +34,12 @@ Web 开发可从仓库根目录运行 `./dev.ps1`。具体启动方式和端口�
 4. 更新受影响的 README、配置示例或设计文档。
 5. 提交前确认没有密钥、个人路径、会话记录和本地运行数据。
 
+仓库卫生检查：
+
+```powershell
+node scripts/check-public-repo.mjs
+```
+
 后端验证：
 
 ```powershell
@@ -51,6 +59,8 @@ npm run test:workflow-behavior
 ```
 
 修改桌面打包逻辑时，还应运行 `npx tauri info` 和 `./desktop-dev.cmd`。正式构建安装包前，请同步 `desktop/package.json`、`desktop/src-tauri/Cargo.toml` 与 `desktop/src-tauri/tauri.conf.json` 中的版本号。
+
+提交 Pull Request 即表示你同意按仓库的 MIT License 授权你的贡献。
 
 ## Pull Request
 

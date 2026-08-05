@@ -33,6 +33,7 @@ backend/workspaces/
 .agents/
 .claude/
 .codex/
+.superpowers/
 
 # Credentials, private keys, and signing material
 credentials.json

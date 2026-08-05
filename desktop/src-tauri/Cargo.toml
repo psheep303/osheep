@@ -3,6 +3,8 @@ name = "osheep-desktop"
 version = "0.2.0"
 description = "The osheep desktop workbench"
 authors = ["osheep"]
+license = "MIT"
+repository = "https://github.com/psheep303/osheep"
 edition = "2021"
 
 [lib]

@@ -10,6 +10,8 @@ export class ApiError extends Error {
 }
 
 export const errors = {
+  authRequired: (msg = "需要有效的本地 Osheep 会话") => new ApiError(401, "AUTH_REQUIRED", msg),
+  originNotAllowed: () => new ApiError(403, "ORIGIN_NOT_ALLOWED", "请求来源不在 Osheep 信任列表中"),
   invalidPath: (msg = "路径格式非法") => new ApiError(400, "INVALID_PATH", msg),
   pathOutside: () => new ApiError(403, "PATH_OUTSIDE_WORKSPACE", "路径越出工作区边界"),
   workspaceNotFound: (id: string) =>

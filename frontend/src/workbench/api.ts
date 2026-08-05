@@ -16,6 +16,64 @@ export class ApiClientError extends Error {
 }
 
 const etagCache = new Map<string, { etag: string; body: unknown }>();
+let apiSessionPromise: Promise<void> | null = null;
+
+export function resetApiSession(): void {
+  apiSessionPromise = null;
+}
+
+function fragmentAccessToken(): string | undefined {
+  if (typeof window === "undefined") return undefined;
+  const params = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+  const token = params.get("osheep-token")?.trim() || undefined;
+  if (!token) return undefined;
+
+  params.delete("osheep-token");
+  const hash = params.toString();
+  window.history.replaceState(
+    null,
+    "",
+    `${window.location.pathname}${window.location.search}${hash ? `#${hash}` : ""}`,
+  );
+  return token;
+}
+
+export async function ensureApiSession(): Promise<void> {
+  if (apiSessionPromise) return apiSessionPromise;
+  const token = fragmentAccessToken();
+  apiSessionPromise = (async () => {
+    const headers = token ? { authorization: `Bearer ${token}` } : undefined;
+    const response = await fetch("/api/auth/session", {
+      method: "POST",
+      credentials: "same-origin",
+      headers,
+    });
+    if (response.ok) return;
+
+    const parsed = (await response.json().catch(() => null)) as ApiErrorBody | null;
+    throw new ApiClientError(
+      response.status,
+      parsed?.error?.code ?? `HTTP_${response.status}`,
+      parsed?.error?.message ?? `无法建立 Osheep 会话 (${response.status})`,
+    );
+  })().catch((error) => {
+    apiSessionPromise = null;
+    throw error;
+  });
+  return apiSessionPromise;
+}
+
+async function apiFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+  await ensureApiSession();
+  const requestInit = { ...init, credentials: "same-origin" as const };
+  let response = await fetch(input, requestInit);
+  if (response.status !== 401) return response;
+
+  resetApiSession();
+  await ensureApiSession();
+  response = await fetch(input, requestInit);
+  return response;
+}
 
 async function request<T>(method: string, url: string, body?: unknown): Promise<T> {
   const init: RequestInit = { method };
@@ -28,10 +86,10 @@ async function request<T>(method: string, url: string, body?: unknown): Promise<
     init.body = JSON.stringify(body);
   }
 
-  let res = await fetch(url, init);
+  let res = await apiFetch(url, init);
   if (res.status === 304) {
     if (cached) return cached.body as T;
-    res = await fetch(url, { method: "GET" });
+    res = await apiFetch(url, { method: "GET" });
   }
 
   const text = await res.text();
@@ -1296,7 +1354,7 @@ async function aiChatStreamOnce(
 
   let res: Response;
   try {
-    res = await fetch(url, {
+    res = await apiFetch(url, {
       method: "POST",
       signal,
       headers: {
@@ -1548,7 +1606,7 @@ export async function aiChatTerminalStream(
   const url = `/api/workspaces/${encodeURIComponent(workspaceId)}/ai/chat/terminal`;
   let res: Response;
   try {
-    res = await fetch(url, {
+    res = await apiFetch(url, {
       method: "POST",
       signal,
       headers: {
@@ -1925,7 +1983,7 @@ export async function execRunStream(
   const url = `/api/workspaces/${encodeURIComponent(workspaceId)}/ai/exec/run/stream`;
   let res: Response;
   try {
-    res = await fetch(url, {
+    res = await apiFetch(url, {
       method: "POST",
       signal: options.signal,
       headers: {
