@@ -64,7 +64,8 @@ export function resolveSystemTheme(prefersDark: boolean): ResolvedTheme {
 
 function browserLanguages(): readonly string[] {
   if (typeof navigator === "undefined") return ["en"];
-  return navigator.languages.length > 0 ? navigator.languages : [navigator.language];
+  const languages = Array.isArray(navigator.languages) ? navigator.languages : [];
+  return languages.length > 0 ? languages : [navigator.language || "en"];
 }
 
 function browserPrefersDark(): boolean {
