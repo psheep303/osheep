@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { promisify } from "node:util";
 import { ApiError, errors } from "./errors.js";
+import { detectAiCli } from "./runtime-tools.js";
 
 const execFileAsync = promisify(execFile);
 const UNSAFE_ARGUMENT_PATTERN = /[\r\n"&|<>%^!]/;
@@ -126,7 +127,7 @@ export function parseClaudeCliJson(text: string): unknown {
 }
 
 export async function runClaudePluginCli(args: string[]): Promise<string> {
-  const bin = process.platform === "win32" ? "claude.exe" : "claude";
+  const bin = detectAiCli("claude").command;
   try {
     const result = await execFileAsync(bin, args, {
       encoding: "utf8",

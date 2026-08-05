@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import type { TomlTable } from "smol-toml";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import { ApiError, errors } from "./errors.js";
+import { detectAiCli } from "./runtime-tools.js";
 
 const execFileAsync = promisify(execFile);
 const UNSAFE_WINDOWS_SHELL_PATTERN = /[\r\n"&|<>%^!]/;
@@ -165,7 +166,7 @@ export function resolveCodexPluginPaths(
 }
 
 export async function runCodexPluginCli(args: string[]): Promise<string> {
-  const bin = process.platform === "win32" ? "codex.cmd" : "codex";
+  const bin = detectAiCli("codex").command;
   try {
     const result = await execFileAsync(
       process.platform === "win32" ? "cmd.exe" : bin,

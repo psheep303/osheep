@@ -8,11 +8,13 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build && node scripts/compress-dist.mjs",
-    "test:workflow-behavior": "node --test src/workbench/workflow-behavior.test.ts",
-    "test:terminal-conversation": "node --test src/workbench/terminal-conversation.test.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run test:theme && npm run test:workflow-behavior && npm run test:terminal-conversation && npm run test:api && npm run test:vite-manual-chunks && npm run test:workbench-css-reader && npm run check:agent-navigation && npm run check:workflow-left-sidebar && npm run check:workflow-css && npm run check:workbench-css-equivalence",
+    "test:workflow-behavior": "tsx --test src/workbench/workflow-behavior.test.ts",
+    "test:terminal-conversation": "tsx --test src/workbench/terminal-conversation.test.ts",
     "test:theme": "node --test src/workbench/theme.test.mjs",
-    "test:api": "node --experimental-transform-types --test src/workbench/api.test.ts",
-    "test:vite-manual-chunks": "node --test scripts/vite-manual-chunks.test.ts",
+    "test:api": "tsx --test src/workbench/api.test.ts",
+    "test:vite-manual-chunks": "tsx --test scripts/vite-manual-chunks.test.ts",
     "test:workbench-css-reader": "node --test scripts/read-workbench-css.test.mjs",
     "check:agent-navigation": "node scripts/check-agent-navigation.mjs",
     "check:workflow-left-sidebar": "node scripts/check-workflow-left-sidebar.mjs",
@@ -43,6 +45,7 @@
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
+    "tsx": "^4.19.2",
     "typescript": "^5.6.3",
     "vite": "^5.4.11"
   }

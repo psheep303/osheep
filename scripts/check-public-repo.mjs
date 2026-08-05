@@ -15,6 +15,7 @@ const untrackedFiles = git(["ls-files", "--others", "--exclude-standard", "-z"])
   .filter(Boolean);
 
 const repositoryFiles = [...new Set([...presentTrackedFiles, ...untrackedFiles])];
+const repositoryFileSet = new Set(repositoryFiles.map((file) => file.replaceAll("\\", "/")));
 
 const ignoredTrackedFiles = git(["ls-files", "-ci", "--exclude-standard", "-z"])
   .split("\0")
@@ -83,11 +84,30 @@ if (process.argv.includes("--history")) {
   }
 }
 
+const documentationPairs = [
+  ["README.md", "README.zh-CN.md"],
+  ["CONTRIBUTING.md", "CONTRIBUTING.zh-CN.md"],
+  ["SECURITY.md", "SECURITY.zh-CN.md"],
+  ["CODE_OF_CONDUCT.md", "CODE_OF_CONDUCT.zh-CN.md"],
+  ["backend/README.md", "backend/README.zh-CN.md"],
+  ["backend/template-library/README.md", "backend/template-library/README.zh-CN.md"],
+];
+const documentationFailures = repositoryFiles
+  .filter((file) => file.toLowerCase().endsWith(".en.md"))
+  .map((file) => `${file}: English documentation must use the unsuffixed .md filename`);
+for (const [english, chinese] of documentationPairs) {
+  if (!repositoryFileSet.has(english)) documentationFailures.push(`${english}: missing English document`);
+  if (!repositoryFileSet.has(chinese)) {
+    documentationFailures.push(`${chinese}: missing Simplified Chinese document`);
+  }
+}
+
 const failures = [
   ...ignoredTrackedFiles.map((file) => `${file}: tracked even though .gitignore excludes it`),
   ...forbiddenPaths.map((file) => `${file}: forbidden public-repository path`),
   ...secretHits,
   ...historyHits,
+  ...documentationFailures,
 ];
 
 if (failures.length > 0) {

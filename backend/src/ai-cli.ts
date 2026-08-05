@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { platform } from "./config.js";
+import { detectAiCli } from "./runtime-tools.js";
 
 export type CliProviderKind = "claude-cli" | "codex-cli";
 
@@ -162,7 +163,7 @@ function buildInvocation(
       "acceptEdits",
     ];
     if (useModel) args.push("--model", model);
-    return { command: platform === "windows" ? "claude.exe" : "claude", args };
+    return { command: detectAiCli("claude").command, args };
   }
 
   const args = [
@@ -179,7 +180,7 @@ function buildInvocation(
     args.push("--output-last-message", outputLastMessagePath);
   }
   args.push("-");
-  return { command: platform === "windows" ? "codex.cmd" : "codex", args };
+  return { command: detectAiCli("codex").command, args };
 }
 
 async function createOutputCapture(): Promise<{ dir: string; file: string }> {

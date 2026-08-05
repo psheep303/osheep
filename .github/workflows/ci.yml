@@ -37,13 +37,9 @@ jobs:
       - name: Review dependency changes
         uses: actions/dependency-review-action@v4
 
-  backend:
-    name: Backend
-    runs-on: windows-latest
-    defaults:
-      run:
-        shell: pwsh
-        working-directory: backend
+  linux-web:
+    name: Linux web and clean install
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -53,27 +49,24 @@ jobs:
         with:
           node-version: 20
           cache: npm
-          cache-dependency-path: backend/package-lock.json
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
 
-      - name: Install
-        run: npm.cmd ci
+      - name: Install Linux build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential python3 git
 
-      - name: Lint
-        run: npm.cmd run lint
+      - name: Verify documented Linux installation and web development
+        run: bash scripts/verify-linux.sh
 
-      - name: Typecheck
-        run: npm.cmd run typecheck
-
-      - name: Test
-        run: npm.cmd test
-
-  frontend:
-    name: Frontend
+  windows-web:
+    name: Windows web regression
     runs-on: windows-latest
     defaults:
       run:
         shell: pwsh
-        working-directory: frontend
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -83,49 +76,29 @@ jobs:
         with:
           node-version: 20
           cache: npm
-          cache-dependency-path: frontend/package-lock.json
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
 
-      - name: Install
-        run: npm.cmd ci
+      - name: Install backend
+        run: npm.cmd --prefix backend ci
 
-      - name: Lint
-        run: npm.cmd run lint
+      - name: Verify backend
+        run: |
+          npm.cmd --prefix backend run lint
+          npm.cmd --prefix backend run typecheck
+          npm.cmd --prefix backend test
+          npm.cmd --prefix backend run build
 
-      - name: Typecheck
-        run: npx.cmd tsc --noEmit
+      - name: Install frontend
+        run: npm.cmd --prefix frontend ci
 
-      - name: Theme test
-        run: npm.cmd run test:theme
-
-      - name: Behavior test
-        run: npm.cmd run test:workflow-behavior
-
-      - name: Terminal conversation test
-        run: npm.cmd run test:terminal-conversation
-
-      - name: API test
-        run: npm.cmd run test:api
-
-      - name: Vite chunk test
-        run: npm.cmd run test:vite-manual-chunks
-
-      - name: Workbench CSS reader test
-        run: npm.cmd run test:workbench-css-reader
-
-      - name: Agent navigation check
-        run: npm.cmd run check:agent-navigation
-
-      - name: Left sidebar check
-        run: npm.cmd run check:workflow-left-sidebar
-
-      - name: Workflow CSS check
-        run: npm.cmd run check:workflow-css
-
-      - name: Workbench CSS equivalence check
-        run: npm.cmd run check:workbench-css-equivalence
-
-      - name: Build
-        run: npx.cmd vite build
+      - name: Verify frontend
+        run: |
+          npm.cmd --prefix frontend run lint
+          npm.cmd --prefix frontend run typecheck
+          npm.cmd --prefix frontend test
+          npm.cmd --prefix frontend run build
 
   desktop:
     name: Desktop Rust

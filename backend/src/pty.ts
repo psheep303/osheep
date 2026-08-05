@@ -1,10 +1,10 @@
 import { randomBytes } from "node:crypto";
-import * as fs from "node:fs";
 import * as path from "node:path";
 import * as nodePty from "node-pty";
 import { config, platform } from "./config.js";
 import { errors } from "./errors.js";
 import { buildBashGuard, buildCmdGuard, buildPowerShellGuard } from "./pty-guard.js";
+import { findExecutable } from "./runtime-tools.js";
 import type { WorkspaceInfo } from "./workspace.js";
 
 export interface ShellProfile {
@@ -48,33 +48,10 @@ export interface TerminalSession {
 const sessions = new Map<string, TerminalSession>();
 let cachedProfiles: ShellProfile[] | null = null;
 
-function fileExists(p: string): boolean {
-  try {
-    return fs.statSync(p).isFile();
-  } catch {
-    return false;
-  }
-}
-
-function whichSync(name: string): string | null {
-  const PATH = process.env.PATH ?? "";
-  const sep = platform === "windows" ? ";" : ":";
-  const exts =
-    platform === "windows" ? (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";") : [""];
-  for (const dir of PATH.split(sep)) {
-    if (!dir) continue;
-    for (const ext of exts) {
-      const candidate = path.join(dir, name + ext);
-      if (fileExists(candidate)) return candidate;
-    }
-  }
-  return null;
-}
-
-function detectProfiles(): ShellProfile[] {
+export function detectProfiles(): ShellProfile[] {
   const profiles: ShellProfile[] = [];
   if (platform === "windows") {
-    const pwsh = whichSync("powershell");
+    const pwsh = findExecutable("powershell");
     if (pwsh) {
       profiles.push({
         id: "powershell",
@@ -83,7 +60,7 @@ function detectProfiles(): ShellProfile[] {
         args: ["-NoLogo"],
       });
     }
-    const cmd = whichSync("cmd");
+    const cmd = findExecutable("cmd");
     if (cmd) {
       profiles.push({ id: "cmd", label: "Command Prompt", executable: cmd, args: [] });
     }
@@ -91,7 +68,7 @@ function detectProfiles(): ShellProfile[] {
       "C:\\Program Files\\Git\\bin\\bash.exe",
       "C:\\Program Files (x86)\\Git\\bin\\bash.exe",
     ];
-    const gitBash = gitBashCandidates.find(fileExists);
+    const gitBash = gitBashCandidates.find((candidate) => findExecutable(candidate));
     if (gitBash) {
       profiles.push({
         id: "bash",
@@ -101,9 +78,9 @@ function detectProfiles(): ShellProfile[] {
       });
     }
   } else {
-    const bash = whichSync("bash");
+    const bash = findExecutable("bash");
     if (bash) profiles.push({ id: "bash", label: "bash", executable: bash, args: [] });
-    const zsh = whichSync("zsh");
+    const zsh = findExecutable("zsh");
     if (zsh) profiles.push({ id: "zsh", label: "zsh", executable: zsh, args: [] });
   }
   return profiles;

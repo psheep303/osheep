@@ -30,6 +30,7 @@ import {
   readFileText,
   writeFileText,
 } from "../fs-ops.js";
+import { detectAiCli } from "../runtime-tools.js";
 import { searchWorkspace } from "../search.js";
 import { resolveWorkspace, resolveWorkspacePath } from "../workspace.js";
 
@@ -329,6 +330,11 @@ function terminalPromptFromMessages(messages: ChatMessageIn[]): string {
 }
 
 export async function registerAiRoutes(app: FastifyInstance) {
+  app.get("/api/ai/cli-status", async () => ({
+    claude: detectAiCli("claude"),
+    codex: detectAiCli("codex"),
+  }));
+
   app.post<{
     Params: { id: string };
     Body: { kind?: ProviderKind };
