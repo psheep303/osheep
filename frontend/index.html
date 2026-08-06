@@ -4,9 +4,127 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Osheep workbench</title>
+    <script>
+      (() => {
+        try {
+          const raw = localStorage.getItem("osheep.uiPreferences.v1");
+          const preference = raw ? JSON.parse(raw).theme : null;
+          const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+          const theme = preference === "dark" || (preference !== "light" && prefersDark) ? "dark" : "light";
+          document.documentElement.dataset.theme = theme;
+          document.documentElement.style.colorScheme = theme;
+        } catch {
+          // The React preference provider will recover if storage is unavailable or malformed.
+        }
+      })();
+    </script>
+    <style>
+      :root {
+        color-scheme: light;
+        --startup-bg: #f7f8fa;
+        --startup-fg: #26313d;
+        --startup-track: #dbe5ef;
+        --startup-accent: #0078d4;
+        --startup-mark-bg: #e7eef6;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          color-scheme: dark;
+          --startup-bg: #181818;
+          --startup-fg: #d7d7d7;
+          --startup-track: #3a4149;
+          --startup-accent: #75beff;
+          --startup-mark-bg: #293440;
+        }
+      }
+
+      :root[data-theme="light"] {
+        color-scheme: light;
+        --startup-bg: #f7f8fa;
+        --startup-fg: #26313d;
+        --startup-track: #dbe5ef;
+        --startup-accent: #0078d4;
+        --startup-mark-bg: #e7eef6;
+      }
+
+      :root[data-theme="dark"] {
+        color-scheme: dark;
+        --startup-bg: #181818;
+        --startup-fg: #d7d7d7;
+        --startup-track: #3a4149;
+        --startup-accent: #75beff;
+        --startup-mark-bg: #293440;
+      }
+
+      html,
+      body,
+      #root {
+        min-height: 100%;
+        margin: 0;
+      }
+
+      body {
+        background: var(--startup-bg);
+        color: var(--startup-fg);
+      }
+
+      #startup-splash {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        display: grid;
+        place-items: center;
+        background: var(--startup-bg);
+      }
+
+      .startup-splash__mark {
+        position: relative;
+        display: grid;
+        width: 88px;
+        height: 88px;
+        place-items: center;
+        border-radius: 50%;
+        background: var(--startup-mark-bg);
+      }
+
+      .startup-splash__mark::before {
+        position: absolute;
+        inset: -7px;
+        border: 3px solid var(--startup-track);
+        border-top-color: var(--startup-accent);
+        border-radius: 50%;
+        content: "";
+        animation: startup-splash-spin 0.9s linear infinite;
+      }
+
+      .startup-splash__mark img {
+        width: 58px;
+        height: 58px;
+        object-fit: contain;
+      }
+
+      @keyframes startup-splash-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .startup-splash__mark::before {
+          animation-duration: 1.8s;
+        }
+      }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div id="startup-splash" aria-hidden="true">
+        <div class="startup-splash__mark">
+          <img src="/osheep-icon.png" alt="" />
+        </div>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
