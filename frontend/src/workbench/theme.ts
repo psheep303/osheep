@@ -170,6 +170,28 @@ export function xtermAnsiTheme(theme: UiColorTheme = "dark"): XtermAnsiTheme {
   return theme === "light" ? { ...LIGHT_ANSI } : { ...DARK_ANSI };
 }
 
+/** Remove explicit terminal background colors so light mode keeps a light canvas. */
+export function normalizeLightTerminalAnsi(data: string, theme: UiColorTheme = "dark"): string {
+  if (theme !== "light" || !data.includes("\x1b[")) return data;
+  return data.replace(/\x1b\[([0-9;]*)m/g, (_sequence, rawParams: string) => {
+    const params = rawParams === "" ? [0] : rawParams.split(";").map((value) => Number(value));
+    const kept: number[] = [];
+    for (let index = 0; index < params.length; index += 1) {
+      const param = params[index];
+      if ((param >= 40 && param <= 47) || (param >= 100 && param <= 107) || param === 49) {
+        continue;
+      }
+      if (param === 48) {
+        const mode = params[index + 1];
+        index += mode === 5 ? 2 : mode === 2 ? 4 : 1;
+        continue;
+      }
+      kept.push(param);
+    }
+    return kept.length ? `\x1b[${kept.join(";")}m` : "";
+  });
+}
+
 const GIT_GRAPH_PALETTE = ["#ffb000", "#dc267f", "#994f00", "#40b0a6", "#b66dff"] as const;
 
 export function gitGraphPalette(): string[] {

@@ -17,6 +17,7 @@ const {
   gitGraphRefColors,
   monacoDiffColors,
   monacoEditorColors,
+  normalizeLightTerminalAnsi,
   workflowXtermTheme,
   xtermAnsiTheme,
   xtermTheme,
@@ -94,6 +95,12 @@ test("explicit light palettes stay readable without a DOM", () => {
   assert.equal(workflowXtermTheme("light").background, "#ffffff");
   assert.equal(xtermAnsiTheme("light").brightWhite, "#1f2933");
   assert.equal(xtermAnsiTheme("light").brightYellow, "#795e26");
+});
+
+test("light terminal output drops explicit background colors without changing dark output", () => {
+  const data = "\u001b[38;2;255;255;255;48;2;30;30;30mhello\u001b[0m";
+  assert.equal(normalizeLightTerminalAnsi(data, "light"), "\u001b[38;2;255;255;255mhello\u001b[0m");
+  assert.equal(normalizeLightTerminalAnsi(data, "dark"), data);
 });
 
 test("cssVar trims DOM values and falls back for empty tokens", () => {

@@ -554,8 +554,8 @@
 :root[data-theme="light"] .workflow-template-editor .workflow-template-editor__control:focus {
   background: transparent;
   border-color: transparent;
-  color: #303030;
-  -webkit-text-fill-color: #303030;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
 }
 
 :root[data-theme="light"] .workflow-template-token {
@@ -630,6 +630,30 @@
 :root[data-theme="light"] .workflow-run-details__xterm-host .xterm-screen,
 :root[data-theme="light"] .workflow-run-details__xterm-host .xterm-viewport {
   background: #ffffff !important;
+}
+
+:root[data-theme="light"] .workflow-inspector__check input[type="checkbox"] {
+  border-color: #aeb7c2;
+  background: #ffffff;
+  box-shadow: inset 0 0 0 1px rgba(31, 31, 31, 0.04);
+}
+
+:root[data-theme="light"] .workflow-inspector__check input[type="checkbox"]::after {
+  border-color: #006ab1;
+}
+
+:root[data-theme="light"] .workflow-inspector__check input[type="checkbox"]:checked {
+  border-color: #0078d4;
+  background: #e7f3fc;
+  box-shadow: inset 0 0 0 1px rgba(0, 120, 212, 0.12);
+}
+
+:root[data-theme="light"] .workflow-inspector__check input[type="checkbox"]:focus-visible {
+  box-shadow: 0 0 0 3px rgba(0, 120, 212, 0.2);
+}
+
+:root[data-theme="light"] .workflow-inspector__field select {
+  color-scheme: light;
 }
 
 :root[data-theme="light"] .workflow-run-details__terminal,

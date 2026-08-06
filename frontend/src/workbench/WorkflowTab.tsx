@@ -59,7 +59,7 @@ import {
 import { ClaudeLogo, OpenAILogo } from "./BrandIcons";
 import { ContextMenu, type CtxMenuSection } from "./ContextMenu";
 import { cleanAgentTerminalConversation } from "./terminal-conversation";
-import { workflowXtermTheme, xtermAnsiTheme } from "./theme";
+import { normalizeLightTerminalAnsi, workflowXtermTheme, xtermAnsiTheme } from "./theme";
 import {
   blockOutputText,
   canApplyWorkflowRefresh,
@@ -3214,9 +3214,11 @@ function WorkflowAgentTerminal({
   const termRef = useRef<XTerm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const resolvedThemeRef = useRef(resolvedTheme);
   const [paused, setPaused] = useState(false);
   const [autoSuccess, setAutoSuccess] = useState(initialAutoSuccess);
   const canMarkSuccess = canManuallyMarkAgentSuccess(terminalStatus);
+  resolvedThemeRef.current = resolvedTheme;
 
   useEffect(() => {
     setAutoSuccess(initialAutoSuccess);
@@ -3259,7 +3261,7 @@ function WorkflowAgentTerminal({
           signal?: number | string | null;
         };
         if (msg.type === "output" && typeof msg.data === "string") {
-          term.write(msg.data);
+          term.write(normalizeLightTerminalAnsi(msg.data, resolvedThemeRef.current));
         } else if (msg.type === "exit") {
           term.writeln(
             `\r\n\x1b[2m[osheep] terminal exited code=${msg.code ?? "null"} signal=${
