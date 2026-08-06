@@ -46,13 +46,13 @@ const checks = [
         /\{workspaceName\s+\?\?\s+t\("workspace\.select"\)\}/.test(workbench)),
   },
   {
-    name: "titlebar actions only keep save",
+    name: "save all follows the titlebar project label",
     pass:
-      /<div className="titlebar__actions">\s*<button\s+className="tb-btn"\s+onClick=\{saveActive\}/m.test(
+      /className="titlebar__project-btn"[\s\S]*?<\/button>\s*<button className="tb-btn" onClick=\{\(\) => void saveAll\(\)\}/m.test(
         workbench,
       ) &&
-      !/<LayoutToggle/.test(workbench) &&
-      !/titlebar__spacer/.test(workbench),
+      /t\("workspace\.saveAll"\)/.test(workbench) &&
+      !/titlebar__actions/.test(workbench),
   },
   {
     name: "explorer empty state has no workspace picker button",

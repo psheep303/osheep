@@ -62,6 +62,11 @@ interface FileTab {
   goto?: GotoTarget | null;
 }
 
+interface FileSaveSnapshot {
+  path: string;
+  content: string;
+}
+
 interface SettingsTab {
   kind: "settings";
   path: "__settings__";
@@ -424,25 +429,64 @@ export function Workbench() {
     [activePath],
   );
 
+  const saveFiles = useCallback(
+    async (files: FileSaveSnapshot[]) => {
+      if (!workspaceId || files.length === 0) return;
+      const results = await Promise.allSettled(
+        files.map((file) => writeFileText(workspaceId, file.path, file.content)),
+      );
+      const saved = new Map(
+        files
+          .filter((_, index) => results[index].status === "fulfilled")
+          .map((file) => [file.path, file.content]),
+      );
+      if (saved.size > 0) {
+        setTabs((current) =>
+          current.map((tab) => {
+            if (tab.kind !== "file") return tab;
+            const savedContent = saved.get(tab.path);
+            return savedContent === undefined
+              ? tab
+              : { ...tab, savedContent, dirty: tab.content !== savedContent };
+          }),
+        );
+        refreshGitStatus();
+      }
+      const failure = results.find(
+        (result): result is PromiseRejectedResult => result.status === "rejected",
+      );
+      if (failure) {
+        const detail =
+          failure.reason instanceof Error ? failure.reason.message : String(failure.reason);
+        setError(t("error.writeFile", { detail }));
+      }
+    },
+    [refreshGitStatus, t, workspaceId],
+  );
+
   const saveActive = useCallback(async () => {
-    if (!activePath || !workspaceId) return;
-    const tab = tabs.find((t) => t.path === activePath);
+    if (!activePath) return;
+    const tab = tabs.find((candidate) => candidate.path === activePath);
     if (tab?.kind !== "file" || tab.deleted) return;
-    try {
-      await writeFileText(workspaceId, tab.path, tab.content);
-    } catch (e) {
-      setError(t("error.writeFile", { detail: (e as Error).message }));
-      return;
-    }
-    setTabs((prev) =>
-      prev.map((t) =>
-        t.kind === "file" && t.path === activePath
-          ? { ...t, savedContent: t.content, dirty: false }
-          : t,
-      ),
-    );
-    refreshGitStatus();
-  }, [activePath, tabs, workspaceId, refreshGitStatus, t]);
+    await saveFiles([{ path: tab.path, content: tab.content }]);
+  }, [activePath, saveFiles, tabs]);
+
+  const saveAll = useCallback(async () => {
+    const files = tabs
+      .filter((tab): tab is FileTab => tab.kind === "file" && tab.dirty && !tab.deleted)
+      .map(({ path, content }) => ({ path, content }));
+    await saveFiles(files);
+  }, [saveFiles, tabs]);
+
+  useEffect(() => {
+    if (!settings.editor.autoSave) return;
+    const files = tabs
+      .filter((tab): tab is FileTab => tab.kind === "file" && tab.dirty && !tab.deleted)
+      .map(({ path, content }) => ({ path, content }));
+    if (files.length === 0) return;
+    const timer = window.setTimeout(() => void saveFiles(files), 750);
+    return () => window.clearTimeout(timer);
+  }, [saveFiles, settings.editor.autoSave, tabs]);
 
   const closeTab = useCallback(
     (path: string) => {
@@ -555,6 +599,7 @@ export function Workbench() {
   const activeTab = tabs.find((t) => t.path === activePath) ?? null;
   const activeFileTab = activeTab?.kind === "file" ? activeTab : null;
   const activeDiffTab = activeTab?.kind === "diff" ? activeTab : null;
+  const hasDirtyFiles = tabs.some((tab) => tab.kind === "file" && tab.dirty && !tab.deleted);
 
   return (
     <div className="workbench">
@@ -569,15 +614,9 @@ export function Workbench() {
         >
           {workspaceName ?? t("workspace.select")}
         </button>
-        <div className="titlebar__actions">
-          <button
-            className="tb-btn"
-            onClick={saveActive}
-            disabled={!activeFileTab?.dirty || activeFileTab?.deleted}
-          >
-            {t("workspace.save")}
-          </button>
-        </div>
+        <button className="tb-btn" onClick={() => void saveAll()} disabled={!hasDirtyFiles}>
+          {t("workspace.saveAll")}
+        </button>
       </div>
 
       {error && (

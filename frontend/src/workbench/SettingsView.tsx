@@ -37,6 +37,11 @@ export function SettingsView({ settings, onChange, hasProject }: SettingsViewPro
     onChange({ ...settings, editor: { ...settings.editor, tabSize: next } });
   };
 
+  const applyAutoSave = (autoSave: boolean) => {
+    if (autoSave === settings.editor.autoSave) return;
+    onChange({ ...settings, editor: { ...settings.editor, autoSave } });
+  };
+
   return (
     <div className="settings-view">
       <div className="settings-view__container">
@@ -80,6 +85,18 @@ export function SettingsView({ settings, onChange, hasProject }: SettingsViewPro
           </div>
 
           <SettingItem
+            label={t("settings.editor.autoSave")}
+            description={t("settings.editor.autoSaveDescription")}
+          >
+            <Switch
+              checked={settings.editor.autoSave}
+              disabled={!hasProject}
+              label={t("settings.editor.autoSave")}
+              onChange={applyAutoSave}
+            />
+          </SettingItem>
+
+          <SettingItem
             label={t("settings.editor.fontSize")}
             description={t("settings.editor.fontSizeDescription", {
               min: MIN_FONT,
@@ -110,6 +127,29 @@ export function SettingsView({ settings, onChange, hasProject }: SettingsViewPro
         </section>
       </div>
     </div>
+  );
+}
+
+interface SwitchProps {
+  checked: boolean;
+  disabled?: boolean;
+  label: string;
+  onChange: (checked: boolean) => void;
+}
+
+function Switch({ checked, disabled = false, label, onChange }: SwitchProps) {
+  return (
+    <button
+      type="button"
+      className={`settings-view__switch${checked ? " is-on" : ""}`}
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+    >
+      <span className="settings-view__switch-thumb" />
+    </button>
   );
 }
 
