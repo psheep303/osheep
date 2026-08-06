@@ -55,6 +55,13 @@ const checks = [
       !/titlebar__actions/.test(workbench),
   },
   {
+    name: "open terminal follows save all in the titlebar",
+    pass:
+      /t\("workspace\.saveAll"\)[\s\S]*?className="tb-btn tb-btn--icon"[\s\S]*?onClick=\{openTerminal\}/m.test(
+        workbench,
+      ) && /setOpenTerminalSignal\(\(signal\) => signal \+ 1\)/.test(workbench),
+  },
+  {
     name: "explorer empty state has no workspace picker button",
     pass: !/side-view__body--padded[\s\S]*setPicking\(true\)/.test(workbench),
   },

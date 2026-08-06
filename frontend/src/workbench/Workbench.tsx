@@ -188,6 +188,7 @@ export function Workbench() {
   const [bottomActivated, setBottomActivated] = useState(false);
   const [terminalLaunchRequest, setTerminalLaunchRequest] =
     useState<AgentTerminalLaunchRequest | null>(null);
+  const [openTerminalSignal, setOpenTerminalSignal] = useState(0);
 
   const lastLeftWidthRef = useRef(DEFAULT_LEFT_WIDTH);
   const leftProgressRef = useRef(0);
@@ -578,6 +579,12 @@ export function Workbench() {
     setTerminalLaunchRequest(null);
   };
 
+  const openTerminal = useCallback(() => {
+    setBottomActivated(true);
+    setBottomHeight((height) => height || 300);
+    setOpenTerminalSignal((signal) => signal + 1);
+  }, []);
+
   const resumeAgentSession = useCallback(
     (session: Pick<AgentSessionSummary, "app" | "id" | "title">) => {
       if (!workspaceId) return;
@@ -623,6 +630,15 @@ export function Workbench() {
         </button>
         <button className="tb-btn" onClick={() => void saveAll()} disabled={!hasDirtyFiles}>
           {t("workspace.saveAll")}
+        </button>
+        <button
+          type="button"
+          className="tb-btn tb-btn--icon"
+          onClick={openTerminal}
+          title={t("terminal.open")}
+          aria-label={t("terminal.open")}
+        >
+          <i className="codicon codicon-terminal" aria-hidden="true" />
         </button>
         <span className="titlebar__drag-region" data-tauri-drag-region />
         {windowsDesktopShell && <DesktopWindowControls />}
@@ -886,6 +902,7 @@ export function Workbench() {
                   onClose={hardCloseBottom}
                   terminalLaunchRequest={terminalLaunchRequest}
                   onTerminalLaunchHandled={handleTerminalLaunch}
+                  openTerminalSignal={openTerminalSignal}
                 />
               </Suspense>
             </div>

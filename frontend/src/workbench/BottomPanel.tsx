@@ -12,6 +12,7 @@ interface BottomPanelProps {
   onClose: () => void;
   terminalLaunchRequest?: AgentTerminalLaunchRequest | null;
   onTerminalLaunchHandled?: (key: number) => void;
+  openTerminalSignal?: number;
 }
 
 export function BottomPanel({
@@ -19,6 +20,7 @@ export function BottomPanel({
   onClose,
   terminalLaunchRequest = null,
   onTerminalLaunchHandled,
+  openTerminalSignal = 0,
 }: BottomPanelProps) {
   const { t } = useUiPreferences();
   const [tab, setTab] = useState<BottomTab>("terminal");
@@ -26,6 +28,10 @@ export function BottomPanel({
   useEffect(() => {
     if (terminalLaunchRequest) setTab("terminal");
   }, [terminalLaunchRequest]);
+
+  useEffect(() => {
+    if (openTerminalSignal > 0) setTab("terminal");
+  }, [openTerminalSignal]);
 
   return (
     <div className="bottom-panel">

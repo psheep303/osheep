@@ -3,8 +3,8 @@
 .titlebar {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 12px;
+  gap: 6px;
+  padding: 0 10px;
   background: var(--bg-shell);
   font-size: 12px;
   color: var(--fg-default);
@@ -17,8 +17,8 @@
 }
 
 .titlebar__logo {
-  width: 18px;
-  height: 18px;
+  width: 17px;
+  height: 17px;
   flex: 0 0 auto;
   object-fit: contain;
 }
@@ -74,12 +74,25 @@
   background: transparent;
   color: var(--fg-default);
   border: 1px solid transparent;
-  padding: 3px 10px;
+  padding: 2px 8px;
   font-size: 12px;
   cursor: pointer;
   border-radius: var(--radius-sm);
   transition: background-color var(--duration-fast) ease, color var(--duration-fast) ease,
     border-color var(--duration-fast) ease;
+}
+
+.tb-btn--icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 24px;
+  padding: 0;
+}
+
+.tb-btn--icon .codicon {
+  font-size: 14px;
 }
 .tb-btn:hover:not(:disabled) {
   background: var(--bg-hover);
