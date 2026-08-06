@@ -57,6 +57,7 @@ export function TerminalSession({
         cursorBlink: true,
         fontFamily: "Cascadia Mono, Consolas, Courier New, monospace",
         fontSize: 13,
+        minimumContrastRatio: resolvedTheme === "light" ? 4.5 : 1,
         theme: { ...xtermTheme(resolvedTheme), ...xtermAnsiTheme(resolvedTheme) },
         scrollback: 5000,
       });
@@ -257,8 +258,11 @@ export function TerminalSession({
 
   useEffect(() => {
     const term = xtermRef.current;
-    if (term)
+    if (term) {
       term.options.theme = { ...xtermTheme(resolvedTheme), ...xtermAnsiTheme(resolvedTheme) };
+      term.options.minimumContrastRatio = resolvedTheme === "light" ? 4.5 : 1;
+      term.refresh(0, term.rows - 1);
+    }
   }, [resolvedTheme]);
 
   // When this session becomes visible, force a fit + focus.

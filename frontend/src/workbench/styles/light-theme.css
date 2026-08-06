@@ -268,6 +268,16 @@
   color: #3b3b3b;
 }
 
+:root[data-theme="light"] .template-avatar {
+  background: linear-gradient(135deg, #dbeafe, #bfd7f2);
+  color: #1e3a5f;
+  box-shadow: inset 0 0 0 1px rgba(0, 90, 158, 0.16);
+}
+
+:root[data-theme="light"] .template-avatar img {
+  box-shadow: none;
+}
+
 :root[data-theme="light"] .workflow-readme,
 :root[data-theme="light"] .workflow-readme__bar,
 :root[data-theme="light"] .workflow-readme__content,
@@ -353,6 +363,25 @@
   background-image: linear-gradient(rgba(31, 31, 31, 0.08) 1px, transparent 1px),
     linear-gradient(90deg, rgba(31, 31, 31, 0.08) 1px, transparent 1px);
   box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.04);
+}
+
+:root[data-theme="light"] .workflow-minimap {
+  background: #ffffff;
+  border-color: #c8c8c8;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.16);
+}
+
+:root[data-theme="light"] .workflow-minimap__node {
+  fill: #7a8794;
+}
+
+:root[data-theme="light"] .workflow-minimap__node.is-selected {
+  fill: #0078d4;
+}
+
+:root[data-theme="light"] .workflow-minimap__view {
+  fill: rgba(0, 120, 212, 0.12);
+  stroke: #0078d4;
 }
 
 :root[data-theme="light"] .workflow-node {
@@ -541,6 +570,66 @@
   background: #f8f8f8;
   border-color: #d4d4d4;
   color: #303030;
+}
+
+:root[data-theme="light"] .workflow-inspector__chip,
+:root[data-theme="light"] .workflow-inspector__edge,
+:root[data-theme="light"] .workflow-run-details__meta span,
+:root[data-theme="light"] .workflow-inspector__mcp-error {
+  background: #f8f8f8;
+  border-color: #d4d4d4;
+  color: #454545;
+}
+
+:root[data-theme="light"] .workflow-inspector__edge span,
+:root[data-theme="light"] .workflow-inspector__muted,
+:root[data-theme="light"] .workflow-run-details__meta,
+:root[data-theme="light"] .workflow-run-details__session {
+  color: #686868;
+}
+
+:root[data-theme="light"] .workflow-inspector__plugin-search {
+  background: #f8f8f8;
+  border-color: #c8c8c8;
+  color: #303030;
+}
+
+:root[data-theme="light"] .workflow-inspector__plugin-search:disabled {
+  background: #eeeeee;
+  color: #686868;
+  opacity: 1;
+}
+
+:root[data-theme="light"] .workflow-inspector__plugin-search::placeholder,
+:root[data-theme="light"] .workflow-inspector__field input::placeholder,
+:root[data-theme="light"] .workflow-inspector__field textarea::placeholder {
+  color: #767676;
+  opacity: 1;
+}
+
+:root[data-theme="light"] .workflow-inspector__field input:disabled,
+:root[data-theme="light"] .workflow-inspector__field textarea:disabled,
+:root[data-theme="light"] .workflow-inspector__field select:disabled {
+  background: #eeeeee;
+  color: #686868;
+  -webkit-text-fill-color: #686868;
+  opacity: 1;
+}
+
+:root[data-theme="light"] .workflow-run-details__session code,
+:root[data-theme="light"] .workflow-run-details__session button {
+  color: #006ab1;
+}
+
+:root[data-theme="light"] .workflow-run-details__terminal pre {
+  background: #f8f8f8;
+  color: #303030;
+}
+
+:root[data-theme="light"] .workflow-run-details__xterm-host .xterm,
+:root[data-theme="light"] .workflow-run-details__xterm-host .xterm-screen,
+:root[data-theme="light"] .workflow-run-details__xterm-host .xterm-viewport {
+  background: #ffffff !important;
 }
 
 :root[data-theme="light"] .workflow-run-details__terminal,

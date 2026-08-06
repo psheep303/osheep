@@ -3229,6 +3229,7 @@ function WorkflowAgentTerminal({
       cursorBlink: true,
       fontFamily: "Geist Mono, SFMono-Regular, Cascadia Mono, Consolas, Courier New, monospace",
       fontSize: 12.5,
+      minimumContrastRatio: resolvedTheme === "light" ? 4.5 : 1,
       scrollback: 8000,
       theme: { ...workflowXtermTheme(resolvedTheme), ...xtermAnsiTheme(resolvedTheme) },
     });
@@ -3305,11 +3306,14 @@ function WorkflowAgentTerminal({
 
   useEffect(() => {
     const term = termRef.current;
-    if (term)
+    if (term) {
       term.options.theme = {
         ...workflowXtermTheme(resolvedTheme),
         ...xtermAnsiTheme(resolvedTheme),
       };
+      term.options.minimumContrastRatio = resolvedTheme === "light" ? 4.5 : 1;
+      term.refresh(0, term.rows - 1);
+    }
   }, [resolvedTheme]);
 
   const updateAutoSuccess = async (enabled: boolean) => {
