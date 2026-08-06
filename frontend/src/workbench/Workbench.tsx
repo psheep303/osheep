@@ -10,6 +10,8 @@ import {
   getGitStatus,
   getTemplateCapabilities,
 } from "./api";
+import { DesktopWindowControls } from "./DesktopWindowControls";
+import { isWindowsDesktopShell } from "./desktop-folder-picker";
 import type { GotoTarget } from "./EditorPane";
 import {
   type FsNode,
@@ -600,10 +602,15 @@ export function Workbench() {
   const activeFileTab = activeTab?.kind === "file" ? activeTab : null;
   const activeDiffTab = activeTab?.kind === "diff" ? activeTab : null;
   const hasDirtyFiles = tabs.some((tab) => tab.kind === "file" && tab.dirty && !tab.deleted);
+  const windowsDesktopShell = isWindowsDesktopShell();
 
   return (
     <div className="workbench">
-      <div className="titlebar">
+      <div
+        className={`titlebar${windowsDesktopShell ? " titlebar--desktop" : ""}`}
+        data-tauri-drag-region={windowsDesktopShell ? true : undefined}
+      >
+        <img className="titlebar__logo" src="/osheep-icon.png" alt="" draggable={false} />
         <span className="titlebar__brand">Osheep</span>
         {developerMode && <span className="titlebar__dev-badge">DEVELOPER</span>}
         <span className="titlebar__sep">·</span>
@@ -617,6 +624,8 @@ export function Workbench() {
         <button className="tb-btn" onClick={() => void saveAll()} disabled={!hasDirtyFiles}>
           {t("workspace.saveAll")}
         </button>
+        <span className="titlebar__drag-region" data-tauri-drag-region />
+        {windowsDesktopShell && <DesktopWindowControls />}
       </div>
 
       {error && (

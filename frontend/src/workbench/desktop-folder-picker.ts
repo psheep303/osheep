@@ -4,6 +4,10 @@ export function isDesktopShell(): boolean {
   return isTauri();
 }
 
+export function isWindowsDesktopShell(): boolean {
+  return isDesktopShell() && /Windows/i.test(navigator.userAgent);
+}
+
 export async function pickWorkspaceFolder(initialPath?: string | null): Promise<string | null> {
   try {
     return await invoke<string | null>("pick_workspace_folder", {

@@ -408,21 +408,27 @@ pub fn run() {
             app.manage(backend.clone());
 
             if let Some(url) = remote_url()? {
-                WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
+                let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
                     .title("Osheep")
                     .inner_size(1440.0, 900.0)
-                    .min_inner_size(960.0, 640.0)
-                    .build()?;
+                    .min_inner_size(960.0, 640.0);
+                #[cfg(target_os = "windows")]
+                let builder = builder.decorations(false);
+                builder.build()?;
                 return Ok(());
             }
 
             let startup_ui = StartupUi::default();
             let page_ui = startup_ui.clone();
             let page_backend = backend.clone();
-            WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
-                .title("Osheep")
-                .inner_size(1440.0, 900.0)
-                .min_inner_size(960.0, 640.0)
+            let builder =
+                WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+                    .title("Osheep")
+                    .inner_size(1440.0, 900.0)
+                    .min_inner_size(960.0, 640.0);
+            #[cfg(target_os = "windows")]
+            let builder = builder.decorations(false);
+            builder
                 .on_page_load(move |window, payload| {
                     if payload.event() == PageLoadEvent::Finished {
                         if let Some(message) = page_ui.mark_shell_loaded() {

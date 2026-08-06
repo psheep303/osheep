@@ -6,11 +6,11 @@ import { fileURLToPath } from "node:url";
 import { normalizeCssLineEndings, readWorkbenchCss } from "./read-workbench-css.mjs";
 
 const expected = Object.freeze({
-  sha256: "1e327470ad570f288adc7cd85ccc999c43f005f0c959f5aafb92b349605c0fbb",
-  bytes: 223581,
-  openingBraces: 1549,
-  closingBraces: 1549,
-  declarations: 6096,
+  sha256: "9a7a4ff27987c400e1d64d2b19e550ffaa2f4c011dedf7ab02a9d7932a9d094b",
+  bytes: 224307,
+  openingBraces: 1557,
+  closingBraces: 1557,
+  declarations: 6118,
 });
 
 const expectedPattern = /const expected = Object\.freeze\(\{[\s\S]*?\}\);/;

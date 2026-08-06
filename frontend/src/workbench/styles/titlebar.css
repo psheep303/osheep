@@ -12,6 +12,17 @@
   border-bottom: 1px solid var(--border-faint);
 }
 
+.titlebar--desktop {
+  padding-right: 0;
+}
+
+.titlebar__logo {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  object-fit: contain;
+}
+
 .titlebar__brand {
   font-weight: 600;
   color: var(--fg-strong);
@@ -48,16 +59,15 @@
     border-color var(--duration-fast) ease;
 }
 
+.titlebar__drag-region {
+  align-self: stretch;
+  flex: 1 1 auto;
+  min-width: 16px;
+}
+
 .titlebar__project-btn:hover {
   background: var(--bg-hover);
   color: var(--fg-strong);
-}
-
-.titlebar__actions {
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  gap: 4px;
 }
 
 .tb-btn {
@@ -77,6 +87,42 @@
 .tb-btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+.window-controls {
+  align-self: stretch;
+  display: flex;
+  flex: 0 0 auto;
+}
+
+.window-controls__button {
+  width: 46px;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--fg-default);
+  cursor: default;
+}
+
+.window-controls__button:hover {
+  background: var(--bg-hover);
+  color: var(--fg-strong);
+}
+
+.window-controls__button:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.window-controls__button--close:hover {
+  background: #c42b1c;
+  color: #fff;
+}
+
+.window-controls__button .codicon {
+  font-size: 14px;
 }
 
 .banner-error {
@@ -112,4 +158,3 @@
   min-width: 0;
   overflow: hidden;
 }
-
