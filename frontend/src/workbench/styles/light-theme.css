@@ -588,6 +588,25 @@
   color: #686868;
 }
 
+:root[data-theme="light"] .workflow-inspector__edge button {
+  background: #ffffff;
+  border-color: #c8c8c8;
+  color: #3b3b3b;
+}
+
+:root[data-theme="light"] .workflow-inspector__edge button.is-active {
+  background: #e7f3fc;
+  border-color: #89c2eb;
+  color: #005a9e;
+  opacity: 1;
+}
+
+:root[data-theme="light"] .workflow-inspector__edge button.is-active:hover:not(:disabled) {
+  background: #d6ecfa;
+  border-color: #5aa7dc;
+  color: #004578;
+}
+
 :root[data-theme="light"] .workflow-inspector__plugin-search {
   background: #f8f8f8;
   border-color: #c8c8c8;
