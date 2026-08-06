@@ -42,16 +42,24 @@ const checks = [
     pass:
       /className="titlebar__project-btn"/.test(workbench) &&
       /onClick=\{\(\)\s*=>\s*setPicking\(true\)\}/.test(workbench) &&
-      /\{workspaceName\s+\?\?\s+"[^"]+"\}/.test(workbench),
+      (/\{workspaceName\s+\?\?\s+"[^"]+"\}/.test(workbench) ||
+        /\{workspaceName\s+\?\?\s+t\("workspace\.select"\)\}/.test(workbench)),
   },
   {
-    name: "titlebar actions only keep save",
+    name: "save all follows the titlebar project label",
     pass:
-      /<div className="titlebar__actions">\s*<button\s+className="tb-btn"\s+onClick=\{saveActive\}/m.test(
+      /className="titlebar__project-btn"[\s\S]*?<\/button>\s*<button className="tb-btn" onClick=\{\(\) => void saveAll\(\)\}/m.test(
         workbench,
       ) &&
-      !/<LayoutToggle/.test(workbench) &&
-      !/titlebar__spacer/.test(workbench),
+      /t\("workspace\.saveAll"\)/.test(workbench) &&
+      !/titlebar__actions/.test(workbench),
+  },
+  {
+    name: "open terminal follows save all in the titlebar",
+    pass:
+      /t\("workspace\.saveAll"\)[\s\S]*?className="tb-btn tb-btn--icon"[\s\S]*?onClick=\{openTerminal\}/m.test(
+        workbench,
+      ) && /setOpenTerminalSignal\(\(signal\) => signal \+ 1\)/.test(workbench),
   },
   {
     name: "explorer empty state has no workspace picker button",

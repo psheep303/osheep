@@ -1,4 +1,5 @@
 import { lazy, Suspense, useEffect, useState } from "react";
+import { useUiPreferences } from "../i18n/UiPreferences";
 import type { AgentTerminalLaunchRequest } from "./Terminal";
 
 const PlanView = lazy(() => import("./PlanView").then((module) => ({ default: module.PlanView })));
@@ -11,6 +12,7 @@ interface BottomPanelProps {
   onClose: () => void;
   terminalLaunchRequest?: AgentTerminalLaunchRequest | null;
   onTerminalLaunchHandled?: (key: number) => void;
+  openTerminalSignal?: number;
 }
 
 export function BottomPanel({
@@ -18,12 +20,18 @@ export function BottomPanel({
   onClose,
   terminalLaunchRequest = null,
   onTerminalLaunchHandled,
+  openTerminalSignal = 0,
 }: BottomPanelProps) {
+  const { t } = useUiPreferences();
   const [tab, setTab] = useState<BottomTab>("terminal");
 
   useEffect(() => {
     if (terminalLaunchRequest) setTab("terminal");
   }, [terminalLaunchRequest]);
+
+  useEffect(() => {
+    if (openTerminalSignal > 0) setTab("terminal");
+  }, [openTerminalSignal]);
 
   return (
     <div className="bottom-panel">
@@ -32,25 +40,21 @@ export function BottomPanel({
           className={`bottom-panel__tab${tab === "terminal" ? " is-active" : ""}`}
           onClick={() => setTab("terminal")}
         >
-          终端
+          {t("panel.terminal")}
         </div>
         <div
           className={`bottom-panel__tab${tab === "log" ? " is-active" : ""}`}
           onClick={() => setTab("log")}
         >
-          日志
+          {t("panel.log")}
         </div>
         <div
           className={`bottom-panel__tab${tab === "plan" ? " is-active" : ""}`}
           onClick={() => setTab("plan")}
         >
-          计划
+          {t("panel.plan")}
         </div>
-        <button
-          className="icon-btn bottom-panel__close"
-          title="关闭面板（终止所有终端）"
-          onClick={onClose}
-        >
+        <button className="icon-btn bottom-panel__close" title={t("panel.close")} onClick={onClose}>
           <svg
             viewBox="0 0 16 16"
             width="14"
@@ -75,7 +79,7 @@ export function BottomPanel({
           )}
           {tab === "log" && (
             <div className="muted" style={{ padding: "10px 16px" }}>
-              任务执行日志将在后续阶段接入。
+              {t("panel.logComingSoon")}
             </div>
           )}
           {tab === "plan" && <PlanView workspaceId={workspaceId} />}

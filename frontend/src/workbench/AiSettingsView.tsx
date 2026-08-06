@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { type CSSProperties, useEffect, useMemo, useState } from "react";
 import {
   type AiSettingsApp,
   type AiSettingsProvider,
@@ -29,19 +29,11 @@ function ProviderCard({
 }: ProviderCardProps) {
   const getIcon = (name: string) => {
     const initial = name.charAt(0).toUpperCase();
-    const colors = [
-      "#f59e0b",
-      "#10b981",
-      "#3b82f6",
-      "#8b5cf6",
-      "#ec4899",
-      "#ef4444",
-      "#06b6d4",
-      "#84cc16",
-    ];
-    const bgColor = provider.iconColor || colors[name.charCodeAt(0) % colors.length];
+    const paletteIndex = (name.charCodeAt(0) % 8) + 1;
+    const iconColor = provider.iconColor || `var(--provider-icon-${paletteIndex})`;
+    const style = { "--provider-icon-color": iconColor } as CSSProperties;
     return (
-      <div className="ai-settings__icon" style={{ backgroundColor: bgColor }}>
+      <div className="ai-settings__icon" style={style}>
         {initial}
       </div>
     );

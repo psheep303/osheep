@@ -37,6 +37,7 @@ export interface OsheepSettings {
   editor: {
     fontSize: number;
     tabSize: TabSize;
+    autoSave: boolean;
   };
   ai: {
     autoAllow: AiAutoAllow;
@@ -54,7 +55,7 @@ export const DEFAULT_AUTO_ALLOW: AiAutoAllow = {
 };
 
 export const DEFAULT_SETTINGS: OsheepSettings = {
-  editor: { fontSize: 14, tabSize: 2 },
+  editor: { fontSize: 14, tabSize: 2, autoSave: false },
   ai: {
     autoAllow: { ...DEFAULT_AUTO_ALLOW },
   },
@@ -84,7 +85,7 @@ function sanitizeAutoAllow(raw: unknown): AiAutoAllow {
 
 export function mergeSettings(partial: unknown): OsheepSettings {
   const p = (partial ?? {}) as {
-    editor?: { fontSize?: unknown; tabSize?: unknown };
+    editor?: { fontSize?: unknown; tabSize?: unknown; autoSave?: unknown };
     ai?: {
       autoAllow?: unknown;
     };
@@ -94,9 +95,11 @@ export function mergeSettings(partial: unknown): OsheepSettings {
       ? p.editor.fontSize
       : DEFAULT_SETTINGS.editor.fontSize;
   const tabSize: TabSize = p.editor?.tabSize === 4 ? 4 : 2;
+  const autoSave =
+    typeof p.editor?.autoSave === "boolean" ? p.editor.autoSave : DEFAULT_SETTINGS.editor.autoSave;
   const autoAllow = sanitizeAutoAllow(p.ai?.autoAllow);
   return {
-    editor: { fontSize, tabSize },
+    editor: { fontSize, tabSize, autoSave },
     ai: {
       autoAllow,
     },

@@ -1,9 +1,14 @@
 import { useEffect, useState } from "react";
+import {
+  type LanguagePreference,
+  type ThemePreference,
+  useUiPreferences,
+} from "../i18n/UiPreferences";
 import type { OsheepSettings, TabSize } from "./settings";
 
 interface SettingsViewProps {
   settings: OsheepSettings;
-  onChange: (s: OsheepSettings) => void;
+  onChange: (settings: OsheepSettings) => void;
   hasProject: boolean;
 }
 
@@ -11,81 +16,157 @@ const MIN_FONT = 8;
 const MAX_FONT = 64;
 
 export function SettingsView({ settings, onChange, hasProject }: SettingsViewProps) {
+  const { language, setLanguage, theme, setTheme, t } = useUiPreferences();
+
   const commitFontSize = (raw: string): number => {
-    const n = parseInt(raw, 10);
-    const fallback = settings.editor.fontSize;
-    if (Number.isNaN(n)) return fallback;
-    return Math.max(MIN_FONT, Math.min(MAX_FONT, n));
+    const value = Number.parseInt(raw, 10);
+    if (Number.isNaN(value)) return settings.editor.fontSize;
+    return Math.max(MIN_FONT, Math.min(MAX_FONT, value));
   };
 
   const applyFontSize = (raw: string) => {
     const next = commitFontSize(raw);
     if (next !== settings.editor.fontSize) {
-      onChange({
-        ...settings,
-        editor: { ...settings.editor, fontSize: next },
-      });
+      onChange({ ...settings, editor: { ...settings.editor, fontSize: next } });
     }
     return next;
   };
 
   const applyTabSize = (next: TabSize) => {
     if (next === settings.editor.tabSize) return;
-    onChange({
-      ...settings,
-      editor: { ...settings.editor, tabSize: next },
-    });
+    onChange({ ...settings, editor: { ...settings.editor, tabSize: next } });
+  };
+
+  const applyAutoSave = (autoSave: boolean) => {
+    if (autoSave === settings.editor.autoSave) return;
+    onChange({ ...settings, editor: { ...settings.editor, autoSave } });
   };
 
   return (
     <div className="settings-view">
       <div className="settings-view__container">
-        <div className="settings-view__title">设置</div>
-        <div className="settings-view__hint">
-          {hasProject
-            ? "设置保存到当前项目的 .osheep/settings.json"
-            : "请先打开项目再修改设置，未打开项目时无法持久化"}
-        </div>
+        <h1 className="settings-view__title">{t("settings.title")}</h1>
 
-        <div className="settings-view__group">
-          <div className="settings-view__group-title">编辑器</div>
+        <section className="settings-view__group">
+          <h2 className="settings-view__group-title">{t("settings.appearance")}</h2>
 
-          <div className="settings-view__item">
-            <div className="settings-view__item-label">字体大小</div>
-            <div className="settings-view__item-desc">
-              控制编辑器字号，单位 px。范围 {MIN_FONT}-{MAX_FONT}。
-            </div>
+          <SettingItem
+            label={t("settings.language")}
+            description={t("settings.language.description")}
+          >
+            <Segmented<LanguagePreference>
+              value={language}
+              options={[
+                { label: t("settings.language.system"), value: "system" },
+                { label: t("settings.language.zhCN"), value: "zh-CN" },
+                { label: t("settings.language.en"), value: "en" },
+              ]}
+              onChange={setLanguage}
+            />
+          </SettingItem>
+
+          <SettingItem label={t("settings.theme")} description={t("settings.theme.description")}>
+            <Segmented<ThemePreference>
+              value={theme}
+              options={[
+                { label: t("settings.theme.system"), value: "system" },
+                { label: t("settings.theme.light"), value: "light" },
+                { label: t("settings.theme.dark"), value: "dark" },
+              ]}
+              onChange={setTheme}
+            />
+          </SettingItem>
+        </section>
+
+        <section className="settings-view__group">
+          <h2 className="settings-view__group-title">{t("settings.editor")}</h2>
+          <div className="settings-view__hint">
+            {t(hasProject ? "settings.editor.projectHint" : "settings.editor.noProjectHint")}
+          </div>
+
+          <SettingItem
+            label={t("settings.editor.autoSave")}
+            description={t("settings.editor.autoSaveDescription")}
+          >
+            <Switch
+              checked={settings.editor.autoSave}
+              disabled={!hasProject}
+              label={t("settings.editor.autoSave")}
+              onChange={applyAutoSave}
+            />
+          </SettingItem>
+
+          <SettingItem
+            label={t("settings.editor.fontSize")}
+            description={t("settings.editor.fontSizeDescription", {
+              min: MIN_FONT,
+              max: MAX_FONT,
+            })}
+          >
             <NumberInput
               value={settings.editor.fontSize}
               disabled={!hasProject}
               onCommit={applyFontSize}
             />
-          </div>
+          </SettingItem>
 
-          <div className="settings-view__item">
-            <div className="settings-view__item-label">Tab 缩进</div>
-            <div className="settings-view__item-desc">
-              按 Tab 键插入的空格数，同时影响自动缩进宽度。
-            </div>
+          <SettingItem
+            label={t("settings.editor.tabSize")}
+            description={t("settings.editor.tabSizeDescription")}
+          >
             <Segmented<TabSize>
               value={settings.editor.tabSize}
               disabled={!hasProject}
               options={[
-                { label: "2 空格", value: 2 },
-                { label: "4 空格", value: 4 },
+                { label: t("settings.editor.spaces", { count: 2 }), value: 2 },
+                { label: t("settings.editor.spaces", { count: 4 }), value: 4 },
               ]}
               onChange={applyTabSize}
             />
-          </div>
-        </div>
-
-        <div className="settings-view__group">
-          <div className="settings-view__group-title">AI</div>
-          <div className="settings-view__item-desc">
-            osheep 现在直接调用本机 Codex CLI。模型、认证和其它 CLI 选项请在 CLI 自己的配置中维护。
-          </div>
-        </div>
+          </SettingItem>
+        </section>
       </div>
+    </div>
+  );
+}
+
+interface SwitchProps {
+  checked: boolean;
+  disabled?: boolean;
+  label: string;
+  onChange: (checked: boolean) => void;
+}
+
+function Switch({ checked, disabled = false, label, onChange }: SwitchProps) {
+  return (
+    <button
+      type="button"
+      className={`settings-view__switch${checked ? " is-on" : ""}`}
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+    >
+      <span className="settings-view__switch-thumb" />
+    </button>
+  );
+}
+
+function SettingItem({
+  label,
+  description,
+  children,
+}: {
+  label: string;
+  description: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="settings-view__item">
+      <div className="settings-view__item-label">{label}</div>
+      <div className="settings-view__item-desc">{description}</div>
+      {children}
     </div>
   );
 }
@@ -99,14 +180,9 @@ interface NumberInputProps {
 function NumberInput({ value, disabled, onCommit }: NumberInputProps) {
   const [draft, setDraft] = useState(String(value));
 
-  useEffect(() => {
-    setDraft(String(value));
-  }, [value]);
+  useEffect(() => setDraft(String(value)), [value]);
 
-  const commit = () => {
-    const applied = onCommit(draft);
-    setDraft(String(applied));
-  };
+  const commit = () => setDraft(String(onCommit(draft)));
 
   return (
     <input
@@ -114,15 +190,17 @@ function NumberInput({ value, disabled, onCommit }: NumberInputProps) {
       className="settings-view__input"
       value={draft}
       disabled={disabled}
-      onChange={(e) => setDraft(e.target.value)}
+      min={MIN_FONT}
+      max={MAX_FONT}
+      onChange={(event) => setDraft(event.target.value)}
       onBlur={commit}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") {
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
           commit();
-          (e.currentTarget as HTMLInputElement).blur();
-        } else if (e.key === "Escape") {
+          event.currentTarget.blur();
+        } else if (event.key === "Escape") {
           setDraft(String(value));
-          (e.currentTarget as HTMLInputElement).blur();
+          event.currentTarget.blur();
         }
       }}
     />
@@ -132,27 +210,28 @@ function NumberInput({ value, disabled, onCommit }: NumberInputProps) {
 interface SegmentedProps<T extends string | number> {
   value: T;
   options: { label: string; value: T }[];
-  disabled: boolean;
-  onChange: (v: T) => void;
+  disabled?: boolean;
+  onChange: (value: T) => void;
 }
 
 function Segmented<T extends string | number>({
   value,
   options,
-  disabled,
+  disabled = false,
   onChange,
 }: SegmentedProps<T>) {
   return (
     <div className="settings-view__segmented">
-      {options.map((opt) => (
+      {options.map((option) => (
         <button
-          key={String(opt.value)}
+          key={String(option.value)}
           type="button"
           disabled={disabled}
-          className={`settings-view__seg${opt.value === value ? " is-active" : ""}`}
-          onClick={() => onChange(opt.value)}
+          className={`settings-view__seg${option.value === value ? " is-active" : ""}`}
+          aria-pressed={option.value === value}
+          onClick={() => onChange(option.value)}
         >
-          {opt.label}
+          {option.label}
         </button>
       ))}
     </div>

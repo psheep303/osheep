@@ -1,4 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useUiPreferences } from "../i18n/UiPreferences";
 import { ActivityBar, type ViewId } from "./ActivityBar";
 import { ClaudeCodeAgentView, CodexAgentView } from "./AgentSettingsView";
 import { AiPanel } from "./AiPanel";
@@ -9,6 +10,8 @@ import {
   getGitStatus,
   getTemplateCapabilities,
 } from "./api";
+import { DesktopWindowControls } from "./DesktopWindowControls";
+import { isWindowsDesktopShell } from "./desktop-folder-picker";
 import type { GotoTarget } from "./EditorPane";
 import {
   type FsNode,
@@ -61,6 +64,11 @@ interface FileTab {
   goto?: GotoTarget | null;
 }
 
+interface FileSaveSnapshot {
+  path: string;
+  content: string;
+}
+
 interface SettingsTab {
   kind: "settings";
   path: "__settings__";
@@ -109,6 +117,7 @@ const BOTTOM_THRESHOLD = 60;
 const SIDE_MAX = 600;
 
 export function Workbench() {
+  const { t } = useUiPreferences();
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
   const [workspaceName, setWorkspaceName] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);
@@ -179,6 +188,7 @@ export function Workbench() {
   const [bottomActivated, setBottomActivated] = useState(false);
   const [terminalLaunchRequest, setTerminalLaunchRequest] =
     useState<AgentTerminalLaunchRequest | null>(null);
+  const [openTerminalSignal, setOpenTerminalSignal] = useState(0);
 
   const lastLeftWidthRef = useRef(DEFAULT_LEFT_WIDTH);
   const leftProgressRef = useRef(0);
@@ -233,7 +243,7 @@ export function Workbench() {
       try {
         text = await readFileText(workspaceId, node.path);
       } catch (e) {
-        setError((e as Error).message);
+        setError(t("error.readFile", { detail: (e as Error).message }));
         return;
       }
       setTabs((prev) => [
@@ -250,7 +260,7 @@ export function Workbench() {
       ]);
       setActivePath(node.path);
     },
-    [tabs, workspaceId],
+    [tabs, workspaceId, t],
   );
 
   const openFileAt = useCallback(
@@ -273,7 +283,7 @@ export function Workbench() {
       try {
         text = await readFileText(workspaceId, filePath);
       } catch (e) {
-        setError((e as Error).message);
+        setError(t("error.readFile", { detail: (e as Error).message }));
         return;
       }
       setTabs((prev) => [
@@ -291,7 +301,7 @@ export function Workbench() {
       ]);
       setActivePath(filePath);
     },
-    [tabs, workspaceId],
+    [tabs, workspaceId, t],
   );
 
   const openDiffTab = useCallback(
@@ -320,10 +330,10 @@ export function Workbench() {
         ]);
         setActivePath(diffId);
       } catch (e) {
-        setError((e as Error).message);
+        setError(t("error.loadDiff", { detail: (e as Error).message }));
       }
     },
-    [tabs, workspaceId],
+    [tabs, workspaceId, t],
   );
 
   const openSettingsTab = useCallback(() => {
@@ -422,25 +432,64 @@ export function Workbench() {
     [activePath],
   );
 
+  const saveFiles = useCallback(
+    async (files: FileSaveSnapshot[]) => {
+      if (!workspaceId || files.length === 0) return;
+      const results = await Promise.allSettled(
+        files.map((file) => writeFileText(workspaceId, file.path, file.content)),
+      );
+      const saved = new Map(
+        files
+          .filter((_, index) => results[index].status === "fulfilled")
+          .map((file) => [file.path, file.content]),
+      );
+      if (saved.size > 0) {
+        setTabs((current) =>
+          current.map((tab) => {
+            if (tab.kind !== "file") return tab;
+            const savedContent = saved.get(tab.path);
+            return savedContent === undefined
+              ? tab
+              : { ...tab, savedContent, dirty: tab.content !== savedContent };
+          }),
+        );
+        refreshGitStatus();
+      }
+      const failure = results.find(
+        (result): result is PromiseRejectedResult => result.status === "rejected",
+      );
+      if (failure) {
+        const detail =
+          failure.reason instanceof Error ? failure.reason.message : String(failure.reason);
+        setError(t("error.writeFile", { detail }));
+      }
+    },
+    [refreshGitStatus, t, workspaceId],
+  );
+
   const saveActive = useCallback(async () => {
-    if (!activePath || !workspaceId) return;
-    const tab = tabs.find((t) => t.path === activePath);
+    if (!activePath) return;
+    const tab = tabs.find((candidate) => candidate.path === activePath);
     if (tab?.kind !== "file" || tab.deleted) return;
-    try {
-      await writeFileText(workspaceId, tab.path, tab.content);
-    } catch (e) {
-      setError((e as Error).message);
-      return;
-    }
-    setTabs((prev) =>
-      prev.map((t) =>
-        t.kind === "file" && t.path === activePath
-          ? { ...t, savedContent: t.content, dirty: false }
-          : t,
-      ),
-    );
-    refreshGitStatus();
-  }, [activePath, tabs, workspaceId, refreshGitStatus]);
+    await saveFiles([{ path: tab.path, content: tab.content }]);
+  }, [activePath, saveFiles, tabs]);
+
+  const saveAll = useCallback(async () => {
+    const files = tabs
+      .filter((tab): tab is FileTab => tab.kind === "file" && tab.dirty && !tab.deleted)
+      .map(({ path, content }) => ({ path, content }));
+    await saveFiles(files);
+  }, [saveFiles, tabs]);
+
+  useEffect(() => {
+    if (!settings.editor.autoSave) return;
+    const files = tabs
+      .filter((tab): tab is FileTab => tab.kind === "file" && tab.dirty && !tab.deleted)
+      .map(({ path, content }) => ({ path, content }));
+    if (files.length === 0) return;
+    const timer = window.setTimeout(() => void saveFiles(files), 750);
+    return () => window.clearTimeout(timer);
+  }, [saveFiles, settings.editor.autoSave, tabs]);
 
   const closeTab = useCallback(
     (path: string) => {
@@ -530,6 +579,12 @@ export function Workbench() {
     setTerminalLaunchRequest(null);
   };
 
+  const openTerminal = useCallback(() => {
+    setBottomActivated(true);
+    setBottomHeight((height) => height || 300);
+    setOpenTerminalSignal((signal) => signal + 1);
+  }, []);
+
   const resumeAgentSession = useCallback(
     (session: Pick<AgentSessionSummary, "app" | "id" | "title">) => {
       if (!workspaceId) return;
@@ -553,35 +608,50 @@ export function Workbench() {
   const activeTab = tabs.find((t) => t.path === activePath) ?? null;
   const activeFileTab = activeTab?.kind === "file" ? activeTab : null;
   const activeDiffTab = activeTab?.kind === "diff" ? activeTab : null;
+  const hasDirtyFiles = tabs.some((tab) => tab.kind === "file" && tab.dirty && !tab.deleted);
+  const windowsDesktopShell = isWindowsDesktopShell();
 
   return (
     <div className="workbench">
-      <div className="titlebar">
+      <div
+        className={`titlebar${windowsDesktopShell ? " titlebar--desktop" : ""}`}
+        data-tauri-drag-region={windowsDesktopShell ? true : undefined}
+      >
+        <img className="titlebar__logo" src="/osheep-icon.png" alt="" draggable={false} />
         <span className="titlebar__brand">Osheep</span>
         {developerMode && <span className="titlebar__dev-badge">DEVELOPER</span>}
         <span className="titlebar__sep">·</span>
         <button
           className="titlebar__project-btn"
           onClick={() => setPicking(true)}
-          title={workspaceId ? "切换工作区" : "选择工作区"}
+          title={t(workspaceId ? "workspace.switch" : "workspace.select")}
         >
-          {workspaceName ?? "选择工作区"}
+          {workspaceName ?? t("workspace.select")}
         </button>
-        <div className="titlebar__actions">
-          <button
-            className="tb-btn"
-            onClick={saveActive}
-            disabled={!activeFileTab?.dirty || activeFileTab?.deleted}
-          >
-            保存
-          </button>
-        </div>
+        <button className="tb-btn" onClick={() => void saveAll()} disabled={!hasDirtyFiles}>
+          {t("workspace.saveAll")}
+        </button>
+        <button
+          type="button"
+          className="tb-btn tb-btn--icon"
+          onClick={openTerminal}
+          title={t("terminal.open")}
+          aria-label={t("terminal.open")}
+        >
+          <i className="codicon codicon-terminal" aria-hidden="true" />
+        </button>
+        <span className="titlebar__drag-region" data-tauri-drag-region />
+        {windowsDesktopShell && <DesktopWindowControls />}
       </div>
 
       {error && (
         <div className="banner-error">
           {error}
-          <button className="banner-error__close" onClick={() => setError(null)} title="关闭">
+          <button
+            className="banner-error__close"
+            onClick={() => setError(null)}
+            title={t("common.close")}
+          >
             ×
           </button>
         </div>
@@ -637,10 +707,10 @@ export function Workbench() {
                 ) : (
                   <div className="side-view">
                     <div className="side-view__header">
-                      <span className="side-view__title">资源管理器</span>
+                      <span className="side-view__title">{t("nav.explorer")}</span>
                     </div>
                     <div className="side-view__body side-view__body--padded">
-                      <div className="muted">所有文件由后端 osheep-backend 提供</div>
+                      <div className="muted">{t("workspace.explorerHint")}</div>
                     </div>
                   </div>
                 ))}
@@ -676,51 +746,51 @@ export function Workbench() {
           <div className="editor-area">
             <div className="tabs">
               <div className="tabs__list">
-                {tabs.map((t) => {
-                  const isDeleted = t.kind === "file" && t.deleted;
+                {tabs.map((tab) => {
+                  const isDeleted = tab.kind === "file" && tab.deleted;
                   const label =
-                    t.kind === "settings"
-                      ? "设置"
-                      : t.kind === "workflow"
-                        ? "Workflow"
-                        : t.kind === "template"
-                          ? "Template"
-                          : t.kind === "diff"
-                            ? `${basename(t.filePath)} (${diffLabel(t)})`
-                            : t.path.split("/").pop();
+                    tab.kind === "settings"
+                      ? t("common.settings")
+                      : tab.kind === "workflow"
+                        ? t("nav.workflow")
+                        : tab.kind === "template"
+                          ? t("nav.templates")
+                          : tab.kind === "diff"
+                            ? `${basename(tab.filePath)} (${diffLabel(tab)})`
+                            : tab.path.split("/").pop();
                   const tabTitle =
-                    t.kind === "file"
+                    tab.kind === "file"
                       ? isDeleted
-                        ? `${t.path}（已被删除）`
-                        : t.path
-                      : t.kind === "diff"
-                        ? `${t.filePath} · ${diffLabel(t)}`
-                        : t.kind === "workflow"
-                          ? `Workflow ${t.workflowId}`
-                          : t.kind === "template"
-                            ? `Template ${t.templateId}`
-                            : "设置";
+                        ? `${tab.path}${t("editor.deleted")}`
+                        : tab.path
+                      : tab.kind === "diff"
+                        ? `${tab.filePath} · ${diffLabel(tab)}`
+                        : tab.kind === "workflow"
+                          ? `${t("nav.workflow")} ${tab.workflowId}`
+                          : tab.kind === "template"
+                            ? `${t("nav.templates")} ${tab.templateId}`
+                            : t("common.settings");
                   return (
                     <div
-                      key={t.path}
+                      key={tab.path}
                       className={
                         "tab" +
-                        (t.path === activePath ? " is-active" : "") +
+                        (tab.path === activePath ? " is-active" : "") +
                         (isDeleted ? " is-deleted" : "") +
-                        (t.kind === "diff" ? " is-diff" : "")
+                        (tab.kind === "diff" ? " is-diff" : "")
                       }
-                      onClick={() => setActivePath(t.path)}
+                      onClick={() => setActivePath(tab.path)}
                       title={tabTitle}
                     >
                       <span className="tab__name">
                         {label}
-                        {t.kind === "file" && t.dirty ? " ●" : ""}
+                        {tab.kind === "file" && tab.dirty ? " *" : ""}
                       </span>
                       <span
                         className="tab__close"
                         onClick={(e) => {
                           e.stopPropagation();
-                          closeTab(t.path);
+                          closeTab(tab.path);
                         }}
                       >
                         ×
@@ -761,7 +831,7 @@ export function Workbench() {
                 ) : activeDiffTab ? (
                   <div className="editor-host__source">
                     {activeDiffTab.binary ? (
-                      <div className="empty-hint">该文件为二进制，无法显示 diff</div>
+                      <div className="empty-hint">{t("editor.binaryDiff")}</div>
                     ) : (
                       <DiffPane
                         path={activeDiffTab.filePath}
@@ -796,7 +866,7 @@ export function Workbench() {
                       }
                     />
                   ) : (
-                    <div className="empty-hint">请先打开工作区</div>
+                    <div className="empty-hint">{t("workspace.openFirst")}</div>
                   )
                 ) : activeTab?.kind === "template" ? (
                   <TemplateDetail
@@ -812,7 +882,7 @@ export function Workbench() {
                     onTemplateChanged={() => setTemplateRefreshSignal((signal) => signal + 1)}
                   />
                 ) : (
-                  <div className="empty-hint">在左侧选择文件以开始编辑</div>
+                  <div className="empty-hint">{t("editor.selectFile")}</div>
                 )}
               </Suspense>
             </div>
@@ -832,6 +902,7 @@ export function Workbench() {
                   onClose={hardCloseBottom}
                   terminalLaunchRequest={terminalLaunchRequest}
                   onTerminalLaunchHandled={handleTerminalLaunch}
+                  openTerminalSignal={openTerminalSignal}
                 />
               </Suspense>
             </div>
@@ -867,10 +938,11 @@ function diffLabel(t: DiffTab): string {
 }
 
 function PreviewToggle({ previewMode, onToggle }: { previewMode: boolean; onToggle: () => void }) {
+  const { t } = useUiPreferences();
   return (
     <button
       className="preview-toggle"
-      title={previewMode ? "切换到源码" : "打开预览"}
+      title={t(previewMode ? "editor.preview.source" : "editor.preview.open")}
       onClick={onToggle}
     >
       {previewMode ? (

@@ -1,4 +1,5 @@
-:root {
+:root,
+:root[data-theme="dark"] {
   color-scheme: dark;
   scrollbar-color: #3f3f46 #111113;
   scrollbar-width: thin;
@@ -22,21 +23,218 @@
   --border-faint: #2b2b2b;
   --border-edge: #333333;
 
-  /* ── 布局与形状 ── */
-  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-5: 24px;
-  --radius-sm: 4px; --radius-md: 6px; --radius-lg: 8px;
-  --text-xs: 11px; --text-sm: 12px; --text-md: 13px; --text-lg: 14px; --text-xl: 16px;
+  /* Shared dimensions and motion */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-md: 13px;
+  --text-lg: 14px;
+  --text-xl: 16px;
   --shadow-1: 0 2px 8px rgba(0, 0, 0, 0.35);
   --shadow-2: 0 8px 24px rgba(0, 0, 0, 0.45);
-  --z-dropdown: 100; --z-modal: 200; --z-toast: 300;
-  --duration-fast: 120ms; --duration-normal: 160ms;
-  /* ── 语义色(源自 workbench.css 高频影子令牌) ── */
-  --color-error: #f48771; --color-warning: #cca700; --color-warning-strong: #fde68a;
-  --color-success: #89d185; --color-success-strong: #8cc796;
-  --color-info: #75beff; --color-link: #6aa8ff; --color-link-strong: #d8eaff;
-  --surface-1: #181818; --surface-2: #1f1f1f; --surface-3: #262626; --surface-4: #303030;
+  --z-dropdown: 100;
+  --z-modal: 200;
+  --z-toast: 300;
+  --duration-fast: 120ms;
+  --duration-normal: 160ms;
+
+  /* Legacy primitives retained for existing workbench components. */
+  --color-error: #f48771;
+  --color-warning: #cca700;
+  --color-warning-strong: #fde68a;
+  --color-success: #89d185;
+  --color-success-strong: #8cc796;
+  --color-info: #75beff;
+  --color-link: #6aa8ff;
+  --color-link-strong: #d8eaff;
+  --surface-1: #181818;
+  --surface-2: #1f1f1f;
+  --surface-3: #262626;
+  --surface-4: #303030;
   --surface-control: #313131;
-  --border-subtle: #2b2b2b; --border-strong: #3c3c3c; --border-control: #343434;
+  --border-subtle: #2b2b2b;
+  --border-strong: #3c3c3c;
+  --border-control: #343434;
+  --overlay-subtle: rgba(255, 255, 255, 0.04);
+  --overlay-hover: rgba(255, 255, 255, 0.07);
+  --overlay-strong: rgba(255, 255, 255, 0.12);
+
+  /* Component-facing theme roles. New themes should override this layer. */
+  --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: "Geist Mono", "Cascadia Mono", Consolas, "Courier New", monospace;
+  --ui-surface-card: #252526;
+  --ui-surface-card-hover: #2a2a2b;
+  --ui-surface-control: #1e1e1e;
+  --ui-surface-menu: #1f1f1f;
+  --ui-surface-selected: #37373d;
+  --ui-border-card: #3e3e42;
+  --ui-border-card-hover: #4a4a4e;
+  --ui-border-control: #454545;
+  --ui-text-on-accent: #ffffff;
+  --ui-link: #569cd6;
+  --ui-shadow-card: 0 2px 8px rgba(0, 0, 0, 0.15);
+  --ui-success: #10b981;
+  --ui-success-bg: rgba(16, 185, 129, 0.15);
+  --ui-success-bg-subtle: rgba(16, 185, 129, 0.1);
+  --ui-success-border: rgba(16, 185, 129, 0.4);
+  --ui-success-border-strong: rgba(16, 185, 129, 0.6);
+  --ui-success-shadow: 0 2px 8px rgba(16, 185, 129, 0.1);
+  --ui-danger: #f44336;
+  --ui-danger-bg: rgba(244, 67, 54, 0.1);
+  --ui-danger-bg-hover: rgba(244, 67, 54, 0.2);
+  --ui-danger-border: rgba(244, 67, 54, 0.3);
+  --ui-danger-border-strong: rgba(244, 67, 54, 0.5);
+  --ui-warning: #e2c08d;
+  --ui-warning-bg: rgba(226, 192, 141, 0.1);
+  --ui-warning-border: rgba(226, 192, 141, 0.28);
+  --ui-neutral: #94a3b8;
+  --ui-neutral-bg: rgba(148, 163, 184, 0.15);
+  --ui-neutral-border: rgba(148, 163, 184, 0.2);
+  --provider-icon-1: #f59e0b;
+  --provider-icon-2: #10b981;
+  --provider-icon-3: #3b82f6;
+  --provider-icon-4: #8b5cf6;
+  --provider-icon-5: #ec4899;
+  --provider-icon-6: #ef4444;
+  --provider-icon-7: #06b6d4;
+  --provider-icon-8: #84cc16;
+  --provider-icon-bg-mix: 62%;
+  --provider-icon-fg-mix: 18%;
+
+  /* Compatibility aliases used by older components; all resolve through theme roles. */
+  --fg: var(--fg-default);
+  --border: var(--border-faint);
+  --border-default: var(--ui-border-card-hover);
+  --bg-secondary: var(--surface-3);
+  --row-hover: var(--bg-hover);
+  --row-selected: var(--ui-surface-selected);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  scrollbar-color: #c2c6cc #f3f3f3;
+
+  /* VS Code Modern Light-inspired workbench hierarchy. */
+  --bg-shell: #f3f3f3;
+  --bg-editor: #ffffff;
+  --bg-hover: #e8e8e8;
+  --bg-selection: #cce8ff;
+  --bg-active: #ffffff;
+
+  --fg-default: #3b3b3b;
+  --fg-muted: #616161;
+  --fg-faint: #767676;
+  --fg-strong: #1f1f1f;
+  --fg-error: #a1260d;
+
+  --accent: #0078d4;
+  --accent-soft: rgba(0, 120, 212, 0.12);
+
+  --border-faint: #e5e5e5;
+  --border-edge: #d4d4d4;
+
+  --shadow-1: 0 2px 8px rgba(0, 0, 0, 0.12);
+  --shadow-2: 0 8px 24px rgba(0, 0, 0, 0.16);
+
+  --color-error: #a1260d;
+  --color-warning: #7a5d00;
+  --color-warning-strong: #6a4f00;
+  --color-success: #16825d;
+  --color-success-strong: #116b4c;
+  --color-info: #006ab1;
+  --color-link: #006ab1;
+  --color-link-strong: #005a9e;
+
+  --surface-1: #f3f3f3;
+  --surface-2: #ffffff;
+  --surface-3: #f8f8f8;
+  --surface-4: #eeeeee;
+  --surface-control: #ffffff;
+  --border-subtle: #e5e5e5;
+  --border-strong: #c8c8c8;
+  --border-control: #cecece;
+  --overlay-subtle: rgba(0, 0, 0, 0.025);
+  --overlay-hover: rgba(0, 0, 0, 0.055);
+  --overlay-strong: rgba(0, 0, 0, 0.1);
+
+  --ui-surface-card: #ffffff;
+  --ui-surface-card-hover: #f8f8f8;
+  --ui-surface-control: #ffffff;
+  --ui-surface-menu: #ffffff;
+  --ui-surface-selected: #e4e6ea;
+  --ui-border-card: #d8d8d8;
+  --ui-border-card-hover: #b8b8b8;
+  --ui-border-control: #c8c8c8;
+  --ui-text-on-accent: #ffffff;
+  --ui-link: #006ab1;
+  --ui-shadow-card: 0 2px 8px rgba(0, 0, 0, 0.1);
+  --ui-success: #087f5b;
+  --ui-success-bg: rgba(8, 127, 91, 0.12);
+  --ui-success-bg-subtle: rgba(8, 127, 91, 0.08);
+  --ui-success-border: rgba(8, 127, 91, 0.38);
+  --ui-success-border-strong: rgba(8, 127, 91, 0.58);
+  --ui-success-shadow: 0 2px 8px rgba(8, 127, 91, 0.1);
+  --ui-danger: #b42318;
+  --ui-danger-bg: rgba(180, 35, 24, 0.08);
+  --ui-danger-bg-hover: rgba(180, 35, 24, 0.14);
+  --ui-danger-border: rgba(180, 35, 24, 0.3);
+  --ui-danger-border-strong: rgba(180, 35, 24, 0.5);
+  --ui-warning: #7a5d00;
+  --ui-warning-bg: rgba(122, 93, 0, 0.08);
+  --ui-warning-border: rgba(122, 93, 0, 0.28);
+  --ui-neutral: #5f6b7a;
+  --ui-neutral-bg: rgba(95, 107, 122, 0.1);
+  --ui-neutral-border: rgba(95, 107, 122, 0.2);
+  --provider-icon-1: #b45309;
+  --provider-icon-2: #047857;
+  --provider-icon-3: #2563eb;
+  --provider-icon-4: #7c3aed;
+  --provider-icon-5: #be185d;
+  --provider-icon-6: #b91c1c;
+  --provider-icon-7: #0e7490;
+  --provider-icon-8: #4d7c0f;
+  --provider-icon-bg-mix: 16%;
+  --provider-icon-fg-mix: 80%;
+}
+
+@media (forced-colors: active) {
+  :root {
+    --ui-surface-card: Canvas;
+    --ui-surface-card-hover: Canvas;
+    --ui-surface-control: Field;
+    --ui-surface-menu: Canvas;
+    --ui-surface-selected: Highlight;
+    --ui-border-card: CanvasText;
+    --ui-border-card-hover: Highlight;
+    --ui-border-control: ButtonText;
+    --ui-text-on-accent: HighlightText;
+    --ui-link: LinkText;
+    --ui-shadow-card: none;
+    --ui-success: CanvasText;
+    --ui-success-bg: Canvas;
+    --ui-success-bg-subtle: Canvas;
+    --ui-success-border: CanvasText;
+    --ui-success-border-strong: CanvasText;
+    --ui-success-shadow: none;
+    --ui-danger: CanvasText;
+    --ui-danger-bg: Canvas;
+    --ui-danger-bg-hover: Canvas;
+    --ui-danger-border: CanvasText;
+    --ui-danger-border-strong: CanvasText;
+    --ui-warning: CanvasText;
+    --ui-warning-bg: Canvas;
+    --ui-warning-border: CanvasText;
+    --ui-neutral: CanvasText;
+    --ui-neutral-bg: Canvas;
+    --ui-neutral-border: CanvasText;
+  }
 }
 
 * {
@@ -49,8 +247,7 @@ body,
   height: 100%;
   margin: 0;
   padding: 0;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
-    "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-family: var(--font-ui);
   font-size: 13px;
   background: var(--bg-editor);
   color: var(--fg-default);
@@ -99,16 +296,16 @@ body.is-resizing-y * {
   height: 10px;
 }
 ::-webkit-scrollbar-track {
-  background: #111113;
+  background: var(--surface-1);
 }
 ::-webkit-scrollbar-thumb {
-  background: #3f3f46;
+  background: var(--border-edge);
   border: 2px solid transparent;
   background-clip: padding-box;
   border-radius: 5px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #52525b;
+  background: var(--fg-faint);
   background-clip: padding-box;
 }
 ::-webkit-scrollbar-corner {

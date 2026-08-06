@@ -1,4 +1,5 @@
 import { lazy, Suspense, useEffect, useState } from "react";
+import { useUiPreferences } from "../i18n/UiPreferences";
 import { type FsNode, PLAN_DIR, readDirShallow, readFileText } from "./fs";
 
 const MarkdownPreview = lazy(() =>
@@ -10,6 +11,7 @@ interface PlanViewProps {
 }
 
 export function PlanView({ workspaceId }: PlanViewProps) {
+  const { t } = useUiPreferences();
   const [files, setFiles] = useState<FsNode[]>([]);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [content, setContent] = useState<string>("");
@@ -37,14 +39,14 @@ export function PlanView({ workspaceId }: PlanViewProps) {
           setContent("");
         }
       } catch (e) {
-        if (!cancelled) setError((e as Error).message);
+        if (!cancelled) setError(t("error.loadPlan", { detail: (e as Error).message }));
       }
     })();
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspaceId]);
+  }, [workspaceId, t]);
 
   useEffect(() => {
     if (!workspaceId || !selectedPath) {
@@ -57,16 +59,16 @@ export function PlanView({ workspaceId }: PlanViewProps) {
         const text = await readFileText(workspaceId, selectedPath);
         if (!cancelled) setContent(text);
       } catch (e) {
-        if (!cancelled) setError((e as Error).message);
+        if (!cancelled) setError(t("error.loadPlan", { detail: (e as Error).message }));
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [workspaceId, selectedPath]);
+  }, [workspaceId, selectedPath, t]);
 
   if (!workspaceId) {
-    return <div className="plan-view plan-view--empty muted">请先选择工作区</div>;
+    return <div className="plan-view plan-view--empty muted">{t("plan.openFirst")}</div>;
   }
 
   return (
@@ -74,7 +76,7 @@ export function PlanView({ workspaceId }: PlanViewProps) {
       <div className="plan-view__sidebar">
         <div className="plan-view__sidebar-header">.osheep / plan</div>
         {files.length === 0 ? (
-          <div className="plan-view__empty muted">暂无计划</div>
+          <div className="plan-view__empty muted">{t("plan.empty")}</div>
         ) : (
           files.map((f) => (
             <div
@@ -96,7 +98,7 @@ export function PlanView({ workspaceId }: PlanViewProps) {
             <MarkdownPreview source={content} />
           </Suspense>
         ) : (
-          <div className="muted plan-view__placeholder">从左侧选择一份计划</div>
+          <div className="muted plan-view__placeholder">{t("plan.select")}</div>
         )}
       </div>
     </div>

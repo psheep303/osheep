@@ -3,7 +3,15 @@
   "identifier": "default",
   "description": "Core permissions for the osheep desktop window",
   "windows": ["main"],
-  "permissions": ["core:default", "allow-pick-workspace-folder"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-close",
+    "core:window:allow-is-maximized",
+    "core:window:allow-minimize",
+    "core:window:allow-start-dragging",
+    "core:window:allow-toggle-maximize",
+    "allow-pick-workspace-folder"
+  ],
   "remote": {
     "urls": ["http://127.0.0.1:*"]
   }

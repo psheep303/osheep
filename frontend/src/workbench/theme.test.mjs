@@ -17,7 +17,9 @@ const {
   gitGraphRefColors,
   monacoDiffColors,
   monacoEditorColors,
+  normalizeLightTerminalAnsi,
   workflowXtermTheme,
+  xtermAnsiTheme,
   xtermTheme,
 } = await loadTheme();
 
@@ -81,6 +83,26 @@ test("theme helpers preserve exact fallbacks without a DOM", () => {
   assert.deepEqual(gitGraphRefColors(), { ref: "#3794ff", remoteRef: "#b180d7" });
 });
 
+test("explicit light palettes stay readable without a DOM", () => {
+  assert.equal(monacoEditorColors("light")["editor.background"], "#ffffff");
+  assert.equal(monacoEditorColors("light")["editor.foreground"], "#26313d");
+  assert.deepEqual(xtermTheme("light"), {
+    background: "#ffffff",
+    foreground: "#26313d",
+    cursor: "#1f2933",
+    selectionBackground: "#c5def5",
+  });
+  assert.equal(workflowXtermTheme("light").background, "#ffffff");
+  assert.equal(xtermAnsiTheme("light").brightWhite, "#1f2933");
+  assert.equal(xtermAnsiTheme("light").brightYellow, "#795e26");
+});
+
+test("light terminal output drops explicit background colors without changing dark output", () => {
+  const data = "\u001b[38;2;255;255;255;48;2;30;30;30mhello\u001b[0m";
+  assert.equal(normalizeLightTerminalAnsi(data, "light"), "\u001b[38;2;255;255;255mhello\u001b[0m");
+  assert.equal(normalizeLightTerminalAnsi(data, "dark"), data);
+});
+
 test("cssVar trims DOM values and falls back for empty tokens", () => {
   withMockDom({ "--rgb": "  rgb(1, 2, 3)  ", "--empty": "  " }, () => {
     assert.equal(cssVar("--rgb", "#fallback"), "rgb(1, 2, 3)");
@@ -121,4 +143,35 @@ test("GitGraph palette calls return stable fresh arrays", () => {
   first[0] = "#000000";
   assert.deepEqual(second, ["#ffb000", "#dc267f", "#994f00", "#40b0a6", "#b66dff"]);
   assert.deepEqual(gitGraphPalette(), second);
+});
+
+test("theme-sensitive cards and terminal menus use component roles", async () => {
+  const [tokens, agentCss, terminalCss, terminalSource, aiSettingsSource] = await Promise.all([
+    readFile(new URL("../styles.css", import.meta.url), "utf8"),
+    readFile(new URL("./styles/agent-settings.css", import.meta.url), "utf8"),
+    readFile(new URL("./styles/terminal.css", import.meta.url), "utf8"),
+    readFile(new URL("./Terminal.tsx", import.meta.url), "utf8"),
+    readFile(new URL("./AiSettingsView.tsx", import.meta.url), "utf8"),
+  ]);
+
+  for (const role of [
+    "--ui-surface-card",
+    "--ui-surface-control",
+    "--ui-surface-menu",
+    "--ui-border-card",
+    "--ui-success-bg",
+    "--ui-danger-bg",
+  ]) {
+    assert.ok(tokens.includes(role), `missing component theme role ${role}`);
+  }
+  assert.match(tokens, /@media \(forced-colors: active\)/);
+  assert.match(tokens, /:root\[data-theme="light"\][\s\S]*?--ui-surface-card:\s*#ffffff/);
+  assert.match(agentCss, /background: var\(--ui-surface-card\)/);
+  assert.match(agentCss, /var\(--provider-icon-color\)/);
+  assert.doesNotMatch(agentCss, /#252526|#3e3e42|#569cd6/);
+  assert.doesNotMatch(aiSettingsSource, /backgroundColor/);
+  assert.match(aiSettingsSource, /--provider-icon-\$\{paletteIndex\}/);
+  assert.match(terminalCss, /background: var\(--ui-surface-menu\)/);
+  assert.doesNotMatch(terminalCss, /\.terminal__menu-item\.is-active::before/);
+  assert.match(terminalSource, /codicon codicon-check/);
 });

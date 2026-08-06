@@ -15,6 +15,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { useUiPreferences } from "../i18n/UiPreferences";
 import {
   type AgentSessionApp,
   type AiTerminalClaudePermissionMode,
@@ -58,7 +59,7 @@ import {
 import { ClaudeLogo, OpenAILogo } from "./BrandIcons";
 import { ContextMenu, type CtxMenuSection } from "./ContextMenu";
 import { cleanAgentTerminalConversation } from "./terminal-conversation";
-import { workflowXtermTheme } from "./theme";
+import { normalizeLightTerminalAnsi, workflowXtermTheme, xtermAnsiTheme } from "./theme";
 import {
   blockOutputText,
   canApplyWorkflowRefresh,
@@ -3208,13 +3209,16 @@ function WorkflowAgentTerminal({
   terminalStatus?: string;
   initialAutoSuccess: boolean;
 }) {
+  const { resolvedTheme } = useUiPreferences();
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<XTerm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const resolvedThemeRef = useRef(resolvedTheme);
   const [paused, setPaused] = useState(false);
   const [autoSuccess, setAutoSuccess] = useState(initialAutoSuccess);
   const canMarkSuccess = canManuallyMarkAgentSuccess(terminalStatus);
+  resolvedThemeRef.current = resolvedTheme;
 
   useEffect(() => {
     setAutoSuccess(initialAutoSuccess);
@@ -3227,8 +3231,9 @@ function WorkflowAgentTerminal({
       cursorBlink: true,
       fontFamily: "Geist Mono, SFMono-Regular, Cascadia Mono, Consolas, Courier New, monospace",
       fontSize: 12.5,
+      minimumContrastRatio: resolvedTheme === "light" ? 4.5 : 1,
       scrollback: 8000,
-      theme: workflowXtermTheme(),
+      theme: { ...workflowXtermTheme(resolvedTheme), ...xtermAnsiTheme(resolvedTheme) },
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -3256,7 +3261,7 @@ function WorkflowAgentTerminal({
           signal?: number | string | null;
         };
         if (msg.type === "output" && typeof msg.data === "string") {
-          term.write(msg.data);
+          term.write(normalizeLightTerminalAnsi(msg.data, resolvedThemeRef.current));
         } else if (msg.type === "exit") {
           term.writeln(
             `\r\n\x1b[2m[osheep] terminal exited code=${msg.code ?? "null"} signal=${
@@ -3300,6 +3305,18 @@ function WorkflowAgentTerminal({
       fitRef.current = null;
     };
   }, [sessionId]);
+
+  useEffect(() => {
+    const term = termRef.current;
+    if (term) {
+      term.options.theme = {
+        ...workflowXtermTheme(resolvedTheme),
+        ...xtermAnsiTheme(resolvedTheme),
+      };
+      term.options.minimumContrastRatio = resolvedTheme === "light" ? 4.5 : 1;
+      term.refresh(0, term.rows - 1);
+    }
+  }, [resolvedTheme]);
 
   const updateAutoSuccess = async (enabled: boolean) => {
     setAutoSuccess(enabled);
