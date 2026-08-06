@@ -144,3 +144,34 @@ test("GitGraph palette calls return stable fresh arrays", () => {
   assert.deepEqual(second, ["#ffb000", "#dc267f", "#994f00", "#40b0a6", "#b66dff"]);
   assert.deepEqual(gitGraphPalette(), second);
 });
+
+test("theme-sensitive cards and terminal menus use component roles", async () => {
+  const [tokens, agentCss, terminalCss, terminalSource, aiSettingsSource] = await Promise.all([
+    readFile(new URL("../styles.css", import.meta.url), "utf8"),
+    readFile(new URL("./styles/agent-settings.css", import.meta.url), "utf8"),
+    readFile(new URL("./styles/terminal.css", import.meta.url), "utf8"),
+    readFile(new URL("./Terminal.tsx", import.meta.url), "utf8"),
+    readFile(new URL("./AiSettingsView.tsx", import.meta.url), "utf8"),
+  ]);
+
+  for (const role of [
+    "--ui-surface-card",
+    "--ui-surface-control",
+    "--ui-surface-menu",
+    "--ui-border-card",
+    "--ui-success-bg",
+    "--ui-danger-bg",
+  ]) {
+    assert.ok(tokens.includes(role), `missing component theme role ${role}`);
+  }
+  assert.match(tokens, /@media \(forced-colors: active\)/);
+  assert.match(tokens, /:root\[data-theme="light"\][\s\S]*?--ui-surface-card:\s*#ffffff/);
+  assert.match(agentCss, /background: var\(--ui-surface-card\)/);
+  assert.match(agentCss, /var\(--provider-icon-color\)/);
+  assert.doesNotMatch(agentCss, /#252526|#3e3e42|#569cd6/);
+  assert.doesNotMatch(aiSettingsSource, /backgroundColor/);
+  assert.match(aiSettingsSource, /--provider-icon-\$\{paletteIndex\}/);
+  assert.match(terminalCss, /background: var\(--ui-surface-menu\)/);
+  assert.doesNotMatch(terminalCss, /\.terminal__menu-item\.is-active::before/);
+  assert.match(terminalSource, /codicon codicon-check/);
+});

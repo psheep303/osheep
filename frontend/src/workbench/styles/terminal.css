@@ -6,14 +6,14 @@
   height: 100%;
   min-height: 0;
   background: var(--bg-editor);
-  font-family: "Cascadia Mono", Consolas, "Courier New", monospace;
+  font-family: var(--font-mono);
 }
 
 .terminal--empty {
   align-items: center;
   justify-content: center;
   padding: 16px;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: var(--font-ui);
 }
 
 .terminal__main {
@@ -35,7 +35,7 @@
   align-items: center;
   justify-content: center;
   height: 100%;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: var(--font-ui);
 }
 
 .terminal__error {
@@ -43,7 +43,7 @@
   color: var(--fg-error);
   padding: 4px 12px;
   font-size: 12px;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: var(--font-ui);
   flex-shrink: 0;
 }
 
@@ -69,7 +69,7 @@
   color: var(--fg-error);
   padding: 4px 12px;
   font-size: 12px;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: var(--font-ui);
   flex-shrink: 0;
   margin-bottom: 4px;
 }
@@ -147,7 +147,7 @@
 }
 
 .terminal__sidebar-item.is-active {
-  background: #37373d;
+  background: var(--ui-surface-selected);
   color: var(--fg-strong);
 }
 
@@ -200,9 +200,9 @@
   top: 28px;
   left: 0;
   min-width: 200px;
-  background: var(--surface-2);
-  border: 1px solid #454545;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  background: var(--ui-surface-menu);
+  border: 1px solid var(--ui-border-control);
+  box-shadow: var(--shadow-2);
   z-index: 50;
   padding: 4px 0;
   font-size: 13px;
@@ -219,7 +219,8 @@
 }
 
 .terminal__menu-item {
-  display: block;
+  display: flex;
+  align-items: center;
   width: 100%;
   text-align: left;
   background: transparent;
@@ -241,9 +242,17 @@
   color: var(--fg-strong);
 }
 
-.terminal__menu-item.is-active::before {
-  content: "鉁?";
+.terminal__menu-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
   margin-right: 4px;
+  flex: 0 0 16px;
+}
+
+.terminal__menu-check .codicon {
+  font-size: 13px;
 }
 
 .terminal__menu-item.is-empty {
@@ -252,4 +261,3 @@
   cursor: default;
   pointer-events: none;
 }
-

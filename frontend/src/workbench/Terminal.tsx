@@ -245,7 +245,10 @@ export function Terminal({ workspaceId, launchRequest = null, onLaunchHandled }:
                       setMenuOpen(false);
                     }}
                   >
-                    {p.label}
+                    <span className="terminal__menu-check" aria-hidden="true">
+                      {p.id === defaultProfileId && <i className="codicon codicon-check" />}
+                    </span>
+                    <span>{p.label}</span>
                   </button>
                 ))}
               </div>

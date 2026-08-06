@@ -59,7 +59,7 @@
 :root[data-theme="light"] .terminal__sidebar-item.is-active,
 :root[data-theme="light"] .plan-view__item.is-active,
 :root[data-theme="light"] .agent-settings__nav-item.is-active {
-  background: #e4e6ea;
+  background: var(--ui-surface-selected);
   color: var(--fg-strong);
 }
 
@@ -88,8 +88,8 @@
 :root[data-theme="light"] .chat-composer__slash,
 :root[data-theme="light"] .provider-card__picker,
 :root[data-theme="light"] .workflow-mode-menu {
-  background: #ffffff;
-  border-color: #c8c8c8;
+  background: var(--ui-surface-menu);
+  border-color: var(--ui-border-control);
   box-shadow: var(--shadow-2);
   color: var(--fg-default);
 }
@@ -101,8 +101,8 @@
 :root[data-theme="light"] .chat-composer__agent-btn:hover:not(:disabled),
 :root[data-theme="light"] .chat-composer__slash-item:hover:not(.is-disabled),
 :root[data-theme="light"] .workflow-mode-menu__item:hover {
-  background: #e8e8e8;
-  color: #1f1f1f;
+  background: var(--bg-hover);
+  color: var(--fg-strong);
 }
 
 :root[data-theme="light"] .ctx-menu__shortcut,
@@ -116,8 +116,8 @@
 :root[data-theme="light"] .claude-plugins__card,
 :root[data-theme="light"] .git-view__remote-form,
 :root[data-theme="light"] .git-view__remotes-form {
-  background: #fafafa;
-  border-color: #dedede;
+  background: var(--ui-surface-card);
+  border-color: var(--ui-border-card);
 }
 
 :root[data-theme="light"] .agent-settings__textarea,
@@ -125,9 +125,9 @@
 :root[data-theme="light"] .ai-settings__textarea,
 :root[data-theme="light"] .ai-settings__input,
 :root[data-theme="light"] .codex-plugins__input {
-  background: #ffffff;
-  border-color: #c8c8c8;
-  color: #3b3b3b;
+  background: var(--ui-surface-control);
+  border-color: var(--ui-border-control);
+  color: var(--fg-default);
 }
 
 :root[data-theme="light"] .chat-composer {
