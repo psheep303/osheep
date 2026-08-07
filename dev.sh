@@ -87,3 +87,4 @@ wait -n "${pids[@]}"
 status=$?
 set -e
 exit "$status"
+

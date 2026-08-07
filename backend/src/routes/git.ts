@@ -7,6 +7,7 @@ import {
   discardPaths,
   fetchRemote,
   getCommitDetails,
+  getCommitDiff,
   getDiff,
   getLog,
   getRepoInfo,
@@ -239,4 +240,14 @@ export async function registerGitRoutes(app: FastifyInstance) {
       return await getCommitDetails(ws.path, req.params.sha);
     },
   );
+
+  app.get<{
+    Params: { id: string; sha: string };
+    Querystring: { path?: string };
+  }>("/api/workspaces/:id/git/commits/:sha/diff", async (req) => {
+    const ws = await resolveWorkspace(req.params.id);
+    await ensureRepo(ws.path);
+    if (typeof req.query.path !== "string") throw errors.invalidPath("缺少 path 参数");
+    return await getCommitDiff(ws.path, req.params.sha, req.query.path);
+  });
 }

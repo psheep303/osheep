@@ -5,7 +5,9 @@ import { ClaudeCodeAgentView, CodexAgentView } from "./AgentSettingsView";
 import { AiPanel } from "./AiPanel";
 import {
   type AgentSessionSummary,
+  type GitChange,
   type GitStatus,
+  getGitCommitDiff,
   getGitDiff,
   getGitStatus,
   getTemplateCapabilities,
@@ -33,6 +35,9 @@ const BottomPanel = lazy(() =>
   import("./BottomPanel").then((module) => ({ default: module.BottomPanel })),
 );
 const DiffPane = lazy(() => import("./DiffPane").then((module) => ({ default: module.DiffPane })));
+const MultiDiffPane = lazy(() =>
+  import("./MultiDiffPane").then((module) => ({ default: module.MultiDiffPane })),
+);
 const EditorPane = lazy(() =>
   import("./EditorPane").then((module) => ({ default: module.EditorPane })),
 );
@@ -103,7 +108,21 @@ interface DiffTab {
   binary: boolean;
 }
 
-type Tab = FileTab | SettingsTab | WorkflowTabState | TemplateTabState | DiffTab;
+interface MultiDiffTab {
+  kind: "multi-diff";
+  path: string;
+  title: string;
+  entries: Array<{
+    path: string;
+    leftContent: string;
+    rightContent: string;
+    leftMissing: boolean;
+    rightMissing: boolean;
+    binary: boolean;
+  }>;
+}
+
+type Tab = FileTab | SettingsTab | WorkflowTabState | TemplateTabState | DiffTab | MultiDiffTab;
 
 const SETTINGS_PATH = "__settings__";
 const WORKFLOW_PREFIX = "__workflow__:";
@@ -330,6 +349,80 @@ export function Workbench() {
             binary: d.binary,
           },
         ]);
+        setActivePath(diffId);
+      } catch (e) {
+        setError(t("error.loadDiff", { detail: (e as Error).message }));
+      }
+    },
+    [tabs, workspaceId, t],
+  );
+
+  const openMultiDiffTab = useCallback(
+    async (
+      changes: GitChange[],
+      base: "HEAD" | "INDEX",
+      head: "INDEX" | "WORKTREE",
+      title: string,
+    ) => {
+      if (!workspaceId || changes.length === 0) return;
+      const paths = changes.map((change) => change.path);
+      const diffId = `__multi-diff__:${base}:${head}:${paths
+        .map((path) => encodeURIComponent(path))
+        .join("|")}`;
+      const existing = tabs.find((tab) => tab.path === diffId);
+      if (existing) {
+        setActivePath(diffId);
+        return;
+      }
+      try {
+        const entries = await Promise.all(
+          changes.map(async (change) => {
+            const diff = await getGitDiff(workspaceId, change.path, base, head);
+            return {
+              path: change.path,
+              leftContent: diff.leftContent,
+              rightContent: diff.rightContent,
+              leftMissing: diff.leftMissing,
+              rightMissing: diff.rightMissing,
+              binary: diff.binary,
+            };
+          }),
+        );
+        setTabs((prev) => [...prev, { kind: "multi-diff", path: diffId, title, entries }]);
+        setActivePath(diffId);
+      } catch (e) {
+        setError(t("error.loadDiff", { detail: (e as Error).message }));
+      }
+    },
+    [tabs, workspaceId, t],
+  );
+
+  const openCommitDiffTab = useCallback(
+    async (sha: string, title: string, paths: string[]) => {
+      if (!workspaceId || paths.length === 0) return;
+      const diffId = `__commit-diff__:${sha}:${paths
+        .map((path) => encodeURIComponent(path))
+        .join("|")}`;
+      const existing = tabs.find((tab) => tab.path === diffId);
+      if (existing) {
+        setActivePath(diffId);
+        return;
+      }
+      try {
+        const entries = await Promise.all(
+          paths.map(async (path) => {
+            const diff = await getGitCommitDiff(workspaceId, sha, path);
+            return {
+              path: diff.path,
+              leftContent: diff.leftContent,
+              rightContent: diff.rightContent,
+              leftMissing: diff.leftMissing,
+              rightMissing: diff.rightMissing,
+              binary: diff.binary,
+            };
+          }),
+        );
+        setTabs((prev) => [...prev, { kind: "multi-diff", path: diffId, title, entries }]);
         setActivePath(diffId);
       } catch (e) {
         setError(t("error.loadDiff", { detail: (e as Error).message }));
@@ -615,6 +708,7 @@ export function Workbench() {
   const activeTab = tabs.find((t) => t.path === activePath) ?? null;
   const activeFileTab = activeTab?.kind === "file" ? activeTab : null;
   const activeDiffTab = activeTab?.kind === "diff" ? activeTab : null;
+  const activeMultiDiffTab = activeTab?.kind === "multi-diff" ? activeTab : null;
   const hasDirtyFiles = tabs.some((tab) => tab.kind === "file" && tab.dirty && !tab.deleted);
   const windowsDesktopShell = isWindowsDesktopShell();
 
@@ -737,6 +831,13 @@ export function Workbench() {
                   status={gitStatus}
                   onRefreshStatus={refreshGitStatus}
                   onOpenDiff={(p, base, head) => void openDiffTab(p, base, head)}
+                  onOpenMultiDiff={(changes, base, head, title) =>
+                    void openMultiDiffTab(changes, base, head, title)
+                  }
+                  onOpenFile={(p) => void openFileAt(p, 1, 1)}
+                  onOpenCommitDiff={(sha, title, paths) =>
+                    void openCommitDiffTab(sha, title, paths)
+                  }
                 />
               )}
               {activeView === "claude-code" && (
@@ -766,9 +867,11 @@ export function Workbench() {
                         ? t("nav.workflow")
                         : tab.kind === "template"
                           ? t("nav.templates")
-                          : tab.kind === "diff"
-                            ? `${basename(tab.filePath)} (${diffLabel(tab)})`
-                            : tab.path.split("/").pop();
+                          : tab.kind === "multi-diff"
+                            ? tab.title
+                            : tab.kind === "diff"
+                              ? `${basename(tab.filePath)} (${diffLabel(tab)})`
+                              : tab.path.split("/").pop();
                   const tabTitle =
                     tab.kind === "file"
                       ? isDeleted
@@ -776,11 +879,13 @@ export function Workbench() {
                         : tab.path
                       : tab.kind === "diff"
                         ? `${tab.filePath} · ${diffLabel(tab)}`
-                        : tab.kind === "workflow"
-                          ? `${t("nav.workflow")} ${tab.workflowId}`
-                          : tab.kind === "template"
-                            ? `${t("nav.templates")} ${tab.templateId}`
-                            : t("common.settings");
+                        : tab.kind === "multi-diff"
+                          ? tab.title
+                          : tab.kind === "workflow"
+                            ? `${t("nav.workflow")} ${tab.workflowId}`
+                            : tab.kind === "template"
+                              ? `${t("nav.templates")} ${tab.templateId}`
+                              : t("common.settings");
                   return (
                     <div
                       key={tab.path}
@@ -788,7 +893,7 @@ export function Workbench() {
                         "tab" +
                         (tab.path === activePath ? " is-active" : "") +
                         (isDeleted ? " is-deleted" : "") +
-                        (tab.kind === "diff" ? " is-diff" : "")
+                        (tab.kind === "diff" || tab.kind === "multi-diff" ? " is-diff" : "")
                       }
                       onClick={() => setActivePath(tab.path)}
                       title={tabTitle}
@@ -853,6 +958,14 @@ export function Workbench() {
                         rightContent={activeDiffTab.rightContent}
                       />
                     )}
+                  </div>
+                ) : activeMultiDiffTab ? (
+                  <div className="editor-host__source">
+                    <MultiDiffPane
+                      entries={activeMultiDiffTab.entries}
+                      fontSize={settings.editor.fontSize}
+                      title={activeMultiDiffTab.title}
+                    />
                   </div>
                 ) : activeTab?.kind === "settings" ? (
                   <SettingsView

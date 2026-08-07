@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
-import { getCommitDetails, getLog } from "./git-ops.js";
+import { getCommitDetails, getCommitDiff, getLog } from "./git-ops.js";
 import { findExecutable } from "./runtime-tools.js";
 
 const execFileAsync = promisify(execFile);
@@ -42,6 +42,15 @@ test("Git history returns VS Code graph data and full commit details", async (co
     assert.equal(details.filesChanged, 1);
     assert.equal(details.insertions, 1);
     assert.equal(details.deletions, 0);
+    assert.deepEqual(details.files, [
+      { path: "README.md", insertions: 1, deletions: 0, binary: false },
+    ]);
+
+    const diff = await getCommitDiff(root, details.sha, "README.md");
+    assert.equal(diff.leftContent, "first\n");
+    assert.equal(diff.rightContent, "first\nsecond\n");
+    assert.equal(diff.leftMissing, false);
+    assert.equal(diff.rightMissing, false);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }

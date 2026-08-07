@@ -27,6 +27,14 @@ interface GitViewProps {
   status: GitStatus | null;
   onRefreshStatus: () => void;
   onOpenDiff: (path: string, base: "HEAD" | "INDEX", head: "INDEX" | "WORKTREE") => void;
+  onOpenMultiDiff: (
+    changes: GitChange[],
+    base: "HEAD" | "INDEX",
+    head: "INDEX" | "WORKTREE",
+    title: string,
+  ) => void;
+  onOpenFile: (path: string) => void;
+  onOpenCommitDiff: (sha: string, title: string, paths: string[]) => void;
 }
 
 const DEFAULT_SPLIT = 0.55;
@@ -35,7 +43,15 @@ const MAX_SPLIT = 1;
 
 type CommitMode = "commit" | "commit-push" | "commit-sync";
 
-export function GitView({ workspaceId, status, onRefreshStatus, onOpenDiff }: GitViewProps) {
+export function GitView({
+  workspaceId,
+  status,
+  onRefreshStatus,
+  onOpenDiff,
+  onOpenMultiDiff,
+  onOpenFile,
+  onOpenCommitDiff,
+}: GitViewProps) {
   const { resolvedLanguage, t } = useUiPreferences();
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
@@ -337,6 +353,8 @@ export function GitView({ workspaceId, status, onRefreshStatus, onOpenDiff }: Gi
                 changes={staged}
                 kind="staged"
                 onClickFile={(c) => onOpenDiff(c.path, "HEAD", "INDEX")}
+                onOpenFile={onOpenFile}
+                onOpenDiffAll={() => onOpenMultiDiff(staged, "HEAD", "INDEX", t("git.staged"))}
                 onAction={(c) =>
                   void run(t("git.processing"), () => gitUnstage(workspaceId, [c.path]))
                 }
@@ -358,8 +376,25 @@ export function GitView({ workspaceId, status, onRefreshStatus, onOpenDiff }: Gi
                 changes={unstaged}
                 kind="unstaged"
                 onClickFile={(c) => onOpenDiff(c.path, "INDEX", "WORKTREE")}
+                onOpenFile={onOpenFile}
+                onOpenDiffAll={() =>
+                  onOpenMultiDiff(unstaged, "INDEX", "WORKTREE", t("git.changes"))
+                }
                 onAction={(c) =>
                   void run(t("git.processing"), () => gitStage(workspaceId, [c.path]))
+                }
+                onDiscardAll={() =>
+                  window.confirm(
+                    resolvedLanguage === "zh-CN"
+                      ? `确定要撤销全部 ${unstaged.length} 项更改吗？此操作不可逆。`
+                      : `Discard all ${unstaged.length} changes? This cannot be undone.`,
+                  ) &&
+                  void run(t("git.discarding"), () =>
+                    gitDiscard(
+                      workspaceId,
+                      unstaged.map((c) => c.path),
+                    ).then(() => undefined),
+                  )
                 }
                 onDiscard={async (c) => {
                   const ok = window.confirm(`确定要撤销对 ${c.path} 的修改吗？此操作不可逆。`);
@@ -393,6 +428,7 @@ export function GitView({ workspaceId, status, onRefreshStatus, onOpenDiff }: Gi
             onPush={doPush}
             onRefresh={refreshAll}
             onMore={() => setRemotesOpen(true)}
+            onOpenCommitDiff={onOpenCommitDiff}
           />
         }
       />
@@ -891,6 +927,7 @@ function GraphSection({
   onPush,
   onRefresh,
   onMore,
+  onOpenCommitDiff,
 }: {
   workspaceId: string;
   refreshKey: number;
@@ -902,6 +939,7 @@ function GraphSection({
   onPush: () => void;
   onRefresh: () => void;
   onMore: () => void;
+  onOpenCommitDiff: (sha: string, title: string, paths: string[]) => void;
 }) {
   const [open, setOpen] = useState(true);
   const [scope, setScope] = useState<"auto" | "all">("auto");
@@ -920,7 +958,9 @@ function GraphSection({
             onClick={() => setScope((value) => (value === "auto" ? "all" : "auto"))}
           >
             <i className="codicon codicon-git-branch" aria-hidden="true" />
-            {scope === "auto" ? "自动" : "所有"}
+            <span className="git-view__graph-scope-label">
+              {scope === "auto" ? "自动" : "所有"}
+            </span>
           </button>
           <button
             type="button"
@@ -969,6 +1009,7 @@ function GraphSection({
           refreshKey={refreshKey}
           scope={scope}
           remoteUrl={remoteUrl}
+          onOpenCommitDiff={onOpenCommitDiff}
         />
       )}
     </div>
@@ -981,8 +1022,11 @@ function GitSection({
   changes,
   kind,
   onClickFile,
+  onOpenFile,
+  onOpenDiffAll,
   onAction,
   onDiscard,
+  onDiscardAll,
   onBulk,
   busy,
 }: {
@@ -991,11 +1035,15 @@ function GitSection({
   changes: GitChange[];
   kind: "staged" | "unstaged";
   onClickFile: (c: GitChange) => void;
+  onOpenFile: (path: string) => void;
+  onOpenDiffAll: () => void;
   onAction: (c: GitChange) => void;
   onDiscard?: (c: GitChange) => void;
+  onDiscardAll?: () => void;
   onBulk: () => void;
   busy: boolean;
 }) {
+  const { t } = useUiPreferences();
   const [open, setOpen] = useState(true);
   return (
     <div className="git-view__section">
@@ -1006,17 +1054,37 @@ function GitSection({
         <span className="git-view__section-title">{title}</span>
         <span className="git-view__section-count">{count}</span>
         {count > 0 && (
-          <button
-            className="git-view__bulk"
-            disabled={busy}
-            title={kind === "staged" ? "全部取消暂存" : "全部暂存"}
-            onClick={(e) => {
-              e.stopPropagation();
-              onBulk();
-            }}
-          >
-            {kind === "staged" ? "−" : "+"}
-          </button>
+          <div className="git-view__section-actions" onClick={(e) => e.stopPropagation()}>
+            <button
+              className="git-view__bulk"
+              disabled={busy}
+              title={t("git.openChanges")}
+              onClick={onOpenDiffAll}
+            >
+              <i className="codicon codicon-diff-multiple" aria-hidden="true" />
+            </button>
+            {onDiscardAll && (
+              <button
+                className="git-view__bulk"
+                disabled={busy}
+                title={t("git.discardAll")}
+                onClick={onDiscardAll}
+              >
+                <i className="codicon codicon-discard" aria-hidden="true" />
+              </button>
+            )}
+            <button
+              className="git-view__bulk"
+              disabled={busy}
+              title={t(kind === "staged" ? "git.unstageAll" : "git.stageAll")}
+              onClick={onBulk}
+            >
+              <i
+                className={`codicon codicon-${kind === "staged" ? "remove" : "add"}`}
+                aria-hidden="true"
+              />
+            </button>
+          </div>
         )}
       </div>
       {open && (
@@ -1033,29 +1101,43 @@ function GitSection({
                 <span className="git-view__name">{basename(c.path)}</span>
                 <span className="git-view__path">{dirname(c.path)}</span>
                 <span className="git-view__actions">
+                  <button
+                    className="git-view__act"
+                    title={t("git.openFile")}
+                    disabled={busy || status.letter === "D"}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onOpenFile(c.path);
+                    }}
+                  >
+                    <i className="codicon codicon-go-to-file" aria-hidden="true" />
+                  </button>
                   {onDiscard && (
                     <button
                       className="git-view__act"
-                      title="撤销变更"
+                      title={t("git.discard")}
                       disabled={busy}
                       onClick={(e) => {
                         e.stopPropagation();
                         void onDiscard(c);
                       }}
                     >
-                      ↺
+                      <i className="codicon codicon-discard" aria-hidden="true" />
                     </button>
                   )}
                   <button
                     className="git-view__act"
-                    title={kind === "staged" ? "取消暂存" : "暂存"}
+                    title={t(kind === "staged" ? "git.unstage" : "git.stage")}
                     disabled={busy}
                     onClick={(e) => {
                       e.stopPropagation();
                       onAction(c);
                     }}
                   >
-                    {kind === "staged" ? "−" : "+"}
+                    <i
+                      className={`codicon codicon-${kind === "staged" ? "remove" : "add"}`}
+                      aria-hidden="true"
+                    />
                   </button>
                 </span>
                 <span

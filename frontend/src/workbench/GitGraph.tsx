@@ -10,6 +10,7 @@ interface GitGraphProps {
   refreshKey: number;
   scope: "auto" | "all";
   remoteUrl?: string | null;
+  onOpenCommitDiff: (sha: string, title: string, paths: string[]) => void;
 }
 
 interface GraphNode {
@@ -43,7 +44,13 @@ const { ref: HISTORY_ITEM_REF_COLOR, remoteRef: HISTORY_ITEM_REMOTE_REF_COLOR } 
   gitGraphRefColors();
 const GRAPH_COLORS = gitGraphPalette();
 
-export function GitGraph({ workspaceId, refreshKey, scope, remoteUrl }: GitGraphProps) {
+export function GitGraph({
+  workspaceId,
+  refreshKey,
+  scope,
+  remoteUrl,
+  onOpenCommitDiff,
+}: GitGraphProps) {
   const { resolvedLanguage, t } = useUiPreferences();
   const [commits, setCommits] = useState<GitCommit[]>([]);
   const [head, setHead] = useState<string | null>(null);
@@ -130,6 +137,22 @@ export function GitGraph({ workspaceId, refreshKey, scope, remoteUrl }: GitGraph
     [commits, head, currentRef, currentRemoteRef],
   );
 
+  const openCommitChanges = async (commit: GitCommit) => {
+    try {
+      const value =
+        selected?.commit.sha === commit.sha && details
+          ? details
+          : await getGitCommitDetails(workspaceId, commit.sha);
+      onOpenCommitDiff(
+        value.sha,
+        `${value.shortSha} · ${value.message.split(/\r?\n/, 1)[0]}`,
+        value.files.map((file) => file.path),
+      );
+    } catch (reason) {
+      setError(t("error.gitHistory", { detail: (reason as Error).message }));
+    }
+  };
+
   if (!workspaceId) return null;
 
   return (
@@ -153,6 +176,8 @@ export function GitGraph({ workspaceId, refreshKey, scope, remoteUrl }: GitGraph
                 : { commit: row.commit, rect: element.getBoundingClientRect() },
             );
           }}
+          onOpenChanges={() => void openCommitChanges(row.commit)}
+          language={resolvedLanguage}
         />
       ))}
       {selected &&
@@ -165,6 +190,14 @@ export function GitGraph({ workspaceId, refreshKey, scope, remoteUrl }: GitGraph
             rowRect={selected.rect}
             remoteUrl={remoteUrl}
             language={resolvedLanguage}
+            onOpenChanges={() =>
+              details &&
+              onOpenCommitDiff(
+                details.sha,
+                `${details.shortSha} · ${details.message.split(/\r?\n/, 1)[0]}`,
+                details.files.map((file) => file.path),
+              )
+            }
           />,
           document.body,
         )}
@@ -178,12 +211,16 @@ function GraphRow({
   currentRemoteRef,
   selected,
   onSelect,
+  onOpenChanges,
+  language,
 }: {
   row: HistoryRow;
   currentRef: string | null;
   currentRemoteRef: string | null;
   selected: boolean;
   onSelect: (element: HTMLDivElement) => void;
+  onOpenChanges: () => void;
+  language: "zh-CN" | "en";
 }) {
   const badges = getReferenceBadges(row.commit, currentRef, currentRemoteRef);
   const isHead = row.kind === "HEAD";
@@ -196,7 +233,9 @@ function GraphRow({
       tabIndex={0}
       onClick={(event) => onSelect(event.currentTarget)}
       onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") onSelect(event.currentTarget);
+        if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) {
+          onSelect(event.currentTarget);
+        }
       }}
     >
       <span className={`git-graph__graph-container${isHead ? " is-current" : ""}`}>
@@ -207,6 +246,19 @@ function GraphRow({
           {row.commit.subject}
         </span>
         <span className="git-graph__author">{row.commit.author}</span>
+      </span>
+      <span className="git-graph__row-actions">
+        <button
+          type="button"
+          className="git-view__act"
+          title={language === "zh-CN" ? "打开提交更改" : "Open Commit Changes"}
+          onClick={(event) => {
+            event.stopPropagation();
+            onOpenChanges();
+          }}
+        >
+          <i className="codicon codicon-diff-multiple" aria-hidden="true" />
+        </button>
       </span>
       {badges.length > 0 && (
         <span className="git-graph__refs">
@@ -227,6 +279,7 @@ function CommitDetailsCard({
   rowRect,
   remoteUrl,
   language,
+  onOpenChanges,
 }: {
   commit: GitCommit;
   details: GitCommitDetails | null;
@@ -235,6 +288,7 @@ function CommitDetailsCard({
   rowRect: DOMRect;
   remoteUrl?: string | null;
   language: "zh-CN" | "en";
+  onOpenChanges: () => void;
 }) {
   const width = Math.min(465, window.innerWidth - 16);
   const style: CSSProperties = {
@@ -252,6 +306,7 @@ function CommitDetailsCard({
     filesChanged: 0,
     insertions: 0,
     deletions: 0,
+    files: [],
   };
   const lines = value.message.split(/\r?\n/);
   const subject = lines.shift() || commit.subject;
@@ -313,6 +368,16 @@ function CommitDetailsCard({
           onClick={() => void navigator.clipboard.writeText(value.sha)}
         >
           <i className="codicon codicon-copy" aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          className="git-graph__details-action git-graph__details-open-changes"
+          title={language === "zh-CN" ? "打开提交更改" : "Open Commit Changes"}
+          disabled={loading || !details || details.files.length === 0}
+          onClick={onOpenChanges}
+        >
+          <i className="codicon codicon-diff-multiple" aria-hidden="true" />
+          {language === "zh-CN" ? "打开更改" : "Open Changes"}
         </button>
         {commitUrl && (
           <a

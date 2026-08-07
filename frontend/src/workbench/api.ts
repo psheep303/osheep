@@ -627,6 +627,25 @@ export interface GitCommitDetails {
   filesChanged: number;
   insertions: number;
   deletions: number;
+  files: GitCommitFile[];
+}
+
+export interface GitCommitFile {
+  path: string;
+  insertions: number | null;
+  deletions: number | null;
+  binary: boolean;
+}
+
+export interface GitCommitDiff {
+  path: string;
+  base: string | null;
+  head: string;
+  leftContent: string;
+  rightContent: string;
+  leftMissing: boolean;
+  rightMissing: boolean;
+  binary: boolean;
 }
 
 export async function getWorkspacesRoot(): Promise<string> {
@@ -662,6 +681,15 @@ export async function getGitCommitDetails(
   sha: string,
 ): Promise<GitCommitDetails> {
   return await http.get(gitUrl(workspaceId, `/commits/${encodeURIComponent(sha)}`));
+}
+
+export async function getGitCommitDiff(
+  workspaceId: string,
+  sha: string,
+  path: string,
+): Promise<GitCommitDiff> {
+  const query = new URLSearchParams({ path }).toString();
+  return await http.get(gitUrl(workspaceId, `/commits/${encodeURIComponent(sha)}/diff?${query}`));
 }
 
 // ─── Branches & remote ops ───
