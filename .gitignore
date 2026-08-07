@@ -28,6 +28,7 @@ workspaces/
 **/.env.*
 !**/.env.example
 *.local
+/set-version.ps1
 backend/.osheep/
 backend/workspaces/
 .agents/
