@@ -4,6 +4,8 @@
   align-items: stretch;
   min-width: 0;
   height: 22px;
+  min-height: 22px;
+  flex: 0 0 22px;
   overflow: hidden;
   background: var(--bg-shell);
   border-top: 1px solid var(--border-faint);

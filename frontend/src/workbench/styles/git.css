@@ -781,3 +781,215 @@
   color: var(--fg-error);
 }
 
+/* Repository toolbar follows VS Code's SCM repository view. */
+.git-view__repository-header {
+  display: flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 6px 0 2px;
+  border-bottom: 1px solid var(--border-faint);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.git-view__repository-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-view__repository-actions,
+.git-view__graph-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  margin-left: auto;
+}
+
+.git-view__repository-actions .icon-btn,
+.git-view__graph-actions .icon-btn {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+}
+
+.git-view__graph-actions {
+  max-width: 100%;
+}
+
+.git-view__graph-scope {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 24px;
+  padding: 0 5px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.git-view__graph-scope:hover {
+  background: var(--bg-hover);
+  color: var(--fg-default);
+}
+
+.git-view__sync-primary {
+  min-height: 40px;
+  font-size: 14px;
+}
+
+.git-view__msg {
+  height: 38px;
+  min-height: 38px;
+  padding: 8px;
+  font-size: 13px;
+  resize: none;
+  box-sizing: border-box;
+}
+
+.git-graph__row {
+  cursor: pointer;
+  user-select: none;
+}
+
+.git-graph__row:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.git-graph__row.is-selected {
+  background: var(--ui-surface-selected, var(--bg-hover));
+}
+
+.git-graph__details {
+  position: fixed;
+  z-index: var(--z-modal, 1000);
+  max-height: calc(100vh - 16px);
+  overflow: auto;
+  border: 1px solid var(--ui-border-control, var(--border-edge));
+  border-radius: 4px;
+  background: var(--ui-surface-menu, var(--bg-shell));
+  color: var(--fg-default);
+  box-shadow: var(--shadow-2, 0 8px 24px rgba(0, 0, 0, 0.35));
+  font-size: 12px;
+}
+
+.git-graph__details-meta,
+.git-graph__details-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 8px 10px;
+}
+
+.git-graph__details-meta {
+  border-bottom: 1px solid var(--border-faint);
+  color: var(--fg-muted);
+}
+
+.git-graph__details-meta strong {
+  color: var(--fg-default);
+}
+
+.git-graph__details-email,
+.git-graph__details-time {
+  color: var(--fg-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-graph__details-time {
+  margin-left: auto;
+}
+
+.git-graph__details-message {
+  padding: 10px;
+  line-height: 1.45;
+}
+
+.git-graph__details-message strong {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.git-graph__details-message pre {
+  max-width: 100%;
+  margin: 8px 0 0;
+  color: var(--fg-muted);
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.git-graph__details-loading {
+  display: block;
+  margin-top: 8px;
+  color: var(--fg-faint);
+}
+
+.git-graph__details-error {
+  display: block;
+  margin-top: 8px;
+  color: var(--fg-error);
+}
+
+.git-graph__details-stat {
+  padding: 0 10px 8px;
+  color: var(--fg-muted);
+}
+
+.git-graph__details-stat .is-added {
+  color: #81b88b;
+}
+
+.git-graph__details-stat .is-deleted {
+  color: #c74e39;
+}
+
+.git-graph__details-actions {
+  border-top: 1px solid var(--border-faint);
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+
+.git-graph__details-sha {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  color: var(--fg-faint);
+  font-family: "Cascadia Mono", Consolas, monospace;
+}
+
+.git-graph__details-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 5px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.git-graph__details-action:hover {
+  background: var(--bg-hover);
+  color: var(--fg-default);
+}
+
+.git-graph__details-link {
+  margin-left: auto;
+}
+

@@ -36,7 +36,7 @@ const MAX_SPLIT = 1;
 type CommitMode = "commit" | "commit-push" | "commit-sync";
 
 export function GitView({ workspaceId, status, onRefreshStatus, onOpenDiff }: GitViewProps) {
-  const { t } = useUiPreferences();
+  const { resolvedLanguage, t } = useUiPreferences();
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [busyLabel, setBusyLabel] = useState<string | null>(null);
@@ -47,6 +47,7 @@ export function GitView({ workspaceId, status, onRefreshStatus, onOpenDiff }: Gi
   const [remotesOpen, setRemotesOpen] = useState(false);
   const [branchOpen, setBranchOpen] = useState(false);
   const [commitMode, setCommitMode] = useState<CommitMode>("commit");
+  const [repositoryOpen, setRepositoryOpen] = useState(true);
 
   const isRepo = !!status?.isRepo;
 
@@ -183,31 +184,78 @@ export function GitView({ workspaceId, status, onRefreshStatus, onOpenDiff }: Gi
       if (ahead > 0 || behind === 0) await gitPush(workspaceId, {});
     });
 
-  const doPublish = () =>
-    void run(t("git.publishing"), async () => {
-      await gitPush(workspaceId, autoPushOpts(remotes, status));
-    });
-
   const doFetch = () =>
     void run(t("git.pulling"), async () => {
       await gitFetch(workspaceId, null, false);
     });
+
+  const doPull = () =>
+    void run(t("git.pulling"), async () => {
+      await gitPull(workspaceId, {});
+    });
+
+  const doPush = () =>
+    void run(t("git.pushing"), async () => {
+      await gitPush(workspaceId, hasUpstream ? {} : autoPushOpts(remotes, status));
+    });
+
+  const showSyncAction = staged.length === 0 && unstaged.length === 0 && (ahead > 0 || behind > 0);
+  const commitPlaceholder = status?.branch
+    ? resolvedLanguage === "zh-CN"
+      ? `消息(Ctrl+Enter 在“${status.branch}”提交)`
+      : `Message (Ctrl+Enter to commit on '${status.branch}')`
+    : t("git.commitPlaceholder");
 
   return (
     <div className="side-view git-view">
       <div className="side-view__header git-view__header">
         <span className="side-view__title">{t("git.title")}</span>
         <RemotesButton
-          count={remotes.length}
           open={remotesOpen}
           onToggle={() => {
             setRemotesOpen((v) => !v);
             setBranchOpen(false);
           }}
         />
-        <button className="icon-btn" title={t("git.refresh")} onClick={refreshAll} disabled={busy}>
-          <RefreshIcon />
-        </button>
+      </div>
+
+      <div
+        className="git-view__repository-header"
+        onClick={() => setRepositoryOpen((open) => !open)}
+      >
+        <span className="search-view__chevron">
+          <ChevronIcon open={repositoryOpen} />
+        </span>
+        <span className="git-view__repository-title">{t("git.changes")}</span>
+        <div className="git-view__repository-actions" onClick={(event) => event.stopPropagation()}>
+          <button
+            className="icon-btn"
+            title={t("git.commitOnly")}
+            disabled={!canCommit}
+            onClick={() => doCommit("commit")}
+          >
+            <i className="codicon codicon-check" aria-hidden="true" />
+          </button>
+          <button
+            className="icon-btn"
+            title={t("git.refresh")}
+            onClick={refreshAll}
+            disabled={busy}
+          >
+            <RefreshIcon />
+          </button>
+          <button
+            className={`icon-btn${branchOpen ? " is-active" : ""}`}
+            title={t("git.switchBranch")}
+            disabled={detached || busy}
+            onClick={() => {
+              setBranchOpen((open) => !open);
+              setRemotesOpen(false);
+            }}
+          >
+            <BranchIcon />
+          </button>
+        </div>
       </div>
 
       {remotesOpen && (
@@ -220,37 +268,6 @@ export function GitView({ workspaceId, status, onRefreshStatus, onOpenDiff }: Gi
         />
       )}
 
-      {status?.branch && (
-        <div className="git-view__branch">
-          <button
-            className="git-view__branch-btn"
-            onClick={() => {
-              if (detached) return;
-              setBranchOpen((v) => !v);
-              setRemotesOpen(false);
-            }}
-            disabled={detached || busy}
-            title={detached ? "Detached HEAD" : t("git.switchBranch")}
-          >
-            <BranchIcon />
-            <span className="git-view__branch-name">{status.branch}</span>
-            <span className="git-view__branch-chev">▾</span>
-          </button>
-          <SyncControl
-            ahead={ahead}
-            behind={behind}
-            hasUpstream={hasUpstream}
-            hasRemotes={hasRemotes}
-            detached={detached}
-            busy={busy}
-            onSync={doSync}
-            onPublish={doPublish}
-            onFetch={doFetch}
-            onOpenRemotes={() => setRemotesOpen(true)}
-          />
-        </div>
-      )}
-
       {branchOpen && workspaceId && (
         <BranchPopover
           workspaceId={workspaceId}
@@ -261,24 +278,41 @@ export function GitView({ workspaceId, status, onRefreshStatus, onOpenDiff }: Gi
         />
       )}
 
-      <div className="git-view__commit">
-        <textarea
-          className="git-view__msg"
-          placeholder={t("git.commitPlaceholder")}
-          value={message}
-          onChange={(e) => setMessage(e.target.value)}
-          rows={2}
-          spellCheck={false}
-        />
-        <CommitSplitButton
-          mode={commitMode}
-          disabled={!canCommit}
-          hasRemotes={hasRemotes}
-          busyLabel={busy ? busyLabel : null}
-          onModeChange={(m) => setCommitMode(m)}
-          onCommit={() => doCommit(commitMode)}
-        />
-      </div>
+      {repositoryOpen && (
+        <div className="git-view__commit">
+          <textarea
+            className="git-view__msg"
+            placeholder={commitPlaceholder}
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && event.ctrlKey && canCommit) {
+                event.preventDefault();
+                doCommit(commitMode);
+              }
+            }}
+            rows={2}
+            spellCheck={false}
+          />
+          {showSyncAction ? (
+            <button className="primary-btn git-view__sync-primary" disabled={busy} onClick={doSync}>
+              <SyncIcon />
+              {resolvedLanguage === "zh-CN" ? "同步更改" : "Sync Changes"}
+              {behind > 0 ? ` ${behind}↓` : ""}
+              {ahead > 0 ? ` ${ahead}↑` : ""}
+            </button>
+          ) : (
+            <CommitSplitButton
+              mode={commitMode}
+              disabled={!canCommit}
+              hasRemotes={hasRemotes}
+              busyLabel={busy ? busyLabel : null}
+              onModeChange={(m) => setCommitMode(m)}
+              onCommit={() => doCommit(commitMode)}
+            />
+          )}
+        </div>
+      )}
 
       {error && (
         <div className="git-view__error">
@@ -296,7 +330,7 @@ export function GitView({ workspaceId, status, onRefreshStatus, onOpenDiff }: Gi
       <SplitSections
         changesNode={
           <>
-            {staged.length > 0 && (
+            {repositoryOpen && staged.length > 0 && (
               <GitSection
                 title={t("git.staged")}
                 count={staged.length}
@@ -317,36 +351,50 @@ export function GitView({ workspaceId, status, onRefreshStatus, onOpenDiff }: Gi
                 busy={busy}
               />
             )}
-            <GitSection
-              title={t("git.changes")}
-              count={unstaged.length}
-              changes={unstaged}
-              kind="unstaged"
-              onClickFile={(c) => onOpenDiff(c.path, "INDEX", "WORKTREE")}
-              onAction={(c) => void run(t("git.processing"), () => gitStage(workspaceId, [c.path]))}
-              onDiscard={async (c) => {
-                const ok = window.confirm(`确定要撤销对 ${c.path} 的修改吗？此操作不可逆。`);
-                if (!ok) return;
-                await run(t("git.discarding"), () =>
-                  gitDiscard(workspaceId, [c.path]).then(() => undefined),
-                );
-              }}
-              onBulk={() =>
-                void run(t("git.processing"), () =>
-                  gitStage(
-                    workspaceId,
-                    unstaged.map((c) => c.path),
-                  ),
-                )
-              }
-              busy={busy}
-            />
-            {staged.length === 0 && unstaged.length === 0 && (
-              <div className="git-view__empty">{t("git.noChanges")}</div>
+            {repositoryOpen && (
+              <GitSection
+                title={t("git.changes")}
+                count={unstaged.length}
+                changes={unstaged}
+                kind="unstaged"
+                onClickFile={(c) => onOpenDiff(c.path, "INDEX", "WORKTREE")}
+                onAction={(c) =>
+                  void run(t("git.processing"), () => gitStage(workspaceId, [c.path]))
+                }
+                onDiscard={async (c) => {
+                  const ok = window.confirm(`确定要撤销对 ${c.path} 的修改吗？此操作不可逆。`);
+                  if (!ok) return;
+                  await run(t("git.discarding"), () =>
+                    gitDiscard(workspaceId, [c.path]).then(() => undefined),
+                  );
+                }}
+                onBulk={() =>
+                  void run(t("git.processing"), () =>
+                    gitStage(
+                      workspaceId,
+                      unstaged.map((c) => c.path),
+                    ),
+                  )
+                }
+                busy={busy}
+              />
             )}
           </>
         }
-        graphNode={<GraphSection workspaceId={workspaceId} refreshKey={graphVersion} />}
+        graphNode={
+          <GraphSection
+            workspaceId={workspaceId}
+            refreshKey={graphVersion}
+            status={status}
+            remoteUrl={remotes.find((remote) => remote.name === "origin")?.url ?? remotes[0]?.url}
+            busy={busy}
+            onFetch={doFetch}
+            onPull={doPull}
+            onPush={doPush}
+            onRefresh={refreshAll}
+            onMore={() => setRemotesOpen(true)}
+          />
+        }
       />
     </div>
   );
@@ -359,80 +407,6 @@ function autoPushOpts(
   if (!status?.branch || remotes.length === 0) return {};
   const remote = remotes.find((r) => r.name === "origin")?.name ?? remotes[0].name;
   return { remote, branch: status.branch, setUpstream: true };
-}
-
-function SyncControl({
-  ahead,
-  behind,
-  hasUpstream,
-  hasRemotes,
-  detached,
-  busy,
-  onSync,
-  onPublish,
-  onFetch,
-  onOpenRemotes,
-}: {
-  ahead: number;
-  behind: number;
-  hasUpstream: boolean;
-  hasRemotes: boolean;
-  detached: boolean;
-  busy: boolean;
-  onSync: () => void;
-  onPublish: () => void;
-  onFetch: () => void;
-  onOpenRemotes: () => void;
-}) {
-  if (detached) return null;
-  if (!hasRemotes) {
-    return (
-      <button
-        className="git-view__sync git-view__sync--publish"
-        onClick={onOpenRemotes}
-        disabled={busy}
-        title="先添加一个远程仓库，然后才能发布分支"
-      >
-        + 添加远程
-      </button>
-    );
-  }
-  if (!hasUpstream) {
-    return (
-      <button
-        className="git-view__sync git-view__sync--publish"
-        onClick={onPublish}
-        disabled={busy}
-        title="把当前分支推送到默认远程并设置 upstream"
-      >
-        ↑ 发布分支
-      </button>
-    );
-  }
-  const hasWork = ahead > 0 || behind > 0;
-  return (
-    <button
-      className={`git-view__sync${hasWork ? " git-view__sync--active" : ""}`}
-      onClick={hasWork ? onSync : onFetch}
-      disabled={busy}
-      title={
-        hasWork
-          ? `同步：${behind > 0 ? `pull ↓${behind}` : ""}${
-              behind > 0 && ahead > 0 ? " 然后 " : ""
-            }${ahead > 0 ? `push ↑${ahead}` : ""}`
-          : "fetch（检查远端是否有新内容）"
-      }
-    >
-      <SyncIcon />
-      {hasWork && (
-        <span className="git-view__sync-counts">
-          {behind > 0 ? `↓${behind}` : ""}
-          {behind > 0 && ahead > 0 ? " " : ""}
-          {ahead > 0 ? `↑${ahead}` : ""}
-        </span>
-      )}
-    </button>
-  );
 }
 
 function CommitSplitButton({
@@ -742,15 +716,7 @@ function clamp(v: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, v));
 }
 
-function RemotesButton({
-  count,
-  open,
-  onToggle,
-}: {
-  count: number;
-  open: boolean;
-  onToggle: () => void;
-}) {
+function RemotesButton({ open, onToggle }: { open: boolean; onToggle: () => void }) {
   return (
     <button
       className={`icon-btn git-view__remotes-btn${open ? " is-active" : ""}`}
@@ -758,7 +724,6 @@ function RemotesButton({
       onClick={onToggle}
     >
       <RemoteIcon />
-      {count > 0 && <span className="git-view__remotes-badge">{count}</span>}
     </button>
   );
 }
@@ -915,8 +880,31 @@ function RemotesPopover({
   );
 }
 
-function GraphSection({ workspaceId, refreshKey }: { workspaceId: string; refreshKey: number }) {
+function GraphSection({
+  workspaceId,
+  refreshKey,
+  status,
+  remoteUrl,
+  busy,
+  onFetch,
+  onPull,
+  onPush,
+  onRefresh,
+  onMore,
+}: {
+  workspaceId: string;
+  refreshKey: number;
+  status: GitStatus | null;
+  remoteUrl?: string | null;
+  busy: boolean;
+  onFetch: () => void;
+  onPull: () => void;
+  onPush: () => void;
+  onRefresh: () => void;
+  onMore: () => void;
+}) {
   const [open, setOpen] = useState(true);
+  const [scope, setScope] = useState<"auto" | "all">("auto");
   return (
     <div className="git-view__section git-view__section--graph">
       <div className="git-view__section-header" onClick={() => setOpen((v) => !v)}>
@@ -924,8 +912,65 @@ function GraphSection({ workspaceId, refreshKey }: { workspaceId: string; refres
           <ChevronIcon open={open} />
         </span>
         <span className="git-view__section-title">图形</span>
+        <div className="git-view__graph-actions" onClick={(event) => event.stopPropagation()}>
+          <button
+            type="button"
+            className="git-view__graph-scope"
+            title={scope === "auto" ? "自动选择当前分支和上游" : "显示所有分支"}
+            onClick={() => setScope((value) => (value === "auto" ? "all" : "auto"))}
+          >
+            <i className="codicon codicon-git-branch" aria-hidden="true" />
+            {scope === "auto" ? "自动" : "所有"}
+          </button>
+          <button
+            type="button"
+            className="icon-btn"
+            title="转到当前分支"
+            onClick={() =>
+              document.querySelector<HTMLElement>(".git-graph__row.is-head")?.scrollIntoView({
+                block: "center",
+              })
+            }
+          >
+            <i className="codicon codicon-target" aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            className="icon-btn"
+            title="拉取"
+            disabled={busy || !status?.upstream}
+            onClick={onPull}
+          >
+            <i className="codicon codicon-cloud-download" aria-hidden="true" />
+          </button>
+          <button type="button" className="icon-btn" title="推送" disabled={busy} onClick={onPush}>
+            <i className="codicon codicon-cloud-upload" aria-hidden="true" />
+          </button>
+          <button type="button" className="icon-btn" title="提取" disabled={busy} onClick={onFetch}>
+            <i className="codicon codicon-repo-fetch" aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            className="icon-btn"
+            title="刷新"
+            disabled={busy}
+            onClick={onRefresh}
+          >
+            <i className="codicon codicon-refresh" aria-hidden="true" />
+          </button>
+          <button type="button" className="icon-btn" title="更多操作" onClick={onMore}>
+            <i className="codicon codicon-ellipsis" aria-hidden="true" />
+          </button>
+        </div>
       </div>
-      {open && <GitGraph workspaceId={workspaceId} refreshKey={refreshKey} />}
+      {open && (
+        <GitGraph
+          workspaceId={workspaceId}
+          refreshKey={refreshKey}
+          scope={scope}
+          remoteUrl={remoteUrl}
+        />
+      )}
     </div>
   );
 }

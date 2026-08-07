@@ -350,6 +350,18 @@ export interface GitLog {
   currentRemoteRef: string | null;
 }
 
+export interface GitCommitDetails {
+  sha: string;
+  shortSha: string;
+  author: string;
+  authorEmail: string;
+  date: number;
+  message: string;
+  filesChanged: number;
+  insertions: number;
+  deletions: number;
+}
+
 export async function getLog(
   workspaceRoot: string,
   limit: number,
@@ -432,6 +444,53 @@ export async function getLog(
     currentRemoteRef = null;
   }
   return { commits, head, currentRef, currentRemoteRef };
+}
+
+export async function getCommitDetails(
+  workspaceRoot: string,
+  sha: string,
+): Promise<GitCommitDetails> {
+  if (!/^[0-9a-f]{7,64}$/i.test(sha)) throw errors.invalidRef("commit SHA 格式非法");
+  const r = await runGit(workspaceRoot, [
+    "show",
+    "--no-renames",
+    "--numstat",
+    "--format=%H%x00%an%x00%ae%x00%at%x00%B%x1e",
+    "-1",
+    sha,
+  ]);
+  if (r.code !== 0) throw errors.gitFailed(r.stderr.trim() || "git show 失败");
+
+  const text = r.stdout.toString("utf-8");
+  const separator = text.indexOf("\x1e");
+  if (separator < 0) throw errors.gitFailed("无法解析 commit 详情");
+  const [fullSha = sha, author = "", authorEmail = "", at = "0", ...messageParts] = text
+    .slice(0, separator)
+    .split("\0");
+  let filesChanged = 0;
+  let insertions = 0;
+  let deletions = 0;
+  for (const line of text
+    .slice(separator + 1)
+    .trim()
+    .split(/\r?\n/)) {
+    if (!line) continue;
+    const [added, removed] = line.split("\t", 3);
+    filesChanged += 1;
+    if (/^\d+$/.test(added)) insertions += Number.parseInt(added, 10);
+    if (/^\d+$/.test(removed)) deletions += Number.parseInt(removed, 10);
+  }
+  return {
+    sha: fullSha,
+    shortSha: fullSha.slice(0, 7),
+    author,
+    authorEmail,
+    date: Number.parseInt(at, 10) || 0,
+    message: messageParts.join("\0").trim(),
+    filesChanged,
+    insertions,
+    deletions,
+  };
 }
 
 export async function getDiff(

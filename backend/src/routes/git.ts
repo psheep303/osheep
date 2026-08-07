@@ -6,6 +6,7 @@ import {
   commit,
   discardPaths,
   fetchRemote,
+  getCommitDetails,
   getDiff,
   getLog,
   getRepoInfo,
@@ -229,4 +230,13 @@ export async function registerGitRoutes(app: FastifyInstance) {
     const ref = req.query.ref && req.query.ref.length > 0 ? req.query.ref : "HEAD";
     return await getLog(ws.path, limit, offset, ref);
   });
+
+  app.get<{ Params: { id: string; sha: string } }>(
+    "/api/workspaces/:id/git/commits/:sha",
+    async (req) => {
+      const ws = await resolveWorkspace(req.params.id);
+      await ensureRepo(ws.path);
+      return await getCommitDetails(ws.path, req.params.sha);
+    },
+  );
 }

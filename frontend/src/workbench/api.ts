@@ -617,6 +617,18 @@ export interface GitLog {
   currentRemoteRef: string | null;
 }
 
+export interface GitCommitDetails {
+  sha: string;
+  shortSha: string;
+  author: string;
+  authorEmail: string;
+  date: number;
+  message: string;
+  filesChanged: number;
+  insertions: number;
+  deletions: number;
+}
+
 export async function getWorkspacesRoot(): Promise<string> {
   const result = await http.get<{ path: string }>("/api/workspaces/root");
   return result.path;
@@ -643,6 +655,13 @@ export async function getGitLog(
     ref,
   }).toString();
   return await http.get(gitUrl(workspaceId, `/log?${qs}`));
+}
+
+export async function getGitCommitDetails(
+  workspaceId: string,
+  sha: string,
+): Promise<GitCommitDetails> {
+  return await http.get(gitUrl(workspaceId, `/commits/${encodeURIComponent(sha)}`));
 }
 
 // ─── Branches & remote ops ───
