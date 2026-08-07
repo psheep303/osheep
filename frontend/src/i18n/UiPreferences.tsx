@@ -8,6 +8,7 @@ import {
   useState,
 } from "react";
 import { en, type MessageKey, type MessageParams, zhCN } from "./messages";
+import { getUiPreferences, putUiPreferences } from "../workbench/api";
 
 export type LanguagePreference = "system" | "zh-CN" | "en";
 export type ResolvedLanguage = Exclude<LanguagePreference, "system">;
@@ -107,6 +108,7 @@ const UiPreferencesContext = createContext<UiPreferencesContextValue | null>(nul
 
 export function UiPreferencesProvider({ children }: { children: ReactNode }) {
   const [preferences, setPreferences] = useState(readUiPreferences);
+  const [remoteLoaded, setRemoteLoaded] = useState(false);
   const [systemLanguage, setSystemLanguage] = useState(() =>
     resolveSystemLanguage(browserLanguages()),
   );
@@ -133,12 +135,33 @@ export function UiPreferencesProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    void getUiPreferences<unknown>()
+      .then((value) => {
+        if (!cancelled) {
+          setPreferences(parseUiPreferences(JSON.stringify(value) ?? null));
+          setRemoteLoaded(true);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setRemoteLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     try {
       localStorage.setItem(UI_PREFERENCES_STORAGE_KEY, JSON.stringify(preferences));
     } catch {
       // Preferences remain active for this session when storage is unavailable.
     }
   }, [preferences]);
+
+  useEffect(() => {
+    if (remoteLoaded) void putUiPreferences(preferences).catch(() => undefined);
+  }, [preferences, remoteLoaded]);
 
   useEffect(() => {
     document.documentElement.lang = resolvedLanguage;

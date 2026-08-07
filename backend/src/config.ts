@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import { APP_SETTINGS_DIR } from "./app-settings.js";
 
 export interface Config {
   host: string;
@@ -79,6 +80,15 @@ export const config: Config = {
     ? path.resolve(process.env.OSHEEP_WORKSPACE_ROOT_CONFIG)
     : undefined,
 };
+
+// Keep CLI credentials, models, sessions, and plugins alongside the backend
+// for portable desktop launches. Explicit environment overrides remain valid.
+if (!process.env.OSHEEP_CLAUDE_CONFIG_DIR) {
+  process.env.OSHEEP_CLAUDE_CONFIG_DIR = path.join(APP_SETTINGS_DIR, "claude");
+}
+if (!process.env.OSHEEP_CODEX_CONFIG_DIR) {
+  process.env.OSHEEP_CODEX_CONFIG_DIR = path.join(APP_SETTINGS_DIR, "codex");
+}
 
 export const platform: "windows" | "macos" | "linux" =
   os.platform() === "win32" ? "windows" : os.platform() === "darwin" ? "macos" : "linux";

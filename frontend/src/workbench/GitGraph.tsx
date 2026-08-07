@@ -1,4 +1,4 @@
-import { type CSSProperties, type ReactNode, useEffect, useMemo, useState } from "react";
+import { type CSSProperties, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useUiPreferences } from "../i18n/UiPreferences";
 import { type GitCommit, type GitCommitDetails, getGitCommitDetails, getGitLog } from "./api";
@@ -62,6 +62,39 @@ export function GitGraph({
   const [details, setDetails] = useState<GitCommitDetails | null>(null);
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [detailsError, setDetailsError] = useState<string | null>(null);
+  const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearHoverTimers = () => {
+    if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+    if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
+    hoverTimerRef.current = null;
+    closeTimerRef.current = null;
+  };
+
+  const scheduleClose = () => {
+    if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
+    closeTimerRef.current = setTimeout(() => {
+      setSelected(null);
+      closeTimerRef.current = null;
+    }, 360);
+  };
+
+  const showOnHover = (commit: GitCommit, element: HTMLDivElement) => {
+    clearHoverTimers();
+    hoverTimerRef.current = setTimeout(() => {
+      setSelected({ commit, rect: element.getBoundingClientRect() });
+      hoverTimerRef.current = null;
+    }, 260);
+  };
+
+  useEffect(
+    () => () => {
+      if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+      if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!workspaceId) return;
@@ -170,12 +203,15 @@ export function GitGraph({
           currentRemoteRef={currentRemoteRef}
           selected={selected?.commit.sha === row.commit.sha}
           onSelect={(element) => {
+            clearHoverTimers();
             setSelected((current) =>
               current?.commit.sha === row.commit.sha
                 ? null
                 : { commit: row.commit, rect: element.getBoundingClientRect() },
             );
           }}
+          onHoverStart={(element) => showOnHover(row.commit, element)}
+          onHoverEnd={scheduleClose}
           onOpenChanges={() => void openCommitChanges(row.commit)}
           language={resolvedLanguage}
         />
@@ -198,6 +234,8 @@ export function GitGraph({
                 details.files.map((file) => file.path),
               )
             }
+            onMouseEnter={clearHoverTimers}
+            onMouseLeave={scheduleClose}
           />,
           document.body,
         )}
@@ -211,6 +249,8 @@ function GraphRow({
   currentRemoteRef,
   selected,
   onSelect,
+  onHoverStart,
+  onHoverEnd,
   onOpenChanges,
   language,
 }: {
@@ -219,6 +259,8 @@ function GraphRow({
   currentRemoteRef: string | null;
   selected: boolean;
   onSelect: (element: HTMLDivElement) => void;
+  onHoverStart: (element: HTMLDivElement) => void;
+  onHoverEnd: () => void;
   onOpenChanges: () => void;
   language: "zh-CN" | "en";
 }) {
@@ -232,6 +274,8 @@ function GraphRow({
       role="button"
       tabIndex={0}
       onClick={(event) => onSelect(event.currentTarget)}
+      onMouseEnter={(event) => onHoverStart(event.currentTarget)}
+      onMouseLeave={onHoverEnd}
       onKeyDown={(event) => {
         if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) {
           onSelect(event.currentTarget);
@@ -280,6 +324,8 @@ function CommitDetailsCard({
   remoteUrl,
   language,
   onOpenChanges,
+  onMouseEnter,
+  onMouseLeave,
 }: {
   commit: GitCommit;
   details: GitCommitDetails | null;
@@ -289,6 +335,8 @@ function CommitDetailsCard({
   remoteUrl?: string | null;
   language: "zh-CN" | "en";
   onOpenChanges: () => void;
+  onMouseEnter: () => void;
+  onMouseLeave: () => void;
 }) {
   const width = Math.min(465, window.innerWidth - 16);
   const style: CSSProperties = {
@@ -314,7 +362,13 @@ function CommitDetailsCard({
   const commitUrl = githubCommitUrl(remoteUrl, value.sha);
 
   return (
-    <aside className="git-graph__details" style={style} aria-label={subject}>
+    <aside
+      className="git-graph__details"
+      style={style}
+      aria-label={subject}
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
+    >
       <div className="git-graph__details-meta">
         <i className="codicon codicon-account" aria-hidden="true" />
         <strong>{value.author}</strong>

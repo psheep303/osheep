@@ -9,13 +9,12 @@ import type { OsheepSettings, TabSize } from "./settings";
 interface SettingsViewProps {
   settings: OsheepSettings;
   onChange: (settings: OsheepSettings) => void;
-  hasProject: boolean;
 }
 
 const MIN_FONT = 8;
 const MAX_FONT = 64;
 
-export function SettingsView({ settings, onChange, hasProject }: SettingsViewProps) {
+export function SettingsView({ settings, onChange }: SettingsViewProps) {
   const { language, setLanguage, theme, setTheme, t } = useUiPreferences();
 
   const commitFontSize = (raw: string): number => {
@@ -81,7 +80,7 @@ export function SettingsView({ settings, onChange, hasProject }: SettingsViewPro
         <section className="settings-view__group">
           <h2 className="settings-view__group-title">{t("settings.editor")}</h2>
           <div className="settings-view__hint">
-            {t(hasProject ? "settings.editor.projectHint" : "settings.editor.noProjectHint")}
+            {t("settings.editor.projectHint")}
           </div>
 
           <SettingItem
@@ -90,7 +89,6 @@ export function SettingsView({ settings, onChange, hasProject }: SettingsViewPro
           >
             <Switch
               checked={settings.editor.autoSave}
-              disabled={!hasProject}
               label={t("settings.editor.autoSave")}
               onChange={applyAutoSave}
             />
@@ -105,7 +103,6 @@ export function SettingsView({ settings, onChange, hasProject }: SettingsViewPro
           >
             <NumberInput
               value={settings.editor.fontSize}
-              disabled={!hasProject}
               onCommit={applyFontSize}
             />
           </SettingItem>
@@ -116,7 +113,6 @@ export function SettingsView({ settings, onChange, hasProject }: SettingsViewPro
           >
             <Segmented<TabSize>
               value={settings.editor.tabSize}
-              disabled={!hasProject}
               options={[
                 { label: t("settings.editor.spaces", { count: 2 }), value: 2 },
                 { label: t("settings.editor.spaces", { count: 4 }), value: 4 },
@@ -173,11 +169,11 @@ function SettingItem({
 
 interface NumberInputProps {
   value: number;
-  disabled: boolean;
+  disabled?: boolean;
   onCommit: (raw: string) => number;
 }
 
-function NumberInput({ value, disabled, onCommit }: NumberInputProps) {
+function NumberInput({ value, disabled = false, onCommit }: NumberInputProps) {
   const [draft, setDraft] = useState(String(value));
 
   useEffect(() => setDraft(String(value)), [value]);

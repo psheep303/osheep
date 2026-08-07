@@ -4,6 +4,8 @@ $cacheRoot = Join-Path $root '.cache'
 New-Item -ItemType Directory -Force -Path $cacheRoot | Out-Null
 $env:npm_config_cache = Join-Path $cacheRoot 'npm'
 
+Copy-Item (Join-Path $root 'frontend\public\osheep-icon.png') (Join-Path $root 'desktop\shell\osheep-icon.png') -Force
+
 Write-Host 'Building osheep backend for desktop development...'
 Push-Location (Join-Path $root 'backend')
 try { & npm.cmd run build } finally { Pop-Location }

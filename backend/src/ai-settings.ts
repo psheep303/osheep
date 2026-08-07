@@ -1,8 +1,8 @@
 import * as fs from "node:fs/promises";
-import * as os from "node:os";
 import * as path from "node:path";
 import type { TomlTable } from "smol-toml";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
+import { APP_SETTINGS_DIR } from "./app-settings.js";
 import { errors } from "./errors.js";
 
 export type AiSettingsApp = "claude" | "codex";
@@ -63,7 +63,7 @@ const INTERNAL_CLAUDE_KEYS = [
   "openrouterCompatMode",
 ];
 
-const STORE_PATH = path.resolve(process.cwd(), ".osheep", "ai-settings.json");
+const STORE_PATH = path.join(APP_SETTINGS_DIR, "ai-settings.json");
 
 function defaultState(): AiSettingsState {
   return {
@@ -521,12 +521,8 @@ function validateTomlText(text: string, label: string): void {
   }
 }
 
-function getHomeDir(): string {
-  return os.homedir() || ".";
-}
-
 function getClaudeConfigDir(): string {
-  return path.resolve(process.env.OSHEEP_CLAUDE_CONFIG_DIR || path.join(getHomeDir(), ".claude"));
+  return path.resolve(process.env.OSHEEP_CLAUDE_CONFIG_DIR || path.join(APP_SETTINGS_DIR, "claude"));
 }
 
 function getClaudeSettingsPath(): string {
@@ -536,7 +532,7 @@ function getClaudeSettingsPath(): string {
 }
 
 function getCodexConfigDir(): string {
-  return path.resolve(process.env.OSHEEP_CODEX_CONFIG_DIR || path.join(getHomeDir(), ".codex"));
+  return path.resolve(process.env.OSHEEP_CODEX_CONFIG_DIR || path.join(APP_SETTINGS_DIR, "codex"));
 }
 
 function getCodexAuthPath(): string {

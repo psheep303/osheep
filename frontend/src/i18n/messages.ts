@@ -19,8 +19,9 @@ export const en = {
   "settings.theme.dark": "Dark",
   "settings.editor": "Editor",
   "settings.editor.projectHint":
-    "Editor settings are saved to .osheep/settings.json in the current project.",
-  "settings.editor.noProjectHint": "Open a project to change and save editor settings.",
+    "Editor settings are saved globally to backend/.osheep/settings.json.",
+  "settings.editor.noProjectHint":
+    "Editor settings are saved globally to backend/.osheep/settings.json.",
   "settings.editor.fontSize": "Font size",
   "settings.editor.fontSizeDescription":
     "Controls the editor font size in pixels. Range: {min}-{max}.",

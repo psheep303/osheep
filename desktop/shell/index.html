@@ -5,43 +5,33 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Osheep</title>
     <style>
-      html,
-      body {
-        height: 100%;
-        margin: 0;
-      }
-
+      html, body { height: 100%; margin: 0; }
       body {
         display: flex;
         align-items: center;
         justify-content: center;
-        flex-direction: column;
-        gap: 16px;
         background: #181818;
         color: #cccccc;
         font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
       }
-
-      .brand {
-        color: #f2f2f2;
-        font-size: 24px;
-        font-weight: 600;
+      .startup {
+        display: flex;
+        align-items: center;
+        flex-direction: column;
+        gap: 18px;
       }
-
-      .spinner {
-        width: 28px;
-        height: 28px;
-        box-sizing: border-box;
-        border: 3px solid #3c3c3c;
-        border-top-color: #0078d4;
+      .startup img { width: 72px; height: 72px; object-fit: contain; }
+      .dots { display: flex; align-items: center; justify-content: center; gap: 7px; height: 8px; }
+      .dot {
+        width: 6px;
+        height: 6px;
         border-radius: 50%;
-        animation: spin 0.9s linear infinite;
+        background: #75beff;
+        opacity: 0.28;
+        animation: pulse 1.2s ease-in-out infinite;
       }
-
-      .status {
-        font-size: 14px;
-      }
-
+      .dot:nth-child(2) { animation-delay: 0.16s; }
+      .dot:nth-child(3) { animation-delay: 0.32s; }
       .error {
         display: none;
         max-width: min(480px, calc(100vw - 48px));
@@ -51,27 +41,28 @@
         text-align: center;
         white-space: pre-wrap;
       }
-
-      @keyframes spin {
-        to {
-          transform: rotate(360deg);
-        }
+      @media (prefers-color-scheme: light) {
+        body { background: #f7f8fa; color: #26313d; }
+        .dot { background: #0078d4; }
+      }
+      @keyframes pulse {
+        0%, 60%, 100% { opacity: 0.28; transform: scale(0.82); }
+        30% { opacity: 1; transform: scale(1.16); }
       }
     </style>
   </head>
   <body>
-    <div class="brand">Osheep</div>
-    <div class="spinner" id="spinner" aria-hidden="true"></div>
-    <div class="status" id="status">正在启动...</div>
+    <div class="startup" id="startup" aria-hidden="true">
+      <img src="osheep-icon.png" alt="" />
+      <div class="dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+    </div>
     <div class="error" id="error" role="alert"></div>
     <script>
       window.__osheepStartupError = function (message) {
-        document.getElementById("spinner").style.display = "none";
-        document.getElementById("status").style.display = "none";
+        document.getElementById("startup").style.display = "none";
         var error = document.getElementById("error");
         error.style.display = "block";
-        error.textContent =
-          "启动失败: " + message + "\n请查看日志目录中的 backend.log，或重启应用重试。";
+        error.textContent = "启动失败: " + message + "\n请查看日志目录中的 backend.log，或重启应用重试。";
       };
     </script>
   </body>

@@ -17,9 +17,9 @@ import { isWindowsDesktopShell } from "./desktop-folder-picker";
 import type { EditorCursorStatus, GotoTarget } from "./EditorPane";
 import {
   type FsNode,
-  loadOsheepSettings,
+  loadGlobalOsheepSettings,
   readFileText,
-  saveOsheepSettings,
+  saveGlobalOsheepSettings,
   writeFileText,
 } from "./fs";
 import { buildDecorations } from "./git-decorations";
@@ -219,22 +219,21 @@ export function Workbench() {
   const bottomCollapsed = bottomHeight === 0;
 
   useEffect(() => {
-    if (!workspaceId) return;
     let cancelled = false;
-    void loadOsheepSettings(workspaceId).then((s) => {
+    void loadGlobalOsheepSettings().then((s) => {
       if (!cancelled) setSettings(s);
     });
     return () => {
       cancelled = true;
     };
-  }, [workspaceId]);
+  }, []);
 
   const updateSettings = useCallback(
     (next: OsheepSettings) => {
       setSettings(next);
-      if (workspaceId) void saveOsheepSettings(workspaceId, next);
+      void saveGlobalOsheepSettings(next);
     },
-    [workspaceId],
+    [],
   );
 
   const onChooseWorkspace = useCallback(
@@ -971,7 +970,6 @@ export function Workbench() {
                   <SettingsView
                     settings={settings}
                     onChange={updateSettings}
-                    hasProject={!!workspaceId}
                   />
                 ) : activeTab?.kind === "workflow" ? (
                   workspaceId ? (

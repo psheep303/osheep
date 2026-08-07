@@ -254,6 +254,22 @@ export async function putSettings(workspaceId: string, value: unknown): Promise<
   await http.put(`/api/workspaces/${encodeURIComponent(workspaceId)}/settings`, value);
 }
 
+export async function getGlobalSettings<T = unknown>(): Promise<T> {
+  return await http.get<T>("/api/settings");
+}
+
+export async function putGlobalSettings(value: unknown): Promise<void> {
+  await http.put("/api/settings", value);
+}
+
+export async function getUiPreferences<T = unknown>(): Promise<T> {
+  return await http.get<T>("/api/ui-preferences");
+}
+
+export async function putUiPreferences(value: unknown): Promise<void> {
+  await http.put("/api/ui-preferences", value);
+}
+
 // ─── Terminal ───
 
 // AI Settings

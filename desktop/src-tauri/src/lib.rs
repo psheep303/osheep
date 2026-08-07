@@ -456,7 +456,12 @@ pub fn run() {
                         if backend.is_stopping() {
                             return;
                         }
-                        let url = match format!("http://127.0.0.1:{port}").parse::<tauri::Url>() {
+                        // The bundled shell is the desktop loading page. Skip the
+                        // web app's initial splash on this navigation so Windows
+                        // never shows two consecutive loading screens.
+                        let url = match format!("http://127.0.0.1:{port}/?osheepDesktop=1")
+                            .parse::<tauri::Url>()
+                        {
                             Ok(url) => url,
                             Err(error) => {
                                 eprintln!("failed to parse local backend URL: {error}");
