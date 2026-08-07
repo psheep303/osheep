@@ -222,6 +222,22 @@ fn require_file(path: &Path, label: &str) -> io::Result<()> {
     }
 }
 
+fn startup_theme(app: &tauri::AppHandle) -> Option<&'static str> {
+    let paths = local_backend_paths(app).ok()?;
+    let settings = fs::read_to_string(paths.working_dir.join(".osheep/settings.json")).ok()?;
+    let compact: String = settings
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect();
+    if compact.contains("\"theme\":\"dark\"") {
+        Some("dark")
+    } else if compact.contains("\"theme\":\"light\"") {
+        Some("light")
+    } else {
+        None
+    }
+}
+
 fn node_path(path: &Path) -> PathBuf {
     let text = path.to_string_lossy();
     text.strip_prefix("\\\\?\\")
@@ -421,8 +437,12 @@ pub fn run() {
             let startup_ui = StartupUi::default();
             let page_ui = startup_ui.clone();
             let page_backend = backend.clone();
+            let configured_theme = startup_theme(app.handle());
+            let startup_url = configured_theme
+                .map(|theme| format!("index.html?osheepTheme={theme}"))
+                .unwrap_or_else(|| "index.html".to_string());
             let builder =
-                WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+                WebviewWindowBuilder::new(app, "main", WebviewUrl::App(startup_url.into()))
                     .title("Osheep")
                     .inner_size(1440.0, 900.0)
                     .min_inner_size(960.0, 640.0);
@@ -459,16 +479,20 @@ pub fn run() {
                         // The bundled shell is the desktop loading page. Skip the
                         // web app's initial splash on this navigation so Windows
                         // never shows two consecutive loading screens.
-                        let url = match format!("http://127.0.0.1:{port}/?osheepDesktop=1")
-                            .parse::<tauri::Url>()
-                        {
-                            Ok(url) => url,
-                            Err(error) => {
-                                eprintln!("failed to parse local backend URL: {error}");
-                                backend.cleanup_startup_failure();
-                                return;
-                            }
-                        };
+                        let theme_query = configured_theme
+                            .map(|theme| format!("&osheepTheme={theme}"))
+                            .unwrap_or_default();
+                        let url =
+                            match format!("http://127.0.0.1:{port}/?osheepDesktop=1{theme_query}")
+                                .parse::<tauri::Url>()
+                            {
+                                Ok(url) => url,
+                                Err(error) => {
+                                    eprintln!("failed to parse local backend URL: {error}");
+                                    backend.cleanup_startup_failure();
+                                    return;
+                                }
+                            };
                         let main_handle = handle.clone();
                         let main_backend = backend.clone();
                         if let Err(error) = handle.run_on_main_thread(move || {

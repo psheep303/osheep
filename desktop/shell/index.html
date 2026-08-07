@@ -4,14 +4,21 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Osheep</title>
+    <script>
+      var startupTheme = new URLSearchParams(window.location.search).get("osheepTheme");
+      if (startupTheme === "light" || startupTheme === "dark") {
+        document.documentElement.dataset.theme = startupTheme;
+        document.documentElement.style.colorScheme = startupTheme;
+      }
+    </script>
     <style>
       html, body { height: 100%; margin: 0; }
       body {
         display: flex;
         align-items: center;
         justify-content: center;
-        background: #181818;
-        color: #cccccc;
+        background: #f7f8fa;
+        color: #26313d;
         font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
       }
       .startup {
@@ -26,7 +33,7 @@
         width: 6px;
         height: 6px;
         border-radius: 50%;
-        background: #75beff;
+        background: #0078d4;
         opacity: 0.28;
         animation: pulse 1.2s ease-in-out infinite;
       }
@@ -41,10 +48,14 @@
         text-align: center;
         white-space: pre-wrap;
       }
-      @media (prefers-color-scheme: light) {
-        body { background: #f7f8fa; color: #26313d; }
-        .dot { background: #0078d4; }
+      @media (prefers-color-scheme: dark) {
+        body { background: #181818; color: #cccccc; }
+        .dot { background: #75beff; }
       }
+      :root[data-theme="light"] body { background: #f7f8fa; color: #26313d; }
+      :root[data-theme="light"] .dot { background: #0078d4; }
+      :root[data-theme="dark"] body { background: #181818; color: #cccccc; }
+      :root[data-theme="dark"] .dot { background: #75beff; }
       @keyframes pulse {
         0%, 60%, 100% { opacity: 0.28; transform: scale(0.82); }
         30% { opacity: 1; transform: scale(1.16); }

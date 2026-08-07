@@ -21,6 +21,12 @@
       if (new URLSearchParams(window.location.search).has("osheepDesktop")) {
         document.documentElement.dataset.desktopNavigation = "true";
       }
+
+      const startupTheme = new URLSearchParams(window.location.search).get("osheepTheme");
+      if (startupTheme === "light" || startupTheme === "dark") {
+        document.documentElement.dataset.theme = startupTheme;
+        document.documentElement.style.colorScheme = startupTheme;
+      }
     </script>
     <style>
       :root {
