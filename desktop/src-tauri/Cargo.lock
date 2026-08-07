@@ -2323,7 +2323,7 @@ dependencies = [
 
 [[package]]
 name = "osheep-desktop"
-version = "0.2.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "rfd",
  "tauri",
