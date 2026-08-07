@@ -1064,83 +1064,19 @@ function ChevronIcon({ open }: { open: boolean }) {
 }
 
 function RefreshIcon() {
-  return (
-    <svg
-      viewBox="0 0 16 16"
-      width="14"
-      height="14"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.6"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M2 8a6 6 0 0 1 10.3-4.2L14 5" />
-      <path d="M14 2v3h-3" />
-      <path d="M14 8a6 6 0 0 1-10.3 4.2L2 11" />
-      <path d="M2 14v-3h3" />
-    </svg>
-  );
+  return <i className="codicon codicon-refresh" aria-hidden="true" />;
 }
 
 function SyncIcon() {
-  return (
-    <svg
-      viewBox="0 0 16 16"
-      width="12"
-      height="12"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.6"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M3 8a5 5 0 0 1 8.5-3.5L13 6" />
-      <path d="M13 3v3h-3" />
-      <path d="M13 8a5 5 0 0 1-8.5 3.5L3 10" />
-      <path d="M3 13v-3h3" />
-    </svg>
-  );
+  return <i className="codicon codicon-sync" aria-hidden="true" />;
 }
 
 function RemoteIcon() {
-  return (
-    <svg
-      viewBox="0 0 16 16"
-      width="14"
-      height="14"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <circle cx="4" cy="4" r="2" />
-      <circle cx="12" cy="12" r="2" />
-      <path d="M6 4h4a2 2 0 0 1 2 2v4" />
-      <path d="M10 12H6a2 2 0 0 1-2-2V6" />
-    </svg>
-  );
+  return <i className="codicon codicon-ellipsis" aria-hidden="true" />;
 }
 
 function BranchIcon() {
-  return (
-    <svg
-      viewBox="0 0 16 16"
-      width="13"
-      height="13"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.4"
-      strokeLinecap="round"
-    >
-      <circle cx="4" cy="3" r="1.5" />
-      <circle cx="4" cy="13" r="1.5" />
-      <circle cx="12" cy="8" r="1.5" />
-      <path d="M4 4.5v7" />
-      <path d="M5 3h4a3 3 0 0 1 3 3v1" />
-    </svg>
-  );
+  return <i className="codicon codicon-git-branch" aria-hidden="true" />;
 }
 
 function basename(p: string): string {

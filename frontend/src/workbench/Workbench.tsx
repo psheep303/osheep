@@ -12,7 +12,7 @@ import {
 } from "./api";
 import { DesktopWindowControls } from "./DesktopWindowControls";
 import { isWindowsDesktopShell } from "./desktop-folder-picker";
-import type { GotoTarget } from "./EditorPane";
+import type { EditorCursorStatus, GotoTarget } from "./EditorPane";
 import {
   type FsNode,
   loadOsheepSettings,
@@ -23,6 +23,7 @@ import {
 import { buildDecorations } from "./git-decorations";
 import { Resizer } from "./Resizer";
 import { SettingsView } from "./SettingsView";
+import { StatusBar } from "./StatusBar";
 import { DEFAULT_SETTINGS, type OsheepSettings } from "./settings";
 import type { AgentTerminalLaunchRequest } from "./Terminal";
 import { WorkspacePicker } from "./WorkspacePicker";
@@ -123,6 +124,7 @@ export function Workbench() {
   const [picking, setPicking] = useState(false);
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [activePath, setActivePath] = useState<string | null>(null);
+  const [cursorStatus, setCursorStatus] = useState<EditorCursorStatus | null>(null);
   const [selectedTreePath, setSelectedTreePath] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [settings, setSettings] = useState<OsheepSettings>(DEFAULT_SETTINGS);
@@ -538,6 +540,11 @@ export function Workbench() {
     }
   };
 
+  const openGitView = useCallback(() => {
+    setActiveView("git");
+    if (leftCollapsed) setLeftWidth(lastLeftWidthRef.current);
+  }, [leftCollapsed]);
+
   // ─────────── Resize handlers ───────────
 
   const onLeftStart = () => {
@@ -610,6 +617,10 @@ export function Workbench() {
   const activeDiffTab = activeTab?.kind === "diff" ? activeTab : null;
   const hasDirtyFiles = tabs.some((tab) => tab.kind === "file" && tab.dirty && !tab.deleted);
   const windowsDesktopShell = isWindowsDesktopShell();
+
+  useEffect(() => {
+    setCursorStatus(activeFileTab ? { line: 1, column: 1, selectedCharacters: 0 } : null);
+  }, [activeFileTab?.path]);
 
   return (
     <div className="workbench">
@@ -818,6 +829,7 @@ export function Workbench() {
                   ) : (
                     <div className="editor-host__source">
                       <EditorPane
+                        key={activeFileTab.path}
                         path={activeFileTab.path}
                         value={activeFileTab.content}
                         fontSize={settings.editor.fontSize}
@@ -825,6 +837,7 @@ export function Workbench() {
                         onChange={updateActive}
                         onSave={saveActive}
                         goto={activeFileTab.goto ?? null}
+                        onCursorStatus={setCursorStatus}
                       />
                     </div>
                   )
@@ -909,6 +922,13 @@ export function Workbench() {
           )}
         </div>
       </div>
+
+      <StatusBar
+        status={gitStatus}
+        activeFilePath={activeFileTab?.path ?? null}
+        cursor={cursorStatus}
+        onOpenGit={openGitView}
+      />
 
       {picking && (
         <WorkspacePicker
