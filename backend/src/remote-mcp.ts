@@ -171,7 +171,7 @@ async function initializeRemoteMcpSession(session: RemoteMcpSession): Promise<vo
       capabilities: {},
       clientInfo: {
         name: "osheep",
-        version: "0.2.0-alpha.1",
+        version: "0.2.0-alpha.2",
       },
     },
   });
