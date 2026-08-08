@@ -79,9 +79,7 @@ export function SettingsView({ settings, onChange }: SettingsViewProps) {
 
         <section className="settings-view__group">
           <h2 className="settings-view__group-title">{t("settings.editor")}</h2>
-          <div className="settings-view__hint">
-            {t("settings.editor.projectHint")}
-          </div>
+          <div className="settings-view__hint">{t("settings.editor.projectHint")}</div>
 
           <SettingItem
             label={t("settings.editor.autoSave")}
@@ -101,10 +99,7 @@ export function SettingsView({ settings, onChange }: SettingsViewProps) {
               max: MAX_FONT,
             })}
           >
-            <NumberInput
-              value={settings.editor.fontSize}
-              onCommit={applyFontSize}
-            />
+            <NumberInput value={settings.editor.fontSize} onCommit={applyFontSize} />
           </SettingItem>
 
           <SettingItem

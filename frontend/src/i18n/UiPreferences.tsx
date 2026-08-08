@@ -7,8 +7,8 @@ import {
   useMemo,
   useState,
 } from "react";
-import { en, type MessageKey, type MessageParams, zhCN } from "./messages";
 import { getUiPreferences, putUiPreferences } from "../workbench/api";
+import { en, type MessageKey, type MessageParams, zhCN } from "./messages";
 
 export type LanguagePreference = "system" | "zh-CN" | "en";
 export type ResolvedLanguage = Exclude<LanguagePreference, "system">;

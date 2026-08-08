@@ -228,13 +228,10 @@ export function Workbench() {
     };
   }, []);
 
-  const updateSettings = useCallback(
-    (next: OsheepSettings) => {
-      setSettings(next);
-      void saveGlobalOsheepSettings(next);
-    },
-    [],
-  );
+  const updateSettings = useCallback((next: OsheepSettings) => {
+    setSettings(next);
+    void saveGlobalOsheepSettings(next);
+  }, []);
 
   const onChooseWorkspace = useCallback(
     (workspace: { id: string; name: string }) => {
@@ -967,10 +964,7 @@ export function Workbench() {
                     />
                   </div>
                 ) : activeTab?.kind === "settings" ? (
-                  <SettingsView
-                    settings={settings}
-                    onChange={updateSettings}
-                  />
+                  <SettingsView settings={settings} onChange={updateSettings} />
                 ) : activeTab?.kind === "workflow" ? (
                   workspaceId ? (
                     <WorkflowTab
