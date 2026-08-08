@@ -12,6 +12,12 @@ export interface GotoTarget {
   nonce: number;
 }
 
+export interface EditorCursorStatus {
+  line: number;
+  column: number;
+  selectedCharacters: number;
+}
+
 interface EditorPaneProps {
   path: string;
   value: string;
@@ -20,6 +26,7 @@ interface EditorPaneProps {
   onChange: (value: string) => void;
   onSave: () => void;
   goto?: GotoTarget | null;
+  onCursorStatus?: (status: EditorCursorStatus) => void;
 }
 
 function defineMonacoTheme(monaco: typeof import("monaco-editor"), theme: "light" | "dark") {
@@ -39,10 +46,13 @@ export function EditorPane({
   onChange,
   onSave,
   goto,
+  onCursorStatus,
 }: EditorPaneProps) {
   const { resolvedTheme } = useUiPreferences();
   const onSaveRef = useRef(onSave);
   onSaveRef.current = onSave;
+  const onCursorStatusRef = useRef(onCursorStatus);
+  onCursorStatusRef.current = onCursorStatus;
 
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
   const monacoRef = useRef<typeof import("monaco-editor") | null>(null);
@@ -64,6 +74,22 @@ export function EditorPane({
     monacoRef.current = monaco;
     defineMonacoTheme(monaco, resolvedTheme);
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => onSaveRef.current());
+    const reportCursor = () => {
+      const position = editor.getPosition();
+      const selection = editor.getSelection();
+      if (!position) return;
+      onCursorStatusRef.current?.({
+        line: position.lineNumber,
+        column: position.column,
+        selectedCharacters:
+          selection && !selection.isEmpty()
+            ? (editor.getModel()?.getValueLengthInRange(selection) ?? 0)
+            : 0,
+      });
+    };
+    editor.onDidChangeCursorSelection(reportCursor);
+    editor.onDidChangeModel(reportCursor);
+    reportCursor();
     if (goto && appliedNonceRef.current !== goto.nonce) {
       // Defer until next tick so the model is fully attached.
       window.setTimeout(() => applyGoto(goto), 0);

@@ -19,8 +19,9 @@ export const en = {
   "settings.theme.dark": "Dark",
   "settings.editor": "Editor",
   "settings.editor.projectHint":
-    "Editor settings are saved to .osheep/settings.json in the current project.",
-  "settings.editor.noProjectHint": "Open a project to change and save editor settings.",
+    "Editor settings are saved globally to backend/.osheep/settings.json.",
+  "settings.editor.noProjectHint":
+    "Editor settings are saved globally to backend/.osheep/settings.json.",
   "settings.editor.fontSize": "Font size",
   "settings.editor.fontSizeDescription":
     "Controls the editor font size in pixels. Range: {min}-{max}.",
@@ -127,6 +128,10 @@ export const en = {
   "git.commitPlaceholder": "Commit message (required)",
   "git.staged": "Staged changes",
   "git.changes": "Changes",
+  "git.openChanges": "Open Changes",
+  "git.openFile": "Open File",
+  "git.discardAll": "Discard All Changes",
+  "git.openCommitChanges": "Open Commit Changes",
   "git.processing": "Processing...",
   "git.discarding": "Discarding...",
   "git.noChanges": "No changes",
@@ -304,6 +309,10 @@ export const zhCN: Record<MessageKey, string> = {
   "git.commitPlaceholder": "提交信息（必填）",
   "git.staged": "暂存的更改",
   "git.changes": "更改",
+  "git.openChanges": "打开更改",
+  "git.openFile": "打开文件",
+  "git.discardAll": "撤销所有更改",
+  "git.openCommitChanges": "打开提交更改",
   "git.processing": "处理中...",
   "git.discarding": "撤销中...",
   "git.noChanges": "没有变更",

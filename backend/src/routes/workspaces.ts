@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { readAppSettings, writeAppSettings } from "../app-settings.js";
 import { config } from "../config.js";
 import { errors } from "../errors.js";
 import {
@@ -19,6 +20,35 @@ import {
 } from "../workspace.js";
 
 export async function registerWorkspaceRoutes(app: FastifyInstance) {
+  app.get("/api/settings", async () =>
+    readAppSettings({
+      editor: { fontSize: 14, tabSize: 2, autoSave: false },
+      ai: { autoAllow: {} },
+    }),
+  );
+
+  app.put<{ Body: unknown }>("/api/settings", async (req) => {
+    const current = await readAppSettings<Record<string, unknown>>({});
+    const next =
+      req.body && typeof req.body === "object" && !Array.isArray(req.body)
+        ? { ...current, ...(req.body as Record<string, unknown>) }
+        : current;
+    await writeAppSettings(next);
+    return { ok: true };
+  });
+
+  app.get("/api/ui-preferences", async () => {
+    const settings = await readAppSettings<{ ui?: unknown }>({});
+    return settings.ui ?? { language: "system", theme: "system" };
+  });
+
+  app.put<{ Body: unknown }>("/api/ui-preferences", async (req) => {
+    const settings = await readAppSettings<Record<string, unknown>>({});
+    settings.ui = req.body;
+    await writeAppSettings(settings);
+    return { ok: true };
+  });
+
   app.get("/api/workspaces", async () => {
     const list = await listWorkspaces();
     return { workspaces: list.map(({ id, name }) => ({ id, name })) };

@@ -1,7 +1,7 @@
 {
   "name": "osheep-frontend",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.2.0-alpha.2",
   "license": "MIT",
   "repository": "https://github.com/psheep303/osheep",
   "type": "module",

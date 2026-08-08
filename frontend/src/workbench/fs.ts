@@ -7,9 +7,11 @@ import {
   createEntry as apiCreateEntry,
   deleteEntry as apiDeleteEntry,
   findFreeName as apiFindFreeName,
+  getGlobalSettings as apiGetGlobalSettings,
   getSettings as apiGetSettings,
   listTree as apiListTree,
   moveEntry as apiMoveEntry,
+  putGlobalSettings as apiPutGlobalSettings,
   putSettings as apiPutSettings,
   readFile as apiReadFile,
   writeFile as apiWriteFile,
@@ -106,6 +108,18 @@ export async function loadOsheepSettings(workspaceId: string): Promise<OsheepSet
 
 export async function saveOsheepSettings(workspaceId: string, s: OsheepSettings): Promise<void> {
   await apiPutSettings(workspaceId, s);
+}
+
+export async function loadGlobalOsheepSettings(): Promise<OsheepSettings> {
+  try {
+    return mergeSettings(await apiGetGlobalSettings<unknown>());
+  } catch {
+    return DEFAULT_SETTINGS;
+  }
+}
+
+export async function saveGlobalOsheepSettings(s: OsheepSettings): Promise<void> {
+  await apiPutGlobalSettings(s);
 }
 
 export const PLAN_DIR = ".osheep/plan";

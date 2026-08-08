@@ -350,6 +350,37 @@ export interface GitLog {
   currentRemoteRef: string | null;
 }
 
+export interface GitCommitDetails {
+  sha: string;
+  shortSha: string;
+  author: string;
+  authorEmail: string;
+  date: number;
+  message: string;
+  filesChanged: number;
+  insertions: number;
+  deletions: number;
+  files: GitCommitFile[];
+}
+
+export interface GitCommitFile {
+  path: string;
+  insertions: number | null;
+  deletions: number | null;
+  binary: boolean;
+}
+
+export interface GitCommitDiff {
+  path: string;
+  base: string | null;
+  head: string;
+  leftContent: string;
+  rightContent: string;
+  leftMissing: boolean;
+  rightMissing: boolean;
+  binary: boolean;
+}
+
 export async function getLog(
   workspaceRoot: string,
   limit: number,
@@ -432,6 +463,114 @@ export async function getLog(
     currentRemoteRef = null;
   }
   return { commits, head, currentRef, currentRemoteRef };
+}
+
+export async function getCommitDetails(
+  workspaceRoot: string,
+  sha: string,
+): Promise<GitCommitDetails> {
+  if (!/^[0-9a-f]{7,64}$/i.test(sha)) throw errors.invalidRef("commit SHA 格式非法");
+  const r = await runGit(workspaceRoot, [
+    "-c",
+    "core.quotepath=false",
+    "show",
+    "--no-renames",
+    "--numstat",
+    "--format=%H%x00%an%x00%ae%x00%at%x00%B%x1e",
+    "-1",
+    sha,
+  ]);
+  if (r.code !== 0) throw errors.gitFailed(r.stderr.trim() || "git show 失败");
+
+  const text = r.stdout.toString("utf-8");
+  const separator = text.indexOf("\x1e");
+  if (separator < 0) throw errors.gitFailed("无法解析 commit 详情");
+  const [fullSha = sha, author = "", authorEmail = "", at = "0", ...messageParts] = text
+    .slice(0, separator)
+    .split("\0");
+  let filesChanged = 0;
+  let insertions = 0;
+  let deletions = 0;
+  const files: GitCommitFile[] = [];
+  for (const line of text
+    .slice(separator + 1)
+    .trim()
+    .split(/\r?\n/)) {
+    if (!line) continue;
+    const [added, removed, filePath = ""] = line.split("\t", 3);
+    if (!filePath) continue;
+    filesChanged += 1;
+    if (/^\d+$/.test(added)) insertions += Number.parseInt(added, 10);
+    if (/^\d+$/.test(removed)) deletions += Number.parseInt(removed, 10);
+    files.push({
+      path: filePath,
+      insertions: /^\d+$/.test(added) ? Number.parseInt(added, 10) : null,
+      deletions: /^\d+$/.test(removed) ? Number.parseInt(removed, 10) : null,
+      binary: added === "-" || removed === "-",
+    });
+  }
+  return {
+    sha: fullSha,
+    shortSha: fullSha.slice(0, 7),
+    author,
+    authorEmail,
+    date: Number.parseInt(at, 10) || 0,
+    message: messageParts.join("\0").trim(),
+    filesChanged,
+    insertions,
+    deletions,
+    files,
+  };
+}
+
+export async function getCommitDiff(
+  workspaceRoot: string,
+  sha: string,
+  filePath: string,
+): Promise<GitCommitDiff> {
+  if (!/^[0-9a-f]{7,64}$/i.test(sha)) throw errors.invalidRef("commit SHA 格式非法");
+  const abs = resolveWorkspacePath(workspaceRoot, filePath);
+  const rel = path.relative(workspaceRoot, abs).replace(/\\/g, "/");
+
+  const commitResult = await runGit(workspaceRoot, ["rev-parse", "--verify", `${sha}^{commit}`]);
+  if (commitResult.code !== 0) {
+    throw errors.invalidRef(commitResult.stderr.trim() || "commit 不存在");
+  }
+  const head = commitResult.stdout.toString("utf-8").trim();
+  const parentResult = await runGit(workspaceRoot, ["rev-parse", "--verify", `${head}^`]);
+  const base = parentResult.code === 0 ? parentResult.stdout.toString("utf-8").trim() : null;
+
+  async function readCommitFile(
+    ref: string | null,
+  ): Promise<{ content: string; missing: boolean; binary: boolean }> {
+    if (!ref) return { content: "", missing: true, binary: false };
+    const result = await runGit(workspaceRoot, ["show", `${ref}:${rel}`]);
+    if (result.code !== 0) {
+      const message = result.stderr.toLowerCase();
+      if (
+        message.includes("does not exist") ||
+        message.includes("exists on disk") ||
+        message.includes("path '")
+      ) {
+        return { content: "", missing: true, binary: false };
+      }
+      throw errors.gitFailed(result.stderr.trim() || "git show 失败");
+    }
+    if (looksBinary(result.stdout)) return { content: "", missing: false, binary: true };
+    return { content: result.stdout.toString("utf-8"), missing: false, binary: false };
+  }
+
+  const [left, right] = await Promise.all([readCommitFile(base), readCommitFile(head)]);
+  return {
+    path: rel,
+    base,
+    head,
+    leftContent: left.content,
+    rightContent: right.content,
+    leftMissing: left.missing,
+    rightMissing: right.missing,
+    binary: left.binary || right.binary,
+  };
 }
 
 export async function getDiff(

@@ -17,15 +17,23 @@
           // The React preference provider will recover if storage is unavailable or malformed.
         }
       })();
+
+      if (new URLSearchParams(window.location.search).has("osheepDesktop")) {
+        document.documentElement.dataset.desktopNavigation = "true";
+      }
+
+      const startupTheme = new URLSearchParams(window.location.search).get("osheepTheme");
+      if (startupTheme === "light" || startupTheme === "dark") {
+        document.documentElement.dataset.theme = startupTheme;
+        document.documentElement.style.colorScheme = startupTheme;
+      }
     </script>
     <style>
       :root {
         color-scheme: light;
         --startup-bg: #f7f8fa;
         --startup-fg: #26313d;
-        --startup-track: #dbe5ef;
         --startup-accent: #0078d4;
-        --startup-mark-bg: #e7eef6;
       }
 
       @media (prefers-color-scheme: dark) {
@@ -33,9 +41,7 @@
           color-scheme: dark;
           --startup-bg: #181818;
           --startup-fg: #d7d7d7;
-          --startup-track: #3a4149;
           --startup-accent: #75beff;
-          --startup-mark-bg: #293440;
         }
       }
 
@@ -43,18 +49,14 @@
         color-scheme: light;
         --startup-bg: #f7f8fa;
         --startup-fg: #26313d;
-        --startup-track: #dbe5ef;
         --startup-accent: #0078d4;
-        --startup-mark-bg: #e7eef6;
       }
 
       :root[data-theme="dark"] {
         color-scheme: dark;
         --startup-bg: #181818;
         --startup-fg: #d7d7d7;
-        --startup-track: #3a4149;
         --startup-accent: #75beff;
-        --startup-mark-bg: #293440;
       }
 
       html,
@@ -79,40 +81,64 @@
       }
 
       .startup-splash__mark {
-        position: relative;
-        display: grid;
-        width: 88px;
-        height: 88px;
-        place-items: center;
-        border-radius: 50%;
-        background: var(--startup-mark-bg);
+        display: flex;
+        align-items: center;
+        flex-direction: column;
+        gap: 18px;
       }
 
-      .startup-splash__mark::before {
-        position: absolute;
-        inset: -7px;
-        border: 3px solid var(--startup-track);
-        border-top-color: var(--startup-accent);
-        border-radius: 50%;
-        content: "";
-        animation: startup-splash-spin 0.9s linear infinite;
+      :root[data-desktop-navigation="true"] #startup-splash {
+        display: none;
       }
 
       .startup-splash__mark img {
-        width: 58px;
-        height: 58px;
+        width: 72px;
+        height: 72px;
         object-fit: contain;
       }
 
-      @keyframes startup-splash-spin {
-        to {
-          transform: rotate(360deg);
+      .startup-splash__dots {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 7px;
+        height: 8px;
+      }
+
+      .startup-splash__dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--startup-accent);
+        opacity: 0.28;
+        animation: startup-splash-dot 1.2s ease-in-out infinite;
+      }
+
+      .startup-splash__dot:nth-child(2) {
+        animation-delay: 0.16s;
+      }
+
+      .startup-splash__dot:nth-child(3) {
+        animation-delay: 0.32s;
+      }
+
+      @keyframes startup-splash-dot {
+        0%,
+        60%,
+        100% {
+          opacity: 0.28;
+          transform: scale(0.82);
+        }
+
+        30% {
+          opacity: 1;
+          transform: scale(1.16);
         }
       }
 
       @media (prefers-reduced-motion: reduce) {
-        .startup-splash__mark::before {
-          animation-duration: 1.8s;
+        .startup-splash__dot {
+          animation-duration: 2.4s;
         }
       }
     </style>
@@ -122,6 +148,11 @@
       <div id="startup-splash" aria-hidden="true">
         <div class="startup-splash__mark">
           <img src="/osheep-icon.png" alt="" />
+          <div class="startup-splash__dots">
+            <span class="startup-splash__dot"></span>
+            <span class="startup-splash__dot"></span>
+            <span class="startup-splash__dot"></span>
+          </div>
         </div>
       </div>
     </div>

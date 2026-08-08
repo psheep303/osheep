@@ -11,12 +11,13 @@ const checks = [
       /dataset\.theme = theme/.test(html),
   },
   {
-    name: "startup splash uses the Osheep icon and a rotating indicator",
+    name: "startup splash uses the Osheep icon and three cycling dots",
     pass:
       /id="startup-splash"/.test(html) &&
       /src="\/osheep-icon\.png"/.test(html) &&
-      /startup-splash-spin/.test(html) &&
-      /animation: startup-splash-spin/.test(html),
+      (html.match(/class="startup-splash__dot"/g)?.length ?? 0) === 3 &&
+      /animation: startup-splash-dot/.test(html) &&
+      !/startup-splash__mark::before/.test(html),
   },
   {
     name: "startup splash has no visible brand text",

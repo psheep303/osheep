@@ -1,0 +1,82 @@
+/* VS Code-inspired 22px workbench status bar. */
+.statusbar {
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+  height: 22px;
+  min-height: 22px;
+  flex: 0 0 22px;
+  overflow: hidden;
+  background: var(--bg-shell);
+  border-top: 1px solid var(--border-faint);
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 22px;
+  user-select: none;
+}
+
+.statusbar__left,
+.statusbar__right {
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+}
+
+.statusbar__left {
+  flex: 1 1 auto;
+}
+
+.statusbar__right {
+  flex: 0 1 auto;
+  justify-content: flex-end;
+  overflow: hidden;
+}
+
+.statusbar__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  max-width: 40vw;
+  padding: 0 8px;
+  color: inherit;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.statusbar__git {
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  color: var(--fg-default);
+}
+
+.statusbar__git:hover {
+  background: var(--bg-hover);
+  color: var(--fg-strong);
+}
+
+.statusbar__git .codicon {
+  font-size: 14px;
+}
+
+.statusbar__sync-count {
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.statusbar__cursor {
+  font-variant-numeric: tabular-nums;
+}
+
+.statusbar__right > .statusbar__item {
+  cursor: default;
+}
+
+.statusbar__right > .statusbar__item:hover {
+  background: var(--bg-hover);
+  color: var(--fg-default);
+}

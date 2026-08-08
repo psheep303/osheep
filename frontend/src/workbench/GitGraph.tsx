@@ -1,12 +1,16 @@
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type CSSProperties, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useUiPreferences } from "../i18n/UiPreferences";
-import { type GitCommit, getGitLog } from "./api";
+import { type GitCommit, type GitCommitDetails, getGitCommitDetails, getGitLog } from "./api";
 import { gitGraphPalette, gitGraphRefColors } from "./theme";
 
 interface GitGraphProps {
   workspaceId: string;
   /** Bumped externally to force a refetch. */
   refreshKey: number;
+  scope: "auto" | "all";
+  remoteUrl?: string | null;
+  onOpenCommitDiff: (sha: string, title: string, paths: string[]) => void;
 }
 
 interface GraphNode {
@@ -40,21 +44,64 @@ const { ref: HISTORY_ITEM_REF_COLOR, remoteRef: HISTORY_ITEM_REMOTE_REF_COLOR } 
   gitGraphRefColors();
 const GRAPH_COLORS = gitGraphPalette();
 
-export function GitGraph({ workspaceId, refreshKey }: GitGraphProps) {
-  const { t } = useUiPreferences();
+export function GitGraph({
+  workspaceId,
+  refreshKey,
+  scope,
+  remoteUrl,
+  onOpenCommitDiff,
+}: GitGraphProps) {
+  const { resolvedLanguage, t } = useUiPreferences();
   const [commits, setCommits] = useState<GitCommit[]>([]);
   const [head, setHead] = useState<string | null>(null);
   const [currentRef, setCurrentRef] = useState<string | null>(null);
   const [currentRemoteRef, setCurrentRemoteRef] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<{ commit: GitCommit; rect: DOMRect } | null>(null);
+  const [details, setDetails] = useState<GitCommitDetails | null>(null);
+  const [detailsLoading, setDetailsLoading] = useState(false);
+  const [detailsError, setDetailsError] = useState<string | null>(null);
+  const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearHoverTimers = () => {
+    if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+    if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
+    hoverTimerRef.current = null;
+    closeTimerRef.current = null;
+  };
+
+  const scheduleClose = () => {
+    if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
+    closeTimerRef.current = setTimeout(() => {
+      setSelected(null);
+      closeTimerRef.current = null;
+    }, 360);
+  };
+
+  const showOnHover = (commit: GitCommit, element: HTMLDivElement) => {
+    clearHoverTimers();
+    hoverTimerRef.current = setTimeout(() => {
+      setSelected({ commit, rect: element.getBoundingClientRect() });
+      hoverTimerRef.current = null;
+    }, 260);
+  };
+
+  useEffect(
+    () => () => {
+      if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+      if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!workspaceId) return;
     let cancelled = false;
     setLoading(true);
     setError(null);
-    void getGitLog(workspaceId, 200, 0, "HEAD")
+    void getGitLog(workspaceId, 200, 0, scope === "all" ? "--all" : "HEAD")
       .then((result) => {
         if (cancelled) return;
         setCommits(result.commits);
@@ -72,12 +119,72 @@ export function GitGraph({ workspaceId, refreshKey }: GitGraphProps) {
     return () => {
       cancelled = true;
     };
-  }, [workspaceId, refreshKey, t]);
+  }, [workspaceId, refreshKey, scope, t]);
+
+  useEffect(() => {
+    setSelected(null);
+    setDetails(null);
+  }, [refreshKey, scope, workspaceId]);
+
+  useEffect(() => {
+    if (!selected) return;
+    let cancelled = false;
+    setDetails(null);
+    setDetailsError(null);
+    setDetailsLoading(true);
+    void getGitCommitDetails(workspaceId, selected.commit.sha)
+      .then((value) => {
+        if (!cancelled) setDetails(value);
+      })
+      .catch((reason) => {
+        if (!cancelled) setDetailsError((reason as Error).message);
+      })
+      .finally(() => {
+        if (!cancelled) setDetailsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selected, workspaceId]);
+
+  useEffect(() => {
+    if (!selected) return;
+    const close = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest(".git-graph__details") || target?.closest(".git-graph__row")) return;
+      setSelected(null);
+    };
+    const closeOnViewportChange = () => setSelected(null);
+    document.addEventListener("mousedown", close);
+    window.addEventListener("resize", closeOnViewportChange);
+    window.addEventListener("scroll", closeOnViewportChange, true);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      window.removeEventListener("resize", closeOnViewportChange);
+      window.removeEventListener("scroll", closeOnViewportChange, true);
+    };
+  }, [selected]);
 
   const rows = useMemo(
     () => toHistoryRows(commits, head, currentRef, currentRemoteRef),
     [commits, head, currentRef, currentRemoteRef],
   );
+
+  const openCommitChanges = async (commit: GitCommit) => {
+    try {
+      const value =
+        selected?.commit.sha === commit.sha && details
+          ? details
+          : await getGitCommitDetails(workspaceId, commit.sha);
+      onOpenCommitDiff(
+        value.sha,
+        `${value.shortSha} · ${value.message.split(/\r?\n/, 1)[0]}`,
+        value.files.map((file) => file.path),
+      );
+    } catch (reason) {
+      setError(t("error.gitHistory", { detail: (reason as Error).message }));
+    }
+  };
 
   if (!workspaceId) return null;
 
@@ -94,8 +201,44 @@ export function GitGraph({ workspaceId, refreshKey }: GitGraphProps) {
           row={row}
           currentRef={currentRef}
           currentRemoteRef={currentRemoteRef}
+          selected={selected?.commit.sha === row.commit.sha}
+          onSelect={(element) => {
+            clearHoverTimers();
+            setSelected((current) =>
+              current?.commit.sha === row.commit.sha
+                ? null
+                : { commit: row.commit, rect: element.getBoundingClientRect() },
+            );
+          }}
+          onHoverStart={(element) => showOnHover(row.commit, element)}
+          onHoverEnd={scheduleClose}
+          onOpenChanges={() => void openCommitChanges(row.commit)}
+          language={resolvedLanguage}
         />
       ))}
+      {selected &&
+        createPortal(
+          <CommitDetailsCard
+            commit={selected.commit}
+            details={details}
+            loading={detailsLoading}
+            error={detailsError}
+            rowRect={selected.rect}
+            remoteUrl={remoteUrl}
+            language={resolvedLanguage}
+            onOpenChanges={() =>
+              details &&
+              onOpenCommitDiff(
+                details.sha,
+                `${details.shortSha} · ${details.message.split(/\r?\n/, 1)[0]}`,
+                details.files.map((file) => file.path),
+              )
+            }
+            onMouseEnter={clearHoverTimers}
+            onMouseLeave={scheduleClose}
+          />,
+          document.body,
+        )}
     </div>
   );
 }
@@ -104,18 +247,40 @@ function GraphRow({
   row,
   currentRef,
   currentRemoteRef,
+  selected,
+  onSelect,
+  onHoverStart,
+  onHoverEnd,
+  onOpenChanges,
+  language,
 }: {
   row: HistoryRow;
   currentRef: string | null;
   currentRemoteRef: string | null;
+  selected: boolean;
+  onSelect: (element: HTMLDivElement) => void;
+  onHoverStart: (element: HTMLDivElement) => void;
+  onHoverEnd: () => void;
+  onOpenChanges: () => void;
+  language: "zh-CN" | "en";
 }) {
   const badges = getReferenceBadges(row.commit, currentRef, currentRemoteRef);
   const isHead = row.kind === "HEAD";
 
   return (
     <div
-      className={`git-graph__row${isHead ? " is-head" : ""}`}
+      className={`git-graph__row${isHead ? " is-head" : ""}${selected ? " is-selected" : ""}`}
       title={`${row.commit.subject}\n${row.commit.shortSha} · ${row.commit.author}`}
+      role="button"
+      tabIndex={0}
+      onClick={(event) => onSelect(event.currentTarget)}
+      onMouseEnter={(event) => onHoverStart(event.currentTarget)}
+      onMouseLeave={onHoverEnd}
+      onKeyDown={(event) => {
+        if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) {
+          onSelect(event.currentTarget);
+        }
+      }}
     >
       <span className={`git-graph__graph-container${isHead ? " is-current" : ""}`}>
         <HistoryGraph row={row} />
@@ -126,6 +291,19 @@ function GraphRow({
         </span>
         <span className="git-graph__author">{row.commit.author}</span>
       </span>
+      <span className="git-graph__row-actions">
+        <button
+          type="button"
+          className="git-view__act"
+          title={language === "zh-CN" ? "打开提交更改" : "Open Commit Changes"}
+          onClick={(event) => {
+            event.stopPropagation();
+            onOpenChanges();
+          }}
+        >
+          <i className="codicon codicon-diff-multiple" aria-hidden="true" />
+        </button>
+      </span>
       {badges.length > 0 && (
         <span className="git-graph__refs">
           {badges.map((badge) => (
@@ -135,6 +313,174 @@ function GraphRow({
       )}
     </div>
   );
+}
+
+function CommitDetailsCard({
+  commit,
+  details,
+  loading,
+  error,
+  rowRect,
+  remoteUrl,
+  language,
+  onOpenChanges,
+  onMouseEnter,
+  onMouseLeave,
+}: {
+  commit: GitCommit;
+  details: GitCommitDetails | null;
+  loading: boolean;
+  error: string | null;
+  rowRect: DOMRect;
+  remoteUrl?: string | null;
+  language: "zh-CN" | "en";
+  onOpenChanges: () => void;
+  onMouseEnter: () => void;
+  onMouseLeave: () => void;
+}) {
+  const width = Math.min(465, window.innerWidth - 16);
+  const style: CSSProperties = {
+    width,
+    left: clampNumber(rowRect.right + 4, 8, window.innerWidth - width - 8),
+    top: clampNumber(rowRect.top - 88, 8, window.innerHeight - 250),
+  };
+  const value = details ?? {
+    sha: commit.sha,
+    shortSha: commit.shortSha,
+    author: commit.author,
+    authorEmail: "",
+    date: commit.date,
+    message: commit.subject,
+    filesChanged: 0,
+    insertions: 0,
+    deletions: 0,
+    files: [],
+  };
+  const lines = value.message.split(/\r?\n/);
+  const subject = lines.shift() || commit.subject;
+  const body = lines.join("\n").trim();
+  const commitUrl = githubCommitUrl(remoteUrl, value.sha);
+
+  return (
+    <aside
+      className="git-graph__details"
+      style={style}
+      aria-label={subject}
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
+    >
+      <div className="git-graph__details-meta">
+        <i className="codicon codicon-account" aria-hidden="true" />
+        <strong>{value.author}</strong>
+        {value.authorEmail && (
+          <span className="git-graph__details-email">&lt;{value.authorEmail}&gt;</span>
+        )}
+        <span className="git-graph__details-time">
+          <i className="codicon codicon-history" aria-hidden="true" />
+          {formatRelativeTime(value.date, language)} ({formatCommitDate(value.date, language)})
+        </span>
+      </div>
+      <div className="git-graph__details-message">
+        <strong>{subject}</strong>
+        {body && <pre>{body}</pre>}
+        {loading && (
+          <span className="git-graph__details-loading">
+            {language === "zh-CN" ? "加载提交详情..." : "Loading commit details..."}
+          </span>
+        )}
+        {error && (
+          <span className="git-graph__details-error">
+            {language === "zh-CN" ? "无法加载提交详情：" : "Unable to load commit details: "}
+            {error}
+          </span>
+        )}
+      </div>
+      {!loading && (
+        <div className="git-graph__details-stat">
+          {language === "zh-CN" ? "已更改" : "Changed"} {value.filesChanged}{" "}
+          {language === "zh-CN" ? "个文件" : "files"},
+          <span className="is-added">
+            {" "}
+            {value.insertions} {language === "zh-CN" ? "行插入(+)" : "insertions(+)"}
+          </span>
+          ,
+          <span className="is-deleted">
+            {" "}
+            {value.deletions} {language === "zh-CN" ? "行删除(-)" : "deletions(-)"}
+          </span>
+        </div>
+      )}
+      <div className="git-graph__details-actions">
+        <span className="git-graph__details-sha">
+          <i className="codicon codicon-git-commit" aria-hidden="true" />
+          {value.shortSha}
+        </span>
+        <button
+          type="button"
+          className="git-graph__details-action"
+          title={language === "zh-CN" ? "复制提交 ID" : "Copy commit ID"}
+          onClick={() => void navigator.clipboard.writeText(value.sha)}
+        >
+          <i className="codicon codicon-copy" aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          className="git-graph__details-action git-graph__details-open-changes"
+          title={language === "zh-CN" ? "打开提交更改" : "Open Commit Changes"}
+          disabled={loading || !details || details.files.length === 0}
+          onClick={onOpenChanges}
+        >
+          <i className="codicon codicon-diff-multiple" aria-hidden="true" />
+          {language === "zh-CN" ? "打开更改" : "Open Changes"}
+        </button>
+        {commitUrl && (
+          <a
+            className="git-graph__details-action git-graph__details-link"
+            href={commitUrl}
+            target="_blank"
+            rel="noreferrer"
+          >
+            <i className="codicon codicon-github" aria-hidden="true" />
+            {language === "zh-CN" ? "在 GitHub 上打开" : "Open on GitHub"}
+          </a>
+        )}
+      </div>
+    </aside>
+  );
+}
+
+function githubCommitUrl(remoteUrl: string | null | undefined, sha: string): string | null {
+  if (!remoteUrl) return null;
+  const match = remoteUrl.match(
+    /^(?:https?:\/\/github\.com\/|git@github\.com:)([^/]+\/[^/]+?)(?:\.git)?$/i,
+  );
+  return match ? `https://github.com/${match[1]}/commit/${sha}` : null;
+}
+
+function formatRelativeTime(timestamp: number, language: "zh-CN" | "en"): string {
+  const seconds = timestamp - Math.floor(Date.now() / 1000);
+  const absolute = Math.abs(seconds);
+  const [value, unit]: [number, Intl.RelativeTimeFormatUnit] =
+    absolute >= 86400
+      ? [Math.round(seconds / 86400), "day"]
+      : absolute >= 3600
+        ? [Math.round(seconds / 3600), "hour"]
+        : [Math.round(seconds / 60), "minute"];
+  return new Intl.RelativeTimeFormat(language, { numeric: "auto" }).format(value, unit);
+}
+
+function formatCommitDate(timestamp: number, language: "zh-CN" | "en"): string {
+  return new Intl.DateTimeFormat(language, {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(timestamp * 1000));
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(value, max));
 }
 
 function RefBadge({ badge }: { badge: ReferenceBadge }) {

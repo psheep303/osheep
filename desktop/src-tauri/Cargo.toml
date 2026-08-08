@@ -1,6 +1,6 @@
 [package]
 name = "osheep-desktop"
-version = "0.2.0"
+version = "0.2.0-alpha.2"
 description = "The osheep desktop workbench"
 authors = ["osheep"]
 license = "MIT"

@@ -30,6 +30,9 @@ export function languageFromPath(path: string): string {
     sh: "shell",
     bash: "shell",
     zsh: "shell",
+    ps1: "powershell",
+    psm1: "powershell",
+    psd1: "powershell",
     yaml: "yaml",
     yml: "yaml",
     toml: "ini",
@@ -41,4 +44,21 @@ export function languageFromPath(path: string): string {
     dockerfile: "dockerfile",
   };
   return map[ext] ?? "plaintext";
+}
+
+export function languageLabelFromPath(path: string): string {
+  const language = languageFromPath(path);
+  const labels: Record<string, string> = {
+    plaintext: "Plain Text",
+    powershell: "PowerShell",
+    typescript: "TypeScript",
+    javascript: "JavaScript",
+    json: "JSON",
+    markdown: "Markdown",
+    python: "Python",
+    rust: "Rust",
+    go: "Go",
+    shell: "Shell Script",
+  };
+  return labels[language] ?? language.charAt(0).toUpperCase() + language.slice(1);
 }

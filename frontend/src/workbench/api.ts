@@ -254,6 +254,22 @@ export async function putSettings(workspaceId: string, value: unknown): Promise<
   await http.put(`/api/workspaces/${encodeURIComponent(workspaceId)}/settings`, value);
 }
 
+export async function getGlobalSettings<T = unknown>(): Promise<T> {
+  return await http.get<T>("/api/settings");
+}
+
+export async function putGlobalSettings(value: unknown): Promise<void> {
+  await http.put("/api/settings", value);
+}
+
+export async function getUiPreferences<T = unknown>(): Promise<T> {
+  return await http.get<T>("/api/ui-preferences");
+}
+
+export async function putUiPreferences(value: unknown): Promise<void> {
+  await http.put("/api/ui-preferences", value);
+}
+
 // ─── Terminal ───
 
 // AI Settings
@@ -617,6 +633,37 @@ export interface GitLog {
   currentRemoteRef: string | null;
 }
 
+export interface GitCommitDetails {
+  sha: string;
+  shortSha: string;
+  author: string;
+  authorEmail: string;
+  date: number;
+  message: string;
+  filesChanged: number;
+  insertions: number;
+  deletions: number;
+  files: GitCommitFile[];
+}
+
+export interface GitCommitFile {
+  path: string;
+  insertions: number | null;
+  deletions: number | null;
+  binary: boolean;
+}
+
+export interface GitCommitDiff {
+  path: string;
+  base: string | null;
+  head: string;
+  leftContent: string;
+  rightContent: string;
+  leftMissing: boolean;
+  rightMissing: boolean;
+  binary: boolean;
+}
+
 export async function getWorkspacesRoot(): Promise<string> {
   const result = await http.get<{ path: string }>("/api/workspaces/root");
   return result.path;
@@ -643,6 +690,22 @@ export async function getGitLog(
     ref,
   }).toString();
   return await http.get(gitUrl(workspaceId, `/log?${qs}`));
+}
+
+export async function getGitCommitDetails(
+  workspaceId: string,
+  sha: string,
+): Promise<GitCommitDetails> {
+  return await http.get(gitUrl(workspaceId, `/commits/${encodeURIComponent(sha)}`));
+}
+
+export async function getGitCommitDiff(
+  workspaceId: string,
+  sha: string,
+  path: string,
+): Promise<GitCommitDiff> {
+  const query = new URLSearchParams({ path }).toString();
+  return await http.get(gitUrl(workspaceId, `/commits/${encodeURIComponent(sha)}/diff?${query}`));
 }
 
 // ─── Branches & remote ops ───
