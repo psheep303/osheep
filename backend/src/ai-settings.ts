@@ -522,7 +522,9 @@ function validateTomlText(text: string, label: string): void {
 }
 
 function getClaudeConfigDir(): string {
-  return path.resolve(process.env.OSHEEP_CLAUDE_CONFIG_DIR || path.join(APP_SETTINGS_DIR, "claude"));
+  return path.resolve(
+    process.env.OSHEEP_CLAUDE_CONFIG_DIR || path.join(APP_SETTINGS_DIR, "claude"),
+  );
 }
 
 function getClaudeSettingsPath(): string {
