@@ -1139,6 +1139,35 @@ export interface WorkflowRun {
   completedAt?: number;
   nodeIds: string[];
   error?: string;
+  trace?: WorkflowRunTrace[];
+  stats?: WorkflowRunStats;
+}
+
+export interface WorkflowRunTrace {
+  nodeId: string;
+  title: string;
+  kind: WorkflowNodeKind;
+  status: WorkflowNodeStatus | "stopped";
+  startedAt: number;
+  completedAt?: number;
+  durationMs?: number;
+  input?: unknown;
+  output?: unknown;
+  error?: string;
+  retryReasons?: string[];
+  terminal?: { commandLine?: string; stdout?: string; stderr?: string; transcript?: string; exitCode?: number | null; signal?: string | null };
+  tokens?: { input?: number; output?: number; total?: number };
+  cost?: number;
+}
+
+export interface WorkflowRunStats {
+  durationMs?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  cost?: number;
+  nodeCount?: number;
+  retryCount?: number;
 }
 
 export interface WorkflowRecord {

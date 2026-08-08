@@ -53,6 +53,7 @@ import {
   type WorkflowProviderKind,
   type WorkflowRecord,
   type WorkflowRun,
+  type WorkflowRunTrace,
   type WorkflowRunStatus,
   writeFile,
 } from "./api";
@@ -758,6 +759,8 @@ export function WorkflowTab({
   const [blockPickerOpen, setBlockPickerOpen] = useState(false);
   const [blockPickerCategory, setBlockPickerCategory] = useState<BlockCategoryId>("triggers");
   const [detailNodeId, setDetailNodeId] = useState<string | null>(null);
+  const [observabilityOpen, setObservabilityOpen] = useState(false);
+  const [observabilityRunId, setObservabilityRunId] = useState<string | null>(null);
   const [mpeNodeId, setMpeNodeId] = useState<string | null>(null);
   const [titleMenu, setTitleMenu] = useState<{ x: number; y: number } | null>(null);
   const [titleRenaming, setTitleRenaming] = useState(false);
@@ -885,6 +888,26 @@ export function WorkflowTab({
     () => workflow?.nodes.find((node) => node.id === selectedId) ?? null,
     [workflow, selectedId],
   );
+  const observabilityRun = useMemo(() => {
+    if (!workflow) return null;
+    return workflow.runs.find((run) => run.id === observabilityRunId) ?? workflow.runs[workflow.runs.length - 1] ?? null;
+  }, [workflow, observabilityRunId]);
+
+  const exportRunReport = useCallback(() => {
+    if (!workflow || !observabilityRun) return;
+    const report = {
+      workflow: { id: workflow.id, title: workflow.title },
+      run: observabilityRun,
+      exportedAt: new Date().toISOString(),
+    };
+    const blob = new Blob([JSON.stringify(report, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `${workflow.title || "workflow"}-${observabilityRun.id}-report.json`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }, [workflow, observabilityRun]);
   const waitingForChoiceNode = useMemo(
     () =>
       workflow?.nodes.find((node) => {
@@ -2213,6 +2236,14 @@ export function WorkflowTab({
         </div>
         <div className="workflow-toolbar__cluster workflow-toolbar__cluster--run">
           <button
+            className={`workflow-toolbar__btn workflow-toolbar__btn--observe${observabilityOpen ? " is-active" : ""}`}
+            onClick={() => setObservabilityOpen((open) => !open)}
+            title="运行可观察性"
+            aria-label="运行可观察性"
+          >
+            运行
+          </button>
+          <button
             className="workflow-toolbar__btn workflow-toolbar__btn--icon"
             onClick={() => void runSelected()}
             disabled={running || !selectedNode}
@@ -2539,6 +2570,22 @@ export function WorkflowTab({
               workflow,
             )}
             onClose={() => setMpeNodeId(null)}
+          />
+        </div>
+      )}
+      {observabilityOpen && (
+        <div className="workflow-panel-shell workflow-observability-shell">
+          <WorkflowObservabilityPanel
+            workflow={workflow}
+            run={observabilityRun}
+            selectedRunId={observabilityRun?.id ?? null}
+            onSelectRun={setObservabilityRunId}
+            onExport={exportRunReport}
+            onClose={() => setObservabilityOpen(false)}
+            onSelectNode={(nodeId) => {
+              setSelectedId(nodeId);
+              setDetailNodeId(nodeId);
+            }}
           />
         </div>
       )}
@@ -3153,6 +3200,94 @@ function WorkflowDetailsPanel({
       </div>
     </aside>
   );
+}
+
+function WorkflowObservabilityPanel({
+  workflow,
+  run,
+  selectedRunId,
+  onSelectRun,
+  onExport,
+  onClose,
+  onSelectNode,
+}: {
+  workflow: WorkflowRecord;
+  run: WorkflowRun | null;
+  selectedRunId: string | null;
+  onSelectRun: (id: string) => void;
+  onExport: () => void;
+  onClose: () => void;
+  onSelectNode: (id: string) => void;
+}) {
+  const traces = run?.trace ?? [];
+  const stats = run?.stats;
+  const [selectedTraceKey, setSelectedTraceKey] = useState("");
+  const selectedTrace: WorkflowRunTrace | null =
+    traces.find((trace) => `${trace.nodeId}:${trace.startedAt}` === selectedTraceKey) ?? traces[0] ?? null;
+  return (
+    <aside className="workflow-inspector workflow-observability">
+      <div className="workflow-inspector__head">
+        <div>
+          <div className="workflow-inspector__eyebrow">运行可观察性</div>
+          <strong>{workflow.title}</strong>
+        </div>
+        <div className="workflow-inspector__head-actions">
+          <button type="button" onClick={onExport} disabled={!run} title="导出运行报告">导出</button>
+          <button type="button" className="workflow-inspector__close" onClick={onClose} aria-label="Close">x</button>
+        </div>
+      </div>
+      <label className="workflow-observability__run-select">
+        <span>运行记录</span>
+        <select value={selectedRunId ?? ""} onChange={(e) => onSelectRun(e.target.value)}>
+          {workflow.runs.length === 0 && <option value="">暂无运行记录</option>}
+          {workflow.runs.slice().reverse().map((item) => (
+            <option key={item.id} value={item.id}>{item.id} · {item.status}</option>
+          ))}
+        </select>
+      </label>
+      {run && (
+        <>
+          <div className="workflow-observability__summary">
+            <div><span>状态</span><strong className={`is-${run.status}`}>{run.status}</strong></div>
+            <div><span>耗时</span><strong>{formatWorkflowDuration(stats?.durationMs ?? (run.completedAt ? run.completedAt - run.startedAt : 0))}</strong></div>
+            <div><span>节点</span><strong>{stats?.nodeCount ?? traces.length}</strong></div>
+            <div><span>重试</span><strong>{stats?.retryCount ?? 0}</strong></div>
+            <div><span>Token</span><strong>{stats?.totalTokens ? stats.totalTokens.toLocaleString() : "未提供"}</strong></div>
+            <div><span>费用</span><strong>{stats?.cost !== undefined ? `$${stats.cost.toFixed(4)}` : "未提供"}</strong></div>
+          </div>
+          <div className="workflow-observability__timeline">
+            {traces.length === 0 ? <div className="workflow-inspector__muted">该运行暂无节点追踪数据。</div> : traces.map((trace) => (
+              <button type="button" className={`workflow-observability__event${selectedTrace === trace ? " is-selected" : ""}`} key={`${trace.nodeId}:${trace.startedAt}`} onClick={() => setSelectedTraceKey(`${trace.nodeId}:${trace.startedAt}`)} onDoubleClick={() => onSelectNode(trace.nodeId)}>
+                <span className={`workflow-observability__dot is-${trace.status}`} />
+                <span className="workflow-observability__event-main"><strong>{trace.title}</strong><small>{trace.kind} · {trace.status}</small></span>
+                <span className="workflow-observability__event-time">{trace.durationMs !== undefined ? formatWorkflowDuration(trace.durationMs) : "..."}</span>
+                {trace.retryReasons?.length ? <span className="workflow-observability__retry">重试 {trace.retryReasons.length}</span> : null}
+              </button>
+            ))}
+          </div>
+          {selectedTrace && (
+            <div className="workflow-observability__detail">
+              <div className="workflow-observability__detail-head">
+                <strong>{selectedTrace.title}</strong>
+                <button type="button" onClick={() => onSelectNode(selectedTrace.nodeId)}>打开节点</button>
+              </div>
+              <details open><summary>输入</summary><pre>{formatTraceValue(selectedTrace.input)}</pre></details>
+              <details open><summary>输出</summary><pre>{formatTraceValue(selectedTrace.output)}</pre></details>
+              {selectedTrace.retryReasons?.length ? <details><summary>重试原因</summary><pre>{selectedTrace.retryReasons.join("\n")}</pre></details> : null}
+              {selectedTrace.terminal ? <details><summary>终端记录</summary><pre>{selectedTrace.terminal.transcript || selectedTrace.terminal.stdout || selectedTrace.terminal.stderr || selectedTrace.terminal.commandLine || "无终端输出"}</pre></details> : null}
+            </div>
+          )}
+          {run.error && <div className="workflow-inspector__notice is-error">{run.error}</div>}
+        </>
+      )}
+    </aside>
+  );
+}
+
+function formatTraceValue(value: unknown): string {
+  if (value === undefined) return "未记录";
+  if (typeof value === "string") return value || "(空)";
+  try { return JSON.stringify(value, null, 2); } catch { return String(value); }
 }
 
 function WorkflowFinishedRunSnapshot({ snapshot }: { snapshot: WorkflowRunDetailSnapshot | null }) {

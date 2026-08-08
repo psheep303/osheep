@@ -67,6 +67,42 @@ export interface WorkflowRun {
   completedAt?: number;
   nodeIds: string[];
   error?: string;
+  trace?: WorkflowRunTrace[];
+  stats?: WorkflowRunStats;
+}
+
+export interface WorkflowRunTrace {
+  nodeId: string;
+  title: string;
+  kind: WorkflowNodeKind;
+  status: WorkflowNodeStatus | "stopped";
+  startedAt: number;
+  completedAt?: number;
+  durationMs?: number;
+  input?: unknown;
+  output?: unknown;
+  error?: string;
+  retryReasons?: string[];
+  terminal?: {
+    commandLine?: string;
+    stdout?: string;
+    stderr?: string;
+    transcript?: string;
+    exitCode?: number | null;
+    signal?: string | null;
+  };
+  tokens?: { input?: number; output?: number; total?: number };
+  cost?: number;
+}
+
+export interface WorkflowRunStats {
+  durationMs?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  cost?: number;
+  nodeCount?: number;
+  retryCount?: number;
 }
 
 export interface WorkflowRecord {
@@ -259,6 +295,10 @@ function sanitizeRun(raw: unknown): WorkflowRun | null {
   };
   if (typeof r.completedAt === "number") run.completedAt = r.completedAt;
   if (typeof r.error === "string") run.error = r.error;
+  if (Array.isArray((r as any).trace)) {
+    run.trace = (r as any).trace.filter((item: any) => item && typeof item.nodeId === "string").slice(-500);
+  }
+  if ((r as any).stats && typeof (r as any).stats === "object") run.stats = (r as any).stats;
   return run;
 }
 
