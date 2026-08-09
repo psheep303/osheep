@@ -1446,20 +1446,67 @@ function usageFromTerminal(terminal: WorkflowRunTrace["terminal"]): {
   tokens?: WorkflowRunTrace["tokens"];
   cost?: number;
 } {
-  const text = `${terminal?.transcript ?? ""}\n${terminal?.stdout ?? ""}`.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "");
-  let total: number | undefined;
-  for (const match of text.matchAll(/([\d,.]+)\s*([km])?\s+tokens?\b/gi)) {
-    const base = Number(match[1]?.replace(/,/g, ""));
-    if (!Number.isFinite(base)) continue;
-    const multiplier = match[2]?.toLowerCase() === "k" ? 1_000 : match[2]?.toLowerCase() === "m" ? 1_000_000 : 1;
-    total = Math.max(total ?? 0, Math.round(base * multiplier));
+  const text = `${terminal?.transcript ?? ""}\n${terminal?.stdout ?? ""}`;
+  return parseWorkflowUsage(text);
+}
+
+export function parseWorkflowUsage(text: string): {
+  tokens?: WorkflowRunTrace["tokens"];
+  cost?: number;
+} {
+  const plain = text.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "");
+  const input = lastLabeledTokenCount(
+    plain,
+    /(?:\binput(?:\s+tokens?)?|\binput_tokens)[\s"']*[:=][\s"']*/gi,
+  );
+  const output = lastLabeledTokenCount(
+    plain,
+    /(?:\boutput(?:\s+tokens?)?|\boutput_tokens)[\s"']*[:=][\s"']*/gi,
+  );
+  const explicitTotal = lastLabeledTokenCount(
+    plain,
+    /(?:\btotal(?:\s+tokens?)?|\btotal_tokens)[\s"']*[:=][\s"']*/gi,
+  );
+  let genericTotal: number | undefined;
+  if (input === undefined && output === undefined && explicitTotal === undefined) {
+    for (const match of plain.matchAll(/([\d,.]+)\s*([km])?\s+tokens?\b/gi)) {
+      const count = tokenCount(match[1], match[2]);
+      if (count !== undefined) genericTotal = Math.max(genericTotal ?? 0, count);
+    }
   }
-  const costMatch = [...text.matchAll(/(?:cost|total_cost_usd)[^\d$]{0,12}\$?([\d.]+)/gi)].at(-1);
+  const total =
+    explicitTotal ??
+    (input !== undefined || output !== undefined ? (input ?? 0) + (output ?? 0) : genericTotal);
+  const costMatch = [
+    ...plain.matchAll(
+      /(?:\btotal[ _-]?cost(?:_usd)?|\bcost)[\s"']*[:=][\s"']*\$?([\d.]+)/gi,
+    ),
+  ].at(-1);
   const cost = costMatch ? Number(costMatch[1]) : undefined;
   return {
-    tokens: total ? { total } : undefined,
+    tokens:
+      input !== undefined || output !== undefined || total !== undefined
+        ? { input, output, total }
+        : undefined,
     cost: cost !== undefined && Number.isFinite(cost) ? cost : undefined,
   };
+}
+
+function lastLabeledTokenCount(text: string, label: RegExp): number | undefined {
+  let count: number | undefined;
+  const pattern = new RegExp(`${label.source}([\\d,.]+)\\s*([km])?`, label.flags);
+  for (const match of text.matchAll(pattern)) {
+    count = tokenCount(match[1], match[2]) ?? count;
+  }
+  return count;
+}
+
+function tokenCount(value: string | undefined, suffix: string | undefined): number | undefined {
+  const base = Number(value?.replace(/,/g, ""));
+  if (!Number.isFinite(base)) return undefined;
+  const multiplier =
+    suffix?.toLowerCase() === "k" ? 1_000 : suffix?.toLowerCase() === "m" ? 1_000_000 : 1;
+  return Math.round(base * multiplier);
 }
 
 function patchNode(
@@ -1537,7 +1584,15 @@ function finishRunRecord(
 function runStats(run: WorkflowRun, completedAt: number): WorkflowRun["stats"] {
   const trace = run.trace ?? [];
   const retryCount = trace.reduce((sum, item) => sum + (item.retryReasons?.length ?? 0), 0);
-  const totalTokens = trace.reduce((sum, item) => sum + (item.tokens?.total ?? 0), 0);
+  const totalTokens = trace.reduce(
+    (sum, item) =>
+      sum +
+      (item.tokens?.total ??
+        (item.tokens?.input !== undefined || item.tokens?.output !== undefined
+          ? (item.tokens.input ?? 0) + (item.tokens.output ?? 0)
+          : 0)),
+    0,
+  );
   return {
     durationMs: Math.max(0, completedAt - run.startedAt),
     totalTokens: totalTokens || undefined,

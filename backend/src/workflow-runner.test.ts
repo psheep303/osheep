@@ -6,6 +6,7 @@ import {
   classifyAgentTerminalResultFailure,
   createLiveAgentRunDetails,
   nextAgentRetryPrompt,
+  parseWorkflowUsage,
   planWorkflowRunNodeIds,
   resolveWorkflowTemplate,
   shouldRetryAgentTerminalFailure,
@@ -176,6 +177,35 @@ test("live agent run details capture terminal session and output frames", async 
   assert.match(writes[3]?.transcript ?? "", /\[stdout\] first chunk/);
   assert.equal(writes[4]?.terminalStatus, "ready");
   assert.equal(writes[4]?.status, "running");
+});
+
+test("workflow usage captures Codex input, output, and total tokens", () => {
+  assert.deepEqual(
+    parseWorkflowUsage(
+      "Token usage: total=17,946 input=15,801 (+ 10,240 cached) output=2,145 (reasoning 757)",
+    ),
+    {
+      tokens: { input: 15_801, output: 2_145, total: 17_946 },
+      cost: undefined,
+    },
+  );
+});
+
+test("workflow usage derives total tokens and captures Claude cost output", () => {
+  assert.deepEqual(
+    parseWorkflowUsage('input_tokens: 1.2k\noutput_tokens: 345\ntotal_cost_usd: 0.0421'),
+    {
+      tokens: { input: 1_200, output: 345, total: 1_545 },
+      cost: 0.0421,
+    },
+  );
+});
+
+test("workflow usage retains generic terminal token totals as a fallback", () => {
+  assert.deepEqual(parseWorkflowUsage("Cooked for 3m · 35.2k tokens"), {
+    tokens: { input: undefined, output: undefined, total: 35_200 },
+    cost: undefined,
+  });
 });
 
 test("Codex workflow blocks without an effort setting use medium reasoning", () => {

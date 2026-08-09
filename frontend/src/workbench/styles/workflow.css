@@ -296,18 +296,6 @@
   background: #8a3028;
 }
 
-.workflow-toolbar__btn--observe {
-  color: var(--fg-default);
-  border-color: #4b6e8f;
-  background: rgba(70, 120, 170, 0.18);
-}
-
-.workflow-toolbar__btn--observe.is-active {
-  color: var(--fg-strong);
-  border-color: var(--color-link);
-  background: rgba(106, 168, 255, 0.2);
-}
-
 .workflow-toolbar__btn--icon {
   width: 28px;
   padding: 0;
@@ -1672,7 +1660,7 @@
 
 .workflow-observability__summary {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 1px;
   margin: 12px 14px;
   border: 1px solid var(--border-edge);
