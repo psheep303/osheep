@@ -18,6 +18,7 @@ import {
   resolveAgentTerminalContentStateForTest,
   selectConversationSessionIdForTest,
   shouldAutoEnterChoice,
+  shouldFinishAgentTerminalWithErrorForTest,
   shouldExposeWaitingForChoice,
   shouldFollowUpPastedPromptSubmit,
 } from "./ai-terminal.js";
@@ -48,6 +49,76 @@ test("terminal failures are detected independently of auto success", () => {
     hasAgentTerminalFailureForTest(
       "● API Error: 529 Overloaded\n● Retrying… (3s)\n● 已恢复并继续执行",
     ),
+    false,
+  );
+  assert.equal(
+    hasAgentTerminalFailureForTest(
+      "Reconnecting... 1/5 (6s \u2022 esc to interrupt)\n\u2514 Unexpected status 503 Service Unavailable: No available channel for model gpt-5.6-luna under group",
+    ),
+    false,
+  );
+});
+
+test("a visible Codex error at the idle prompt completes as a terminal error", () => {
+  const screen = [
+    "OpenAI Codex (v0.147.0)",
+    "model: gpt-5.6-luna medium /model to change",
+    "directory: D:\\project\\osheep\\backend\\workspaces\\demo",
+    "› 生成一个羊的特效，直接做，不要问我任何细节",
+    "■ unexpected status 503 Service Unavailable: No available channel for model",
+    "gpt-5.6-luna under group default_特价 (distributor)",
+    "› Summarize recent commits",
+    "gpt-5.6-luna medium · D:\\project\\osheep\\backend\\workspaces\\demo",
+  ].join("\n");
+
+  assert.equal(hasAgentTerminalFailureForTest(screen), true);
+  assert.equal(shouldFinishAgentTerminalWithErrorForTest("codex-cli", screen), true);
+});
+
+test("all common terminal error forms finish as errors once Codex is idle", () => {
+  const errors = [
+    "Error: request could not be completed",
+    "Failed to execute request",
+    "Fatal exception while calling provider",
+    "Traceback (most recent call last):",
+    "npm ERR! command failed",
+    "Request failed before completion",
+    "Connection refused by provider",
+    "No available channel for this model",
+    "Something went wrong while sending the request",
+    "■ permission denied while opening the workspace",
+  ];
+
+  for (const error of errors) {
+    const screen = [error, "› Summarize recent commits", "gpt-5.6-luna medium · D:\\demo"].join(
+      "\n",
+    );
+    assert.equal(hasAgentTerminalFailureForTest(screen), true, error);
+    assert.equal(shouldFinishAgentTerminalWithErrorForTest("codex-cli", screen), true, error);
+  }
+});
+
+test("a terminal error does not finish while Codex is still generating", () => {
+  const screen = [
+    "Error: provider request failed",
+    "Working (8s • esc to interrupt)",
+  ].join("\n");
+
+  assert.equal(shouldFinishAgentTerminalWithErrorForTest("codex-cli", screen), false);
+});
+
+test("Codex reconnecting always remains running even when a prompt is visible", () => {
+  const screen = [
+    "Error: provider request failed",
+    "Reconnecting... 5/5 (6s • esc to interrupt)",
+    "› Summarize recent commits",
+    "gpt-5.6-luna medium · D:\\demo",
+  ].join("\n");
+
+  assert.equal(hasAgentTerminalFailureForTest(screen), false);
+  assert.equal(shouldFinishAgentTerminalWithErrorForTest("codex-cli", screen), false);
+  assert.equal(
+    agentTerminalReadyForAutoFinishForTest("codex-cli", screen, "ready-for-success"),
     false,
   );
 });
@@ -214,6 +285,13 @@ test("Codex terminal command applies reasoning effort without an approval preset
       effort: "high",
     }).command,
     "codex --ask-for-approval on-request --sandbox workspace-write -c 'model_reasoning_effort=\"high\"' --model gpt-5.1-codex",
+  );
+});
+
+test("Codex terminal command can explicitly pin the default medium effort", () => {
+  assert.equal(
+    buildAgentTerminalCommand("codex-cli", "default", { effort: "medium" }).command,
+    "codex --ask-for-approval on-request --sandbox workspace-write -c 'model_reasoning_effort=\"medium\"'",
   );
 });
 

@@ -178,6 +178,18 @@ test("live agent run details capture terminal session and output frames", async 
   assert.equal(writes[4]?.status, "running");
 });
 
+test("Codex workflow blocks without an effort setting use medium reasoning", () => {
+  const node = workflowNode("node_default_effort", "agent", "Codex");
+  const details = createLiveAgentRunDetails({
+    node,
+    startedAt: 1_000,
+    autoSuccess: true,
+    writeSnapshot: async () => {},
+  });
+
+  assert.match(details.snapshot("running").commandLine, /model_reasoning_effort="medium"/);
+});
+
 test("live agent run details bound stored terminal output", async () => {
   const node: WorkflowNode = {
     id: "node_livelimit",
@@ -334,6 +346,61 @@ test("agent result scans the terminal transcript when extracted content misses t
 
   assert.equal(failure.failed, true);
   assert.equal(failure.retryable, false);
+});
+
+test("agent result scans the raw terminal stream for Codex 503 errors", () => {
+  const failure = classifyAgentTerminalResultFailure(
+    {
+      content: "",
+      transcript: "Use /skills to list available skills",
+      rawTranscript: [
+        "Reconnecting... 1/5 (6s • esc to interrupt)",
+        "└ Unexpected status 503 Service Unavailable: No available channel for model",
+        "gpt-5.6-luna under group default",
+        "› Use /skills to list available skills",
+      ].join("\n"),
+      exitCode: 0,
+      signal: "auto-finished",
+    },
+    "Build a weather crawler",
+  );
+
+  assert.equal(failure.failed, true);
+  assert.equal(failure.retryable, true);
+  assert.match(failure.message, /unexpected status 503/i);
+});
+
+test("agent result treats generic raw terminal errors as failures", () => {
+  const failure = classifyAgentTerminalResultFailure(
+    {
+      content: "",
+      transcript: "",
+      rawTranscript: [
+        "Fatal exception while calling provider",
+        "› Summarize recent commits",
+        "gpt-5.6-luna medium · D:\\demo",
+      ].join("\n"),
+      exitCode: 0,
+      signal: "auto-finished",
+    },
+    "Build a weather crawler",
+  );
+
+  assert.equal(failure.failed, true);
+  assert.match(failure.message, /reported an error/i);
+});
+
+test("Codex reconnect activity does not supersede a preceding 503 error", () => {
+  const failure = classifyAgentTerminalFailure(
+    [
+      "unexpected status 503 Service Unavailable: No available channel for model",
+      "Reconnecting... 2/5 (6s • esc to interrupt)",
+    ].join("\n"),
+    "Build a weather crawler",
+  );
+
+  assert.equal(failure.failed, true);
+  assert.equal(failure.retryable, true);
 });
 
 test("agent result never treats abnormal process completion as success", () => {

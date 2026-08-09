@@ -247,7 +247,9 @@ async function readCodexSession(
 
   if (!id || !SESSION_ID_RE.test(id)) return null;
   const indexed = titles.get(id);
-  const updatedAt = indexed?.updatedAt ?? stat.mtimeMs;
+  // The title index can lag behind the session file while Codex is finishing.
+  // Prefer the newest signal so workflow runs can resolve the session they just created.
+  const updatedAt = Math.max(indexed?.updatedAt ?? 0, stat.mtimeMs);
   return {
     app: "codex",
     id,

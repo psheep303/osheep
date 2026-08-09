@@ -74,6 +74,8 @@ export interface AgentTerminalOptions {
   codexApproval?: CodexApproval;
   codexSandbox?: CodexSandbox;
   effort?: AgentEffort;
+  /** Keep the raw terminal stream for workflow-level failure classification. */
+  retainRawTranscript?: boolean;
   alwaysEnter?: boolean;
   conversationSessionId?: string;
   resumeConversation?: boolean;
@@ -96,6 +98,8 @@ export interface AgentTerminalResult {
   conversationSessionId?: string;
   content: string;
   transcript: string;
+  /** Raw terminal output retained for workflow failure classification. */
+  rawTranscript?: string;
   changedFiles: string[];
   verification: string[];
   exitCode: number | null;
@@ -294,6 +298,7 @@ export async function runAgentTerminal(opts: AgentTerminalOptions): Promise<Agen
         conversationSessionId,
         content,
         transcript: cleanTranscript,
+        rawTranscript: opts.retainRawTranscript ? transcript : undefined,
         changedFiles: metadata.changedFiles,
         verification: metadata.verification,
         exitCode: 0,
@@ -328,6 +333,7 @@ export async function runAgentTerminal(opts: AgentTerminalOptions): Promise<Agen
       conversationSessionId,
       content: structuredAnswer || extractTerminalContent(transcript, opts.prompt, opts.kind),
       transcript: cleanTranscript,
+      rawTranscript: opts.retainRawTranscript ? transcript : undefined,
       changedFiles: metadata.changedFiles,
       verification: metadata.verification,
       exitCode,
@@ -877,6 +883,14 @@ export function extractAgentTerminalContentForTest(
   return extractTerminalContent(transcript, prompt, kind);
 }
 
+export function extractAgentTerminalContent(
+  transcript: string,
+  prompt = "",
+  kind?: CliProviderKind,
+): string {
+  return extractTerminalContent(transcript, prompt, kind);
+}
+
 function stripAgentTerminalChrome(text: string): string {
   return text
     .split("\n")
@@ -1285,11 +1299,6 @@ function waitForAgentCompletion(
         screenSignature = nextScreenSignature;
         screenChangedAt = now;
       }
-      if (hasAgentTerminalFailure(transcript)) {
-        clearInterval(timer);
-        resolve("terminal-error");
-        return;
-      }
       if (control.autoFinishPaused) return;
       if (control.manualSuccessRequested) {
         clearInterval(timer);
@@ -1319,6 +1328,9 @@ function waitForAgentCompletion(
         }
         return;
       }
+      // Generation state has the highest priority. Do not classify choices,
+      // errors, stalls, or success while the current screen is still active.
+      if (isAgentTerminalBusy(transcript)) return;
       if (state === "waiting-for-choice") {
         if (control.alwaysEnter) {
           if (
@@ -1354,6 +1366,11 @@ function waitForAgentCompletion(
         onStatus("prompt-sent");
       } else if (state !== control.lastCompletionState && state !== "ready-for-success") {
         control.lastCompletionState = state;
+      }
+      if (shouldFinishAgentTerminalWithError(kind, transcript)) {
+        clearInterval(timer);
+        resolve("terminal-error");
+        return;
       }
       // Total runtime is intentionally unbounded. Only a continuous period
       // without terminal output is treated as a stalled agent.
@@ -1408,14 +1425,18 @@ export function agentTerminalStalledForTest(
   return hasAgentTerminalStalled(now, promptSubmittedAt, lastOutputAt, timeoutMs);
 }
 
-function hasAgentTerminalFailure(rawTranscript: string): boolean {
+export function hasAgentTerminalFailure(rawTranscript: string): boolean {
   const screen = agentTerminalScreenSignature(rawTranscript);
+  if (isAgentTerminalRetrying(screen)) return false;
   const patterns = [
     /^[ \t]*(?:[●•*✖×!]\s*)?(?:Please run\s+\/login\s*(?:[·•-]\s*)?)?API Error\s*:\s*\S[^\n]*/im,
     /^[ \t]*(?:[●•*✖×!]\s*)?Please run\s+\/login\b[^\n]*/im,
     /^[ \t]*(?:[●•*✖×!]\s*)?Image generation is not enabled for this (?:group|organization|account)\b[^\n]*/im,
     /^[ \t]*[●•✖×!]\s*(?:(?:fatal|authentication|authorization|request)\s+)?error\s*:\s*\S[^\n]*/im,
     /\bunexpected status\s+(?:4\d\d|5\d\d)\b[^\n]*/i,
+    /^[ \t]*(?![\u203a\u276f])(?:[\u25a0\u25cf\u2022*\u2716\u00d7!]\s*[^\n]*(?:\b(?:errors?|failed|failure|fatal|exception|panic(?:ked)?)\b|\bunexpected status\s+\d{3}\b|\b(?:service|temporarily) unavailable\b|\b(?:permission|access|request) denied\b|\b(?:timed?|time)\s*out\b|\bconnection reset\b)|(?:(?:api\s+)?errors?|failed|failure|fatal|exception|panic(?:ked)?|traceback)\b[^\n]*|unexpected status\s+\d{3}\b[^\n]*|(?:service|temporarily) unavailable\b[^\n]*|(?:permission|access|request) denied\b[^\n]*|(?:timed?|time)\s*out\b[^\n]*|connection reset\b[^\n]*|npm\s+ERR![^\n]*)/im,
+    /^[ \t]*(?![\u203a\u276f])(?:request|command|process|task|tool|operation|execution|connection|authentication|authorization|permission|network|server|provider|model)\s+(?:errors?|failed|failure|denied|unavailable|refused|aborted|(?:timed?|time)\s*out)\b[^\n]*/im,
+    /^[ \t]*(?![\u203a\u276f])(?:no available channel\b|something went wrong\b|HTTP\s+[45]\d\d\b|E(?:CONNREFUSED|CONNRESET|TIMEDOUT)\b)[^\n]*/im,
   ];
   let lastErrorAt = -1;
   let lastErrorEnd = -1;
@@ -1429,13 +1450,33 @@ function hasAgentTerminalFailure(rawTranscript: string): boolean {
     }
   }
   if (lastErrorAt < 0) return false;
+  const recovery = screen
+    .slice(lastErrorEnd)
+    .replace(/(?:^|\n)\s*(?:Reconnecting|Retrying)\b[^\n]*/gi, "\n");
   return !/(?:^|\n)\s*(?:[\p{S}\p{P}]\s*)?(?:Thought\s+for\s+\d|\p{L}[\p{L}'’-]*(?:…|\.\.\.)?\s*\(\s*\d+(?:\.\d+)?(?:ms|s|m|h)\b)/imu.test(
-    screen.slice(lastErrorEnd),
+    recovery,
   );
 }
 
 export function hasAgentTerminalFailureForTest(rawTranscript: string): boolean {
   return hasAgentTerminalFailure(rawTranscript);
+}
+
+function shouldFinishAgentTerminalWithError(kind: CliProviderKind, rawTranscript: string): boolean {
+  if (isAgentTerminalBusy(rawTranscript)) return false;
+  if (!hasAgentTerminalFailure(rawTranscript)) return false;
+  const screen = agentTerminalScreenSignature(rawTranscript);
+  if (kind === "claude-cli") {
+    return isClaudeIdlePromptVisible(screen) && !isClaudeChoicePromptVisible(screen);
+  }
+  return isCodexIdlePromptVisible(screen);
+}
+
+export function shouldFinishAgentTerminalWithErrorForTest(
+  kind: CliProviderKind,
+  rawTranscript: string,
+): boolean {
+  return shouldFinishAgentTerminalWithError(kind, rawTranscript);
 }
 
 function agentTerminalScreenSignature(rawTranscript: string): string {
@@ -1452,9 +1493,14 @@ function isAgentTerminalBusy(rawTranscript: string): boolean {
   return lastAgentActivityIndex(screen) >= 0;
 }
 
+function isAgentTerminalRetrying(screen: string): boolean {
+  return /\b(?:Reconnecting|Retrying)(?:\.\.\.)?(?:\s+\d+\s*\/\s*\d+)?/i.test(screen);
+}
+
 function lastAgentActivityIndex(screen: string): number {
   return maxLastRegexIndex(screen, [
     /\bEsc to interrupt\b/i,
+    /\b(?:Reconnecting|Retrying)(?:\.\.\.)?(?:\s+\d+\s*\/\s*\d+)?/i,
     /(?:^|\n)\s*(?:[\p{S}\p{P}]\s*)?\p{L}[\p{L}'’-]*(?:…|\.\.\.)?\s*\(\s*\d+(?:\.\d+)?(?:ms|s|m|h)\b[^\n)]*\)/iu,
   ]);
 }

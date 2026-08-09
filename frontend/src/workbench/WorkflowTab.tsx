@@ -567,7 +567,7 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
     model: "default",
     icon: "codex",
     config: {
-      effort: "high",
+      effort: "medium",
       retries: 0,
       retryForever: false,
       alwaysEnter: false,
@@ -1872,6 +1872,7 @@ export function WorkflowTab({
               codexApproval: agentCodexApproval(node),
               codexSandbox: agentCodexSandbox(node),
               effort: agentEffort(node),
+              failOnTerminalError: true,
               alwaysEnter: agentAlwaysEnter(node),
               conversationSessionId: requestedConversationSessionId,
             },
@@ -1916,9 +1917,18 @@ export function WorkflowTab({
             startedAt,
             expectedId: requestedConversationSessionId,
           }));
-        let raw =
-          result.result?.content ||
+        const fallbackRaw =
           `${node.providerKind === "codex-cli" ? "Codex CLI" : "Claude Code CLI"} completed without text output.`;
+        const transcriptRaw = result.result?.transcript
+          ? cleanAgentTerminalConversation(
+              result.result.transcript,
+              node.providerKind === "claude-cli" ? "claude-cli" : "codex-cli",
+            )
+          : "";
+        let raw =
+          result.result?.content && !/completed without text output/i.test(result.result.content)
+            ? result.result.content
+            : transcriptRaw || fallbackRaw;
         const toolRun = result.aborted
           ? null
           : await maybeRunAgentMcpToolCalls(
@@ -3126,6 +3136,23 @@ function WorkflowDetailsPanel({
 }) {
   const snapshot = runDetailsSnapshot(node);
   const title = snapshot?.title || node.title;
+  const openAgentSession = async () => {
+    if (!snapshot || snapshot.kind !== "agent") return;
+    const app: AgentSessionApp = node.providerKind === "claude-cli" ? "claude" : "codex";
+    let sessionId = snapshot.conversationSessionId;
+    if (!sessionId) {
+      try {
+        const sessions = await listAgentSessions(app, workspaceId);
+        const recent = sessions
+          .filter((session) => session.updatedAt >= snapshot.startedAt - 10 * 60 * 1000)
+          .sort((a, b) => b.updatedAt - a.updatedAt);
+        sessionId = (recent[0] ?? sessions.sort((a, b) => b.updatedAt - a.updatedAt)[0])?.id;
+      } catch {
+        return;
+      }
+    }
+    if (sessionId) onResumeSession({ app, id: sessionId, title });
+  };
   return (
     <aside className="workflow-inspector workflow-run-details">
       <div className="workflow-inspector__head">
@@ -3155,27 +3182,22 @@ function WorkflowDetailsPanel({
           </span>
         )}
         {snapshot?.exitCode !== undefined && <span>exit {snapshot.exitCode ?? "signal"}</span>}
-      </div>
-      {snapshot?.kind === "agent" && snapshot.conversationSessionId && (
-        <div className="workflow-run-details__session">
-          <span>Session</span>
-          {snapshot.status === "running" ? (
-            <code>{snapshot.conversationSessionId}</code>
-          ) : (
+        {snapshot?.kind === "agent" &&
+          snapshot.status !== "running" &&
+          (
             <button
               type="button"
-              title="Resume this conversation in the terminal"
-              onClick={() =>
-                onResumeSession({
-                  app: node.providerKind === "claude-cli" ? "claude" : "codex",
-                  id: snapshot.conversationSessionId!,
-                  title,
-                })
-              }
+              className="workflow-run-details__open-session"
+              onClick={() => void openAgentSession()}
             >
-              {snapshot.conversationSessionId}
+              Open in {node.providerKind === "claude-cli" ? "Claude Code" : "Codex"}
             </button>
           )}
+      </div>
+      {snapshot?.kind === "agent" && snapshot.conversationSessionId && snapshot.status === "running" && (
+        <div className="workflow-run-details__session">
+          <span>Session</span>
+          <code>{snapshot.conversationSessionId}</code>
         </div>
       )}
       <div className="workflow-run-details__terminal">
@@ -3195,7 +3217,7 @@ function WorkflowDetailsPanel({
             initialAutoSuccess={snapshot.autoSuccess ?? true}
           />
         ) : (
-          <WorkflowFinishedRunSnapshot snapshot={snapshot} />
+          <WorkflowFinishedRunResult node={node} snapshot={snapshot} />
         )}
       </div>
     </aside>
@@ -3290,33 +3312,41 @@ function formatTraceValue(value: unknown): string {
   try { return JSON.stringify(value, null, 2); } catch { return String(value); }
 }
 
-function WorkflowFinishedRunSnapshot({ snapshot }: { snapshot: WorkflowRunDetailSnapshot | null }) {
+function WorkflowFinishedRunResult({
+  node,
+  snapshot,
+}: {
+  node: WorkflowNode;
+  snapshot: WorkflowRunDetailSnapshot | null;
+}) {
   if (!snapshot) {
     return <pre>Run this block to capture a terminal snapshot.</pre>;
   }
   if (snapshot.kind === "command") {
     return <pre>{snapshot.transcript || snapshot.stdout || snapshot.stderr}</pre>;
   }
-
-  const conversation = readableAgentConversation(snapshot);
-  const label =
-    snapshot.status === "success"
-      ? "Completed"
-      : snapshot.status === "stopped"
-        ? "Stopped"
-        : snapshot.status === "error"
-          ? "Failed"
-          : "Running";
+  const message = workflowAgentLastMessage(node, snapshot);
   return (
-    <div className="workflow-run-details__snapshot">
-      <div className={`workflow-run-details__outcome is-${snapshot.status}`}>
-        <span />
-        <strong>{label}</strong>
-        <small>clean conversation snapshot</small>
-      </div>
-      <pre>{conversation || snapshot.stderr || "No conversation output was captured."}</pre>
+    <div className="workflow-run-details__answer">
+      <Suspense fallback={<div className="tab-loading-fallback" />}>
+        <MarkdownPreview source={message || snapshot.stderr || "No final message was captured."} />
+      </Suspense>
     </div>
   );
+}
+
+function workflowAgentLastMessage(
+  node: WorkflowNode,
+  snapshot: WorkflowRunDetailSnapshot,
+): string {
+  const output = parseJsonObject(node.rawOutput || node.summary || "");
+  const outputText = output ? textFromOutput(output) : "";
+  if (outputText && !/completed without text output/i.test(outputText)) return outputText;
+
+  const conversation = readableAgentConversation(snapshot);
+  const structured = [...conversation.matchAll(/^(?:Claude|Assistant):\n([\s\S]*?)(?=^(?:User|Claude|Assistant|Tool(?: · \S+)?|Tool result|Tool error):\n|$)/gm)];
+  const lastStructured = structured.length > 0 ? structured[structured.length - 1]?.[1]?.trim() : "";
+  return lastStructured || conversation.trim();
 }
 
 function readableAgentConversation(snapshot: WorkflowRunDetailSnapshot): string {
@@ -5445,6 +5475,7 @@ async function runAiTerminalWithRetries(
     codexApproval?: AiTerminalCodexApproval;
     codexSandbox?: AiTerminalCodexSandbox;
     effort?: AiTerminalEffort;
+    failOnTerminalError?: boolean;
     alwaysEnter?: boolean;
     conversationSessionId?: string;
     resumeConversation?: boolean;

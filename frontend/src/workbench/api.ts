@@ -1688,6 +1688,7 @@ export async function aiChatTerminalStream(
     codexApproval?: AiTerminalCodexApproval;
     codexSandbox?: AiTerminalCodexSandbox;
     effort?: AiTerminalEffort;
+    failOnTerminalError?: boolean;
     alwaysEnter?: boolean;
     conversationSessionId?: string;
     resumeConversation?: boolean;

@@ -8,6 +8,8 @@ import {
   type ClaudePermissionMode,
   type CodexApproval,
   type CodexSandbox,
+  extractAgentTerminalContent,
+  hasAgentTerminalFailure,
   runAgentTerminal,
 } from "./ai-terminal.js";
 import { applyClaudePluginSelection } from "./claude-plugins.js";
@@ -113,6 +115,7 @@ export interface AgentTerminalFailure {
 interface AgentTerminalProcessResult {
   content: string;
   transcript: string;
+  rawTranscript?: string;
   exitCode: number | null;
   signal: number | string | null;
 }
@@ -285,6 +288,25 @@ export function classifyAgentTerminalResultFailure(
   if (transcriptFailure.failed) return transcriptFailure;
 
   const modelOutput = terminalModelOutputBeforeError(result.content || result.transcript, prompt);
+
+  // The cleaned conversation intentionally removes terminal chrome. Keep the
+  // raw screen as a fallback so provider errors such as Codex 503 responses
+  // cannot disappear when the conversation has no assistant answer.
+  if (result.rawTranscript) {
+    const rawTranscriptFailure = classifyAgentTerminalFailure(
+      terminalTail(result.rawTranscript, 120),
+      prompt,
+    );
+    if (rawTranscriptFailure.failed) return rawTranscriptFailure;
+    if (hasAgentTerminalFailure(result.rawTranscript)) {
+      return agentTerminalLifecycleFailure(
+        "Agent terminal reported an error.",
+        false,
+        modelOutput,
+      );
+    }
+  }
+
   if (result.signal === "agent-stalled") {
     return agentTerminalLifecycleFailure(
       "Agent terminal stalled without output activity.",
@@ -370,7 +392,9 @@ function isRetryableAgentTerminalMessage(message: string): boolean {
 }
 
 function isAgentErrorSuperseded(text: string, errorAt: number): boolean {
-  const recovery = text.slice(errorAt);
+  const recovery = text
+    .slice(errorAt)
+    .replace(/(?:^|\n)\s*(?:Reconnecting|Retrying)\b[^\n]*/gi, "\n");
   return /(?:^|\n)\s*(?:[\p{S}\p{P}]\s*)?(?:Thought\s+for\s+\d|\p{L}[\p{L}'’-]*(?:…|\.\.\.)?\s*\(\s*\d+(?:\.\d+)?(?:ms|s|m|h)\b)/imu.test(
     recovery,
   );
@@ -713,6 +737,7 @@ async function executeAgentNode(
       codexApproval: agentCodexApproval(node),
       codexSandbox: agentCodexSandbox(node),
       effort: agentEffort(node),
+      retainRawTranscript: true,
       alwaysEnter: agentAlwaysEnter(node),
       conversationSessionId,
       resumeConversation: attempt > 0,
@@ -728,9 +753,16 @@ async function executeAgentNode(
       retries,
       retryForever,
     );
+    const terminalContent = extractAgentTerminalContent(
+      result.transcript || result.content,
+      currentPrompt,
+      node.providerKind,
+    );
     raw =
-      result.content ||
-      `${node.providerKind === "codex-cli" ? "Codex CLI" : "Claude Code CLI"} completed without text output.`;
+      result.content && !/completed without text output/i.test(result.content)
+        ? result.content
+        : terminalContent ||
+          `${node.providerKind === "codex-cli" ? "Codex CLI" : "Claude Code CLI"} completed without text output.`;
     terminalFailure = classifyAgentTerminalResultFailure(result, currentPrompt);
     if (!terminalFailure.failed) break;
     if (!shouldRetryAgentTerminalFailure(terminalFailure, attempt, retries, retryForever)) break;
@@ -2274,7 +2306,7 @@ function agentEffort(node: WorkflowNode): AgentEffort | undefined {
   ) {
     return value;
   }
-  return undefined;
+  return node.providerKind === "claude-cli" ? "high" : "medium";
 }
 
 function terminalModelOutputBeforeError(text: string, prompt: string): string {

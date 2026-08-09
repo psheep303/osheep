@@ -1516,6 +1516,24 @@
   background: var(--surface-1);
 }
 
+.workflow-run-details__open-session {
+  min-height: 24px;
+  padding: 3px 8px;
+  border: 1px solid rgba(96, 165, 250, 0.45);
+  border-radius: var(--radius-sm);
+  background: rgba(96, 165, 250, 0.12);
+  color: #9fc7ff;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.workflow-run-details__open-session:hover {
+  border-color: var(--color-link);
+  background: rgba(96, 165, 250, 0.2);
+  color: var(--color-link-strong);
+}
+
 .workflow-run-details__session {
   display: flex;
   align-items: center;
@@ -1612,6 +1630,22 @@
   line-height: 1.45;
   white-space: pre-wrap;
   text-align: left;
+}
+
+.workflow-run-details__answer {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 14px 16px;
+  color: var(--fg-default);
+  text-align: left;
+}
+
+.workflow-run-details__answer .markdown-preview {
+  max-width: none;
+  color: inherit;
+  font-size: 13px;
+  line-height: 1.6;
 }
 
 .workflow-observability {

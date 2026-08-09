@@ -310,10 +310,13 @@ function extractLastCodexAnswerFromJsonl(jsonl: string): string {
   for (let index = values.length - 1; index >= 0; index -= 1) {
     const value = values[index]!;
     const payload = objectValue(value.payload);
-    if (stringValue(value.type) === "event_msg" && stringValue(payload.type) === "task_complete") {
-      const answer = cleanStructuredText(stringValue(payload.last_agent_message));
-      if (answer) return answer;
-    }
+    const isComplete =
+      stringValue(value.type) === "task_complete" ||
+      (stringValue(value.type) === "event_msg" && stringValue(payload.type) === "task_complete");
+    const answer = cleanStructuredText(
+      stringValue(value.last_agent_message) || stringValue(payload.last_agent_message),
+    );
+    if (isComplete && answer) return answer;
   }
   for (let index = values.length - 1; index >= 0; index -= 1) {
     const value = values[index]!;
@@ -324,6 +327,10 @@ function extractLastCodexAnswerFromJsonl(jsonl: string): string {
       stringValue(payload.role) === "assistant"
     ) {
       const answer = contentText(payload.content);
+      if (answer) return answer;
+    }
+    if (stringValue(value.type) === "message" && stringValue(value.role) === "assistant") {
+      const answer = contentText(value.content);
       if (answer) return answer;
     }
   }
