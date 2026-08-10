@@ -1278,6 +1278,7 @@ function waitForAgentCompletion(
   return new Promise((resolve) => {
     let screenSignature = agentTerminalScreenSignature(rawTranscript());
     let screenChangedAt = Date.now();
+    let completionMarkerArmed = !isAgentTerminalCompletionMarkerVisible(kind, rawTranscript());
     const timer = setInterval(() => {
       if (done()) {
         clearInterval(timer);
@@ -1294,6 +1295,9 @@ function waitForAgentCompletion(
       const now = Date.now();
       const sinceSubmit = now - control.promptSubmittedAt;
       const transcript = rawTranscript();
+      const completionMarkerVisible = isAgentTerminalCompletionMarkerVisible(kind, transcript);
+      if (!completionMarkerVisible) completionMarkerArmed = true;
+      const hasFreshCompletionMarker = completionMarkerArmed && completionMarkerVisible;
       const nextScreenSignature = agentTerminalScreenSignature(transcript);
       if (nextScreenSignature !== screenSignature) {
         screenSignature = nextScreenSignature;
@@ -1388,7 +1392,7 @@ function waitForAgentCompletion(
       }
       if (
         sinceSubmit >= RESPONSE_MIN_MS &&
-        now - screenChangedAt >= RESPONSE_IDLE_MS &&
+        (hasFreshCompletionMarker || now - screenChangedAt >= RESPONSE_IDLE_MS) &&
         isAgentTerminalReadyForAutoFinish(kind, transcript, state)
       ) {
         if (control.lastCompletionState !== "ready-for-success") {
@@ -1493,7 +1497,9 @@ export function agentTerminalScreenSignatureForTest(rawTranscript: string): stri
 
 function isAgentTerminalBusy(rawTranscript: string): boolean {
   const screen = agentTerminalScreenSignature(rawTranscript);
-  return lastAgentActivityIndex(screen) >= 0;
+  const activityAt = lastAgentActivityIndex(screen);
+  if (activityAt < 0) return false;
+  return activityAt > lastClaudeCompletionFooterIndex(screen);
 }
 
 function isAgentTerminalRetrying(screen: string): boolean {
@@ -1508,8 +1514,19 @@ function lastAgentActivityIndex(screen: string): number {
   return maxLastRegexIndex(screen, [
     /\bEsc to interrupt\b/i,
     /\b(?:Reconnecting|Retrying)(?:\.\.\.)?(?:\s+\d+\s*\/\s*\d+)?/i,
+    /(?:^|\n)\s*Thought\s+for\s+\d+(?:\.\d+)?(?:ms|s|m|h)\b[^\n]*\bctrl\+o\s+to\s+expand\b/iu,
     /(?:^|\n)\s*(?:[\p{S}\p{P}]\s*)?\p{L}[\p{L}'’-]*(?:…|\.\.\.)?\s*\(\s*\d+(?:\.\d+)?(?:ms|s|m|h)\b[^\n)]*\)/iu,
   ]);
+}
+
+function lastClaudeCompletionFooterIndex(screen: string): number {
+  let offset = 0;
+  let last = -1;
+  for (const line of screen.split("\n")) {
+    if (isClaudeCompletionFooterLine(line.trim())) last = offset;
+    offset += line.length + 1;
+  }
+  return last;
 }
 
 function isAgentTerminalReadyForAutoFinish(
@@ -1520,10 +1537,11 @@ function isAgentTerminalReadyForAutoFinish(
   if (isAgentTerminalBusy(rawTranscript)) return false;
   const screen = agentTerminalScreenSignature(rawTranscript);
   if (kind === "claude-cli") {
-    if (state === "empty" && !isClaudeCompletionFooterVisible(screen)) return false;
+    const completionMarkerVisible = isClaudeCompletionFooterVisible(screen);
+    if (state === "empty" && !completionMarkerVisible) return false;
     if (hasActiveClaudeBackgroundAgent(screen)) return false;
-    if (!isClaudeIdlePromptVisible(screen)) return false;
-    return !isClaudeChoicePromptVisible(screen);
+    if (isClaudeChoicePromptVisible(screen)) return false;
+    return completionMarkerVisible || isClaudeIdlePromptVisible(screen);
   }
   if (!isCodexIdlePromptVisible(screen)) return false;
   return state === "ready-for-success" || isCodexCompletionFooterVisible(screen);
@@ -1572,19 +1590,33 @@ export function agentTerminalReadyForManualSuccessForTest(
 
 function isClaudeIdlePromptVisible(screen: string): boolean {
   const tail = terminalTail(screen, 10);
-  return /\b(?:(?:auto|manual|plan)\s+mode|bypass permissions|accept edits)\s+on\b[^\n]*for agents/i.test(
-    tail,
+  return tail.split("\n").some((line) => isClaudeIdleFooterLine(line.trim()));
+}
+
+function isAgentTerminalCompletionMarkerVisible(
+  kind: CliProviderKind,
+  rawTranscript: string,
+): boolean {
+  if (kind !== "claude-cli") return false;
+  return isClaudeCompletionFooterVisible(agentTerminalScreenSignature(rawTranscript));
+}
+
+function isClaudeIdleFooterLine(trimmed: string): boolean {
+  return /\b(?:(?:auto|manual|plan)\s+mode|bypass permissions|accept edits)\s+on\b[^\n]*\bagents?\b/i.test(
+    trimmed,
   );
 }
 
 function isClaudeCompletionFooterVisible(screen: string): boolean {
   return terminalTail(screen, 12)
     .split("\n")
-    .some((line) =>
-      /^\s*[\p{S}\p{P}]*\s*\p{L}[\p{L}'’-]*\s+for\s+\d+(?:\.\d+)?(?:ms|s|m|h)\b/iu.test(
-        line,
-      ),
-    );
+    .some((line) => isClaudeCompletionFooterLine(line.trim()));
+}
+
+function isClaudeCompletionFooterLine(trimmed: string): boolean {
+  return /^[^\p{L}\p{N}]*\p{L}[\p{L}'’-]*(?:\s+\p{L}[\p{L}'’-]*)*\s+for\s+\d+(?:\.\d+)?(?:ms|s|m|h)(?:\s+\d+(?:\.\d+)?(?:ms|s|m|h))*\s*$/iu.test(
+    trimmed,
+  );
 }
 
 function isClaudeChoicePromptVisible(screen: string): boolean {
@@ -1602,6 +1634,9 @@ function resolveAgentTerminalContentState(
 
   const screen = agentTerminalScreenSignature(rawTranscript);
   if (isClaudeChoicePromptVisible(screen)) return "waiting-for-choice";
+  if (state === "empty" && isClaudeCompletionFooterVisible(screen) && isClaudeIdlePromptVisible(screen)) {
+    return "ready-for-success";
+  }
   return state === "waiting-for-choice" ? "ready-for-success" : state;
 }
 
@@ -1699,6 +1734,7 @@ function isTerminalChoiceReleaseLine(trimmed: string): boolean {
   if (!trimmed) return false;
   if (isAgentTerminalChromeLine(trimmed) || isAgentTerminalPromptLine(trimmed)) return false;
   if (isTerminalChoiceChromeLine(trimmed)) return false;
+  if (isClaudeCompletionFooterLine(trimmed) || isClaudeIdleFooterLine(trimmed)) return true;
   if (/\b(?:Done|completed|successfully|auto-finished|manual-success)\b/i.test(trimmed)) {
     return true;
   }
@@ -1713,6 +1749,8 @@ function lastTerminalChoiceReleaseIndex(text: string): number {
     /\bauto-finished\b/i,
     /\bmanual-success\b/i,
     /\b(?:auto mode|bypass permissions) on\s*\(shift\+tab to cycle\)/i,
+    /\baccept edits on\s*\(shift\+tab to cycle\)/i,
+    /(?:^|\n)[^\p{L}\p{N}\n]*\p{L}[\p{L}'’-]*(?:\s+\p{L}[\p{L}'’-]*)*\s+for\s+\d+(?:\.\d+)?(?:ms|s|m|h)(?:\s+\d+(?:\.\d+)?(?:ms|s|m|h))*\s*$/imu,
     /(?:已完成|完成|整理完成|执行完成|通过)/,
   ]);
 }

@@ -569,6 +569,84 @@ test("Claude update warning after a completion footer still finishes successfull
   assert.equal(agentTerminalReadyForAutoFinishForTest("claude-cli", screen, state), true);
 });
 
+test("Claude singular-agent idle footer finishes the screenshot layout", () => {
+  const screen = [
+    "Error: Exit code 127",
+    "/usr/bin/bash: line 6: apply_patch: command not found",
+    "Thought for 7s (ctrl+o to expand)",
+    "当前环境没有 apply_patch 命令，但目录已创建。",
+    "● Write(test/claude/index.html)",
+    "  └ Wrote 1 line to test/claude/index.html",
+    "已创建 test/claude/index.html。",
+    "✻ Brewed for 1m 51s",
+    "────────────────────────────────────────",
+    "❯",
+    "⏵⏵ accept edits on (shift+tab to cycle) · ← 1 agent",
+    "✗ Auto-update failed · Run claude doctor",
+  ].join("\n");
+  const content = extractAgentTerminalContentForTest(screen, "", "claude-cli");
+  const state = resolveAgentTerminalContentStateForTest("claude-cli", screen, content);
+
+  assert.equal(hasAgentTerminalFailureForTest(screen), false);
+  assert.equal(state, "ready-for-success");
+  assert.equal(agentTerminalReadyForAutoFinishForTest("claude-cli", screen, state), true);
+});
+
+test("Claude word-for-time footer is a completion marker without decoration", () => {
+  const screen = [
+    "● 已完成文件修改并验证结果。",
+    "Crunched for 39s",
+    "✗ Auto-update failed · Run claude doctor",
+  ].join("\n");
+
+  assert.equal(
+    agentTerminalReadyForAutoFinishForTest("claude-cli", screen, "ready-for-success"),
+    true,
+  );
+});
+
+test("Claude word-for-time footer supports compound durations", () => {
+  const screen = ["已完成。", "Sautéed for 1h 2m 3s"].join("\n");
+
+  assert.equal(
+    agentTerminalReadyForAutoFinishForTest("claude-cli", screen, "ready-for-success"),
+    true,
+  );
+});
+
+test("Claude Thought for duration remains generation activity, not completion", () => {
+  const screen = [
+    "Thought for 20s, searched for 1 pattern (ctrl+o to expand)",
+    "● 我先看一下 test/claude 里现有文件。",
+    "accept edits on (shift+tab to cycle) · ← 1 agent",
+  ].join("\n");
+
+  assert.equal(
+    agentTerminalReadyForAutoFinishForTest("claude-cli", screen, "ready-for-success"),
+    false,
+  );
+});
+
+test("Claude completed output releases an earlier waiting choice", () => {
+  const screen = [
+    "Claude has written up a plan and is ready to execute. Would you like to proceed?",
+    "❯ 1. Yes, and use auto mode",
+    "  2. Yes, manually approve edits",
+    "  3. Tell Claude what to change",
+    "shift+tab to approve with this feedback",
+    "已完成修改并通过验证。",
+    "✻ Brewed for 1m 51s",
+    "❯",
+    "⏵⏵ accept edits on (shift+tab to cycle) · ← 1 agent",
+  ].join("\n");
+
+  assert.equal(classifyAgentTerminalContent(screen), "ready-for-success");
+  assert.equal(
+    resolveAgentTerminalContentStateForTest("claude-cli", screen, ""),
+    "ready-for-success",
+  );
+});
+
 test("Claude task errors using the ballot-x marker finish as terminal errors", () => {
   const screen = [
     "✗ Error: request failed while calling the provider",
