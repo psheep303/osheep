@@ -159,7 +159,6 @@ test("live agent run details capture terminal session and output frames", async 
     node,
     startedAt: 1_000,
     autoSuccess: true,
-    minUpdateIntervalMs: 0,
     writeSnapshot: async (snapshot) => {
       writes.push(snapshot);
     },
@@ -171,13 +170,13 @@ test("live agent run details capture terminal session and output frames", async 
   await details.handleFrame({ type: "output", data: "first chunk\n" });
   await details.handleFrame({ type: "status", status: "ready" });
 
-  assert.equal(writes.length, 5);
+  assert.equal(writes.length, 4);
   assert.equal(writes[1]?.terminalSessionId, "t_live");
   assert.equal(writes[2]?.conversationSessionId, "conv_live");
-  assert.equal(writes[3]?.stdout, "first chunk\n");
-  assert.match(writes[3]?.transcript ?? "", /\[stdout\] first chunk/);
-  assert.equal(writes[4]?.terminalStatus, "ready");
-  assert.equal(writes[4]?.status, "running");
+  assert.equal(writes[3]?.terminalStatus, "ready");
+  assert.equal(writes[3]?.status, "running");
+  assert.equal(writes[3]?.stdout, "");
+  assert.equal(details.snapshot("running").stdout, "first chunk\n");
 });
 
 test("workflow scheduler runs sibling branches in parallel and waits before a join", async () => {
@@ -346,7 +345,6 @@ test("live agent run details bound stored terminal output", async () => {
     node,
     startedAt: 1_000,
     autoSuccess: true,
-    minUpdateIntervalMs: 0,
     writeSnapshot: async (snapshot) => {
       writes.push(snapshot);
     },
@@ -357,8 +355,8 @@ test("live agent run details bound stored terminal output", async () => {
     await details.handleFrame({ type: "output", data: chunk });
   }
 
-  const last = writes.at(-1);
-  assert.ok(last);
+  assert.equal(writes.length, 0);
+  const last = details.snapshot("running");
   assert.ok(last.stdout.length < 300_000);
   assert.match(last.stderr, /run detail output exceeded 256 KiB/);
   assert.match(last.transcript, /run detail output exceeded 256 KiB/);

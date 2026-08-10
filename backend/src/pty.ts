@@ -5,6 +5,7 @@ import { config, platform } from "./config.js";
 import { errors } from "./errors.js";
 import { buildBashGuard, buildCmdGuard, buildPowerShellGuard } from "./pty-guard.js";
 import { findExecutable } from "./runtime-tools.js";
+import { TerminalReplayBuffer } from "./terminal-replay-buffer.js";
 import type { WorkspaceInfo } from "./workspace.js";
 
 export interface ShellProfile {
@@ -23,8 +24,8 @@ export interface TerminalSession {
   createdAt: number;
   pty: nodePty.IPty;
   lastActivity: number;
-  // Buffered output that arrived before any WS attached or between attaches.
-  scrollback: string;
+  // Bounded recent output used to reconstruct a newly attached xterm.
+  replayBuffer: TerminalReplayBuffer;
   // Currently attached WS sink (single attach per session for MVP).
   sink: ((frame: string) => void) | null;
   taps: Set<(frame: string) => void>;
@@ -189,7 +190,7 @@ export function createSession(input: CreateSessionInput): TerminalSession {
     createdAt: Date.now(),
     pty,
     lastActivity: Date.now(),
-    scrollback: "",
+    replayBuffer: new TerminalReplayBuffer(),
     sink: null,
     taps: new Set(),
     idleTimer: null,
@@ -205,15 +206,7 @@ export function createSession(input: CreateSessionInput): TerminalSession {
 
   pty.onData((data) => {
     bumpActivity(session);
-    const frame = JSON.stringify({ type: "output", data });
-    for (const tap of session.taps) tap(frame);
-    if (session.sink) {
-      session.sink(frame);
-    } else {
-      // Keep a bounded buffer so a slightly-delayed WS still sees the prompt.
-      const MAX = 64 * 1024;
-      session.scrollback = (session.scrollback + data).slice(-MAX);
-    }
+    publishPtyOutput(session, data);
   });
   pty.onExit(({ exitCode, signal }) => {
     const frame = JSON.stringify({ type: "exit", code: exitCode, signal: signal ?? null });
@@ -222,6 +215,17 @@ export function createSession(input: CreateSessionInput): TerminalSession {
     cleanupSession(session, "pty-exit");
   });
   return session;
+}
+
+function publishPtyOutput(session: TerminalSession, data: string): void {
+  session.replayBuffer.append(data);
+  const frame = JSON.stringify({ type: "output", data });
+  for (const tap of session.taps) tap(frame);
+  if (session.sink) session.sink(frame);
+}
+
+export function publishPtyOutputForTest(session: TerminalSession, data: string): void {
+  publishPtyOutput(session, data);
 }
 
 export function getSession(id: string): TerminalSession {
@@ -281,8 +285,7 @@ export function attachSink(
   sink: (frame: string) => void,
 ): { detach: () => void; replayed: string } {
   s.sink = sink;
-  const replayed = s.scrollback;
-  s.scrollback = "";
+  const replayed = s.replayBuffer.value();
   return {
     detach: () => {
       if (s.sink === sink) s.sink = null;
@@ -296,7 +299,7 @@ export function addTap(
   tap: (frame: string) => void,
 ): { detach: () => void; replayed: string } {
   s.taps.add(tap);
-  const replayed = s.scrollback;
+  const replayed = s.replayBuffer.value();
   return {
     detach: () => {
       s.taps.delete(tap);

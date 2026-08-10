@@ -29,6 +29,7 @@ import {
   type WorkflowRun,
   type WorkflowRunTrace,
 } from "./workflows.js";
+import { publishWorkflowRuntime } from "./workflow-events.js";
 import { resolveWorkspace, type WorkspaceInfo } from "./workspace.js";
 
 type WorkflowBlockOutput = Record<string, unknown>;
@@ -92,7 +93,6 @@ interface LiveAgentRunDetailsOptions {
   autoSuccess: boolean;
   writeSnapshot: (snapshot: WorkflowRunDetailSnapshot) => Promise<void>;
   logs?: RunLogEntry[];
-  minUpdateIntervalMs?: number;
 }
 
 export interface LiveAgentRunDetails {
@@ -100,7 +100,6 @@ export interface LiveAgentRunDetails {
   update: (
     status: WorkflowRunDetailSnapshot["status"],
     completedAt?: number,
-    force?: boolean,
   ) => Promise<void>;
   snapshot: (
     status: WorkflowRunDetailSnapshot["status"],
@@ -129,6 +128,7 @@ const activeRuns = new Map<string, WorkflowRunState>();
 const RUN_LOG_CHAR_LIMIT = 256 * 1024;
 const RUN_LOG_TRUNCATION_TEXT =
   "[osheep] run detail output exceeded 256 KiB; keeping the latest output only.";
+const runLogSizes = new WeakMap<RunLogEntry[], number>();
 const AGENT_RETAINED_OUTPUT_CHAR_LIMIT = 512 * 1024;
 const AGENT_RETAINED_OUTPUT_TRUNCATION_TEXT =
   "[osheep] retained retry output exceeded 512 KiB; keeping the latest output only.";
@@ -164,42 +164,39 @@ export function createLiveAgentRunDetails(
   options: LiveAgentRunDetailsOptions,
 ): LiveAgentRunDetails {
   const logs = options.logs ?? [];
-  const minUpdateIntervalMs = Math.max(0, options.minUpdateIntervalMs ?? 250);
   let terminalSessionId = "";
   let conversationSessionId = "";
   let terminalStatus = "";
-  let lastUpdateAt = 0;
   let queue = Promise.resolve();
 
-  const snapshot = (status: WorkflowRunDetailSnapshot["status"], completedAt?: number) =>
+  const buildSnapshot = (
+    status: WorkflowRunDetailSnapshot["status"],
+    completedAt: number | undefined,
+    snapshotLogs: RunLogEntry[],
+  ) =>
     agentRunSnapshot(
       options.node,
       status,
       options.startedAt,
       completedAt,
-      logs,
+      snapshotLogs,
       terminalSessionId || undefined,
       conversationSessionId || undefined,
       terminalStatus || undefined,
       options.autoSuccess,
     );
+  const snapshot = (status: WorkflowRunDetailSnapshot["status"], completedAt?: number) =>
+    buildSnapshot(status, completedAt, logs);
 
   const enqueue = (next: WorkflowRunDetailSnapshot) => {
     queue = queue.then(() => options.writeSnapshot(next));
     return queue;
   };
 
-  const update = (
-    status: WorkflowRunDetailSnapshot["status"],
-    completedAt?: number,
-    force = true,
-  ) => {
-    const now = Date.now();
-    if (!force && minUpdateIntervalMs > 0 && now - lastUpdateAt < minUpdateIntervalMs) {
-      return queue;
-    }
-    lastUpdateAt = now;
-    return enqueue(snapshot(status, completedAt));
+  const update = (status: WorkflowRunDetailSnapshot["status"], completedAt?: number) => {
+    // Live output is already available through the PTY stream. Persist only the
+    // metadata needed to reconnect; the complete transcript is saved at finish.
+    return enqueue(buildSnapshot(status, completedAt, []));
   };
 
   const handleFrame = (frame: AgentTerminalFrame) => {
@@ -213,7 +210,7 @@ export function createLiveAgentRunDetails(
     }
     if (frame.type === "output") {
       appendRunLog(logs, { stream: "stdout", content: frame.data });
-      return update("running", undefined, false);
+      return queue;
     }
     if (frame.type === "status") {
       terminalStatus = frame.status;
@@ -482,6 +479,23 @@ export async function startWorkflowRun(
     ),
     runs: [...current.runs.slice(-49), run],
   }));
+  for (const node of record.nodes) {
+    if (resetIds.has(node.id)) {
+      publishWorkflowRuntime(workspace.path, workflowId, {
+        type: "node",
+        updatedAt: record.updatedAt,
+        node,
+      });
+    }
+  }
+  const startedRun = record.runs.find((item) => item.id === run.id);
+  if (startedRun) {
+    publishWorkflowRuntime(workspace.path, workflowId, {
+      type: "run",
+      updatedAt: record.updatedAt,
+      run: startedRun,
+    });
+  }
 
   const abort = new AbortController();
   const done = runWorkflowInBackground(workspace, workflowId, run, ordered, abort).catch(
@@ -621,8 +635,10 @@ async function runWorkflowInBackground(
     const failure = fatalError ?? e;
     const message = (failure as Error).message || "Workflow failed.";
     const stopped = fatalError === undefined && (abort.signal.aborted || message === "Stopped");
-    await updateWorkflow(workspace.path, workflowId, (record) => {
+    let failedNodeIds: string[] = [];
+    const failedRecord = await updateWorkflow(workspace.path, workflowId, (record) => {
       const activeNodes = record.nodes.filter((node) => node.status === "running");
+      failedNodeIds = activeNodes.map((node) => node.id);
       const nodes = activeNodes.length
         ? record.nodes.map((node) =>
             node.status === "running"
@@ -638,6 +654,24 @@ async function runWorkflowInBackground(
         : record.nodes;
       return finishRunRecord({ ...record, nodes }, run.id, stopped ? "stopped" : "error", message);
     });
+    for (const nodeId of failedNodeIds) {
+      const node = failedRecord.nodes.find((item) => item.id === nodeId);
+      if (node) {
+        publishWorkflowRuntime(workspace.path, workflowId, {
+          type: "node",
+          updatedAt: failedRecord.updatedAt,
+          node,
+        });
+      }
+    }
+    const failedRun = failedRecord.runs.find((item) => item.id === run.id);
+    if (failedRun) {
+      publishWorkflowRuntime(workspace.path, workflowId, {
+        type: "run",
+        updatedAt: failedRecord.updatedAt,
+        run: failedRun,
+      });
+    }
   }
 }
 
@@ -854,24 +888,35 @@ async function executeAgentNode(
       });
       await details.update("running");
     }
-    result = await runAgentTerminal({
-      workspace,
-      kind: node.providerKind,
-      model: node.model || "default",
-      prompt: currentPrompt,
-      autoSuccess,
-      claudePermissionMode: agentClaudePermissionMode(node),
-      mode: agentMode(node),
-      codexApproval: agentCodexApproval(node),
-      codexSandbox: agentCodexSandbox(node),
-      effort: agentEffort(node),
-      retainRawTranscript: true,
-      alwaysEnter: agentAlwaysEnter(node),
-      conversationSessionId,
-      resumeConversation: attempt > 0,
-      signal: abort.signal,
-      onFrame,
-    });
+    try {
+      result = await runAgentTerminal({
+        workspace,
+        kind: node.providerKind,
+        model: node.model || "default",
+        prompt: currentPrompt,
+        autoSuccess,
+        claudePermissionMode: agentClaudePermissionMode(node),
+        mode: agentMode(node),
+        codexApproval: agentCodexApproval(node),
+        codexSandbox: agentCodexSandbox(node),
+        effort: agentEffort(node),
+        retainRawTranscript: true,
+        alwaysEnter: agentAlwaysEnter(node),
+        conversationSessionId,
+        resumeConversation: attempt > 0,
+        signal: abort.signal,
+        onFrame,
+      });
+    } catch (error) {
+      await details.drain();
+      await patchWorkflowNode(workspace.path, record.id, node.id, {
+        config: {
+          ...(node.config ?? {}),
+          runDetails: details.snapshot("error", Date.now()),
+        },
+      });
+      throw error;
+    }
     await details.drain();
     if (abort.signal.aborted) throw new Error("Stopped");
     terminalTranscript = appendAgentAttemptTranscript(
@@ -1498,25 +1543,45 @@ function topoOrder(
   return { nodeIds: ordered };
 }
 
-function patchWorkflowNode(
+async function patchWorkflowNode(
   workspaceRoot: string,
   workflowId: string,
   nodeId: string,
   patch: Partial<WorkflowNode>,
 ): Promise<WorkflowRecord> {
-  return updateWorkflow(workspaceRoot, workflowId, (record) => patchNode(record, nodeId, patch));
+  const record = await updateWorkflow(workspaceRoot, workflowId, (record) =>
+    patchNode(record, nodeId, patch),
+  );
+  const node = record.nodes.find((item) => item.id === nodeId);
+  if (node) {
+    publishWorkflowRuntime(workspaceRoot, workflowId, {
+      type: "node",
+      updatedAt: record.updatedAt,
+      node,
+    });
+  }
+  return record;
 }
 
-function patchWorkflowRun(
+async function patchWorkflowRun(
   workspaceRoot: string,
   workflowId: string,
   runId: string,
   updater: (run: WorkflowRun) => WorkflowRun,
 ): Promise<WorkflowRecord> {
-  return updateWorkflow(workspaceRoot, workflowId, (record) => ({
+  const record = await updateWorkflow(workspaceRoot, workflowId, (record) => ({
     ...record,
     runs: record.runs.map((run) => (run.id === runId ? updater(run) : run)),
   }));
+  const run = record.runs.find((item) => item.id === runId);
+  if (run) {
+    publishWorkflowRuntime(workspaceRoot, workflowId, {
+      type: "run",
+      updatedAt: record.updatedAt,
+      run,
+    });
+  }
+  return record;
 }
 
 function appendRunTrace(run: WorkflowRun, trace: WorkflowRunTrace): WorkflowRun {
@@ -1716,9 +1781,18 @@ async function finishRun(
   status: WorkflowRun["status"],
   error?: string,
 ): Promise<WorkflowRecord> {
-  return await updateWorkflow(workspaceRoot, workflowId, (record) =>
+  const record = await updateWorkflow(workspaceRoot, workflowId, (record) =>
     finishRunRecord(record, runId, status, error),
   );
+  const run = record.runs.find((item) => item.id === runId);
+  if (run) {
+    publishWorkflowRuntime(workspaceRoot, workflowId, {
+      type: "run",
+      updatedAt: record.updatedAt,
+      run,
+    });
+  }
+  return record;
 }
 
 function finishRunRecord(
@@ -2587,8 +2661,10 @@ function stripAnsi(text: string): string {
 
 function appendRunLog(logs: RunLogEntry[], entry: RunLogEntry): void {
   if (!entry.content) return;
+  const currentSize =
+    runLogSizes.get(logs) ?? logs.reduce((sum, log) => sum + log.content.length, 0);
   logs.push(entry);
-  trimRunLogs(logs);
+  trimRunLogs(logs, currentSize + entry.content.length);
 }
 
 function appendBoundedJoinedText(
@@ -2605,31 +2681,32 @@ function appendBoundedJoinedText(
   return marker + joined.slice(-tailLength);
 }
 
-function trimRunLogs(logs: RunLogEntry[]): void {
-  const source = logs.filter((log) => !isRunLogTruncationMarker(log));
-  const hadMarker = source.length !== logs.length;
-  const total = source.reduce((sum, log) => sum + log.content.length, 0);
+function trimRunLogs(logs: RunLogEntry[], total: number): void {
   if (total <= RUN_LOG_CHAR_LIMIT) {
-    if (hadMarker) logs.splice(0, logs.length, runLogTruncationMarker(), ...source);
+    runLogSizes.set(logs, total);
     return;
   }
 
   const marker = runLogTruncationMarker();
   const target = Math.max(0, RUN_LOG_CHAR_LIMIT - marker.content.length);
-  const kept: RunLogEntry[] = [];
-  let remaining = target;
-  for (let i = source.length - 1; i >= 0 && remaining > 0; i -= 1) {
-    const log = source[i]!;
-    if (log.content.length <= remaining) {
-      kept.push(log);
-      remaining -= log.content.length;
+  let contentTotal = total;
+  if (logs[0] && isRunLogTruncationMarker(logs[0])) {
+    contentTotal -= logs[0].content.length;
+    logs.shift();
+  }
+  while (contentTotal > target && logs.length > 0) {
+    const overflow = contentTotal - target;
+    const first = logs[0]!;
+    if (first.content.length <= overflow) {
+      contentTotal -= first.content.length;
+      logs.shift();
     } else {
-      kept.push({ ...log, content: log.content.slice(-remaining) });
-      remaining = 0;
+      logs[0] = { ...first, content: first.content.slice(overflow) };
+      contentTotal -= overflow;
     }
   }
-  kept.reverse();
-  logs.splice(0, logs.length, marker, ...kept);
+  logs.unshift(marker);
+  runLogSizes.set(logs, marker.content.length + contentTotal);
 }
 
 function isRunLogTruncationMarker(log: RunLogEntry): boolean {

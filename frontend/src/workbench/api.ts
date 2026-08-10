@@ -1210,6 +1210,11 @@ export interface WorkflowRecord {
   runs: WorkflowRun[];
 }
 
+export type WorkflowRuntimeEvent =
+  | { type: "ready"; updatedAt: number }
+  | { type: "node"; updatedAt: number; node: WorkflowNode }
+  | { type: "run"; updatedAt: number; run: WorkflowRun };
+
 export interface WorkflowSummary {
   id: string;
   title: string;
@@ -1233,6 +1238,12 @@ export async function getWorkflow(
   workflowId: string,
 ): Promise<WorkflowRecord> {
   return await http.get(workflowsUrl(workspaceId, `/${encodeURIComponent(workflowId)}`));
+}
+
+export function openWorkflowRuntimeSocket(workspaceId: string, workflowId: string): WebSocket {
+  return openTerminalSocket(
+    workflowsUrl(workspaceId, `/${encodeURIComponent(workflowId)}/events`),
+  );
 }
 
 export async function createWorkflow(

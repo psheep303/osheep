@@ -4,6 +4,7 @@ import "@xterm/xterm/css/xterm.css";
 import {
   type CSSProperties,
   lazy,
+  memo,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
   type PointerEvent as ReactPointerEvent,
@@ -42,6 +43,7 @@ import {
   getCodexPlugins,
   listAgentSessions,
   openTerminalSocket,
+  openWorkflowRuntimeSocket,
   pauseAiTerminal,
   type RemoteMcpTool,
   type RunResult,
@@ -55,11 +57,13 @@ import {
   type WorkflowRun,
   type WorkflowRunStatus,
   type WorkflowRunTrace,
+  type WorkflowRuntimeEvent,
   writeFile,
 } from "./api";
 import { ClaudeLogo, OpenAILogo } from "./BrandIcons";
 import { ContextMenu, type CtxMenuSection } from "./ContextMenu";
 import { cleanAgentTerminalConversation } from "./terminal-conversation";
+import { createTerminalWriteBatcher } from "./terminal-write-batcher";
 import { normalizeLightTerminalAnsi, workflowXtermTheme, xtermAnsiTheme } from "./theme";
 import {
   blockOutputText,
@@ -739,6 +743,7 @@ export function WorkflowTab({
 }: WorkflowTabProps) {
   const { t } = useUiPreferences();
   const [workflow, setWorkflow] = useState<WorkflowRecord | null>(null);
+  const [runtimeReadyWorkflowKey, setRuntimeReadyWorkflowKey] = useState("");
   const workflowRef = useRef<WorkflowRecord | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -784,16 +789,21 @@ export function WorkflowTab({
   const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const abortRef = useRef<AbortController | null>(null);
   const waitingAlertKeyRef = useRef("");
+  const workflowRuntimeConnectedRef = useRef(false);
+  const workflowRuntimeEventSeqRef = useRef(0);
+  const onWorkflowChangedRef = useRef(onWorkflowChanged);
   const autoSeeRunStartedAtRef = useRef(0);
   const autoSeenMarkdownRef = useRef<Set<string>>(new Set());
   const undoStackRef = useRef<WorkflowRecord[]>([]);
   const redoStackRef = useRef<WorkflowRecord[]>([]);
   const [historyTick, setHistoryTick] = useState(0);
+  onWorkflowChangedRef.current = onWorkflowChanged;
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
+    setRuntimeReadyWorkflowKey("");
     setSelectedId(null);
     setReadmeOpen(false);
     setReadmeEditing(false);
@@ -807,6 +817,7 @@ export function WorkflowTab({
         localRevisionRef.current = 0;
         workflowRef.current = record;
         setWorkflow(record);
+        setRuntimeReadyWorkflowKey(`${workspaceId}\0${workflowId}`);
         onTemplateBinding(record.templateBinding);
         setRunning(workflowIsRunning(record));
         window.requestAnimationFrame(() => {
@@ -828,6 +839,119 @@ export function WorkflowTab({
       abortRef.current?.abort();
     };
   }, [workspaceId, workflowId]);
+
+  useEffect(() => {
+    if (runtimeReadyWorkflowKey !== `${workspaceId}\0${workflowId}`) return;
+    let disposed = false;
+    let socket: WebSocket | null = null;
+    let retryTimer: number | null = null;
+
+    const applyEvent = (event: WorkflowRuntimeEvent) => {
+      workflowRuntimeEventSeqRef.current += 1;
+      const current = workflowRef.current;
+      if (!current || event.type === "ready") return;
+      let next = current;
+      if (event.type === "node") {
+        const layout = runtimeLayoutRef.current.get(event.node.id);
+        const node = layout ? { ...event.node, ...layout } : event.node;
+        if (!current.nodes.some((item) => item.id === node.id)) return;
+        next = {
+          ...current,
+          updatedAt: Math.max(current.updatedAt, event.updatedAt),
+          nodes: current.nodes.map((item) => (item.id === node.id ? node : item)),
+        };
+      } else if (event.type === "run") {
+        const exists = current.runs.some((item) => item.id === event.run.id);
+        next = {
+          ...current,
+          updatedAt: Math.max(current.updatedAt, event.updatedAt),
+          runs: exists
+            ? current.runs.map((item) => (item.id === event.run.id ? event.run : item))
+            : [...current.runs.slice(-49), event.run],
+        };
+      }
+      workflowRef.current = next;
+      setWorkflow(next);
+      const isRunning = workflowIsRunning(next);
+      setRunning(isRunning);
+      if (!isRunning && event.type === "run" && event.run.status !== "running") {
+        onWorkflowChangedRef.current();
+      }
+    };
+
+    const refreshIfBehind = (updatedAt: number) => {
+      const current = workflowRef.current;
+      if (
+        !current ||
+        current.updatedAt >= updatedAt ||
+        nodeDragRef.current ||
+        pendingSaveRef.current ||
+        saveInFlightRef.current > 0
+      ) {
+        return;
+      }
+      const requestedRevision = localRevisionRef.current;
+      void apiGetWorkflow(workspaceId, workflowId)
+        .then((record) => {
+          if (
+            disposed ||
+            !canApplyWorkflowRefresh({
+              requestedRevision,
+              currentRevision: localRevisionRef.current,
+              dragging: nodeDragRef.current !== null,
+              pendingSave: pendingSaveRef.current !== null || saveInFlightRef.current > 0,
+            })
+          ) {
+            return;
+          }
+          const next = applyNodePositions(record, runtimeLayoutRef.current);
+          workflowRef.current = next;
+          setWorkflow(next);
+          setRunning(workflowIsRunning(next));
+        })
+        .catch(() => undefined);
+    };
+
+    const connect = () => {
+      if (disposed) return;
+      socket = openWorkflowRuntimeSocket(workspaceId, workflowId);
+      socket.onmessage = (message) => {
+        try {
+          const event = JSON.parse(message.data) as
+            | WorkflowRuntimeEvent
+            | { type: "ping" }
+            | { type: "error"; message?: string };
+          if (event.type === "ping") {
+            if (socket?.readyState === WebSocket.OPEN) {
+              socket.send(JSON.stringify({ type: "pong" }));
+            }
+            return;
+          }
+          if (event.type === "ready") {
+            workflowRuntimeConnectedRef.current = true;
+            refreshIfBehind(event.updatedAt);
+            return;
+          }
+          if (event.type === "node" || event.type === "run") applyEvent(event);
+        } catch {
+          /* ignore malformed runtime events */
+        }
+      };
+      socket.onclose = () => {
+        workflowRuntimeConnectedRef.current = false;
+        if (!disposed) retryTimer = window.setTimeout(connect, 1_000);
+      };
+      socket.onerror = () => socket?.close();
+    };
+
+    connect();
+    return () => {
+      disposed = true;
+      workflowRuntimeConnectedRef.current = false;
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
+      socket?.close();
+    };
+  }, [workspaceId, workflowId, runtimeReadyWorkflowKey]);
 
   useEffect(() => {
     if (!workflowId || !workspaceId) return;
@@ -853,6 +977,7 @@ export function WorkflowTab({
         const next = applyNodePositions(record, runtimeLayoutRef.current);
         workflowRef.current = next;
         setWorkflow(next);
+        setRuntimeReadyWorkflowKey(`${workspaceId}\0${workflowId}`);
         setRunning(isRunning);
         const completedMarkdown = next.nodes.find((node) => {
           if (nodeKind(node) !== "markdown" || node.status !== "success" || !markdownAutoSeeResult(node)) return false;
@@ -873,6 +998,7 @@ export function WorkflowTab({
       }
     };
     const timer = window.setInterval(() => {
+      if (workflowRuntimeConnectedRef.current) return;
       void refresh();
     }, 1500);
     return () => {
@@ -1656,11 +1782,14 @@ export function WorkflowTab({
     setRunning(true);
     setBlockPickerOpen(false);
     setError(null);
+    const runtimeEventSeq = workflowRuntimeEventSeqRef.current;
     try {
       const result = await apiRunWorkflow(workspaceId, current.id, nodeIds);
-      const next = applyNodePositions(result.workflow, runtimeLayoutRef.current);
-      workflowRef.current = next;
-      setWorkflow(next);
+      if (workflowRuntimeEventSeqRef.current === runtimeEventSeq) {
+        const next = applyNodePositions(result.workflow, runtimeLayoutRef.current);
+        workflowRef.current = next;
+        setWorkflow(next);
+      }
       onWorkflowChanged();
     } catch (e) {
       setRunning(false);
@@ -3544,7 +3673,7 @@ function readableAgentConversation(snapshot: WorkflowRunDetailSnapshot): string 
   return [cleaned, `[error] ${snapshot.stderr.trim()}`].filter(Boolean).join("\n");
 }
 
-function WorkflowAgentTerminal({
+function WorkflowAgentTerminalInner({
   workspaceId,
   sessionId,
   terminalStatus,
@@ -3594,6 +3723,7 @@ function WorkflowAgentTerminal({
 
     const ws = openTerminalSocket(`/api/terminals/${encodeURIComponent(sessionId)}/io`);
     wsRef.current = ws;
+    const outputWriter = createTerminalWriteBatcher((data) => term.write(data));
     ws.onopen = () => {
       ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
       term.focus();
@@ -3607,8 +3737,9 @@ function WorkflowAgentTerminal({
           signal?: number | string | null;
         };
         if (msg.type === "output" && typeof msg.data === "string") {
-          term.write(normalizeLightTerminalAnsi(msg.data, resolvedThemeRef.current));
+          outputWriter.push(normalizeLightTerminalAnsi(msg.data, resolvedThemeRef.current));
         } else if (msg.type === "exit") {
+          outputWriter.flush();
           term.writeln(
             `\r\n\x1b[2m[osheep] terminal exited code=${msg.code ?? "null"} signal=${
               msg.signal ?? "null"
@@ -3617,6 +3748,7 @@ function WorkflowAgentTerminal({
         } else if (msg.type === "ping") {
           ws.send(JSON.stringify({ type: "pong" }));
         } else if (msg.type === "error") {
+          outputWriter.flush();
           term.writeln(`\r\n\x1b[31m[osheep] terminal session is no longer available\x1b[0m`);
         }
       } catch {
@@ -3644,6 +3776,7 @@ function WorkflowAgentTerminal({
     return () => {
       resizeObs.disconnect();
       inputSub.dispose();
+      outputWriter.dispose();
       ws.close();
       term.dispose();
       wsRef.current = null;
@@ -3742,6 +3875,8 @@ function WorkflowAgentTerminal({
     </div>
   );
 }
+
+const WorkflowAgentTerminal = memo(WorkflowAgentTerminalInner);
 
 function WorkflowMpePanel({ markdown, onClose }: { markdown: string; onClose: () => void }) {
   return (

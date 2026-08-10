@@ -3,6 +3,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { errors } from "../errors.js";
 import { calculateModelCost, readStoredModelPrices } from "../model-pricing.js";
 import { updateTemplateFromWorkflow } from "../templates.js";
+import { subscribeWorkflowRuntime } from "../workflow-events.js";
 import { startWorkflowRun, stopWorkflowRun, stopWorkflowRunAndWait } from "../workflow-runner.js";
 import {
   createWorkflow,
@@ -21,7 +22,7 @@ function sendWithEtag(req: FastifyRequest, reply: FastifyReply, payload: unknown
   if (req.headers["if-none-match"] === etag) {
     return reply.status(304).send();
   }
-  return reply.send(payload);
+  return reply.type("application/json; charset=utf-8").send(body);
 }
 
 export async function registerWorkflowRoutes(app: FastifyInstance) {
@@ -58,6 +59,60 @@ export async function registerWorkflowRoutes(app: FastifyInstance) {
         }),
       };
       return sendWithEtag(req, reply, pricedWorkflow);
+    },
+  );
+
+  app.get<{ Params: { id: string; wid: string } }>(
+    "/api/workspaces/:id/workflows/:wid/events",
+    { websocket: true },
+    (socket, req) => {
+      let unsubscribe = () => {};
+      let heartbeat: NodeJS.Timeout | null = null;
+      let closed = false;
+
+      void (async () => {
+        try {
+          const workspace = await resolveWorkspace(req.params.id);
+          unsubscribe = subscribeWorkflowRuntime(
+            workspace.path,
+            req.params.wid,
+            (event) => {
+              if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(event));
+            },
+          );
+          const workflow = await getWorkflow(workspace.path, req.params.wid);
+          if (closed || socket.readyState !== socket.OPEN) {
+            unsubscribe();
+            return;
+          }
+          socket.send(JSON.stringify({ type: "ready", updatedAt: workflow.updatedAt }));
+          heartbeat = setInterval(() => {
+            if (socket.readyState === socket.OPEN) socket.send(JSON.stringify({ type: "ping" }));
+          }, 15_000);
+        } catch (error) {
+          unsubscribe();
+          if (socket.readyState === socket.OPEN) {
+            socket.send(JSON.stringify({ type: "error", message: (error as Error).message }));
+            socket.close();
+          }
+        }
+      })();
+
+      socket.on("message", (raw: Buffer) => {
+        try {
+          const message = JSON.parse(raw.toString("utf8")) as { type?: string };
+          if (message.type === "ping" && socket.readyState === socket.OPEN) {
+            socket.send(JSON.stringify({ type: "pong" }));
+          }
+        } catch {
+          /* ignore malformed keepalive frames */
+        }
+      });
+      socket.on("close", () => {
+        closed = true;
+        unsubscribe();
+        if (heartbeat) clearInterval(heartbeat);
+      });
     },
   );
 
