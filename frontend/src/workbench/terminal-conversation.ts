@@ -65,6 +65,11 @@ function isCodexProgressFragment(line: string): boolean {
 }
 
 function isTerminalChrome(line: string, kind?: AgentTerminalConversationKind): boolean {
+  const compact = line.replace(/\s+/g, "");
+  if (/^[⚠!]?Transcriptwritesarefailing\(permissiondenied[—-]EPERM\)/i.test(compact)) {
+    return true;
+  }
+  if (/^recentmessagesmayno/i.test(compact)) return true;
   if (/^[─━═_\-\s]{8,}$/.test(line)) return true;
   if (/^[❯›]\s*(?:\S.*)?$/.test(line)) return true;
   if (/\b(?:auto|plan) mode on\b/i.test(line)) return true;

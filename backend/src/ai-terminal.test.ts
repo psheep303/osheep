@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   type AgentEffort,
+  agentTerminalPollPriorityForTest,
   agentTerminalPromptEnterCount,
   agentTerminalPromptSubmitDelayMs,
   agentTerminalReadyForAutoFinishForTest,
@@ -16,8 +17,10 @@ import {
   finishAgentTerminalSuccess,
   hasAgentTerminalFailureForTest,
   resolveAgentTerminalContentStateForTest,
+  selectAgentTerminalFinalContentForTest,
   selectConversationSessionIdForTest,
   shouldAutoEnterChoice,
+  shouldClearWaitingForChoice,
   shouldFinishAgentTerminalWithErrorForTest,
   shouldExposeWaitingForChoice,
   shouldFollowUpPastedPromptSubmit,
@@ -343,6 +346,26 @@ test("always enter only presses choice prompts after cooldown", () => {
   assert.equal(shouldExposeWaitingForChoice(false, "waiting-for-choice"), true);
 });
 
+test("Claude structured JSON answer takes priority over terminal fallback", () => {
+  assert.equal(
+    selectAgentTerminalFinalContentForTest(
+      "JSONL 中真正的最后一条 Claude 消息",
+      "终端回退文本和状态警告",
+    ),
+    "JSONL 中真正的最后一条 Claude 消息",
+  );
+  assert.equal(selectAgentTerminalFinalContentForTest("", "终端回退文本"), "终端回退文本");
+});
+
+test("active generation clears a previously exposed choice state", () => {
+  assert.equal(shouldClearWaitingForChoice("waiting-for-choice", "waiting-for-choice", true), true);
+  assert.equal(
+    shouldClearWaitingForChoice("waiting-for-choice", "ready-for-success", false),
+    true,
+  );
+  assert.equal(shouldClearWaitingForChoice("waiting-for-choice", "waiting-for-choice", false), false);
+});
+
 test("terminal choice prompts are classified as waiting for user input", () => {
   const content = [
     "你希望这次“整理项目”的力度到哪一级？",
@@ -353,6 +376,27 @@ test("terminal choice prompts are classified as waiting for user input", () => {
   ].join("\n");
 
   assert.equal(classifyAgentTerminalContent(content), "waiting-for-choice");
+});
+
+test("Claude command approval is waiting even while the shell command header is busy", () => {
+  const screen = [
+    "Running 1 shell command…",
+    "  └ $ apply_patch <<'PATCH'",
+    "Bash command",
+    "apply_patch <<'PATCH'",
+    "This command requires approval",
+    "Do you want to proceed?",
+    "❯ 1. Yes",
+    "  2. Yes, and don’t ask again for: apply_patch *",
+    "  3. No",
+    "Esc to cancel · Tab to amend · ctrl+e to explain",
+  ].join("\n");
+
+  assert.equal(
+    resolveAgentTerminalContentStateForTest("claude-cli", screen, ""),
+    "waiting-for-choice",
+  );
+  assert.equal(agentTerminalPollPriorityForTest("waiting-for-choice", true), "waiting-for-choice");
 });
 
 test("ordinary numbered suggestions are not an interactive choice", () => {
@@ -569,6 +613,30 @@ test("Claude update warning after a completion footer still finishes successfull
   assert.equal(agentTerminalReadyForAutoFinishForTest("claude-cli", screen, state), true);
 });
 
+test("Claude recap does not hide an earlier completion footer on the current screen", () => {
+  const screen = [
+    "已在 test/claude/index.html 写好极简马特效。",
+    "直接用浏览器打开该 HTML 即可查看。",
+    "Crunched for 2m 0s",
+    "recap: 目标是在 test/claude 中用尽量少的代码实现马特效。",
+    "现已完成一匹马循环奔跑的 HTML 页面。",
+    "下一步直接用浏览器打开 test/claude/index.html 查看效果。",
+    "(disable recaps in /config)",
+    "✗ Auto-update failed · Run claude doctor",
+    "",
+    "❯",
+    "",
+    "⏵⏵ accept edits on (shift+tab to cycle) · ← 1 agent",
+    ...Array.from({ length: 4 }, () => ""),
+  ].join("\n");
+
+  assert.equal(
+    resolveAgentTerminalContentStateForTest("claude-cli", screen, ""),
+    "ready-for-success",
+  );
+  assert.equal(agentTerminalReadyForAutoFinishForTest("claude-cli", screen, "empty"), true);
+});
+
 test("Claude singular-agent idle footer finishes the screenshot layout", () => {
   const screen = [
     "Error: Exit code 127",
@@ -644,6 +712,23 @@ test("Claude completed output releases an earlier waiting choice", () => {
   assert.equal(
     resolveAgentTerminalContentStateForTest("claude-cli", screen, ""),
     "ready-for-success",
+  );
+});
+
+test("Claude generation activity releases an earlier waiting choice", () => {
+  const screen = [
+    "Would you like to proceed?",
+    "❯ 1. Yes, and use auto mode",
+    "  2. Yes, manually approve edits",
+    "  3. Tell Claude what to change",
+    "shift+tab to approve with this feedback",
+    "Thought for 3s (ctrl+o to expand)",
+    "● Update(src/index.ts)",
+  ].join("\n");
+
+  assert.equal(
+    resolveAgentTerminalContentStateForTest("claude-cli", screen, ""),
+    "empty",
   );
 });
 

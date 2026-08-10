@@ -268,8 +268,10 @@ export async function runAgentTerminal(opts: AgentTerminalOptions): Promise<Agen
         conversationSessionId,
         structuredConversation,
       );
-      const content =
-        structuredAnswer || extractTerminalContent(transcript, opts.prompt, opts.kind);
+      const content = selectAgentTerminalFinalContent(
+        structuredAnswer,
+        extractTerminalContent(transcript, opts.prompt, opts.kind),
+      );
       const cleanTranscript =
         structuredConversation ||
         conversation.value() ||
@@ -331,7 +333,10 @@ export async function runAgentTerminal(opts: AgentTerminalOptions): Promise<Agen
     return {
       sessionId: session.id,
       conversationSessionId,
-      content: structuredAnswer || extractTerminalContent(transcript, opts.prompt, opts.kind),
+      content: selectAgentTerminalFinalContent(
+        structuredAnswer,
+        extractTerminalContent(transcript, opts.prompt, opts.kind),
+      ),
       transcript: cleanTranscript,
       rawTranscript: opts.retainRawTranscript ? transcript : undefined,
       changedFiles: metadata.changedFiles,
@@ -471,6 +476,17 @@ async function structuredAgentFinalAnswer(
     if (attempt < 3) await new Promise<void>((resolve) => setTimeout(resolve, 75));
   }
   return latest;
+}
+
+function selectAgentTerminalFinalContent(structuredAnswer: string, terminalFallback: string): string {
+  return structuredAnswer.trim() || terminalFallback;
+}
+
+export function selectAgentTerminalFinalContentForTest(
+  structuredAnswer: string,
+  terminalFallback: string,
+): string {
+  return selectAgentTerminalFinalContent(structuredAnswer, terminalFallback);
 }
 
 export function setAgentTerminalAutoContinue(
@@ -683,6 +699,31 @@ export function shouldExposeWaitingForChoice(
   state: AgentTerminalContentState,
 ): boolean {
   return !alwaysEnter && state === "waiting-for-choice";
+}
+
+export function shouldClearWaitingForChoice(
+  previousState: AgentTerminalContentState | undefined,
+  state: AgentTerminalContentState,
+  busy: boolean,
+): boolean {
+  return previousState === "waiting-for-choice" && (busy || state !== "waiting-for-choice");
+}
+
+type AgentTerminalPollPriority = "waiting-for-choice" | "busy" | "continue";
+
+function agentTerminalPollPriority(
+  state: AgentTerminalContentState,
+  busy: boolean,
+): AgentTerminalPollPriority {
+  if (state === "waiting-for-choice") return "waiting-for-choice";
+  return busy ? "busy" : "continue";
+}
+
+export function agentTerminalPollPriorityForTest(
+  state: AgentTerminalContentState,
+  busy: boolean,
+): AgentTerminalPollPriority {
+  return agentTerminalPollPriority(state, busy);
 }
 
 async function writePrompt(
@@ -1332,10 +1373,8 @@ function waitForAgentCompletion(
         }
         return;
       }
-      // Generation state has the highest priority. Do not classify choices,
-      // errors, stalls, or success while the current screen is still active.
-      if (isAgentTerminalBusy(transcript)) return;
-      if (state === "waiting-for-choice") {
+      const pollPriority = agentTerminalPollPriority(state, isAgentTerminalBusy(transcript));
+      if (pollPriority === "waiting-for-choice") {
         if (control.alwaysEnter) {
           if (
             shouldAutoEnterChoice({
@@ -1365,7 +1404,17 @@ function waitForAgentCompletion(
         }
         return;
       }
-      if (control.lastCompletionState === "waiting-for-choice") {
+      // A visible approval menu is actionable even when the preceding shell
+      // command remains in the current viewport. Once the menu is gone,
+      // generation activity takes priority over success and error detection.
+      if (pollPriority === "busy") {
+        if (shouldClearWaitingForChoice(control.lastCompletionState, state, true)) {
+          control.lastCompletionState = "empty";
+          onStatus("prompt-sent");
+        }
+        return;
+      }
+      if (shouldClearWaitingForChoice(control.lastCompletionState, state, false)) {
         control.lastCompletionState = "empty";
         onStatus("prompt-sent");
       } else if (state !== control.lastCompletionState && state !== "ready-for-success") {
@@ -1392,7 +1441,9 @@ function waitForAgentCompletion(
       }
       if (
         sinceSubmit >= RESPONSE_MIN_MS &&
-        (hasFreshCompletionMarker || now - screenChangedAt >= RESPONSE_IDLE_MS) &&
+        (hasFreshCompletionMarker ||
+          now - screenChangedAt >= RESPONSE_IDLE_MS ||
+          isClaudeCompletionReady(kind, transcript)) &&
         isAgentTerminalReadyForAutoFinish(kind, transcript, state)
       ) {
         if (control.lastCompletionState !== "ready-for-success") {
@@ -1601,6 +1652,12 @@ function isAgentTerminalCompletionMarkerVisible(
   return isClaudeCompletionFooterVisible(agentTerminalScreenSignature(rawTranscript));
 }
 
+function isClaudeCompletionReady(kind: CliProviderKind, rawTranscript: string): boolean {
+  if (kind !== "claude-cli") return false;
+  const screen = agentTerminalScreenSignature(rawTranscript);
+  return isClaudeCompletionFooterVisible(screen) && isClaudeIdlePromptVisible(screen);
+}
+
 function isClaudeIdleFooterLine(trimmed: string): boolean {
   return /\b(?:(?:auto|manual|plan)\s+mode|bypass permissions|accept edits)\s+on\b[^\n]*\bagents?\b/i.test(
     trimmed,
@@ -1692,8 +1749,8 @@ function lastInteractiveChoiceBlock(text: string): { startAt: number; endAt: num
   for (let cueLine = lines.length - 1; cueLine >= 0; cueLine -= 1) {
     if (!isTerminalChoiceInteractionCue(lines[cueLine]!.trim())) continue;
     const startLine = Math.max(0, cueLine - 12);
-    const endLine = Math.min(lines.length - 1, cueLine + 4);
-    const window = lines.slice(startLine, endLine + 1).map((line) => line.trim());
+    const endLine = cueLine;
+    const window = lines.slice(startLine, cueLine + 1).map((line) => line.trim());
     const selected = window.filter(isSelectedTerminalChoiceOption).length;
     const options = window.filter(isTerminalChoiceOption).length;
     if (selected < 1 || options < 2) continue;
@@ -1734,6 +1791,8 @@ function isTerminalChoiceReleaseLine(trimmed: string): boolean {
   if (!trimmed) return false;
   if (isAgentTerminalChromeLine(trimmed) || isAgentTerminalPromptLine(trimmed)) return false;
   if (isTerminalChoiceChromeLine(trimmed)) return false;
+  if (/^[●•]\s+\S/.test(trimmed)) return true;
+  if (/^(?:Thought|Thinking)\s+for\s+\d/i.test(trimmed)) return true;
   if (isClaudeCompletionFooterLine(trimmed) || isClaudeIdleFooterLine(trimmed)) return true;
   if (/\b(?:Done|completed|successfully|auto-finished|manual-success)\b/i.test(trimmed)) {
     return true;

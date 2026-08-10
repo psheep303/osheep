@@ -171,6 +171,9 @@ export function createSession(input: CreateSessionInput): TerminalSession {
       rows,
       cwd: input.workspace.path,
       env: { ...process.env },
+      // The bundled ConPTY DLL avoids node-pty's helper process racing a
+      // shell that has already exited (AttachConsole failed on Windows).
+      useConptyDll: platform === "windows",
     });
   } catch (e) {
     if (guardCleanup) guardCleanup();
