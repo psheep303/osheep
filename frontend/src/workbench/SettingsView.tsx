@@ -61,10 +61,10 @@ export function SettingsView({ settings, onChange }: SettingsViewProps) {
 
   const navItems: Array<{ id: SettingsSection; label: string; icon: string }> = [
     { id: "general", label: t("settings.category.general"), icon: "settings-gear" },
-    { id: "editor", label: t("settings.category.editor"), icon: "settings-edit" },
+    { id: "editor", label: t("settings.category.editor"), icon: "edit" },
     { id: "workflow", label: t("settings.category.workflow"), icon: "type-hierarchy-sub" },
-    { id: "pricing", label: t("settings.category.pricing"), icon: "settings-symbol" },
-    { id: "about", label: t("settings.category.about"), icon: "settings-info" },
+    { id: "pricing", label: t("settings.category.pricing"), icon: "symbol-number" },
+    { id: "about", label: t("settings.category.about"), icon: "info" },
   ];
   const normalizedSearch = search.trim().toLowerCase();
   const matches = (value: string) => !normalizedSearch || value.toLowerCase().includes(normalizedSearch);
@@ -269,13 +269,11 @@ function ModelPricingPanel({ settings, onChange }: SettingsViewProps) {
       {error && <div className="settings-view__error">{error}</div>}
       <div className="settings-pricing__table-wrap">
       <div className="settings-pricing__table">
-        <div className="settings-pricing__row settings-pricing__row--head"><span /><span>{t("settings.pricing.model")}</span><span>{t("settings.pricing.provider")}</span><span>{t("settings.pricing.billingMode")}</span><span>{t("settings.pricing.perRequest")}</span><span>{t("settings.pricing.input")}</span><span>{t("settings.pricing.output")}</span><span>{t("settings.pricing.cacheRead")}</span><span>{t("settings.pricing.cacheWrite")}</span><span /></div>
+        <div className="settings-pricing__row settings-pricing__row--head"><span /><span>{t("settings.pricing.model")}</span><span>{t("settings.pricing.provider")}</span><span>{t("settings.pricing.input")}</span><span>{t("settings.pricing.output")}</span><span>{t("settings.pricing.cacheRead")}</span><span>{t("settings.pricing.cacheWrite")}</span><span /></div>
         {adding && <div className="settings-pricing__row is-adding">
           <span />
           <input className="settings-view__input" value={draft.model} placeholder="provider/model" onChange={(event) => setDraft({ ...draft, model: event.target.value })} autoFocus />
           <input className="settings-view__input" value={draft.provider} onChange={(event) => setDraft({ ...draft, provider: event.target.value })} />
-          <select className="settings-view__input" value={draft.billingMode} onChange={(event) => setDraft({ ...draft, billingMode: event.target.value === "per-request" ? "per-request" : "dynamic" })}><option value="dynamic">{t("settings.pricing.dynamic")}</option><option value="per-request">{t("settings.pricing.perRequestMode")}</option></select>
-          <PriceInput value={draft.costPerRequest} onCommit={(value) => setDraft({ ...draft, costPerRequest: value })} />
           <PriceInput value={draft.inputCostPerMillion} onCommit={(value) => setDraft({ ...draft, inputCostPerMillion: value })} />
           <PriceInput value={draft.outputCostPerMillion} onCommit={(value) => setDraft({ ...draft, outputCostPerMillion: value })} />
           <PriceInput value={draft.cacheReadCostPerMillion} onCommit={(value) => setDraft({ ...draft, cacheReadCostPerMillion: value })} />
@@ -288,8 +286,6 @@ function ModelPricingPanel({ settings, onChange }: SettingsViewProps) {
             <button type="button" className={`settings-pricing__favorite${model.favorite ? " is-active" : ""}`} onClick={() => updateModel(index, { favorite: !model.favorite, favoriteCustomized: true })} aria-label={t("settings.pricing.favorite")} title={t("settings.pricing.favorite")}><span className={`codicon codicon-star-${model.favorite ? "full" : "empty"}`} /></button>
             <span className="settings-pricing__model" title={model.model}>{model.model}</span>
             <input className="settings-view__input" defaultValue={model.provider} onBlur={(event) => updateModel(index, { provider: event.target.value.trim(), source: "manual" })} />
-            <select className="settings-view__input" defaultValue={model.billingMode} onChange={(event) => updateModel(index, { billingMode: event.target.value === "per-request" ? "per-request" : "dynamic", source: "manual" })}><option value="dynamic">{t("settings.pricing.dynamic")}</option><option value="per-request">{t("settings.pricing.perRequestMode")}</option></select>
-            <PriceInput value={model.costPerRequest} onCommit={(value) => updateModel(index, { costPerRequest: value, source: "manual" })} />
             <PriceInput value={model.inputCostPerMillion} onCommit={(value) => updateModel(index, { inputCostPerMillion: value, source: "manual" })} />
             <PriceInput value={model.outputCostPerMillion} onCommit={(value) => updateModel(index, { outputCostPerMillion: value, source: "manual" })} />
             <PriceInput value={model.cacheReadCostPerMillion} onCommit={(value) => updateModel(index, { cacheReadCostPerMillion: value, source: "manual" })} />
