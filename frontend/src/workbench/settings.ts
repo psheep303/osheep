@@ -118,20 +118,18 @@ export function mergeSettings(partial: unknown): OsheepSettings {
   const autoSave =
     typeof p.editor?.autoSave === "boolean" ? p.editor.autoSave : DEFAULT_SETTINGS.editor.autoSave;
   const autoAllow = sanitizeAutoAllow(p.ai?.autoAllow);
-  const models = Array.isArray(p.pricing?.models)
+  const parsedModels = Array.isArray(p.pricing?.models)
     ? p.pricing.models.flatMap((item): ModelPrice[] => {
         if (!item || typeof item !== "object" || Array.isArray(item)) return [];
         const value = item as Record<string, unknown>;
-        const rawModel = typeof value.model === "string" ? value.model.trim() : "";
-        const model = canonicalPriceModelName(rawModel);
+        const model = typeof value.model === "string" ? value.model.trim() : "";
+        const provider = typeof value.provider === "string" ? value.provider.trim() : "";
         const input = typeof value.inputCostPerMillion === "number" ? value.inputCostPerMillion : NaN;
         const output = typeof value.outputCostPerMillion === "number" ? value.outputCostPerMillion : NaN;
         if (!model || !Number.isFinite(input) || !Number.isFinite(output)) return [];
         return [{
           model,
-          provider:
-            (typeof value.provider === "string" ? value.provider.trim() : "") ||
-            inferModelOriginProvider(rawModel),
+          provider,
           billingMode: value.billingMode === "per-request" ? "per-request" : "dynamic",
           costPerRequest:
             typeof value.costPerRequest === "number" && Number.isFinite(value.costPerRequest)
@@ -150,13 +148,16 @@ export function mergeSettings(partial: unknown): OsheepSettings {
           favorite:
             value.favoriteCustomized === true
               ? value.favorite === true
-              : value.favorite === true || isDefaultFavoritePriceModel(model),
+              : value.favorite === true || isDefaultFavoritePriceModel(model, provider),
           favoriteCustomized: value.favoriteCustomized === true,
           source: value.source === "litellm" ? "litellm" : "manual",
           updatedAt: typeof value.updatedAt === "number" ? value.updatedAt : undefined,
         }];
       })
     : [];
+  const models = [...new Map(
+    parsedModels.map((model) => [model.model.trim().toLowerCase(), model] as const),
+  ).values()];
   return {
     editor: { fontSize, tabSize, autoSave },
     ai: {
@@ -166,37 +167,21 @@ export function mergeSettings(partial: unknown): OsheepSettings {
   };
 }
 
-const DEFAULT_FAVORITE_PRICE_MODELS = new Set([
-  "gpt-5.6-sol",
-  "gpt-5.6-terra",
-  "gpt-5.6-luna",
-  "gpt-5.5",
-  "gpt-5.4",
-  "claude-fable-5",
-  "claude-opus-4-7",
-  "claude-opus-4-8",
-  "claude-opus-5",
+const DEFAULT_FAVORITE_PRICE_PROVIDERS = new Map([
+  ["gpt-5.6-sol", "openai"],
+  ["gpt-5.6-terra", "openai"],
+  ["gpt-5.6-luna", "openai"],
+  ["gpt-5.5", "openai"],
+  ["gpt-5.4", "openai"],
+  ["claude-fable-5", "anthropic"],
+  ["claude-opus-4-7", "anthropic"],
+  ["claude-opus-4-8", "anthropic"],
+  ["claude-opus-5", "anthropic"],
 ]);
 
-export function inferModelOriginProvider(model: string): string {
-  const normalized = model.trim().toLowerCase();
-  const namespaced = normalized.match(/(?:^|[/.])(anthropic|openai|google|meta|mistral|cohere|xai|deepseek|qwen)[/.]/);
-  if (namespaced?.[1]) return namespaced[1];
-  const canonical = normalized.replace(/^.*\//, "");
-  if (canonical.startsWith("claude-")) return "anthropic";
-  if (/^(?:gpt(?:-|$)|chatgpt-|o[134](?:-|$))/.test(canonical)) return "openai";
-  return "";
-}
-
-export function canonicalPriceModelName(model: string): string {
-  const trimmed = model.trim();
-  const provider = inferModelOriginProvider(trimmed);
-  if (!provider) return trimmed;
-  return trimmed.match(new RegExp(`(?:^|[/.])${provider}[/.](.+)$`, "i"))?.[1]?.trim() || trimmed;
-}
-
-function isDefaultFavoritePriceModel(model: string): boolean {
-  return DEFAULT_FAVORITE_PRICE_MODELS.has(canonicalPriceModelName(model).toLowerCase());
+function isDefaultFavoritePriceModel(model: string, provider: string): boolean {
+  const normalizedModel = model.trim().toLowerCase();
+  return DEFAULT_FAVORITE_PRICE_PROVIDERS.get(normalizedModel) === provider.trim().toLowerCase();
 }
 
 export type ReasoningKind = "cli";

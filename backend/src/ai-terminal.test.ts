@@ -551,6 +551,35 @@ test("Claude stable idle final output succeeds without a word-for-duration foote
   );
 });
 
+test("Claude update warning after a completion footer still finishes successfully", () => {
+  const screen = [
+    "任务已完成。",
+    "✻ Sautéed for 33s",
+    "❯",
+    "⏵⏵ accept edits on (shift+tab to cycle) · ← for agents",
+    "✗ Auto-update failed · Run claude doctor",
+  ].join("\n");
+  const content = extractAgentTerminalContentForTest(screen, "", "claude-cli");
+  const state = classifyAgentTerminalContent(content);
+
+  assert.equal(content, "");
+  assert.equal(state, "empty");
+  assert.equal(hasAgentTerminalFailureForTest(screen), false);
+  assert.equal(shouldFinishAgentTerminalWithErrorForTest("claude-cli", screen), false);
+  assert.equal(agentTerminalReadyForAutoFinishForTest("claude-cli", screen, state), true);
+});
+
+test("Claude task errors using the ballot-x marker finish as terminal errors", () => {
+  const screen = [
+    "✗ Error: request failed while calling the provider",
+    "❯",
+    "⏵⏵ accept edits on (shift+tab to cycle) · ← for agents",
+  ].join("\n");
+
+  assert.equal(hasAgentTerminalFailureForTest(screen), true);
+  assert.equal(shouldFinishAgentTerminalWithErrorForTest("claude-cli", screen), true);
+});
+
 test("Claude resumed manual-mode footer is recognized as idle", () => {
   const screen = [
     "\u276f \u7ee7\u7eed",

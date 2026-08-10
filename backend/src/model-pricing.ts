@@ -1,7 +1,16 @@
 import { readAppSettings } from "./app-settings.js";
 
 export const LITELLM_MODEL_PRICES_URL =
-  "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
+  "https://cdn.jsdelivr.net/gh/BerriAI/litellm@litellm_internal_staging/model_prices_and_context_window.json";
+export const LITELLM_MODEL_PRICES_MAIN_CDN_FALLBACK_URL =
+  "https://cdn.jsdelivr.net/gh/BerriAI/litellm@main/model_prices_and_context_window.json";
+export const LITELLM_MODEL_PRICES_GITHUB_FALLBACK_URL =
+  "https://raw.githubusercontent.com/BerriAI/litellm/litellm_internal_staging/model_prices_and_context_window.json";
+export const LITELLM_MODEL_PRICES_URLS = [
+  LITELLM_MODEL_PRICES_URL,
+  LITELLM_MODEL_PRICES_MAIN_CDN_FALLBACK_URL,
+  LITELLM_MODEL_PRICES_GITHUB_FALLBACK_URL,
+] as const;
 
 export interface ModelPriceRecord {
   model: string;
@@ -22,28 +31,16 @@ export interface ModelPricingSettings {
   models: ModelPriceRecord[];
 }
 
-const DEFAULT_FAVORITE_MODELS = new Set([
-  "gpt-5.6-sol",
-  "gpt-5.6-terra",
-  "gpt-5.6-luna",
-  "gpt-5.5",
-  "gpt-5.4",
-  "claude-fable-5",
-  "claude-opus-4-7",
-  "claude-opus-4-8",
-  "claude-opus-5",
-]);
-
-const ORIGIN_PROVIDERS = new Set([
-  "anthropic",
-  "openai",
-  "google",
-  "meta",
-  "mistral",
-  "cohere",
-  "xai",
-  "deepseek",
-  "qwen",
+const DEFAULT_FAVORITE_PROVIDERS = new Map([
+  ["gpt-5.6-sol", "openai"],
+  ["gpt-5.6-terra", "openai"],
+  ["gpt-5.6-luna", "openai"],
+  ["gpt-5.5", "openai"],
+  ["gpt-5.4", "openai"],
+  ["claude-fable-5", "anthropic"],
+  ["claude-opus-4-7", "anthropic"],
+  ["claude-opus-4-8", "anthropic"],
+  ["claude-opus-5", "anthropic"],
 ]);
 
 export function normalizeModelPriceRecords(raw: unknown): ModelPriceRecord[] {
@@ -59,22 +56,18 @@ export function normalizeModelPriceRecords(raw: unknown): ModelPriceRecord[] {
       finiteNumber(item.output_cost_per_request),
     );
     if (!key.trim() || (input === undefined && output === undefined && perRequest === undefined)) continue;
-    const sourceModel = stringValue(item.model_name) || key;
-    const model = canonicalModelName(sourceModel);
+    const model = key.trim();
+    const provider = stringValue(item.litellm_provider);
     records.push({
       model,
-      provider:
-        originProviderFromModel(key) ||
-        originProviderFromModel(sourceModel) ||
-        stringValue(item.litellm_provider) ||
-        providerFromModel(key),
+      provider,
       billingMode: perRequest !== undefined ? "per-request" : "dynamic",
       costPerRequest: perRequest,
       inputCostPerMillion: Math.max(0, (input ?? 0) * 1_000_000),
       outputCostPerMillion: Math.max(0, (output ?? 0) * 1_000_000),
       cacheReadCostPerMillion: optionalMillion(item.cache_read_input_token_cost),
       cacheWriteCostPerMillion: optionalMillion(item.cache_creation_input_token_cost),
-      favorite: isDefaultFavoriteModel(model),
+      favorite: isDefaultFavoriteModel(model, provider),
       source: "litellm",
     });
   }
@@ -87,19 +80,15 @@ export function normalizeStoredModelPrices(raw: unknown): ModelPriceRecord[] {
     raw.flatMap((value) => {
       if (!value || typeof value !== "object" || Array.isArray(value)) return [];
       const item = value as Record<string, unknown>;
-      const rawModel = stringValue(item.model);
-      const model = canonicalModelName(rawModel);
+      const model = stringValue(item.model);
+      const provider = stringValue(item.provider);
       const input = finiteNumber(item.inputCostPerMillion);
       const output = finiteNumber(item.outputCostPerMillion);
       if (!model || input === undefined || output === undefined) return [];
       return [
         {
           model,
-          provider:
-            stringValue(item.provider) ||
-            originProviderFromModel(rawModel) ||
-            originProviderFromModel(model) ||
-            providerFromModel(rawModel),
+          provider,
           billingMode: item.billingMode === "per-request" ? "per-request" : "dynamic",
           costPerRequest: optionalNumber(item.costPerRequest),
           inputCostPerMillion: Math.max(0, input),
@@ -109,7 +98,7 @@ export function normalizeStoredModelPrices(raw: unknown): ModelPriceRecord[] {
           favorite:
             item.favoriteCustomized === true
               ? item.favorite === true
-              : item.favorite === true || isDefaultFavoriteModel(model),
+              : item.favorite === true || isDefaultFavoriteModel(model, provider),
           favoriteCustomized: item.favoriteCustomized === true,
           source: item.source === "litellm" ? "litellm" : "manual",
           updatedAt: optionalNumber(item.updatedAt),
@@ -122,14 +111,32 @@ export function normalizeStoredModelPrices(raw: unknown): ModelPriceRecord[] {
 export async function syncLiteLlmModelPrices(
   fetcher: typeof fetch = fetch,
 ): Promise<ModelPriceRecord[]> {
-  const response = await fetcher(LITELLM_MODEL_PRICES_URL, {
-    headers: { accept: "application/json" },
-    signal: AbortSignal.timeout(15_000),
-  });
-  if (!response.ok) throw new Error(`LiteLLM price sync failed (${response.status})`);
-  const records = normalizeModelPriceRecords(await response.json());
-  if (records.length === 0) throw new Error("LiteLLM returned no model prices");
-  return records.map((record) => ({ ...record, updatedAt: Date.now() }));
+  let lastError = "LiteLLM returned no model prices";
+  for (const url of LITELLM_MODEL_PRICES_URLS) {
+    try {
+      const response = await fetcher(url, {
+        headers: { accept: "application/json" },
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!response.ok) {
+        lastError = `LiteLLM price sync failed (${response.status})`;
+        continue;
+      }
+      const records = normalizeModelPriceRecords(await response.json());
+      if (records.length === 0) {
+        lastError = "LiteLLM returned no model prices";
+        continue;
+      }
+      if (records.some((record) => !record.provider)) {
+        lastError = "LiteLLM returned model prices without providers";
+        continue;
+      }
+      return records.map((record) => ({ ...record, updatedAt: Date.now() }));
+    } catch (cause) {
+      lastError = cause instanceof Error ? cause.message : String(cause);
+    }
+  }
+  throw new Error(lastError);
 }
 
 export async function readStoredModelPrices(): Promise<ModelPriceRecord[]> {
@@ -162,14 +169,9 @@ export function calculateModelCost(
 }
 
 function findModelPrice(model: string, prices: ModelPriceRecord[]): ModelPriceRecord | undefined {
-  const aliases = modelAliases(model);
-  if (aliases.size === 0) return undefined;
-  return prices.find((price) => {
-    for (const alias of modelAliases(price.model)) {
-      if (aliases.has(alias)) return true;
-    }
-    return false;
-  });
+  const normalized = model.trim().toLowerCase();
+  if (!normalized) return undefined;
+  return prices.find((price) => price.model.trim().toLowerCase() === normalized);
 }
 
 function dedupeModelPrices(records: ModelPriceRecord[]): ModelPriceRecord[] {
@@ -201,48 +203,9 @@ function stringValue(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
-function providerFromModel(model: string): string {
-  const normalized = model.trim().toLowerCase();
-  const slash = normalized.indexOf("/");
-  if (slash > 0) return normalized.slice(0, slash);
-  const dot = normalized.indexOf(".");
-  const prefix = dot > 0 ? normalized.slice(0, dot) : "";
-  return ORIGIN_PROVIDERS.has(prefix) ? prefix : "";
-}
-
-function canonicalModelName(model: string): string {
-  const trimmed = model.trim();
-  const provider = originProviderFromModel(trimmed);
-  if (!provider) return trimmed;
-  const providerPrefix = new RegExp(`(?:^|[/.])${provider}[/.](.+)$`, "i");
-  return trimmed.match(providerPrefix)?.[1]?.trim() || trimmed;
-}
-
-function originProviderFromModel(model: string): string {
-  const normalized = model.trim().toLowerCase();
-  const namespaced = normalized.match(/(?:^|[/.])(anthropic|openai|google|meta|mistral|cohere|xai|deepseek|qwen)[/.]/);
-  if (namespaced?.[1]) return namespaced[1];
-  const canonical = normalized.replace(/^.*\//, "");
-  if (canonical.startsWith("claude-")) return "anthropic";
-  if (/^(?:gpt(?:-|$)|chatgpt-|o[134](?:-|$))/.test(canonical)) return "openai";
-  return "";
-}
-
-function isDefaultFavoriteModel(model: string): boolean {
-  return DEFAULT_FAVORITE_MODELS.has(canonicalModelName(model).toLowerCase());
-}
-
-function modelAliases(model: string): Set<string> {
-  const canonical = canonicalModelName(model)
-    .toLowerCase()
-    .replace(/[\s_]+/g, "-")
-    .replace(/-+/g, "-");
-  if (!canonical) return new Set();
-  const aliases = new Set([canonical]);
-  if (canonical.startsWith("claude-") && canonical.length > "claude-".length) {
-    aliases.add(canonical.slice("claude-".length));
-  }
-  return aliases;
+function isDefaultFavoriteModel(model: string, provider: string): boolean {
+  const normalizedModel = model.trim().toLowerCase();
+  return DEFAULT_FAVORITE_PROVIDERS.get(normalizedModel) === provider.trim().toLowerCase();
 }
 
 function sumDefined(...values: Array<number | undefined>): number | undefined {

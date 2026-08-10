@@ -232,7 +232,7 @@ export function classifyAgentTerminalFailure(raw: string, prompt: string): Agent
   const text = stripAnsi(raw).replace(/\r/g, "\n");
   const apiError = lastRegexMatch(
     text,
-    /^[ \t]*(?:[●•*✖×!]\s*)?(?:Please run\s+\/login\s*(?:[·•-]\s*)?)?API Error\s*:\s*\S[^\n]*/im,
+    /^[ \t]*(?:[●•*✖✗×!]\s*)?(?:Please run\s+\/login\s*(?:[·•-]\s*)?)?API Error\s*:\s*\S[^\n]*/im,
   );
   if (apiError?.index !== undefined) {
     if (!isAgentErrorSuperseded(text, apiError.index)) {
@@ -255,7 +255,7 @@ export function classifyAgentTerminalFailure(raw: string, prompt: string): Agent
 
   const permanent = lastRegexMatch(
     text,
-    /^[ \t]*(?:[●•*✖×!]\s*)?(?:Please run\s+\/login\b[^\n]*|Image generation is not enabled for this (?:group|organization|account)\b[^\n]*|(?:authentication|authorization) (?:failed|required)\b[^\n]*)/im,
+    /^[ \t]*(?:[●•*✖✗×!]\s*)?(?:Please run\s+\/login\b[^\n]*|Image generation is not enabled for this (?:group|organization|account)\b[^\n]*|(?:authentication|authorization) (?:failed|required)\b[^\n]*)/im,
   );
   if (permanent?.index !== undefined && !isAgentErrorSuperseded(text, permanent.index)) {
     return agentTerminalFailure(text, prompt, permanent, false);
@@ -263,7 +263,7 @@ export function classifyAgentTerminalFailure(raw: string, prompt: string): Agent
 
   const decoratedError = lastRegexMatch(
     text,
-    /^[ \t]*[●•✖×!]\s*(?:(?:fatal|authentication|authorization|request)\s+)?error\s*:\s*\S[^\n]*/im,
+    /^[ \t]*[●•✖✗×!]\s*(?:(?:fatal|authentication|authorization|request)\s+)?error\s*:\s*\S[^\n]*/im,
   );
   if (decoratedError?.index !== undefined && !isAgentErrorSuperseded(text, decoratedError.index)) {
     return agentTerminalFailure(

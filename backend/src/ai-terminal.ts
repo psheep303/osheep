@@ -1426,15 +1426,18 @@ export function agentTerminalStalledForTest(
 }
 
 export function hasAgentTerminalFailure(rawTranscript: string): boolean {
-  const screen = agentTerminalScreenSignature(rawTranscript);
+  const screen = agentTerminalScreenSignature(rawTranscript)
+    .split("\n")
+    .filter((line) => !isClaudeUpdateWarningLine(line.trim()))
+    .join("\n");
   if (isAgentTerminalRetrying(screen)) return false;
   const patterns = [
-    /^[ \t]*(?:[●•*✖×!]\s*)?(?:Please run\s+\/login\s*(?:[·•-]\s*)?)?API Error\s*:\s*\S[^\n]*/im,
-    /^[ \t]*(?:[●•*✖×!]\s*)?Please run\s+\/login\b[^\n]*/im,
-    /^[ \t]*(?:[●•*✖×!]\s*)?Image generation is not enabled for this (?:group|organization|account)\b[^\n]*/im,
-    /^[ \t]*[●•✖×!]\s*(?:(?:fatal|authentication|authorization|request)\s+)?error\s*:\s*\S[^\n]*/im,
+    /^[ \t]*(?:[●•*✖✗×!]\s*)?(?:Please run\s+\/login\s*(?:[·•-]\s*)?)?API Error\s*:\s*\S[^\n]*/im,
+    /^[ \t]*(?:[●•*✖✗×!]\s*)?Please run\s+\/login\b[^\n]*/im,
+    /^[ \t]*(?:[●•*✖✗×!]\s*)?Image generation is not enabled for this (?:group|organization|account)\b[^\n]*/im,
+    /^[ \t]*[●•✖✗×!]\s*(?:(?:fatal|authentication|authorization|request)\s+)?error\s*:\s*\S[^\n]*/im,
     /\bunexpected status\s+(?:4\d\d|5\d\d)\b[^\n]*/i,
-    /^[ \t]*(?![\u203a\u276f])(?:[\u25a0\u25cf\u2022*\u2716\u00d7!]\s*[^\n]*(?:\b(?:errors?|failed|failure|fatal|exception|panic(?:ked)?)\b|\bunexpected status\s+\d{3}\b|\b(?:service|temporarily) unavailable\b|\b(?:permission|access|request) denied\b|\b(?:timed?|time)\s*out\b|\bconnection reset\b)|(?:(?:api\s+)?errors?|failed|failure|fatal|exception|panic(?:ked)?|traceback)\b[^\n]*|unexpected status\s+\d{3}\b[^\n]*|(?:service|temporarily) unavailable\b[^\n]*|(?:permission|access|request) denied\b[^\n]*|(?:timed?|time)\s*out\b[^\n]*|connection reset\b[^\n]*|npm\s+ERR![^\n]*)/im,
+    /^[ \t]*(?![\u203a\u276f])(?:[\u25a0\u25cf\u2022*\u2716\u2717\u00d7!]\s*[^\n]*(?:\b(?:errors?|failed|failure|fatal|exception|panic(?:ked)?)\b|\bunexpected status\s+\d{3}\b|\b(?:service|temporarily) unavailable\b|\b(?:permission|access|request) denied\b|\b(?:timed?|time)\s*out\b|\bconnection reset\b)|(?:(?:api\s+)?errors?|failed|failure|fatal|exception|panic(?:ked)?|traceback)\b[^\n]*|unexpected status\s+\d{3}\b[^\n]*|(?:service|temporarily) unavailable\b[^\n]*|(?:permission|access|request) denied\b[^\n]*|(?:timed?|time)\s*out\b[^\n]*|connection reset\b[^\n]*|npm\s+ERR![^\n]*)/im,
     /^[ \t]*(?![\u203a\u276f])(?:request|command|process|task|tool|operation|execution|connection|authentication|authorization|permission|network|server|provider|model)\s+(?:errors?|failed|failure|denied|unavailable|refused|aborted|(?:timed?|time)\s*out)\b[^\n]*/im,
     /^[ \t]*(?![\u203a\u276f])(?:no available channel\b|something went wrong\b|HTTP\s+[45]\d\d\b|E(?:CONNREFUSED|CONNRESET|TIMEDOUT)\b)[^\n]*/im,
   ];
@@ -1497,6 +1500,10 @@ function isAgentTerminalRetrying(screen: string): boolean {
   return /\b(?:Reconnecting|Retrying)(?:\.\.\.)?(?:\s+\d+\s*\/\s*\d+)?/i.test(screen);
 }
 
+function isClaudeUpdateWarningLine(trimmed: string): boolean {
+  return /^(?:[✖✗×!]\s*)?Auto-update failed\b.*\bclaude doctor\b/i.test(trimmed);
+}
+
 function lastAgentActivityIndex(screen: string): number {
   return maxLastRegexIndex(screen, [
     /\bEsc to interrupt\b/i,
@@ -1513,7 +1520,7 @@ function isAgentTerminalReadyForAutoFinish(
   if (isAgentTerminalBusy(rawTranscript)) return false;
   const screen = agentTerminalScreenSignature(rawTranscript);
   if (kind === "claude-cli") {
-    if (state === "empty") return false;
+    if (state === "empty" && !isClaudeCompletionFooterVisible(screen)) return false;
     if (hasActiveClaudeBackgroundAgent(screen)) return false;
     if (!isClaudeIdlePromptVisible(screen)) return false;
     return !isClaudeChoicePromptVisible(screen);
@@ -1568,6 +1575,16 @@ function isClaudeIdlePromptVisible(screen: string): boolean {
   return /\b(?:(?:auto|manual|plan)\s+mode|bypass permissions|accept edits)\s+on\b[^\n]*for agents/i.test(
     tail,
   );
+}
+
+function isClaudeCompletionFooterVisible(screen: string): boolean {
+  return terminalTail(screen, 12)
+    .split("\n")
+    .some((line) =>
+      /^\s*[\p{S}\p{P}]*\s*\p{L}[\p{L}'’-]*\s+for\s+\d+(?:\.\d+)?(?:ms|s|m|h)\b/iu.test(
+        line,
+      ),
+    );
 }
 
 function isClaudeChoicePromptVisible(screen: string): boolean {
