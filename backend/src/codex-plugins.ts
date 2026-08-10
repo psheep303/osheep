@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -142,7 +143,13 @@ export function toCodexCliError(error: {
 
 export function defaultCodexPluginPaths(): CodexPluginPaths {
   const home = os.homedir() || ".";
-  const codexDir = path.resolve(process.env.OSHEEP_CODEX_CONFIG_DIR || path.join(home, ".codex"));
+  const nativeCodexDir = path.join(home, ".codex");
+  const codexDir = path.resolve(
+    process.env.CODEX_HOME ||
+      (existsSync(path.join(nativeCodexDir, ".tmp", "plugins"))
+        ? nativeCodexDir
+        : process.env.OSHEEP_CODEX_CONFIG_DIR || nativeCodexDir),
+  );
   const personalMarketplace = path.resolve(
     process.env.OSHEEP_CODEX_PERSONAL_MARKETPLACE ||
       path.join(home, ".agents", "plugins", "marketplace.json"),

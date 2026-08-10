@@ -1,4 +1,4 @@
-import type { Dirent } from "node:fs";
+import { existsSync, type Dirent } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -216,9 +216,10 @@ export async function readClaudeSessionConversation(sessionId: string): Promise<
   if (!/^[a-f0-9-]{36}$/i.test(sessionId)) return "";
   const home = os.homedir() || ".";
   const claudeHome = path.resolve(
-    process.env.OSHEEP_CLAUDE_CONFIG_DIR ||
-      process.env.CLAUDE_CONFIG_DIR ||
-      path.join(home, ".claude"),
+    process.env.CLAUDE_CONFIG_DIR ||
+      (existsSync(path.join(home, ".claude", "projects"))
+        ? path.join(home, ".claude")
+        : process.env.OSHEEP_CLAUDE_CONFIG_DIR || path.join(home, ".claude")),
   );
   const projectsRoot = path.join(claudeHome, "projects");
   let projectDirs: Dirent[];
@@ -244,7 +245,10 @@ export async function readCodexSessionFinalAnswer(sessionId: string): Promise<st
   if (!/^[a-z0-9_-]{8,128}$/i.test(sessionId)) return "";
   const home = os.homedir() || ".";
   const codexHome = path.resolve(
-    process.env.OSHEEP_CODEX_CONFIG_DIR || process.env.CODEX_HOME || path.join(home, ".codex"),
+    process.env.CODEX_HOME ||
+      (existsSync(path.join(home, ".codex", "sessions"))
+        ? path.join(home, ".codex")
+        : process.env.OSHEEP_CODEX_CONFIG_DIR || path.join(home, ".codex")),
   );
   const filePath = await findCodexSessionFile(path.join(codexHome, "sessions"), sessionId);
   if (!filePath) return "";

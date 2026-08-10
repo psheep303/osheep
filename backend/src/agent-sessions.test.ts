@@ -9,6 +9,7 @@ import {
   deleteAgentSessionsInProject,
   isAgentSessionInProject,
   listAgentSessions,
+  readAgentSessionUsage,
 } from "./agent-sessions.js";
 
 test("project scope filters sessions and batch delete rejects sibling projects", async () => {
@@ -100,6 +101,88 @@ test("Codex sessions use metadata, prompt text, and the title index", async () =
       await fs.readFile(path.join(fixture.roots.codexHome, "session_index.jsonl"), "utf8"),
       new RegExp(id),
     );
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("Codex session usage reads the last cumulative token_count event", async () => {
+  const fixture = await makeFixture();
+  const id = "31111111-2222-4333-8444-555555555555";
+  const sessionPath = codexSessionPath(fixture.roots, id, "12-00-00");
+  try {
+    await writeLines(sessionPath, [
+      codexMetadata(id, fixture.projectPath),
+      {
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            total_token_usage: {
+              input_tokens: 1_000,
+              output_tokens: 100,
+              total_tokens: 1_100,
+            },
+          },
+        },
+      },
+      {
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            total_token_usage: {
+              input_tokens: 2_000,
+              output_tokens: 250,
+              total_tokens: 2_250,
+            },
+          },
+        },
+      },
+    ]);
+
+    assert.deepEqual(await readAgentSessionUsage("codex", id, fixture.roots), {
+      tokens: { input: 2_000, output: 250, total: 2_250 },
+      cost: undefined,
+    });
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("Claude session usage sums assistant message usage", async () => {
+  const fixture = await makeFixture();
+  const id = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";
+  const sessionPath = path.join(
+    fixture.roots.claudeHome,
+    "projects",
+    "fixture-project",
+    `${id}.jsonl`,
+  );
+  try {
+    await writeLines(sessionPath, [
+      {
+        type: "user",
+        sessionId: id,
+        cwd: fixture.projectPath,
+        message: { role: "user", content: "Measure usage" },
+      },
+      {
+        type: "assistant",
+        sessionId: id,
+        message: { role: "assistant", usage: { input_tokens: 600, output_tokens: 80 } },
+      },
+      {
+        type: "assistant",
+        sessionId: id,
+        message: { role: "assistant", usage: { input_tokens: 400, output_tokens: 120 } },
+      },
+    ]);
+
+    assert.deepEqual(await readAgentSessionUsage("claude", id, fixture.roots), {
+      tokens: { input: 1_000, output: 200, total: 1_200 },
+      cost: undefined,
+    });
   } finally {
     await fs.rm(fixture.root, { recursive: true, force: true });
   }

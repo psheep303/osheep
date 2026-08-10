@@ -14,6 +14,7 @@ import {
 } from "./ai-terminal.js";
 import { applyClaudePluginSelection } from "./claude-plugins.js";
 import { applyCodexPluginSelection } from "./codex-plugins.js";
+import { readAgentSessionUsage } from "./agent-sessions.js";
 import { readFileText, writeFileText } from "./fs-ops.js";
 import { callRemoteMcp, discoverRemoteMcp, type RemoteMcpTool } from "./remote-mcp.js";
 import {
@@ -35,6 +36,7 @@ interface LocalNodeResult {
   changedFiles?: boolean;
   error?: string;
   nodePatch?: Partial<WorkflowNode>;
+  conversationSessionId?: string;
 }
 
 interface McpNodeConfig {
@@ -634,7 +636,24 @@ async function runWorkflowInBackground(
       });
       const detailsConfig = result.nodePatch?.config ?? currentNode.config;
       const terminal = terminalFromConfig(detailsConfig);
-      const usage = usageFromTerminal(terminal);
+      const runDetails =
+        detailsConfig && typeof detailsConfig.runDetails === "object"
+          ? (detailsConfig.runDetails as Record<string, unknown>)
+          : undefined;
+      const conversationSessionId =
+        result.conversationSessionId ??
+        (typeof runDetails?.conversationSessionId === "string"
+          ? runDetails.conversationSessionId
+          : undefined);
+      const terminalUsage = usageFromTerminal(terminal);
+      const sessionUsage =
+        conversationSessionId && kind === "agent"
+          ? await readAgentSessionUsage(
+              currentNode.providerKind === "claude-cli" ? "claude" : "codex",
+              conversationSessionId,
+            ).catch(() => ({}))
+          : {};
+      const usage = mergeUsage(terminalUsage, sessionUsage);
       await patchWorkflowRun(workspace.path, workflowId, run.id, (current) =>
         completeRunTrace(current, nodeId, {
           status: result.error ? "error" : "success",
@@ -780,6 +799,8 @@ async function executeAgentNode(
         : `${agentLabel} failed: ${terminalFailure.message}`;
     const errorDetails = details.snapshot("error", Date.now());
     errorDetails.terminalSessionId = errorDetails.terminalSessionId ?? result.sessionId;
+    errorDetails.conversationSessionId =
+      errorDetails.conversationSessionId ?? result.conversationSessionId;
     if (terminalTranscript) errorDetails.transcript = terminalTranscript;
     errorDetails.stderr = [errorDetails.stderr, errorMessage].filter(Boolean).join("\n");
     errorDetails.exitCode = result.exitCode;
@@ -803,6 +824,7 @@ async function executeAgentNode(
           runDetails: errorDetails,
         },
       },
+      conversationSessionId: result.conversationSessionId,
     };
   }
   const toolRun = await maybeRunAgentMcpToolCalls(
@@ -817,6 +839,8 @@ async function executeAgentNode(
   const output = agentOutput(node, raw);
   const finalDetails = details.snapshot("success", Date.now());
   finalDetails.terminalSessionId = finalDetails.terminalSessionId ?? result.sessionId;
+  finalDetails.conversationSessionId =
+    finalDetails.conversationSessionId ?? result.conversationSessionId;
   if (terminalTranscript) finalDetails.transcript = terminalTranscript;
   finalDetails.exitCode = result.exitCode;
   finalDetails.signal =
@@ -833,6 +857,7 @@ async function executeAgentNode(
         runDetails: finalDetails,
       },
     },
+    conversationSessionId: result.conversationSessionId,
   };
 }
 
@@ -1448,6 +1473,17 @@ function usageFromTerminal(terminal: WorkflowRunTrace["terminal"]): {
 } {
   const text = `${terminal?.transcript ?? ""}\n${terminal?.stdout ?? ""}`;
   return parseWorkflowUsage(text);
+}
+
+function mergeUsage(
+  terminal: { tokens?: WorkflowRunTrace["tokens"]; cost?: number },
+  session: { tokens?: WorkflowRunTrace["tokens"]; cost?: number },
+): { tokens?: WorkflowRunTrace["tokens"]; cost?: number } {
+  const tokens = session.tokens ?? terminal.tokens;
+  return {
+    tokens,
+    cost: session.cost ?? terminal.cost,
+  };
 }
 
 export function parseWorkflowUsage(text: string): {
