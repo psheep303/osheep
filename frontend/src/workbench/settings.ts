@@ -57,6 +57,9 @@ export interface OsheepSettings {
   ai: {
     autoAllow: AiAutoAllow;
   };
+  workflow: {
+    maxParallelNodes: number;
+  };
   pricing: {
     models: ModelPrice[];
   };
@@ -77,6 +80,7 @@ export const DEFAULT_SETTINGS: OsheepSettings = {
   ai: {
     autoAllow: { ...DEFAULT_AUTO_ALLOW },
   },
+  workflow: { maxParallelNodes: 4 },
   pricing: { models: [] },
 };
 
@@ -108,6 +112,7 @@ export function mergeSettings(partial: unknown): OsheepSettings {
     ai?: {
       autoAllow?: unknown;
     };
+    workflow?: { maxParallelNodes?: unknown };
     pricing?: { models?: unknown };
   };
   const fontSize =
@@ -118,6 +123,13 @@ export function mergeSettings(partial: unknown): OsheepSettings {
   const autoSave =
     typeof p.editor?.autoSave === "boolean" ? p.editor.autoSave : DEFAULT_SETTINGS.editor.autoSave;
   const autoAllow = sanitizeAutoAllow(p.ai?.autoAllow);
+  const maxParallelNodes =
+    typeof p.workflow?.maxParallelNodes === "number" &&
+    Number.isInteger(p.workflow.maxParallelNodes) &&
+    p.workflow.maxParallelNodes >= 1 &&
+    p.workflow.maxParallelNodes <= 32
+      ? p.workflow.maxParallelNodes
+      : DEFAULT_SETTINGS.workflow.maxParallelNodes;
   const parsedModels = Array.isArray(p.pricing?.models)
     ? p.pricing.models.flatMap((item): ModelPrice[] => {
         if (!item || typeof item !== "object" || Array.isArray(item)) return [];
@@ -163,6 +175,7 @@ export function mergeSettings(partial: unknown): OsheepSettings {
     ai: {
       autoAllow,
     },
+    workflow: { maxParallelNodes },
     pricing: { models },
   };
 }

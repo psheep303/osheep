@@ -25,6 +25,7 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
     readAppSettings({
       editor: { fontSize: 14, tabSize: 2, autoSave: false },
       ai: { autoAllow: {} },
+      workflow: { maxParallelNodes: 4 },
     }),
   );
 

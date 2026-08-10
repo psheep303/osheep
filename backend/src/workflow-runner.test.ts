@@ -9,6 +9,7 @@ import {
   parseWorkflowUsage,
   planWorkflowRunNodeIds,
   resolveWorkflowTemplate,
+  scheduleWorkflowNodes,
   shouldRetryAgentTerminalFailure,
   type WorkflowRunDetailSnapshot,
 } from "./workflow-runner.js";
@@ -177,6 +178,78 @@ test("live agent run details capture terminal session and output frames", async 
   assert.match(writes[3]?.transcript ?? "", /\[stdout\] first chunk/);
   assert.equal(writes[4]?.terminalStatus, "ready");
   assert.equal(writes[4]?.status, "running");
+});
+
+test("workflow scheduler runs sibling branches in parallel and waits before a join", async () => {
+  let siblingCount = 0;
+  let notifySiblingsStarted!: () => void;
+  const siblingsStarted = new Promise<void>((resolve) => {
+    notifySiblingsStarted = resolve;
+  });
+  let releaseSiblings!: () => void;
+  const siblingGate = new Promise<void>((resolve) => {
+    releaseSiblings = resolve;
+  });
+  let joinStarted = false;
+
+  const scheduled = scheduleWorkflowNodes(
+    ["trigger", "codex", "claude", "join"],
+    [
+      { id: "edge_trigger_codex", from: "trigger", to: "codex", passSummary: true },
+      { id: "edge_trigger_claude", from: "trigger", to: "claude", passSummary: true },
+      { id: "edge_codex_join", from: "codex", to: "join", passSummary: true },
+      { id: "edge_claude_join", from: "claude", to: "join", passSummary: true },
+    ],
+    2,
+    async (nodeId) => {
+      if (nodeId === "codex" || nodeId === "claude") {
+        siblingCount += 1;
+        if (siblingCount === 2) notifySiblingsStarted();
+        await siblingGate;
+      }
+      if (nodeId === "join") joinStarted = true;
+    },
+  );
+
+  await siblingsStarted;
+  assert.equal(joinStarted, false);
+  releaseSiblings();
+  await scheduled;
+  assert.equal(joinStarted, true);
+});
+
+test("workflow scheduler respects a per-run parallel limit", async () => {
+  let active = 0;
+  let peak = 0;
+  await scheduleWorkflowNodes(
+    ["a", "b", "c", "d"],
+    [],
+    1,
+    async () => {
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise<void>((resolve) => setTimeout(resolve, 2));
+      active -= 1;
+    },
+  );
+  assert.equal(peak, 1);
+});
+
+test("separate workflow schedules do not share their parallel limit", async () => {
+  let active = 0;
+  let peak = 0;
+  const execute = async () => {
+    active += 1;
+    peak = Math.max(peak, active);
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+    active -= 1;
+  };
+
+  await Promise.all([
+    scheduleWorkflowNodes(["first"], [], 1, execute),
+    scheduleWorkflowNodes(["second"], [], 1, execute),
+  ]);
+  assert.equal(peak, 2);
 });
 
 test("workflow usage captures Codex input, output, and total tokens", () => {

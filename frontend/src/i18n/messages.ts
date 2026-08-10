@@ -9,6 +9,7 @@ export const en = {
   "settings.categories": "Categories",
   "settings.category.general": "General",
   "settings.category.editor": "Editor",
+  "settings.category.workflow": "Workflow",
   "settings.category.pricing": "Model pricing",
   "settings.category.about": "About",
   "settings.appearance": "Appearance",
@@ -38,6 +39,10 @@ export const en = {
   "settings.editor.autoSave": "Auto save",
   "settings.editor.autoSaveDescription":
     "Automatically saves edited Explorer files. Workflows are always saved automatically.",
+  "settings.workflow.title": "Workflow execution",
+  "settings.workflow.maxParallelNodes": "Maximum parallel nodes",
+  "settings.workflow.maxParallelNodesDescription":
+    "Limits concurrent nodes within each workflow run. Separate workflows have independent limits. Range: {min}-{max}.",
   "settings.pricing.title": "Model pricing",
   "settings.pricing.description": "Prices are used to calculate workflow run costs. Values are per one million tokens.",
   "settings.pricing.search": "Filter models",
@@ -495,4 +500,8 @@ export const zhCN: Record<MessageKey, string> = {
   "workflow.status.success": "成功",
   "workflow.status.error": "失败",
   "workflow.status.stopped": "已停止",
+  "settings.category.workflow": "工作流",
+  "settings.workflow.title": "工作流运行",
+  "settings.workflow.maxParallelNodes": "最大并行节点数",
+  "settings.workflow.maxParallelNodesDescription": "限制单次工作流运行内部同时执行的节点数，不同工作流分别计算。范围：{min}-{max}。",
 };

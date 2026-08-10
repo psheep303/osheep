@@ -3991,16 +3991,15 @@ function WorkflowNodeInspector({
           )}
           <label className="workflow-inspector__field">
             <span>Retries</span>
-            <input
-              type="number"
+            <BlurNumberInput
+              value={agentRetryCount(node)}
               min={0}
               max={5}
-              value={agentRetryCount(node)}
-              onChange={(e) =>
+              onCommit={(value) =>
                 onUpdate({
                   config: {
                     ...(node.config ?? {}),
-                    retries: clamp(Number(e.target.value) || 0, 0, 5),
+                    retries: value,
                   },
                 })
               }
@@ -4284,14 +4283,11 @@ function WorkflowNodeInspector({
           </label>
           <label className="workflow-inspector__field">
             <span>Batch Size</span>
-            <input
-              type="number"
+            <BlurNumberInput
+              value={loopConfig.batchSize}
               min={1}
               step={1}
-              value={loopConfig.batchSize}
-              onChange={(e) =>
-                updateConfig({ batchSize: Math.max(1, Number(e.target.value) || 1) })
-              }
+              onCommit={(value) => updateConfig({ batchSize: value })}
               disabled={running}
             />
           </label>
@@ -4299,12 +4295,11 @@ function WorkflowNodeInspector({
       ) : isWait ? (
         <label className="workflow-inspector__field">
           <span>Seconds</span>
-          <input
-            type="number"
+          <BlurNumberInput
+            value={waitConfig.seconds}
             min={0}
             step={0.1}
-            value={waitConfig.seconds}
-            onChange={(e) => updateConfig({ seconds: Math.max(0, Number(e.target.value) || 0) })}
+            onCommit={(value) => updateConfig({ seconds: value })}
             disabled={running}
           />
         </label>
@@ -7385,6 +7380,74 @@ function displayBlockId(node: WorkflowNode): number {
 
 function nextBlockId(record: WorkflowRecord): number {
   return Math.max(0, ...record.nodes.map(displayBlockId)) + 1;
+}
+
+function BlurNumberInput({
+  value,
+  min,
+  max,
+  step,
+  disabled = false,
+  onCommit,
+}: {
+  value: number;
+  min?: number;
+  max?: number;
+  step?: number;
+  disabled?: boolean;
+  onCommit: (value: number) => void;
+}) {
+  const [draft, setDraft] = useState(String(value));
+  const focused = useRef(false);
+  const cancelled = useRef(false);
+
+  useEffect(() => {
+    if (!focused.current) setDraft(String(value));
+  }, [value]);
+
+  const commit = () => {
+    const parsed = Number(draft);
+    if (!draft.trim() || !Number.isFinite(parsed)) {
+      setDraft(String(value));
+      return;
+    }
+    const next = clamp(parsed, min ?? -Infinity, max ?? Infinity);
+    setDraft(String(next));
+    if (next !== value) onCommit(next);
+  };
+
+  return (
+    <input
+      type="number"
+      min={min}
+      max={max}
+      step={step}
+      value={draft}
+      disabled={disabled}
+      onFocus={() => {
+        focused.current = true;
+        cancelled.current = false;
+      }}
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={() => {
+        focused.current = false;
+        if (cancelled.current) {
+          cancelled.current = false;
+          setDraft(String(value));
+          return;
+        }
+        commit();
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") event.currentTarget.blur();
+        if (event.key === "Escape") {
+          cancelled.current = true;
+          setDraft(String(value));
+          event.currentTarget.blur();
+        }
+      }}
+    />
+  );
 }
 
 function clamp(value: number, min: number, max: number): number {

@@ -15,7 +15,9 @@ interface SettingsViewProps {
 
 const MIN_FONT = 8;
 const MAX_FONT = 64;
-type SettingsSection = "general" | "editor" | "pricing" | "about";
+const MIN_WORKFLOW_PARALLEL = 1;
+const MAX_WORKFLOW_PARALLEL = 32;
+type SettingsSection = "general" | "editor" | "workflow" | "pricing" | "about";
 
 export function SettingsView({ settings, onChange }: SettingsViewProps) {
   const { language, setLanguage, theme, setTheme, t } = useUiPreferences();
@@ -46,9 +48,21 @@ export function SettingsView({ settings, onChange }: SettingsViewProps) {
     onChange({ ...settings, editor: { ...settings.editor, autoSave } });
   };
 
+  const applyWorkflowParallelism = (raw: string) => {
+    const parsed = Number.parseInt(raw, 10);
+    const next = Number.isNaN(parsed)
+      ? settings.workflow.maxParallelNodes
+      : Math.max(MIN_WORKFLOW_PARALLEL, Math.min(MAX_WORKFLOW_PARALLEL, parsed));
+    if (next !== settings.workflow.maxParallelNodes) {
+      onChange({ ...settings, workflow: { ...settings.workflow, maxParallelNodes: next } });
+    }
+    return next;
+  };
+
   const navItems: Array<{ id: SettingsSection; label: string; icon: string }> = [
     { id: "general", label: t("settings.category.general"), icon: "settings-gear" },
     { id: "editor", label: t("settings.category.editor"), icon: "settings-edit" },
+    { id: "workflow", label: t("settings.category.workflow"), icon: "type-hierarchy-sub" },
     { id: "pricing", label: t("settings.category.pricing"), icon: "settings-symbol" },
     { id: "about", label: t("settings.category.about"), icon: "settings-info" },
   ];
@@ -156,6 +170,23 @@ export function SettingsView({ settings, onChange }: SettingsViewProps) {
                 { label: t("settings.editor.spaces", { count: 4 }), value: 4 },
               ]}
               onChange={applyTabSize}
+            />
+          </SettingItem>
+          </section>}
+          {section === "workflow" && <section className="settings-view__group">
+          <h2 className="settings-view__group-title">{t("settings.workflow.title")}</h2>
+          <SettingItem
+            label={t("settings.workflow.maxParallelNodes")}
+            description={t("settings.workflow.maxParallelNodesDescription", {
+              min: MIN_WORKFLOW_PARALLEL,
+              max: MAX_WORKFLOW_PARALLEL,
+            })}
+          >
+            <NumberInput
+              value={settings.workflow.maxParallelNodes}
+              min={MIN_WORKFLOW_PARALLEL}
+              max={MAX_WORKFLOW_PARALLEL}
+              onCommit={applyWorkflowParallelism}
             />
           </SettingItem>
           </section>}
@@ -370,12 +401,15 @@ function SettingItem({
 
 interface NumberInputProps {
   value: number;
+  min?: number;
+  max?: number;
   disabled?: boolean;
   onCommit: (raw: string) => number;
 }
 
-function NumberInput({ value, disabled = false, onCommit }: NumberInputProps) {
+function NumberInput({ value, min = MIN_FONT, max = MAX_FONT, disabled = false, onCommit }: NumberInputProps) {
   const [draft, setDraft] = useState(String(value));
+  const cancelled = useRef(false);
 
   useEffect(() => setDraft(String(value)), [value]);
 
@@ -387,15 +421,25 @@ function NumberInput({ value, disabled = false, onCommit }: NumberInputProps) {
       className="settings-view__input"
       value={draft}
       disabled={disabled}
-      min={MIN_FONT}
-      max={MAX_FONT}
+      min={min}
+      max={max}
       onChange={(event) => setDraft(event.target.value)}
-      onBlur={commit}
+      onFocus={() => {
+        cancelled.current = false;
+      }}
+      onBlur={() => {
+        if (cancelled.current) {
+          cancelled.current = false;
+          setDraft(String(value));
+          return;
+        }
+        commit();
+      }}
       onKeyDown={(event) => {
         if (event.key === "Enter") {
-          commit();
           event.currentTarget.blur();
         } else if (event.key === "Escape") {
+          cancelled.current = true;
           setDraft(String(value));
           event.currentTarget.blur();
         }

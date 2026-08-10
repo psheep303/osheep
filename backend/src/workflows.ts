@@ -6,6 +6,7 @@ const WORKFLOW_ID_RE = /^wf_[a-z0-9]{8,32}$/;
 const NODE_ID_RE = /^node_[a-z0-9]{6,32}$/;
 const EDGE_ID_RE = /^edge_[a-z0-9]{6,32}$/;
 const writeLocks = new Map<string, Promise<void>>();
+const updateLocks = new Map<string, Promise<void>>();
 
 export type WorkflowProviderKind = "codex-cli" | "claude-cli";
 export type WorkflowNodeKind =
@@ -525,8 +526,18 @@ export async function saveWorkflow(
   await ensureWorkflowDir(workspaceRoot);
   const next = sanitize(record, record.id);
   next.updatedAt = Date.now();
-  await writeWorkflowFile(workspaceRoot, next);
-  return next;
+  const abs = workflowFile(workspaceRoot, record.id);
+  const previous = updateLocks.get(abs) ?? Promise.resolve();
+  const current = previous.catch(() => undefined).then(async () => {
+    await writeWorkflowFile(workspaceRoot, next);
+  });
+  updateLocks.set(abs, current);
+  try {
+    await current;
+    return next;
+  } finally {
+    if (updateLocks.get(abs) === current) updateLocks.delete(abs);
+  }
 }
 
 export async function updateWorkflow(
@@ -535,12 +546,27 @@ export async function updateWorkflow(
   updater: (record: WorkflowRecord) => WorkflowRecord | Promise<WorkflowRecord>,
 ): Promise<WorkflowRecord> {
   validateWorkflowId(id);
-  const current = await getWorkflow(workspaceRoot, id);
-  const updated = await updater(current);
-  if (!updated || updated.id !== id) {
-    throw errors.invalidPath("workflow id does not match URL");
+  const abs = workflowFile(workspaceRoot, id);
+  const previous = updateLocks.get(abs) ?? Promise.resolve();
+  let result: WorkflowRecord | undefined;
+  const current = previous.catch(() => undefined).then(async () => {
+    const record = await getWorkflow(workspaceRoot, id);
+    const updated = await updater(record);
+    if (!updated || updated.id !== id) {
+      throw errors.invalidPath("workflow id does not match URL");
+    }
+    const next = sanitize(updated, id);
+    next.updatedAt = Date.now();
+    await writeWorkflowFile(workspaceRoot, next);
+    result = next;
+  });
+  updateLocks.set(abs, current);
+  try {
+    await current;
+    return result!;
+  } finally {
+    if (updateLocks.get(abs) === current) updateLocks.delete(abs);
   }
-  return await saveWorkflow(workspaceRoot, updated);
 }
 
 export async function deleteWorkflow(workspaceRoot: string, id: string): Promise<void> {

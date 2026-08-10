@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { readAgentSessionUsage } from "./agent-sessions.js";
 import { execRun } from "./ai-exec.js";
 import {
   type AgentEffort,
@@ -12,15 +13,16 @@ import {
   hasAgentTerminalFailure,
   runAgentTerminal,
 } from "./ai-terminal.js";
+import { readAppSettings } from "./app-settings.js";
 import { applyClaudePluginSelection } from "./claude-plugins.js";
 import { applyCodexPluginSelection } from "./codex-plugins.js";
-import { readAgentSessionUsage } from "./agent-sessions.js";
-import { calculateModelCost, readStoredModelPrices } from "./model-pricing.js";
 import { readFileText, writeFileText } from "./fs-ops.js";
+import { calculateModelCost, readStoredModelPrices } from "./model-pricing.js";
 import { callRemoteMcp, discoverRemoteMcp, type RemoteMcpTool } from "./remote-mcp.js";
 import {
   getWorkflow,
   updateWorkflow,
+  type WorkflowEdge,
   type WorkflowNode,
   type WorkflowNodeKind,
   type WorkflowRecord,
@@ -517,6 +519,73 @@ export function isWorkflowRunActive(workspaceId: string, workflowId: string): bo
   return activeRuns.has(runKey(workspaceId, workflowId));
 }
 
+export async function scheduleWorkflowNodes(
+  nodeIds: string[],
+  edges: WorkflowEdge[],
+  maxParallel: number,
+  execute: (nodeId: string) => Promise<void>,
+): Promise<void> {
+  const scheduledNodeIds = [...new Set(nodeIds)];
+  const order = new Map(scheduledNodeIds.map((id, index) => [id, index]));
+  const selected = new Set(scheduledNodeIds);
+  const dependencies = new Map<string, Set<string>>();
+  const outgoing = new Map<string, string[]>();
+  for (const id of scheduledNodeIds) {
+    dependencies.set(id, new Set());
+    outgoing.set(id, []);
+  }
+  for (const edge of edges) {
+    if (!selected.has(edge.from) || !selected.has(edge.to)) continue;
+    dependencies.get(edge.to)?.add(edge.from);
+    outgoing.get(edge.from)?.push(edge.to);
+  }
+  const ready = scheduledNodeIds.filter((id) => dependencies.get(id)?.size === 0);
+  const completed = new Set<string>();
+  const running = new Map<
+    string,
+    Promise<{ nodeId: string; ok: true } | { nodeId: string; ok: false; error: unknown }>
+  >();
+  const limit = Math.max(1, Math.min(32, Math.floor(maxParallel) || 1));
+  let failed = false;
+  let firstError: unknown;
+
+  const startReady = () => {
+    ready.sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0));
+    while (!failed && ready.length && running.size < limit) {
+      const nodeId = ready.shift()!;
+      const task = execute(nodeId)
+        .then(() => ({ nodeId, ok: true as const }))
+        .catch((error) => ({ nodeId, ok: false as const, error }));
+      running.set(nodeId, task);
+    }
+  };
+
+  while (completed.size < scheduledNodeIds.length) {
+    startReady();
+    if (!running.size) {
+      if (failed) break;
+      throw new Error("Workflow dependencies could not be resolved.");
+    }
+    const result = await Promise.race(running.values());
+    running.delete(result.nodeId);
+    if (!result.ok) {
+      if (!failed) firstError = result.error;
+      failed = true;
+      continue;
+    }
+    completed.add(result.nodeId);
+    for (const next of outgoing.get(result.nodeId) ?? []) {
+      const pending = dependencies.get(next);
+      pending?.delete(result.nodeId);
+      if (pending?.size === 0 && !completed.has(next) && !running.has(next) && !ready.includes(next)) {
+        ready.push(next);
+      }
+    }
+  }
+  await Promise.all(running.values());
+  if (failed) throw firstError;
+}
+
 async function runWorkflowInBackground(
   workspace: WorkspaceInfo,
   workflowId: string,
@@ -524,12 +593,66 @@ async function runWorkflowInBackground(
   nodeIds: string[],
   abort: AbortController,
 ): Promise<void> {
+  let fatalError: unknown;
   try {
-    for (const nodeId of nodeIds) {
+    const appSettings = await readAppSettings<{ workflow?: { maxParallelNodes?: unknown } }>({});
+    const configuredLimit = appSettings.workflow?.maxParallelNodes;
+    const maxParallel =
+      typeof configuredLimit === "number" && Number.isInteger(configuredLimit) && configuredLimit > 0
+        ? Math.min(32, configuredLimit)
+        : 4;
+    const record = await getWorkflow(workspace.path, workflowId);
+    await scheduleWorkflowNodes(nodeIds, record.edges, maxParallel, async (nodeId) => {
+      if (abort.signal.aborted) throw new Error("Stopped");
+      try {
+        await executeWorkflowNode(workspace, workflowId, run, nodeIds, nodeId, abort);
+      } catch (error) {
+        const message = (error as Error)?.message;
+        if (!(abort.signal.aborted && message === "Stopped")) {
+          fatalError ??= error;
+          if (!abort.signal.aborted) abort.abort();
+        }
+        throw error;
+      }
+    });
+    if (fatalError !== undefined) throw fatalError;
+    await finishRun(workspace.path, workflowId, run.id, "success");
+  } catch (e) {
+    const failure = fatalError ?? e;
+    const message = (failure as Error).message || "Workflow failed.";
+    const stopped = fatalError === undefined && (abort.signal.aborted || message === "Stopped");
+    await updateWorkflow(workspace.path, workflowId, (record) => {
+      const activeNodes = record.nodes.filter((node) => node.status === "running");
+      const nodes = activeNodes.length
+        ? record.nodes.map((node) =>
+            node.status === "running"
+              ? {
+                  ...node,
+                  status: "error" as const,
+                  error: message,
+                  completedAt: Date.now(),
+                  config: finalizeRunDetailsOnError(node, message),
+                }
+              : node,
+          )
+        : record.nodes;
+      return finishRunRecord({ ...record, nodes }, run.id, stopped ? "stopped" : "error", message);
+    });
+  }
+}
+
+async function executeWorkflowNode(
+  workspace: WorkspaceInfo,
+  workflowId: string,
+  run: WorkflowRun,
+  nodeIds: string[],
+  nodeId: string,
+  abort: AbortController,
+): Promise<void> {
       if (abort.signal.aborted) throw new Error("Stopped");
       let record = await getWorkflow(workspace.path, workflowId);
       const node = record.nodes.find((item) => item.id === nodeId);
-      if (!node) continue;
+      if (!node) return;
       const startedAt = Date.now();
       const kind = nodeKind(node);
 
@@ -558,7 +681,7 @@ async function runWorkflowInBackground(
             output,
           }),
         );
-        continue;
+        return;
       }
 
       await patchWorkflowNode(workspace.path, workflowId, nodeId, {
@@ -623,7 +746,7 @@ async function runWorkflowInBackground(
             retryReasons: [message],
           }),
         );
-        continue;
+        return;
       }
       const outputText = stringifyBlockOutput(result.output);
       const completedAt = Date.now();
@@ -677,29 +800,6 @@ async function runWorkflowInBackground(
         }),
       );
       if (result.error && !nodeFailover(currentNode)) throw new Error(result.error);
-    }
-    await finishRun(workspace.path, workflowId, run.id, "success");
-  } catch (e) {
-    const message = (e as Error).message || "Workflow failed.";
-    const stopped = abort.signal.aborted || message === "Stopped";
-    await updateWorkflow(workspace.path, workflowId, (record) => {
-      const activeNode = record.nodes.find((node) => node.status === "running");
-      const nodes = activeNode
-        ? record.nodes.map((node) =>
-            node.id === activeNode.id
-              ? {
-                  ...node,
-                  status: "error" as const,
-                  error: message,
-                  completedAt: Date.now(),
-                  config: finalizeRunDetailsOnError(node, message),
-                }
-              : node,
-          )
-        : record.nodes;
-      return finishRunRecord({ ...record, nodes }, run.id, stopped ? "stopped" : "error", message);
-    });
-  }
 }
 
 async function executeAgentNode(
