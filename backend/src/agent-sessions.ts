@@ -1,4 +1,4 @@
-import { existsSync, type Dirent } from "node:fs";
+import { type Dirent, existsSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -16,6 +16,7 @@ export interface AgentSessionSummary {
 }
 
 export interface AgentSessionUsage {
+  model?: string;
   tokens?: {
     input?: number;
     output?: number;
@@ -83,6 +84,7 @@ export async function readAgentSessionUsage(
   let cacheWrite = 0;
   let total: number | undefined;
   let cost: number | undefined;
+  let model: string | undefined;
   let sawInput = false;
   let sawOutput = false;
   let sawCacheRead = false;
@@ -98,6 +100,7 @@ export async function readAgentSessionUsage(
     const root = objectValue(value);
     const payload = objectValue(root.payload);
     if (app === "codex") {
+      model = stringValue(payload.model ?? root.model) || model;
       const info = objectValue(payload.info);
       const usage = objectValue(info.total_token_usage);
       const nextInput = numberValue(usage.input_tokens ?? usage.inputTokens);
@@ -128,6 +131,7 @@ export async function readAgentSessionUsage(
       if (nextTotal !== undefined) total = nextTotal;
     } else {
       const message = objectValue(root.message);
+      model = stringValue(message.model ?? root.model) || model;
       const nestedUsage = objectValue(message.usage);
       const directUsage = objectValue(root.usage);
       const usage = Object.keys(nestedUsage).length > 0 ? nestedUsage : directUsage;
@@ -167,9 +171,12 @@ export async function readAgentSessionUsage(
     !sawCacheRead &&
     !sawCacheWrite &&
     total === undefined &&
-    cost === undefined
-  ) return {};
+    cost === undefined &&
+    model === undefined
+  )
+    return {};
   return {
+    ...(model ? { model } : {}),
     tokens:
       sawInput || sawOutput || sawCacheRead || sawCacheWrite || total !== undefined
         ? {

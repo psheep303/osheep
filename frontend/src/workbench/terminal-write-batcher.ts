@@ -4,6 +4,29 @@ export interface TerminalWriteBatcher {
   dispose: () => void;
 }
 
+export interface TerminalReplayGuard {
+  write: (data: string) => void;
+  acceptsInput: () => boolean;
+}
+
+export function createTerminalReplayGuard(
+  write: (data: string, callback: () => void) => void,
+): TerminalReplayGuard {
+  let pendingWrites = 0;
+  return {
+    write(data) {
+      if (!data) return;
+      pendingWrites += 1;
+      write(data, () => {
+        pendingWrites = Math.max(0, pendingWrites - 1);
+      });
+    },
+    acceptsInput() {
+      return pendingWrites === 0;
+    },
+  };
+}
+
 export function createTerminalWriteBatcher(
   write: (data: string) => void,
   schedule: (callback: FrameRequestCallback) => number = requestAnimationFrame,

@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   calculateModelCost,
-  LITELLM_MODEL_PRICES_URL,
   LITELLM_MODEL_PRICES_GITHUB_FALLBACK_URL,
   LITELLM_MODEL_PRICES_MAIN_CDN_FALLBACK_URL,
+  LITELLM_MODEL_PRICES_URL,
   LITELLM_MODEL_PRICES_URLS,
   normalizeModelPriceRecords,
   normalizeStoredModelPrices,
@@ -121,7 +121,10 @@ test("marks every requested default model for the matching provider", () => {
       outputCostPerMillion: 2,
     })),
   );
-  assert.equal(normalized.every((record) => record.favorite === true), true);
+  assert.equal(
+    normalized.every((record) => record.favorite === true),
+    true,
+  );
 });
 
 test("respects an explicit favorite override", () => {
@@ -169,6 +172,28 @@ test("calculates cache read and write costs separately", () => {
   );
 });
 
+test("calculates Claude cache tokens separately from uncached input", () => {
+  const prices = normalizeStoredModelPrices([
+    {
+      model: "gpt-5.6-sol",
+      provider: "anthropic",
+      inputCostPerMillion: 3,
+      outputCostPerMillion: 15,
+      cacheReadCostPerMillion: 0.3,
+      cacheWriteCostPerMillion: 3.75,
+    },
+  ]);
+  const cost = calculateModelCost(
+    "gpt-5.6-sol",
+    { input: 1_000, output: 200, cacheRead: 500, cacheWrite: 100 },
+    prices,
+    { inputIncludesCache: false },
+  );
+
+  assert.ok(cost !== undefined);
+  assert.ok(Math.abs(cost - 0.006525) < 1e-12);
+});
+
 test("calculates per-request prices without token usage", () => {
   const prices = normalizeStoredModelPrices([
     {
@@ -196,11 +221,14 @@ test("configures staging CDN, main CDN, and GitHub LiteLLM sources", () => {
     LITELLM_MODEL_PRICES_GITHUB_FALLBACK_URL,
     "https://raw.githubusercontent.com/BerriAI/litellm/litellm_internal_staging/model_prices_and_context_window.json",
   );
-  assert.deepEqual([...LITELLM_MODEL_PRICES_URLS], [
-    LITELLM_MODEL_PRICES_URL,
-    LITELLM_MODEL_PRICES_MAIN_CDN_FALLBACK_URL,
-    LITELLM_MODEL_PRICES_GITHUB_FALLBACK_URL,
-  ]);
+  assert.deepEqual(
+    [...LITELLM_MODEL_PRICES_URLS],
+    [
+      LITELLM_MODEL_PRICES_URL,
+      LITELLM_MODEL_PRICES_MAIN_CDN_FALLBACK_URL,
+      LITELLM_MODEL_PRICES_GITHUB_FALLBACK_URL,
+    ],
+  );
 });
 
 test("rejects incomplete providers and falls back to GitHub staging", async () => {
@@ -216,7 +244,9 @@ test("rejects incomplete providers and falls back to GitHub staging", async () =
       );
     }
     return new Response(
-      JSON.stringify({ "ai21.j2-mid-v1": { litellm_provider: "bedrock", input_cost_per_token: 0.0000125 } }),
+      JSON.stringify({
+        "ai21.j2-mid-v1": { litellm_provider: "bedrock", input_cost_per_token: 0.0000125 },
+      }),
       { status: 200, headers: { "content-type": "application/json" } },
     );
   });

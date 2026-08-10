@@ -182,6 +182,7 @@ test("Claude session usage sums assistant message usage", async () => {
         sessionId: id,
         message: {
           role: "assistant",
+          model: "gpt-5.6-sol",
           usage: {
             input_tokens: 600,
             cache_read_input_tokens: 300,
@@ -195,6 +196,7 @@ test("Claude session usage sums assistant message usage", async () => {
         sessionId: id,
         message: {
           role: "assistant",
+          model: "gpt-5.6-sol",
           usage: {
             input_tokens: 400,
             cache_read_input_tokens: 200,
@@ -206,6 +208,7 @@ test("Claude session usage sums assistant message usage", async () => {
     ]);
 
     assert.deepEqual(await readAgentSessionUsage("claude", id, fixture.roots), {
+      model: "gpt-5.6-sol",
       tokens: {
         input: 1_000,
         output: 200,

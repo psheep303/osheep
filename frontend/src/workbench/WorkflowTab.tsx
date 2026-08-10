@@ -63,7 +63,7 @@ import {
 import { ClaudeLogo, OpenAILogo } from "./BrandIcons";
 import { ContextMenu, type CtxMenuSection } from "./ContextMenu";
 import { cleanAgentTerminalConversation } from "./terminal-conversation";
-import { createTerminalWriteBatcher } from "./terminal-write-batcher";
+import { createTerminalReplayGuard, createTerminalWriteBatcher } from "./terminal-write-batcher";
 import { normalizeLightTerminalAnsi, workflowXtermTheme, xtermAnsiTheme } from "./theme";
 import {
   blockOutputText,
@@ -980,7 +980,12 @@ export function WorkflowTab({
         setRuntimeReadyWorkflowKey(`${workspaceId}\0${workflowId}`);
         setRunning(isRunning);
         const completedMarkdown = next.nodes.find((node) => {
-          if (nodeKind(node) !== "markdown" || node.status !== "success" || !markdownAutoSeeResult(node)) return false;
+          if (
+            nodeKind(node) !== "markdown" ||
+            node.status !== "success" ||
+            !markdownAutoSeeResult(node)
+          )
+            return false;
           if (autoSeenMarkdownRef.current.has(`${node.id}:${node.completedAt ?? 0}`)) return false;
           return (
             previous?.nodes.find((item) => item.id === node.id)?.status === "running" ||
@@ -989,7 +994,9 @@ export function WorkflowTab({
           );
         });
         if (completedMarkdown) {
-          autoSeenMarkdownRef.current.add(`${completedMarkdown.id}:${completedMarkdown.completedAt ?? 0}`);
+          autoSeenMarkdownRef.current.add(
+            `${completedMarkdown.id}:${completedMarkdown.completedAt ?? 0}`,
+          );
           setMpeNodeId(completedMarkdown.id);
         }
         if (!isRunning) onWorkflowChanged();
@@ -1034,7 +1041,11 @@ export function WorkflowTab({
   );
   const observabilityRun = useMemo(() => {
     if (!workflow) return null;
-    return workflow.runs.find((run) => run.id === observabilityRunId) ?? workflow.runs[workflow.runs.length - 1] ?? null;
+    return (
+      workflow.runs.find((run) => run.id === observabilityRunId) ??
+      workflow.runs[workflow.runs.length - 1] ??
+      null
+    );
   }, [workflow, observabilityRunId]);
 
   const exportRunReport = useCallback(() => {
@@ -2066,8 +2077,7 @@ export function WorkflowTab({
             startedAt,
             expectedId: requestedConversationSessionId,
           }));
-        const fallbackRaw =
-          `${node.providerKind === "codex-cli" ? "Codex CLI" : "Claude Code CLI"} completed without text output.`;
+        const fallbackRaw = `${node.providerKind === "codex-cli" ? "Codex CLI" : "Claude Code CLI"} completed without text output.`;
         const transcriptRaw = result.result?.transcript
           ? cleanAgentTerminalConversation(
               result.result.transcript,
@@ -2716,6 +2726,7 @@ export function WorkflowTab({
           <WorkflowDetailsPanel
             workspaceId={workspaceId}
             node={workflow.nodes.find((node) => node.id === detailNodeId)!}
+            trace={latestWorkflowNodeTrace(workflow, detailNodeId)}
             onClose={() => setDetailNodeId(null)}
             onResumeSession={onResumeSession}
           />
@@ -2724,7 +2735,10 @@ export function WorkflowTab({
       {mpeNodeId && workflow.nodes.some((node) => node.id === mpeNodeId) && (
         <div className="workflow-panel-shell">
           <WorkflowMpePanel
-            markdown={markdownResultText(workflow.nodes.find((node) => node.id === mpeNodeId)!, workflow)}
+            markdown={markdownResultText(
+              workflow.nodes.find((node) => node.id === mpeNodeId)!,
+              workflow,
+            )}
             onClose={() => setMpeNodeId(null)}
           />
         </div>
@@ -3272,18 +3286,20 @@ function WorkflowNodeBlock({
 function WorkflowDetailsPanel({
   workspaceId,
   node,
+  trace,
   onClose,
   onResumeSession,
 }: {
   workspaceId: string;
   node: WorkflowNode;
+  trace?: WorkflowRunTrace;
   onClose: () => void;
   onResumeSession: (session: { app: AgentSessionApp; id: string; title: string }) => void;
 }) {
   const snapshot = runDetailsSnapshot(node);
   const title = snapshot?.title || node.title;
   const openAgentSession = async () => {
-    if (!snapshot || snapshot.kind !== "agent") return;
+    if (snapshot?.kind !== "agent") return;
     const app: AgentSessionApp = node.providerKind === "claude-cli" ? "claude" : "codex";
     let sessionId = snapshot.conversationSessionId;
     if (!sessionId) {
@@ -3328,24 +3344,27 @@ function WorkflowDetailsPanel({
           </span>
         )}
         {snapshot?.exitCode !== undefined && <span>exit {snapshot.exitCode ?? "signal"}</span>}
-        {snapshot?.kind === "agent" &&
-          snapshot.status !== "running" &&
-          (
-            <button
-              type="button"
-              className="workflow-run-details__open-session"
-              onClick={() => void openAgentSession()}
-            >
-              Open in {node.providerKind === "claude-cli" ? "Claude Code" : "Codex"}
-            </button>
-          )}
+        {snapshot?.kind === "agent" && snapshot.status !== "running" && (
+          <button
+            type="button"
+            className="workflow-run-details__open-session"
+            onClick={() => void openAgentSession()}
+          >
+            Open in {node.providerKind === "claude-cli" ? "Claude Code" : "Codex"}
+          </button>
+        )}
       </div>
-      {snapshot?.kind === "agent" && snapshot.conversationSessionId && snapshot.status === "running" && (
-        <div className="workflow-run-details__session">
-          <span>Session</span>
-          <code>{snapshot.conversationSessionId}</code>
-        </div>
+      {snapshot?.kind === "agent" && (
+        <WorkflowTraceUsageStats trace={trace} className="workflow-run-details__usage" />
       )}
+      {snapshot?.kind === "agent" &&
+        snapshot.conversationSessionId &&
+        snapshot.status === "running" && (
+          <div className="workflow-run-details__session">
+            <span>Session</span>
+            <code>{snapshot.conversationSessionId}</code>
+          </div>
+        )}
       <div className="workflow-run-details__terminal">
         <div className="workflow-run-details__bar">
           <span />
@@ -3403,14 +3422,14 @@ function WorkflowObservabilityPanel({
       : undefined);
   const [selectedTraceKey, setSelectedTraceKey] = useState("");
   const selectedTrace: WorkflowRunTrace | null =
-    traces.find((trace) => `${trace.nodeId}:${trace.startedAt}` === selectedTraceKey) ?? traces[0] ?? null;
+    traces.find((trace) => `${trace.nodeId}:${trace.startedAt}` === selectedTraceKey) ??
+    traces[0] ??
+    null;
   return (
     <aside className="workflow-inspector workflow-observability">
       <div className="workflow-inspector__head">
         <div>
-          <div className="workflow-inspector__eyebrow">
-            {t("workflow.observability.title")}
-          </div>
+          <div className="workflow-inspector__eyebrow">{t("workflow.observability.title")}</div>
           <strong>{workflow.title}</strong>
         </div>
         <div className="workflow-inspector__head-actions">
@@ -3435,25 +3454,31 @@ function WorkflowObservabilityPanel({
       <label className="workflow-observability__run-select">
         <span>{t("workflow.runHistory")}</span>
         <select value={selectedRunId ?? ""} onChange={(e) => onSelectRun(e.target.value)}>
-          {workflow.runs.length === 0 && <option value="">{t("workflow.observability.noRuns")}</option>}
-          {workflow.runs.slice().reverse().map((item) => (
-            <option key={item.id} value={item.id}>
-              {item.id} · {workflowRunStatusLabel(item.status, t)}
-            </option>
-          ))}
+          {workflow.runs.length === 0 && (
+            <option value="">{t("workflow.observability.noRuns")}</option>
+          )}
+          {workflow.runs
+            .slice()
+            .reverse()
+            .map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.id} · {workflowRunStatusLabel(item.status, t)}
+              </option>
+            ))}
         </select>
       </label>
       {run && (
         <>
           <div className="workflow-observability__summary">
             <WorkflowObservabilityStat label={t("workflow.observability.status")}>
-              <strong className={`is-${run.status}`}>{workflowRunStatusLabel(run.status, t)}</strong>
+              <strong className={`is-${run.status}`}>
+                {workflowRunStatusLabel(run.status, t)}
+              </strong>
             </WorkflowObservabilityStat>
             <WorkflowObservabilityStat label={t("workflow.observability.duration")}>
               <strong>
                 {formatWorkflowDuration(
-                  stats?.durationMs ??
-                    (run.completedAt ? run.completedAt - run.startedAt : 0),
+                  stats?.durationMs ?? (run.completedAt ? run.completedAt - run.startedAt : 0),
                 )}
               </strong>
             </WorkflowObservabilityStat>
@@ -3479,33 +3504,89 @@ function WorkflowObservabilityPanel({
               <strong>{formatWorkflowTokenCount(totalTokens, resolvedLanguage, t)}</strong>
             </WorkflowObservabilityStat>
             <WorkflowObservabilityStat label={t("workflow.observability.cost")}>
-              <strong>
-                {stats?.cost !== undefined
-                  ? `$${stats.cost.toFixed(4)}`
-                  : t("workflow.observability.unavailable")}
-              </strong>
+              <strong>{formatWorkflowCost(stats?.cost, t)}</strong>
             </WorkflowObservabilityStat>
           </div>
           <div className="workflow-observability__timeline">
-            {traces.length === 0 ? <div className="workflow-inspector__muted">{t("workflow.observability.noTrace")}</div> : traces.map((trace) => (
-              <button type="button" className={`workflow-observability__event${selectedTrace === trace ? " is-selected" : ""}`} key={`${trace.nodeId}:${trace.startedAt}`} onClick={() => setSelectedTraceKey(`${trace.nodeId}:${trace.startedAt}`)} onDoubleClick={() => onSelectNode(trace.nodeId)}>
-                <span className={`workflow-observability__dot is-${trace.status}`} />
-                <span className="workflow-observability__event-main"><strong>{trace.title}</strong><small>{trace.kind} · {workflowRunStatusLabel(trace.status, t)}</small></span>
-                <span className="workflow-observability__event-time">{trace.durationMs !== undefined ? formatWorkflowDuration(trace.durationMs) : "..."}</span>
-                {trace.retryReasons?.length ? <span className="workflow-observability__retry">{t("workflow.observability.retryCount", { count: trace.retryReasons.length })}</span> : null}
-              </button>
-            ))}
+            {traces.length === 0 ? (
+              <div className="workflow-inspector__muted">{t("workflow.observability.noTrace")}</div>
+            ) : (
+              traces.map((trace) => (
+                <button
+                  type="button"
+                  className={`workflow-observability__event${selectedTrace === trace ? " is-selected" : ""}`}
+                  key={`${trace.nodeId}:${trace.startedAt}`}
+                  onClick={() => setSelectedTraceKey(`${trace.nodeId}:${trace.startedAt}`)}
+                  onDoubleClick={() => onSelectNode(trace.nodeId)}
+                >
+                  <span className={`workflow-observability__dot is-${trace.status}`} />
+                  <span className="workflow-observability__event-main">
+                    <strong>{trace.title}</strong>
+                    <small>
+                      {trace.kind} · {workflowRunStatusLabel(trace.status, t)}
+                    </small>
+                  </span>
+                  <span className="workflow-observability__event-cost">
+                    {trace.kind === "agent"
+                      ? trace.cost !== undefined
+                        ? formatWorkflowCost(trace.cost, t)
+                        : "—"
+                      : ""}
+                  </span>
+                  <span className="workflow-observability__event-time">
+                    {trace.durationMs !== undefined
+                      ? formatWorkflowDuration(trace.durationMs)
+                      : "..."}
+                  </span>
+                  {trace.retryReasons?.length ? (
+                    <span className="workflow-observability__retry">
+                      {t("workflow.observability.retryCount", { count: trace.retryReasons.length })}
+                    </span>
+                  ) : null}
+                </button>
+              ))
+            )}
           </div>
           {selectedTrace && (
             <div className="workflow-observability__detail">
               <div className="workflow-observability__detail-head">
                 <strong>{selectedTrace.title}</strong>
-                <button type="button" onClick={() => onSelectNode(selectedTrace.nodeId)}>{t("workflow.observability.openNode")}</button>
+                <button type="button" onClick={() => onSelectNode(selectedTrace.nodeId)}>
+                  {t("workflow.observability.openNode")}
+                </button>
               </div>
-              <details open><summary>{t("workflow.observability.input")}</summary><pre>{formatTraceValue(selectedTrace.input, t)}</pre></details>
-              <details open><summary>{t("workflow.observability.output")}</summary><pre>{formatTraceValue(selectedTrace.output, t)}</pre></details>
-              {selectedTrace.retryReasons?.length ? <details><summary>{t("workflow.observability.retryReasons")}</summary><pre>{selectedTrace.retryReasons.join("\n")}</pre></details> : null}
-              {selectedTrace.terminal ? <details><summary>{t("workflow.observability.terminalLog")}</summary><pre>{selectedTrace.terminal.transcript || selectedTrace.terminal.stdout || selectedTrace.terminal.stderr || selectedTrace.terminal.commandLine || t("workflow.observability.noTerminalOutput")}</pre></details> : null}
+              {selectedTrace.kind === "agent" && (
+                <WorkflowTraceUsageStats
+                  trace={selectedTrace}
+                  className="workflow-observability__detail-usage"
+                />
+              )}
+              <details open>
+                <summary>{t("workflow.observability.input")}</summary>
+                <pre>{formatTraceValue(selectedTrace.input, t)}</pre>
+              </details>
+              <details open>
+                <summary>{t("workflow.observability.output")}</summary>
+                <pre>{formatTraceValue(selectedTrace.output, t)}</pre>
+              </details>
+              {selectedTrace.retryReasons?.length ? (
+                <details>
+                  <summary>{t("workflow.observability.retryReasons")}</summary>
+                  <pre>{selectedTrace.retryReasons.join("\n")}</pre>
+                </details>
+              ) : null}
+              {selectedTrace.terminal ? (
+                <details>
+                  <summary>{t("workflow.observability.terminalLog")}</summary>
+                  <pre>
+                    {selectedTrace.terminal.transcript ||
+                      selectedTrace.terminal.stdout ||
+                      selectedTrace.terminal.stderr ||
+                      selectedTrace.terminal.commandLine ||
+                      t("workflow.observability.noTerminalOutput")}
+                  </pre>
+                </details>
+              ) : null}
             </div>
           )}
           {run.error && <div className="workflow-inspector__notice is-error">{run.error}</div>}
@@ -3517,13 +3598,7 @@ function WorkflowObservabilityPanel({
 
 type WorkflowTranslate = ReturnType<typeof useUiPreferences>["t"];
 
-function WorkflowObservabilityStat({
-  label,
-  children,
-}: {
-  label: string;
-  children: ReactNode;
-}) {
+function WorkflowObservabilityStat({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div>
       <span>{label}</span>
@@ -3532,8 +3607,71 @@ function WorkflowObservabilityStat({
   );
 }
 
+function WorkflowTraceUsageStats({
+  trace,
+  className,
+}: {
+  trace?: WorkflowRunTrace;
+  className?: string;
+}) {
+  const { resolvedLanguage, t } = useUiPreferences();
+  const tokens = trace?.tokens;
+  const total =
+    tokens?.total ??
+    (tokens?.input !== undefined || tokens?.output !== undefined
+      ? (tokens.input ?? 0) +
+        (tokens.output ?? 0) +
+        (tokens.cacheRead ?? 0) +
+        (tokens.cacheWrite ?? 0)
+      : undefined);
+  const stats = [
+    [
+      t("workflow.observability.inputTokens"),
+      formatWorkflowTokenCount(tokens?.input, resolvedLanguage, t),
+    ],
+    [
+      t("workflow.observability.outputTokens"),
+      formatWorkflowTokenCount(tokens?.output, resolvedLanguage, t),
+    ],
+    [
+      t("workflow.observability.cacheReadTokens"),
+      formatWorkflowTokenCount(tokens?.cacheRead, resolvedLanguage, t),
+    ],
+    [
+      t("workflow.observability.cacheWriteTokens"),
+      formatWorkflowTokenCount(tokens?.cacheWrite, resolvedLanguage, t),
+    ],
+    [t("workflow.observability.totalTokens"), formatWorkflowTokenCount(total, resolvedLanguage, t)],
+    [t("workflow.observability.cost"), formatWorkflowCost(trace?.cost, t)],
+  ];
+
+  return (
+    <div className={`workflow-usage-stats${className ? ` ${className}` : ""}`}>
+      {stats.map(([label, value]) => (
+        <div key={label}>
+          <span>{label}</span>
+          <strong>{value}</strong>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function workflowRunStatusLabel(status: WorkflowRunStatus, t: WorkflowTranslate): string {
   return t(`workflow.status.${status}`);
+}
+
+function latestWorkflowNodeTrace(
+  workflow: WorkflowRecord,
+  nodeId: string,
+): WorkflowRunTrace | undefined {
+  for (let runIndex = workflow.runs.length - 1; runIndex >= 0; runIndex -= 1) {
+    const traces = workflow.runs[runIndex]?.trace ?? [];
+    for (let traceIndex = traces.length - 1; traceIndex >= 0; traceIndex -= 1) {
+      if (traces[traceIndex]?.nodeId === nodeId) return traces[traceIndex];
+    }
+  }
+  return undefined;
 }
 
 function summarizeWorkflowTraceTokens(traces: WorkflowRunTrace[]): {
@@ -3599,6 +3737,12 @@ function formatWorkflowTokenCount(
     : formatCompactTokenCount(count, language);
 }
 
+function formatWorkflowCost(cost: number | undefined, t: WorkflowTranslate): string {
+  if (cost === undefined) return t("workflow.observability.unavailable");
+  if (cost === 0) return "$0.0000";
+  return `$${cost.toFixed(cost < 0.0001 ? 8 : 4)}`;
+}
+
 function markdownAutoSeeResult(node: WorkflowNode): boolean {
   return node.config?.autoSeeResult === true;
 }
@@ -3619,7 +3763,11 @@ function markdownResultText(node: WorkflowNode, workflow: WorkflowRecord): strin
 function formatTraceValue(value: unknown, t: WorkflowTranslate): string {
   if (value === undefined) return t("workflow.observability.notRecorded");
   if (typeof value === "string") return value || t("workflow.observability.empty");
-  try { return JSON.stringify(value, null, 2); } catch { return String(value); }
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
 }
 
 function WorkflowFinishedRunResult({
@@ -3645,17 +3793,19 @@ function WorkflowFinishedRunResult({
   );
 }
 
-function workflowAgentLastMessage(
-  node: WorkflowNode,
-  snapshot: WorkflowRunDetailSnapshot,
-): string {
+function workflowAgentLastMessage(node: WorkflowNode, snapshot: WorkflowRunDetailSnapshot): string {
   const output = parseJsonObject(node.rawOutput || node.summary || "");
   const outputText = output ? textFromOutput(output) : "";
   if (outputText && !/completed without text output/i.test(outputText)) return outputText;
 
   const conversation = readableAgentConversation(snapshot);
-  const structured = [...conversation.matchAll(/^(?:Claude|Assistant):\n([\s\S]*?)(?=^(?:User|Claude|Assistant|Tool(?: · \S+)?|Tool result|Tool error):\n|$)/gm)];
-  const lastStructured = structured.length > 0 ? structured[structured.length - 1]?.[1]?.trim() : "";
+  const structured = [
+    ...conversation.matchAll(
+      /^(?:Claude|Assistant):\n([\s\S]*?)(?=^(?:User|Claude|Assistant|Tool(?: · \S+)?|Tool result|Tool error):\n|$)/gm,
+    ),
+  ];
+  const lastStructured =
+    structured.length > 0 ? structured[structured.length - 1]?.[1]?.trim() : "";
   return lastStructured || conversation.trim();
 }
 
@@ -3724,6 +3874,7 @@ function WorkflowAgentTerminalInner({
     const ws = openTerminalSocket(`/api/terminals/${encodeURIComponent(sessionId)}/io`);
     wsRef.current = ws;
     const outputWriter = createTerminalWriteBatcher((data) => term.write(data));
+    const replayGuard = createTerminalReplayGuard((data, callback) => term.write(data, callback));
     ws.onopen = () => {
       ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
       term.focus();
@@ -3736,7 +3887,10 @@ function WorkflowAgentTerminalInner({
           code?: number | null;
           signal?: number | string | null;
         };
-        if (msg.type === "output" && typeof msg.data === "string") {
+        if (msg.type === "replay" && typeof msg.data === "string") {
+          outputWriter.flush();
+          replayGuard.write(normalizeLightTerminalAnsi(msg.data, resolvedThemeRef.current));
+        } else if (msg.type === "output" && typeof msg.data === "string") {
           outputWriter.push(normalizeLightTerminalAnsi(msg.data, resolvedThemeRef.current));
         } else if (msg.type === "exit") {
           outputWriter.flush();
@@ -3757,7 +3911,7 @@ function WorkflowAgentTerminalInner({
     };
 
     const inputSub = term.onData((data) => {
-      if (ws.readyState === WebSocket.OPEN) {
+      if (replayGuard.acceptsInput() && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: "input", data }));
       }
     });

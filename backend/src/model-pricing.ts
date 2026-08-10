@@ -31,6 +31,10 @@ export interface ModelPricingSettings {
   models: ModelPriceRecord[];
 }
 
+export interface ModelCostOptions {
+  inputIncludesCache?: boolean;
+}
+
 const DEFAULT_FAVORITE_PROVIDERS = new Map([
   ["gpt-5.6-sol", "openai"],
   ["gpt-5.6-terra", "openai"],
@@ -55,7 +59,8 @@ export function normalizeModelPriceRecords(raw: unknown): ModelPriceRecord[] {
       finiteNumber(item.input_cost_per_request),
       finiteNumber(item.output_cost_per_request),
     );
-    if (!key.trim() || (input === undefined && output === undefined && perRequest === undefined)) continue;
+    if (!key.trim() || (input === undefined && output === undefined && perRequest === undefined))
+      continue;
     const model = key.trim();
     const provider = stringValue(item.litellm_provider);
     records.push({
@@ -146,10 +151,9 @@ export async function readStoredModelPrices(): Promise<ModelPriceRecord[]> {
 
 export function calculateModelCost(
   model: string,
-  tokens:
-    | { input?: number; output?: number; cacheRead?: number; cacheWrite?: number }
-    | undefined,
+  tokens: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number } | undefined,
   prices: ModelPriceRecord[],
+  options: ModelCostOptions = {},
 ): number | undefined {
   const price = findModelPrice(model, prices);
   if (!price) return undefined;
@@ -158,7 +162,12 @@ export function calculateModelCost(
   const cacheRead = tokens.cacheRead ?? 0;
   const cacheWrite = tokens.cacheWrite ?? 0;
   const rawInput = tokens.input ?? 0;
-  const uncachedInput = rawInput >= cacheRead + cacheWrite ? rawInput - cacheRead - cacheWrite : rawInput;
+  const uncachedInput =
+    options.inputIncludesCache === false
+      ? rawInput
+      : rawInput >= cacheRead + cacheWrite
+        ? rawInput - cacheRead - cacheWrite
+        : rawInput;
   const cost =
     (uncachedInput * price.inputCostPerMillion +
       (tokens.output ?? 0) * price.outputCostPerMillion +

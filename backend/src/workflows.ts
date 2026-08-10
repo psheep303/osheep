@@ -76,6 +76,7 @@ export interface WorkflowRunTrace {
   nodeId: string;
   title: string;
   kind: WorkflowNodeKind;
+  model?: string;
   status: WorkflowNodeStatus | "stopped";
   startedAt: number;
   completedAt?: number;
@@ -305,7 +306,9 @@ function sanitizeRun(raw: unknown): WorkflowRun | null {
   if (typeof r.completedAt === "number") run.completedAt = r.completedAt;
   if (typeof r.error === "string") run.error = r.error;
   if (Array.isArray((r as any).trace)) {
-    run.trace = (r as any).trace.filter((item: any) => item && typeof item.nodeId === "string").slice(-500);
+    run.trace = (r as any).trace
+      .filter((item: any) => item && typeof item.nodeId === "string")
+      .slice(-500);
   }
   if ((r as any).stats && typeof (r as any).stats === "object") run.stats = (r as any).stats;
   return run;
@@ -528,9 +531,11 @@ export async function saveWorkflow(
   next.updatedAt = Date.now();
   const abs = workflowFile(workspaceRoot, record.id);
   const previous = updateLocks.get(abs) ?? Promise.resolve();
-  const current = previous.catch(() => undefined).then(async () => {
-    await writeWorkflowFile(workspaceRoot, next);
-  });
+  const current = previous
+    .catch(() => undefined)
+    .then(async () => {
+      await writeWorkflowFile(workspaceRoot, next);
+    });
   updateLocks.set(abs, current);
   try {
     await current;
@@ -549,17 +554,19 @@ export async function updateWorkflow(
   const abs = workflowFile(workspaceRoot, id);
   const previous = updateLocks.get(abs) ?? Promise.resolve();
   let result: WorkflowRecord | undefined;
-  const current = previous.catch(() => undefined).then(async () => {
-    const record = await getWorkflow(workspaceRoot, id);
-    const updated = await updater(record);
-    if (!updated || updated.id !== id) {
-      throw errors.invalidPath("workflow id does not match URL");
-    }
-    const next = sanitize(updated, id);
-    next.updatedAt = Date.now();
-    await writeWorkflowFile(workspaceRoot, next);
-    result = next;
-  });
+  const current = previous
+    .catch(() => undefined)
+    .then(async () => {
+      const record = await getWorkflow(workspaceRoot, id);
+      const updated = await updater(record);
+      if (!updated || updated.id !== id) {
+        throw errors.invalidPath("workflow id does not match URL");
+      }
+      const next = sanitize(updated, id);
+      next.updatedAt = Date.now();
+      await writeWorkflowFile(workspaceRoot, next);
+      result = next;
+    });
   updateLocks.set(abs, current);
   try {
     await current;

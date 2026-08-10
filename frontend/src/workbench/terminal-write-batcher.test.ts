@@ -1,6 +1,22 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createTerminalWriteBatcher } from "./terminal-write-batcher";
+import { createTerminalReplayGuard, createTerminalWriteBatcher } from "./terminal-write-batcher";
+
+test("terminal replay guard suppresses generated responses until replay finishes", () => {
+  const writes: string[] = [];
+  const completions: Array<() => void> = [];
+  const replay = createTerminalReplayGuard((data, callback) => {
+    writes.push(data);
+    completions.push(callback);
+  });
+
+  replay.write("\u001b]10;?\u001b\\");
+  assert.equal(replay.acceptsInput(), false);
+  assert.deepEqual(writes, ["\u001b]10;?\u001b\\"]);
+
+  completions[0]?.();
+  assert.equal(replay.acceptsInput(), true);
+});
 
 test("terminal write batcher preserves chunk order in one write", () => {
   const writes: string[] = [];

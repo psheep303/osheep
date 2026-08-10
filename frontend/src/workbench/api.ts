@@ -1170,6 +1170,7 @@ export interface WorkflowRunTrace {
   nodeId: string;
   title: string;
   kind: WorkflowNodeKind;
+  model?: string;
   status: WorkflowNodeStatus | "stopped";
   startedAt: number;
   completedAt?: number;
@@ -1178,8 +1179,21 @@ export interface WorkflowRunTrace {
   output?: unknown;
   error?: string;
   retryReasons?: string[];
-  terminal?: { commandLine?: string; stdout?: string; stderr?: string; transcript?: string; exitCode?: number | null; signal?: string | null };
-  tokens?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; total?: number };
+  terminal?: {
+    commandLine?: string;
+    stdout?: string;
+    stderr?: string;
+    transcript?: string;
+    exitCode?: number | null;
+    signal?: string | null;
+  };
+  tokens?: {
+    input?: number;
+    output?: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+    total?: number;
+  };
   cost?: number;
 }
 
@@ -1241,9 +1255,7 @@ export async function getWorkflow(
 }
 
 export function openWorkflowRuntimeSocket(workspaceId: string, workflowId: string): WebSocket {
-  return openTerminalSocket(
-    workflowsUrl(workspaceId, `/${encodeURIComponent(workflowId)}/events`),
-  );
+  return openTerminalSocket(workflowsUrl(workspaceId, `/${encodeURIComponent(workflowId)}/events`));
 }
 
 export async function createWorkflow(

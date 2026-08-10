@@ -91,7 +91,7 @@ export async function registerTerminalRoutes(app: FastifyInstance) {
       });
 
       if (replayed) {
-        socket.send(JSON.stringify({ type: "output", data: replayed }));
+        socket.send(JSON.stringify({ type: "replay", data: replayed }));
       }
 
       const heartbeat = setInterval(() => {

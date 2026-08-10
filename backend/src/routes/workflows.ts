@@ -1,5 +1,10 @@
 import { createHash } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import {
+  type AgentSessionApp,
+  type AgentSessionUsage,
+  readAgentSessionUsage,
+} from "../agent-sessions.js";
 import { errors } from "../errors.js";
 import { calculateModelCost, readStoredModelPrices } from "../model-pricing.js";
 import { updateTemplateFromWorkflow } from "../templates.js";
@@ -14,6 +19,9 @@ import {
   type WorkflowRecord,
 } from "../workflows.js";
 import { resolveWorkspace } from "../workspace.js";
+
+const WORKFLOW_SESSION_USAGE_CACHE_LIMIT = 128;
+const workflowSessionUsageCache = new Map<string, Promise<AgentSessionUsage>>();
 
 function sendWithEtag(req: FastifyRequest, reply: FastifyReply, payload: unknown) {
   const body = JSON.stringify(payload);
@@ -37,15 +45,31 @@ export async function registerWorkflowRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const ws = await resolveWorkspace(req.params.id);
       const workflow = await getWorkflow(ws.path, req.params.wid);
-      const prices = await readStoredModelPrices().catch(() => []);
+      const [prices, currentSessionUsage] = await Promise.all([
+        readStoredModelPrices().catch(() => []),
+        readCurrentWorkflowSessionUsage(workflow),
+      ]);
       const pricedWorkflow = {
         ...workflow,
         runs: workflow.runs.map((run) => {
           const trace = run.trace?.map((item) => {
             if (item.cost !== undefined) return item;
-            const model = workflow.nodes.find((node) => node.id === item.nodeId)?.model;
-            const cost = model ? calculateModelCost(model, item.tokens, prices) : undefined;
-            return cost === undefined ? item : { ...item, cost };
+            const node = workflow.nodes.find((node) => node.id === item.nodeId);
+            const sessionUsage = currentSessionUsage.get(
+              workflowTraceKey(item.nodeId, item.startedAt),
+            );
+            const model = item.model ?? sessionUsage?.model ?? node?.model;
+            const tokens = item.tokens ?? sessionUsage?.tokens;
+            const cost =
+              sessionUsage?.cost ??
+              (model
+                ? calculateModelCost(model, tokens, prices, {
+                    inputIncludesCache: node?.providerKind !== "claude-cli",
+                  })
+                : undefined);
+            return cost === undefined
+              ? item
+              : { ...item, model: item.model ?? sessionUsage?.model, tokens, cost };
           });
           const calculatedCost = trace?.reduce((sum, item) => sum + (item.cost ?? 0), 0) ?? 0;
           return {
@@ -73,13 +97,9 @@ export async function registerWorkflowRoutes(app: FastifyInstance) {
       void (async () => {
         try {
           const workspace = await resolveWorkspace(req.params.id);
-          unsubscribe = subscribeWorkflowRuntime(
-            workspace.path,
-            req.params.wid,
-            (event) => {
-              if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(event));
-            },
-          );
+          unsubscribe = subscribeWorkflowRuntime(workspace.path, req.params.wid, (event) => {
+            if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(event));
+          });
           const workflow = await getWorkflow(workspace.path, req.params.wid);
           if (closed || socket.readyState !== socket.OPEN) {
             unsubscribe();
@@ -166,4 +186,66 @@ export async function registerWorkflowRoutes(app: FastifyInstance) {
       return { ok: true };
     },
   );
+}
+
+async function readCurrentWorkflowSessionUsage(
+  workflow: WorkflowRecord,
+): Promise<Map<string, AgentSessionUsage>> {
+  const reads: Array<Promise<readonly [string, AgentSessionUsage]>> = [];
+  for (const node of workflow.nodes) {
+    if (node.providerKind !== "claude-cli" && node.providerKind !== "codex-cli") continue;
+    const details =
+      node.config && typeof node.config.runDetails === "object"
+        ? (node.config.runDetails as Record<string, unknown>)
+        : undefined;
+    const sessionId =
+      typeof details?.conversationSessionId === "string"
+        ? details.conversationSessionId
+        : undefined;
+    const startedAt = typeof details?.startedAt === "number" ? details.startedAt : undefined;
+    const completedAt = typeof details?.completedAt === "number" ? details.completedAt : undefined;
+    if (!sessionId || startedAt === undefined || completedAt === undefined) continue;
+    const matchingTrace = workflow.runs.some((run) =>
+      run.trace?.some(
+        (trace) =>
+          trace.nodeId === node.id && trace.startedAt === startedAt && trace.cost === undefined,
+      ),
+    );
+    if (!matchingTrace) continue;
+    const app: AgentSessionApp = node.providerKind === "claude-cli" ? "claude" : "codex";
+    const traceKey = workflowTraceKey(node.id, startedAt);
+    reads.push(
+      readCachedWorkflowSessionUsage(app, sessionId, completedAt).then(
+        (usage) => [traceKey, usage] as const,
+      ),
+    );
+  }
+  return new Map(await Promise.all(reads));
+}
+
+async function readCachedWorkflowSessionUsage(
+  app: AgentSessionApp,
+  sessionId: string,
+  completedAt: number,
+): Promise<AgentSessionUsage> {
+  const cacheKey = `${app}:${sessionId}:${completedAt}`;
+  let pending = workflowSessionUsageCache.get(cacheKey);
+  if (!pending) {
+    if (workflowSessionUsageCache.size >= WORKFLOW_SESSION_USAGE_CACHE_LIMIT) {
+      const oldestKey = workflowSessionUsageCache.keys().next().value;
+      if (oldestKey !== undefined) workflowSessionUsageCache.delete(oldestKey);
+    }
+    pending = readAgentSessionUsage(app, sessionId);
+    workflowSessionUsageCache.set(cacheKey, pending);
+  }
+  try {
+    return await pending;
+  } catch {
+    workflowSessionUsageCache.delete(cacheKey);
+    return {};
+  }
+}
+
+function workflowTraceKey(nodeId: string, startedAt: number): string {
+  return `${nodeId}:${startedAt}`;
 }
