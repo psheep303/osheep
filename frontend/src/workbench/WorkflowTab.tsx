@@ -64,6 +64,7 @@ import { normalizeLightTerminalAnsi, workflowXtermTheme, xtermAnsiTheme } from "
 import {
   blockOutputText,
   canApplyWorkflowRefresh,
+  formatCompactTokenCount,
   formatWorkflowDuration,
   type WorkflowBlockOutput,
 } from "./workflow-behavior";
@@ -783,6 +784,8 @@ export function WorkflowTab({
   const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const abortRef = useRef<AbortController | null>(null);
   const waitingAlertKeyRef = useRef("");
+  const autoSeeRunStartedAtRef = useRef(0);
+  const autoSeenMarkdownRef = useRef<Set<string>>(new Set());
   const undoStackRef = useRef<WorkflowRecord[]>([]);
   const redoStackRef = useRef<WorkflowRecord[]>([]);
   const [historyTick, setHistoryTick] = useState(0);
@@ -846,10 +849,24 @@ export function WorkflowTab({
           return;
         }
         const isRunning = workflowIsRunning(record);
+        const previous = workflowRef.current;
         const next = applyNodePositions(record, runtimeLayoutRef.current);
         workflowRef.current = next;
         setWorkflow(next);
         setRunning(isRunning);
+        const completedMarkdown = next.nodes.find((node) => {
+          if (nodeKind(node) !== "markdown" || node.status !== "success" || !markdownAutoSeeResult(node)) return false;
+          if (autoSeenMarkdownRef.current.has(`${node.id}:${node.completedAt ?? 0}`)) return false;
+          return (
+            previous?.nodes.find((item) => item.id === node.id)?.status === "running" ||
+            (autoSeeRunStartedAtRef.current > 0 &&
+              (node.completedAt ?? 0) >= autoSeeRunStartedAtRef.current)
+          );
+        });
+        if (completedMarkdown) {
+          autoSeenMarkdownRef.current.add(`${completedMarkdown.id}:${completedMarkdown.completedAt ?? 0}`);
+          setMpeNodeId(completedMarkdown.id);
+        }
         if (!isRunning) onWorkflowChanged();
       } catch {
         /* keep the current snapshot while the workspace is changing */
@@ -1634,6 +1651,8 @@ export function WorkflowTab({
     const current = workflowRef.current;
     if (!current || running) return;
     await flushPendingSave();
+    autoSeeRunStartedAtRef.current = Date.now();
+    autoSeenMarkdownRef.current.clear();
     setRunning(true);
     setBlockPickerOpen(false);
     setError(null);
@@ -2576,10 +2595,7 @@ export function WorkflowTab({
       {mpeNodeId && workflow.nodes.some((node) => node.id === mpeNodeId) && (
         <div className="workflow-panel-shell">
           <WorkflowMpePanel
-            markdown={resolveBlockTemplatePreview(
-              workflow.nodes.find((node) => node.id === mpeNodeId)!.prompt,
-              workflow,
-            )}
+            markdown={markdownResultText(workflow.nodes.find((node) => node.id === mpeNodeId)!, workflow)}
             onClose={() => setMpeNodeId(null)}
           />
         </div>
@@ -3427,7 +3443,24 @@ function formatWorkflowTokenCount(
 ): string {
   return count === undefined
     ? t("workflow.observability.unavailable")
-    : count.toLocaleString(language);
+    : formatCompactTokenCount(count, language);
+}
+
+function markdownAutoSeeResult(node: WorkflowNode): boolean {
+  return node.config?.autoSeeResult === true;
+}
+
+function markdownResultText(node: WorkflowNode, workflow: WorkflowRecord): string {
+  if (node.rawOutput) {
+    try {
+      const parsed = JSON.parse(node.rawOutput) as { markdown?: unknown; text?: unknown };
+      if (typeof parsed.markdown === "string") return parsed.markdown;
+      if (typeof parsed.text === "string") return parsed.text;
+    } catch {
+      /* fall back to the configured markdown template */
+    }
+  }
+  return resolveBlockTemplatePreview(node.prompt, workflow);
 }
 
 function formatTraceValue(value: unknown, t: WorkflowTranslate): string {
@@ -3742,6 +3775,7 @@ function WorkflowNodeInspector({
   onUpdateEdge: (edgeId: string, patch: Partial<WorkflowEdge>) => void;
   onDeleteEdge: (edgeId: string) => void;
 }) {
+  const { t } = useUiPreferences();
   const outgoing = edges.filter((edge) => edge.from === node.id);
   const incoming = edges.filter((edge) => edge.to === node.id);
   const bodyText = blockOutputText(node);
@@ -4402,8 +4436,17 @@ function WorkflowNodeInspector({
 
       {isMarkdown && (
         <div className="workflow-inspector__mpe-link-row">
+          <label className="workflow-inspector__check">
+            <input
+              type="checkbox"
+              checked={markdownAutoSeeResult(node)}
+              onChange={(event) => updateConfig({ autoSeeResult: event.target.checked })}
+              disabled={running}
+            />
+            <span>{t("workflow.markdown.autoSeeResult")}</span>
+          </label>
           <button type="button" onClick={onShowMpe}>
-            See result
+            {t("workflow.markdown.seeResult")}
           </button>
         </div>
       )}

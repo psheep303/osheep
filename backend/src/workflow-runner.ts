@@ -15,6 +15,7 @@ import {
 import { applyClaudePluginSelection } from "./claude-plugins.js";
 import { applyCodexPluginSelection } from "./codex-plugins.js";
 import { readAgentSessionUsage } from "./agent-sessions.js";
+import { calculateModelCost, readStoredModelPrices } from "./model-pricing.js";
 import { readFileText, writeFileText } from "./fs-ops.js";
 import { callRemoteMcp, discoverRemoteMcp, type RemoteMcpTool } from "./remote-mcp.js";
 import {
@@ -654,6 +655,14 @@ async function runWorkflowInBackground(
             ).catch(() => ({}))
           : {};
       const usage = mergeUsage(terminalUsage, sessionUsage);
+      const modelCost =
+        usage.cost === undefined
+          ? calculateModelCost(
+              currentNode.model || "default",
+              usage.tokens,
+              await readStoredModelPrices().catch(() => []),
+            )
+          : usage.cost;
       await patchWorkflowRun(workspace.path, workflowId, run.id, (current) =>
         completeRunTrace(current, nodeId, {
           status: result.error ? "error" : "success",
@@ -664,7 +673,7 @@ async function runWorkflowInBackground(
           terminal,
           retryReasons: retryReasonsFromConfig(detailsConfig),
           tokens: usage.tokens,
-          cost: usage.cost,
+          cost: modelCost,
         }),
       );
       if (result.error && !nodeFailover(currentNode)) throw new Error(result.error);

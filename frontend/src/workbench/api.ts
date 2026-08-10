@@ -262,6 +262,23 @@ export async function putGlobalSettings(value: unknown): Promise<void> {
   await http.put("/api/settings", value);
 }
 
+export interface ModelPriceRecord {
+  model: string;
+  inputCostPerMillion: number;
+  outputCostPerMillion: number;
+  cacheReadCostPerMillion?: number;
+  source?: "litellm" | "manual";
+  updatedAt?: number;
+}
+
+export async function syncModelPrices(): Promise<{
+  models: ModelPriceRecord[];
+  source: string;
+  updatedAt: number;
+}> {
+  return await http.post("/api/model-prices/sync", {});
+}
+
 export async function getUiPreferences<T = unknown>(): Promise<T> {
   return await http.get<T>("/api/ui-preferences");
 }

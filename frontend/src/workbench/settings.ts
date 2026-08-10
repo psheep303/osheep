@@ -1,5 +1,14 @@
 export type TabSize = 2 | 4;
 
+export interface ModelPrice {
+  model: string;
+  inputCostPerMillion: number;
+  outputCostPerMillion: number;
+  cacheReadCostPerMillion?: number;
+  source?: "litellm" | "manual";
+  updatedAt?: number;
+}
+
 export type AiProviderKind = "codex-cli" | "claude-cli";
 
 export interface AiProvider {
@@ -42,6 +51,9 @@ export interface OsheepSettings {
   ai: {
     autoAllow: AiAutoAllow;
   };
+  pricing: {
+    models: ModelPrice[];
+  };
 }
 
 export const DEFAULT_AUTO_ALLOW: AiAutoAllow = {
@@ -59,6 +71,7 @@ export const DEFAULT_SETTINGS: OsheepSettings = {
   ai: {
     autoAllow: { ...DEFAULT_AUTO_ALLOW },
   },
+  pricing: { models: [] },
 };
 
 export function isCliProviderKind(kind: unknown): kind is AiProviderKind {
@@ -89,6 +102,7 @@ export function mergeSettings(partial: unknown): OsheepSettings {
     ai?: {
       autoAllow?: unknown;
     };
+    pricing?: { models?: unknown };
   };
   const fontSize =
     typeof p.editor?.fontSize === "number" && p.editor.fontSize >= 8 && p.editor.fontSize <= 64
@@ -98,11 +112,33 @@ export function mergeSettings(partial: unknown): OsheepSettings {
   const autoSave =
     typeof p.editor?.autoSave === "boolean" ? p.editor.autoSave : DEFAULT_SETTINGS.editor.autoSave;
   const autoAllow = sanitizeAutoAllow(p.ai?.autoAllow);
+  const models = Array.isArray(p.pricing?.models)
+    ? p.pricing.models.flatMap((item): ModelPrice[] => {
+        if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+        const value = item as Record<string, unknown>;
+        const model = typeof value.model === "string" ? value.model.trim() : "";
+        const input = typeof value.inputCostPerMillion === "number" ? value.inputCostPerMillion : NaN;
+        const output = typeof value.outputCostPerMillion === "number" ? value.outputCostPerMillion : NaN;
+        if (!model || !Number.isFinite(input) || !Number.isFinite(output)) return [];
+        return [{
+          model,
+          inputCostPerMillion: Math.max(0, input),
+          outputCostPerMillion: Math.max(0, output),
+          cacheReadCostPerMillion:
+            typeof value.cacheReadCostPerMillion === "number" && Number.isFinite(value.cacheReadCostPerMillion)
+              ? Math.max(0, value.cacheReadCostPerMillion)
+              : undefined,
+          source: value.source === "litellm" ? "litellm" : "manual",
+          updatedAt: typeof value.updatedAt === "number" ? value.updatedAt : undefined,
+        }];
+      })
+    : [];
   return {
     editor: { fontSize, tabSize, autoSave },
     ai: {
       autoAllow,
     },
+    pricing: { models },
   };
 }
 

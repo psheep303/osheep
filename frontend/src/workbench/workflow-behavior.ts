@@ -11,6 +11,20 @@ export function formatWorkflowDuration(ms: number): string {
   return `${hours}h${minutes}m${seconds}s`;
 }
 
+export function formatCompactTokenCount(count: number, language = "en"): string {
+  const absolute = Math.abs(count);
+  if (absolute < 1_000) return count.toLocaleString(language);
+  let value = count;
+  let unit = "";
+  for (const candidate of ["k", "m", "b"]) {
+    if (Math.abs(value) < 1_000) break;
+    value /= 1_000;
+    unit = candidate;
+  }
+  const digits = Math.abs(value) >= 100 ? 0 : Math.abs(value) >= 10 ? 1 : 2;
+  return `${value.toFixed(digits).replace(/\.0+$|(?<=\.\d)0+$/g, "")}${unit}`;
+}
+
 function blockId(node: WorkflowNode): number | null {
   return typeof node.blockId === "number" && Number.isInteger(node.blockId) && node.blockId > 0
     ? node.blockId

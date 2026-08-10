@@ -11,6 +11,7 @@ import {
   readFileText,
   writeFileText,
 } from "../fs-ops.js";
+import { syncLiteLlmModelPrices } from "../model-pricing.js";
 import {
   createWorkspace,
   ensureOsheepLayout,
@@ -35,6 +36,11 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
         : current;
     await writeAppSettings(next);
     return { ok: true };
+  });
+
+  app.post("/api/model-prices/sync", async () => {
+    const models = await syncLiteLlmModelPrices();
+    return { models, source: "litellm", updatedAt: Date.now() };
   });
 
   app.get("/api/ui-preferences", async () => {

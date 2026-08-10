@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { errors } from "../errors.js";
+import { calculateModelCost, readStoredModelPrices } from "../model-pricing.js";
 import { updateTemplateFromWorkflow } from "../templates.js";
 import { startWorkflowRun, stopWorkflowRun, stopWorkflowRunAndWait } from "../workflow-runner.js";
 import {
@@ -35,7 +36,28 @@ export async function registerWorkflowRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const ws = await resolveWorkspace(req.params.id);
       const workflow = await getWorkflow(ws.path, req.params.wid);
-      return sendWithEtag(req, reply, workflow);
+      const prices = await readStoredModelPrices().catch(() => []);
+      const pricedWorkflow = {
+        ...workflow,
+        runs: workflow.runs.map((run) => {
+          const trace = run.trace?.map((item) => {
+            if (item.cost !== undefined) return item;
+            const model = workflow.nodes.find((node) => node.id === item.nodeId)?.model;
+            const cost = model ? calculateModelCost(model, item.tokens, prices) : undefined;
+            return cost === undefined ? item : { ...item, cost };
+          });
+          const calculatedCost = trace?.reduce((sum, item) => sum + (item.cost ?? 0), 0) ?? 0;
+          return {
+            ...run,
+            trace,
+            stats:
+              run.stats || calculatedCost > 0
+                ? { ...(run.stats ?? {}), cost: calculatedCost || run.stats?.cost }
+                : run.stats,
+          };
+        }),
+      };
+      return sendWithEtag(req, reply, pricedWorkflow);
     },
   );
 

@@ -1463,7 +1463,13 @@
 .workflow-inspector__mpe-link-row {
   margin-top: auto;
   display: flex;
+  align-items: center;
+  gap: 14px;
   justify-content: flex-start;
+}
+
+.workflow-inspector__mpe-link-row .workflow-inspector__check {
+  margin: 0;
 }
 
 .workflow-inspector__mpe-link-row button {
@@ -1638,6 +1644,10 @@
 
 .workflow-observability {
   width: min(430px, 42vw);
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .workflow-observability__run-select {
@@ -1681,7 +1691,7 @@
 .workflow-observability__summary strong.is-error { color: #f48771; }
 .workflow-observability__summary strong.is-running { color: #d6a849; }
 
-.workflow-observability__timeline { display: grid; gap: 4px; padding: 0 14px 10px; overflow: auto; }
+.workflow-observability__timeline { display: grid; gap: 4px; flex: none; padding: 0 14px 10px; overflow: visible; }
 .workflow-observability__event { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; gap: 9px; align-items: center; width: 100%; border: 1px solid transparent; border-radius: var(--radius-sm); padding: 9px 8px; background: transparent; color: var(--fg-default); text-align: left; cursor: pointer; font: inherit; }
 .workflow-observability__event:hover, .workflow-observability__event.is-selected { border-color: var(--border-control); background: var(--surface-2); }
 .workflow-observability__dot { width: 8px; height: 8px; border-radius: 50%; background: var(--fg-muted); }
