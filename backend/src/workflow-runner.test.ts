@@ -185,7 +185,13 @@ test("workflow usage captures Codex input, output, and total tokens", () => {
       "Token usage: total=17,946 input=15,801 (+ 10,240 cached) output=2,145 (reasoning 757)",
     ),
     {
-      tokens: { input: 15_801, output: 2_145, total: 17_946 },
+      tokens: {
+        input: 15_801,
+        output: 2_145,
+        cacheRead: 10_240,
+        cacheWrite: undefined,
+        total: 17_946,
+      },
       cost: undefined,
     },
   );
@@ -195,7 +201,13 @@ test("workflow usage derives total tokens and captures Claude cost output", () =
   assert.deepEqual(
     parseWorkflowUsage('input_tokens: 1.2k\noutput_tokens: 345\ntotal_cost_usd: 0.0421'),
     {
-      tokens: { input: 1_200, output: 345, total: 1_545 },
+      tokens: {
+        input: 1_200,
+        output: 345,
+        cacheRead: undefined,
+        cacheWrite: undefined,
+        total: 1_545,
+      },
       cost: 0.0421,
     },
   );
@@ -203,9 +215,33 @@ test("workflow usage derives total tokens and captures Claude cost output", () =
 
 test("workflow usage retains generic terminal token totals as a fallback", () => {
   assert.deepEqual(parseWorkflowUsage("Cooked for 3m · 35.2k tokens"), {
-    tokens: { input: undefined, output: undefined, total: 35_200 },
+    tokens: {
+      input: undefined,
+      output: undefined,
+      cacheRead: undefined,
+      cacheWrite: undefined,
+      total: 35_200,
+    },
     cost: undefined,
   });
+});
+
+test("workflow usage captures Claude cache read and write tokens", () => {
+  assert.deepEqual(
+    parseWorkflowUsage(
+      "input_tokens: 12\ncache_read_input_tokens: 3.5k\ncache_creation_input_tokens: 800\noutput_tokens: 90",
+    ),
+    {
+      tokens: {
+        input: 12,
+        output: 90,
+        cacheRead: 3_500,
+        cacheWrite: 800,
+        total: 4_402,
+      },
+      cost: undefined,
+    },
+  );
 });
 
 test("Codex workflow blocks without an effort setting use medium reasoning", () => {

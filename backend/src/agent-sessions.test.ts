@@ -120,6 +120,8 @@ test("Codex session usage reads the last cumulative token_count event", async ()
           info: {
             total_token_usage: {
               input_tokens: 1_000,
+              cached_input_tokens: 700,
+              cache_write_input_tokens: 50,
               output_tokens: 100,
               total_tokens: 1_100,
             },
@@ -133,6 +135,8 @@ test("Codex session usage reads the last cumulative token_count event", async ()
           info: {
             total_token_usage: {
               input_tokens: 2_000,
+              cached_input_tokens: 1_400,
+              cache_write_input_tokens: 75,
               output_tokens: 250,
               total_tokens: 2_250,
             },
@@ -142,7 +146,13 @@ test("Codex session usage reads the last cumulative token_count event", async ()
     ]);
 
     assert.deepEqual(await readAgentSessionUsage("codex", id, fixture.roots), {
-      tokens: { input: 2_000, output: 250, total: 2_250 },
+      tokens: {
+        input: 2_000,
+        output: 250,
+        cacheRead: 1_400,
+        cacheWrite: 75,
+        total: 2_250,
+      },
       cost: undefined,
     });
   } finally {
@@ -170,17 +180,39 @@ test("Claude session usage sums assistant message usage", async () => {
       {
         type: "assistant",
         sessionId: id,
-        message: { role: "assistant", usage: { input_tokens: 600, output_tokens: 80 } },
+        message: {
+          role: "assistant",
+          usage: {
+            input_tokens: 600,
+            cache_read_input_tokens: 300,
+            cache_creation_input_tokens: 40,
+            output_tokens: 80,
+          },
+        },
       },
       {
         type: "assistant",
         sessionId: id,
-        message: { role: "assistant", usage: { input_tokens: 400, output_tokens: 120 } },
+        message: {
+          role: "assistant",
+          usage: {
+            input_tokens: 400,
+            cache_read_input_tokens: 200,
+            cache_creation_input_tokens: 60,
+            output_tokens: 120,
+          },
+        },
       },
     ]);
 
     assert.deepEqual(await readAgentSessionUsage("claude", id, fixture.roots), {
-      tokens: { input: 1_000, output: 200, total: 1_200 },
+      tokens: {
+        input: 1_000,
+        output: 200,
+        cacheRead: 500,
+        cacheWrite: 100,
+        total: 1_800,
+      },
       cost: undefined,
     });
   } finally {

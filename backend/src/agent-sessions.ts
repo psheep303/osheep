@@ -16,7 +16,13 @@ export interface AgentSessionSummary {
 }
 
 export interface AgentSessionUsage {
-  tokens?: { input?: number; output?: number; total?: number };
+  tokens?: {
+    input?: number;
+    output?: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+    total?: number;
+  };
   cost?: number;
 }
 
@@ -73,10 +79,14 @@ export async function readAgentSessionUsage(
   const text = await fs.readFile(record.filePath, "utf8");
   let input = 0;
   let output = 0;
+  let cacheRead = 0;
+  let cacheWrite = 0;
   let total: number | undefined;
   let cost: number | undefined;
   let sawInput = false;
   let sawOutput = false;
+  let sawCacheRead = false;
+  let sawCacheWrite = false;
   for (const line of text.split(/\r?\n/)) {
     if (!line.trim()) continue;
     let value: unknown;
@@ -92,6 +102,12 @@ export async function readAgentSessionUsage(
       const usage = objectValue(info.total_token_usage);
       const nextInput = numberValue(usage.input_tokens ?? usage.inputTokens);
       const nextOutput = numberValue(usage.output_tokens ?? usage.outputTokens);
+      const nextCacheRead = numberValue(
+        usage.cached_input_tokens ?? usage.cache_read_input_tokens ?? usage.cacheRead,
+      );
+      const nextCacheWrite = numberValue(
+        usage.cache_write_input_tokens ?? usage.cache_creation_input_tokens ?? usage.cacheWrite,
+      );
       const nextTotal = numberValue(usage.total_tokens ?? usage.totalTokens);
       if (nextInput !== undefined) {
         input = nextInput;
@@ -101,6 +117,14 @@ export async function readAgentSessionUsage(
         output = nextOutput;
         sawOutput = true;
       }
+      if (nextCacheRead !== undefined) {
+        cacheRead = nextCacheRead;
+        sawCacheRead = true;
+      }
+      if (nextCacheWrite !== undefined) {
+        cacheWrite = nextCacheWrite;
+        sawCacheWrite = true;
+      }
       if (nextTotal !== undefined) total = nextTotal;
     } else {
       const message = objectValue(root.message);
@@ -109,6 +133,12 @@ export async function readAgentSessionUsage(
       const usage = Object.keys(nestedUsage).length > 0 ? nestedUsage : directUsage;
       const nextInput = numberValue(usage.input_tokens ?? usage.inputTokens);
       const nextOutput = numberValue(usage.output_tokens ?? usage.outputTokens);
+      const nextCacheRead = numberValue(
+        usage.cache_read_input_tokens ?? usage.cached_input_tokens ?? usage.cacheRead,
+      );
+      const nextCacheWrite = numberValue(
+        usage.cache_creation_input_tokens ?? usage.cache_write_input_tokens ?? usage.cacheWrite,
+      );
       if (nextInput !== undefined) {
         input += nextInput;
         sawInput = true;
@@ -117,20 +147,41 @@ export async function readAgentSessionUsage(
         output += nextOutput;
         sawOutput = true;
       }
+      if (nextCacheRead !== undefined) {
+        cacheRead += nextCacheRead;
+        sawCacheRead = true;
+      }
+      if (nextCacheWrite !== undefined) {
+        cacheWrite += nextCacheWrite;
+        sawCacheWrite = true;
+      }
     }
     const nextCost = numberValue(
       root.cost_usd ?? root.total_cost_usd ?? payload.cost_usd ?? payload.total_cost_usd,
     );
     if (nextCost !== undefined) cost = nextCost;
   }
-  if (!sawInput && !sawOutput && total === undefined && cost === undefined) return {};
+  if (
+    !sawInput &&
+    !sawOutput &&
+    !sawCacheRead &&
+    !sawCacheWrite &&
+    total === undefined &&
+    cost === undefined
+  ) return {};
   return {
     tokens:
-      sawInput || sawOutput || total !== undefined
+      sawInput || sawOutput || sawCacheRead || sawCacheWrite || total !== undefined
         ? {
             input: sawInput ? input : undefined,
             output: sawOutput ? output : undefined,
-            total: total ?? (sawInput || sawOutput ? input + output : undefined),
+            cacheRead: sawCacheRead ? cacheRead : undefined,
+            cacheWrite: sawCacheWrite ? cacheWrite : undefined,
+            total:
+              total ??
+              (sawInput || sawOutput || sawCacheRead || sawCacheWrite
+                ? input + output + cacheRead + cacheWrite
+                : undefined),
           }
         : undefined,
     cost,

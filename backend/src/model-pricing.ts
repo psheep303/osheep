@@ -5,9 +5,14 @@ export const LITELLM_MODEL_PRICES_URL =
 
 export interface ModelPriceRecord {
   model: string;
+  provider: string;
+  billingMode: "dynamic" | "per-request";
+  costPerRequest?: number;
   inputCostPerMillion: number;
   outputCostPerMillion: number;
   cacheReadCostPerMillion?: number;
+  cacheWriteCostPerMillion?: number;
+  favorite?: boolean;
   source?: "litellm" | "manual";
   updatedAt?: number;
 }
@@ -24,12 +29,20 @@ export function normalizeModelPriceRecords(raw: unknown): ModelPriceRecord[] {
     const item = value as Record<string, unknown>;
     const input = finiteNumber(item.input_cost_per_token);
     const output = finiteNumber(item.output_cost_per_token);
-    if (!key.trim() || (input === undefined && output === undefined)) continue;
+    const perRequest = sumDefined(
+      finiteNumber(item.input_cost_per_request),
+      finiteNumber(item.output_cost_per_request),
+    );
+    if (!key.trim() || (input === undefined && output === undefined && perRequest === undefined)) continue;
     records.push({
       model: stringValue(item.model_name) || key,
+      provider: stringValue(item.litellm_provider) || providerFromModel(key),
+      billingMode: perRequest !== undefined ? "per-request" : "dynamic",
+      costPerRequest: perRequest,
       inputCostPerMillion: Math.max(0, (input ?? 0) * 1_000_000),
       outputCostPerMillion: Math.max(0, (output ?? 0) * 1_000_000),
       cacheReadCostPerMillion: optionalMillion(item.cache_read_input_token_cost),
+      cacheWriteCostPerMillion: optionalMillion(item.cache_creation_input_token_cost),
       source: "litellm",
     });
   }
@@ -49,9 +62,14 @@ export function normalizeStoredModelPrices(raw: unknown): ModelPriceRecord[] {
       return [
         {
           model,
+          provider: stringValue(item.provider) || providerFromModel(model),
+          billingMode: item.billingMode === "per-request" ? "per-request" : "dynamic",
+          costPerRequest: optionalNumber(item.costPerRequest),
           inputCostPerMillion: Math.max(0, input),
           outputCostPerMillion: Math.max(0, output),
           cacheReadCostPerMillion: optionalNumber(item.cacheReadCostPerMillion),
+          cacheWriteCostPerMillion: optionalNumber(item.cacheWriteCostPerMillion),
+          favorite: item.favorite === true,
           source: item.source === "litellm" ? "litellm" : "manual",
           updatedAt: optionalNumber(item.updatedAt),
         } satisfies ModelPriceRecord,
@@ -80,15 +98,24 @@ export async function readStoredModelPrices(): Promise<ModelPriceRecord[]> {
 
 export function calculateModelCost(
   model: string,
-  tokens: { input?: number; output?: number } | undefined,
+  tokens:
+    | { input?: number; output?: number; cacheRead?: number; cacheWrite?: number }
+    | undefined,
   prices: ModelPriceRecord[],
 ): number | undefined {
-  if (!tokens) return undefined;
   const price = findModelPrice(model, prices);
   if (!price) return undefined;
+  if (price.billingMode === "per-request") return price.costPerRequest;
+  if (!tokens) return undefined;
+  const cacheRead = tokens.cacheRead ?? 0;
+  const cacheWrite = tokens.cacheWrite ?? 0;
+  const rawInput = tokens.input ?? 0;
+  const uncachedInput = rawInput >= cacheRead + cacheWrite ? rawInput - cacheRead - cacheWrite : rawInput;
   const cost =
-    ((tokens.input ?? 0) * price.inputCostPerMillion +
-      (tokens.output ?? 0) * price.outputCostPerMillion) /
+    (uncachedInput * price.inputCostPerMillion +
+      (tokens.output ?? 0) * price.outputCostPerMillion +
+      cacheRead * (price.cacheReadCostPerMillion ?? price.inputCostPerMillion) +
+      cacheWrite * (price.cacheWriteCostPerMillion ?? price.inputCostPerMillion)) /
     1_000_000;
   return Number.isFinite(cost) ? cost : undefined;
 }
@@ -132,4 +159,14 @@ function finiteNumber(value: unknown): number | undefined {
 
 function stringValue(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function providerFromModel(model: string): string {
+  const slash = model.indexOf("/");
+  return slash > 0 ? model.slice(0, slash) : "";
+}
+
+function sumDefined(...values: Array<number | undefined>): number | undefined {
+  const present = values.filter((value): value is number => value !== undefined);
+  return present.length > 0 ? present.reduce((sum, value) => sum + value, 0) : undefined;
 }

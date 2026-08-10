@@ -264,9 +264,14 @@ export async function putGlobalSettings(value: unknown): Promise<void> {
 
 export interface ModelPriceRecord {
   model: string;
+  provider: string;
+  billingMode: "dynamic" | "per-request";
+  costPerRequest?: number;
   inputCostPerMillion: number;
   outputCostPerMillion: number;
   cacheReadCostPerMillion?: number;
+  cacheWriteCostPerMillion?: number;
+  favorite?: boolean;
   source?: "litellm" | "manual";
   updatedAt?: number;
 }
@@ -1173,7 +1178,7 @@ export interface WorkflowRunTrace {
   error?: string;
   retryReasons?: string[];
   terminal?: { commandLine?: string; stdout?: string; stderr?: string; transcript?: string; exitCode?: number | null; signal?: string | null };
-  tokens?: { input?: number; output?: number; total?: number };
+  tokens?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; total?: number };
   cost?: number;
 }
 
@@ -1181,6 +1186,8 @@ export interface WorkflowRunStats {
   durationMs?: number;
   inputTokens?: number;
   outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
   totalTokens?: number;
   cost?: number;
   nodeCount?: number;

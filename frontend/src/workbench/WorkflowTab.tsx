@@ -3264,6 +3264,8 @@ function WorkflowObservabilityPanel({
   const traceTokenStats = summarizeWorkflowTraceTokens(traces);
   const inputTokens = stats?.inputTokens ?? traceTokenStats.input;
   const outputTokens = stats?.outputTokens ?? traceTokenStats.output;
+  const cacheReadTokens = stats?.cacheReadTokens ?? traceTokenStats.cacheRead;
+  const cacheWriteTokens = stats?.cacheWriteTokens ?? traceTokenStats.cacheWrite;
   const totalTokens =
     stats?.totalTokens ??
     traceTokenStats.total ??
@@ -3338,6 +3340,12 @@ function WorkflowObservabilityPanel({
             <WorkflowObservabilityStat label={t("workflow.observability.outputTokens")}>
               <strong>{formatWorkflowTokenCount(outputTokens, resolvedLanguage, t)}</strong>
             </WorkflowObservabilityStat>
+            <WorkflowObservabilityStat label={t("workflow.observability.cacheReadTokens")}>
+              <strong>{formatWorkflowTokenCount(cacheReadTokens, resolvedLanguage, t)}</strong>
+            </WorkflowObservabilityStat>
+            <WorkflowObservabilityStat label={t("workflow.observability.cacheWriteTokens")}>
+              <strong>{formatWorkflowTokenCount(cacheWriteTokens, resolvedLanguage, t)}</strong>
+            </WorkflowObservabilityStat>
             <WorkflowObservabilityStat label={t("workflow.observability.totalTokens")}>
               <strong>{formatWorkflowTokenCount(totalTokens, resolvedLanguage, t)}</strong>
             </WorkflowObservabilityStat>
@@ -3402,13 +3410,19 @@ function workflowRunStatusLabel(status: WorkflowRunStatus, t: WorkflowTranslate)
 function summarizeWorkflowTraceTokens(traces: WorkflowRunTrace[]): {
   input?: number;
   output?: number;
+  cacheRead?: number;
+  cacheWrite?: number;
   total?: number;
 } {
   let hasInput = false;
   let hasOutput = false;
+  let hasCacheRead = false;
+  let hasCacheWrite = false;
   let hasTotal = false;
   let input = 0;
   let output = 0;
+  let cacheRead = 0;
+  let cacheWrite = 0;
   let total = 0;
   for (const trace of traces) {
     if (trace.tokens?.input !== undefined) {
@@ -3418,6 +3432,14 @@ function summarizeWorkflowTraceTokens(traces: WorkflowRunTrace[]): {
     if (trace.tokens?.output !== undefined) {
       hasOutput = true;
       output += trace.tokens.output;
+    }
+    if (trace.tokens?.cacheRead !== undefined) {
+      hasCacheRead = true;
+      cacheRead += trace.tokens.cacheRead;
+    }
+    if (trace.tokens?.cacheWrite !== undefined) {
+      hasCacheWrite = true;
+      cacheWrite += trace.tokens.cacheWrite;
     }
     const traceTotal =
       trace.tokens?.total ??
@@ -3432,6 +3454,8 @@ function summarizeWorkflowTraceTokens(traces: WorkflowRunTrace[]): {
   return {
     input: hasInput ? input : undefined,
     output: hasOutput ? output : undefined,
+    cacheRead: hasCacheRead ? cacheRead : undefined,
+    cacheWrite: hasCacheWrite ? cacheWrite : undefined,
     total: hasTotal ? total : undefined,
   };
 }

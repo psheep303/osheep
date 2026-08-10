@@ -1508,6 +1508,15 @@ export function parseWorkflowUsage(text: string): {
     plain,
     /(?:\boutput(?:\s+tokens?)?|\boutput_tokens)[\s"']*[:=][\s"']*/gi,
   );
+  const cacheRead =
+    lastLabeledTokenCount(
+      plain,
+      /(?:\bcached(?:\s+input)?(?:\s+tokens?)?|\bcached_input_tokens|\bcache[ _-]?read(?:[ _-]?input)?(?:[ _-]?tokens?)?)[\s"']*[:=][\s"']*/gi,
+    ) ?? lastMatchedTokenCount(plain, /\(\+\s*([\d,.]+)\s*([kmb])?\s+cached\)/gi);
+  const cacheWrite = lastLabeledTokenCount(
+    plain,
+    /(?:\bcache[ _-]?(?:write|creation)(?:[ _-]?input)?(?:[ _-]?tokens?)?)[\s"']*[:=][\s"']*/gi,
+  );
   const explicitTotal = lastLabeledTokenCount(
     plain,
     /(?:\btotal(?:\s+tokens?)?|\btotal_tokens)[\s"']*[:=][\s"']*/gi,
@@ -1521,7 +1530,13 @@ export function parseWorkflowUsage(text: string): {
   }
   const total =
     explicitTotal ??
-    (input !== undefined || output !== undefined ? (input ?? 0) + (output ?? 0) : genericTotal);
+    (input !== undefined || output !== undefined
+      ? (input ?? 0) +
+        (output ?? 0) +
+        (/cache_(?:read|creation)_input_tokens/i.test(plain)
+          ? (cacheRead ?? 0) + (cacheWrite ?? 0)
+          : 0)
+      : genericTotal);
   const costMatch = [
     ...plain.matchAll(
       /(?:\btotal[ _-]?cost(?:_usd)?|\bcost)[\s"']*[:=][\s"']*\$?([\d.]+)/gi,
@@ -1530,16 +1545,28 @@ export function parseWorkflowUsage(text: string): {
   const cost = costMatch ? Number(costMatch[1]) : undefined;
   return {
     tokens:
-      input !== undefined || output !== undefined || total !== undefined
-        ? { input, output, total }
+      input !== undefined ||
+      output !== undefined ||
+      cacheRead !== undefined ||
+      cacheWrite !== undefined ||
+      total !== undefined
+        ? { input, output, cacheRead, cacheWrite, total }
         : undefined,
     cost: cost !== undefined && Number.isFinite(cost) ? cost : undefined,
   };
 }
 
+function lastMatchedTokenCount(text: string, pattern: RegExp): number | undefined {
+  let count: number | undefined;
+  for (const match of text.matchAll(pattern)) {
+    count = tokenCount(match[1], match[2]) ?? count;
+  }
+  return count;
+}
+
 function lastLabeledTokenCount(text: string, label: RegExp): number | undefined {
   let count: number | undefined;
-  const pattern = new RegExp(`${label.source}([\\d,.]+)\\s*([km])?`, label.flags);
+  const pattern = new RegExp(`${label.source}([\\d,.]+)\\s*([kmb])?`, label.flags);
   for (const match of text.matchAll(pattern)) {
     count = tokenCount(match[1], match[2]) ?? count;
   }
@@ -1550,7 +1577,13 @@ function tokenCount(value: string | undefined, suffix: string | undefined): numb
   const base = Number(value?.replace(/,/g, ""));
   if (!Number.isFinite(base)) return undefined;
   const multiplier =
-    suffix?.toLowerCase() === "k" ? 1_000 : suffix?.toLowerCase() === "m" ? 1_000_000 : 1;
+    suffix?.toLowerCase() === "k"
+      ? 1_000
+      : suffix?.toLowerCase() === "m"
+        ? 1_000_000
+        : suffix?.toLowerCase() === "b"
+          ? 1_000_000_000
+          : 1;
   return Math.round(base * multiplier);
 }
 
@@ -1643,6 +1676,10 @@ function runStats(run: WorkflowRun, completedAt: number): WorkflowRun["stats"] {
     totalTokens: totalTokens || undefined,
     inputTokens: trace.reduce((sum, item) => sum + (item.tokens?.input ?? 0), 0) || undefined,
     outputTokens: trace.reduce((sum, item) => sum + (item.tokens?.output ?? 0), 0) || undefined,
+    cacheReadTokens:
+      trace.reduce((sum, item) => sum + (item.tokens?.cacheRead ?? 0), 0) || undefined,
+    cacheWriteTokens:
+      trace.reduce((sum, item) => sum + (item.tokens?.cacheWrite ?? 0), 0) || undefined,
     cost: trace.reduce((sum, item) => sum + (item.cost ?? 0), 0) || undefined,
     nodeCount: trace.length,
     retryCount: retryCount || undefined,

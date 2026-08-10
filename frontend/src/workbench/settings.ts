@@ -2,9 +2,14 @@ export type TabSize = 2 | 4;
 
 export interface ModelPrice {
   model: string;
+  provider: string;
+  billingMode: "dynamic" | "per-request";
+  costPerRequest?: number;
   inputCostPerMillion: number;
   outputCostPerMillion: number;
   cacheReadCostPerMillion?: number;
+  cacheWriteCostPerMillion?: number;
+  favorite?: boolean;
   source?: "litellm" | "manual";
   updatedAt?: number;
 }
@@ -122,12 +127,28 @@ export function mergeSettings(partial: unknown): OsheepSettings {
         if (!model || !Number.isFinite(input) || !Number.isFinite(output)) return [];
         return [{
           model,
+          provider:
+            typeof value.provider === "string"
+              ? value.provider.trim()
+              : model.includes("/")
+                ? model.split("/")[0]
+                : "",
+          billingMode: value.billingMode === "per-request" ? "per-request" : "dynamic",
+          costPerRequest:
+            typeof value.costPerRequest === "number" && Number.isFinite(value.costPerRequest)
+              ? Math.max(0, value.costPerRequest)
+              : undefined,
           inputCostPerMillion: Math.max(0, input),
           outputCostPerMillion: Math.max(0, output),
           cacheReadCostPerMillion:
             typeof value.cacheReadCostPerMillion === "number" && Number.isFinite(value.cacheReadCostPerMillion)
               ? Math.max(0, value.cacheReadCostPerMillion)
               : undefined,
+          cacheWriteCostPerMillion:
+            typeof value.cacheWriteCostPerMillion === "number" && Number.isFinite(value.cacheWriteCostPerMillion)
+              ? Math.max(0, value.cacheWriteCostPerMillion)
+              : undefined,
+          favorite: value.favorite === true,
           source: value.source === "litellm" ? "litellm" : "manual",
           updatedAt: typeof value.updatedAt === "number" ? value.updatedAt : undefined,
         }];

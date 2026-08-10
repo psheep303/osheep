@@ -91,7 +91,13 @@ export interface WorkflowRunTrace {
     exitCode?: number | null;
     signal?: string | null;
   };
-  tokens?: { input?: number; output?: number; total?: number };
+  tokens?: {
+    input?: number;
+    output?: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+    total?: number;
+  };
   cost?: number;
 }
 
@@ -99,6 +105,8 @@ export interface WorkflowRunStats {
   durationMs?: number;
   inputTokens?: number;
   outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
   totalTokens?: number;
   cost?: number;
   nodeCount?: number;
