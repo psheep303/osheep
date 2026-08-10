@@ -13,6 +13,7 @@ export interface ModelPriceRecord {
   cacheReadCostPerMillion?: number;
   cacheWriteCostPerMillion?: number;
   favorite?: boolean;
+  favoriteCustomized?: boolean;
   source?: "litellm" | "manual";
   updatedAt?: number;
 }
@@ -20,6 +21,30 @@ export interface ModelPriceRecord {
 export interface ModelPricingSettings {
   models: ModelPriceRecord[];
 }
+
+const DEFAULT_FAVORITE_MODELS = new Set([
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+  "gpt-5.5",
+  "gpt-5.4",
+  "claude-fable-5",
+  "claude-opus-4-7",
+  "claude-opus-4-8",
+  "claude-opus-5",
+]);
+
+const ORIGIN_PROVIDERS = new Set([
+  "anthropic",
+  "openai",
+  "google",
+  "meta",
+  "mistral",
+  "cohere",
+  "xai",
+  "deepseek",
+  "qwen",
+]);
 
 export function normalizeModelPriceRecords(raw: unknown): ModelPriceRecord[] {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
@@ -34,15 +59,22 @@ export function normalizeModelPriceRecords(raw: unknown): ModelPriceRecord[] {
       finiteNumber(item.output_cost_per_request),
     );
     if (!key.trim() || (input === undefined && output === undefined && perRequest === undefined)) continue;
+    const sourceModel = stringValue(item.model_name) || key;
+    const model = canonicalModelName(sourceModel);
     records.push({
-      model: stringValue(item.model_name) || key,
-      provider: stringValue(item.litellm_provider) || providerFromModel(key),
+      model,
+      provider:
+        originProviderFromModel(key) ||
+        originProviderFromModel(sourceModel) ||
+        stringValue(item.litellm_provider) ||
+        providerFromModel(key),
       billingMode: perRequest !== undefined ? "per-request" : "dynamic",
       costPerRequest: perRequest,
       inputCostPerMillion: Math.max(0, (input ?? 0) * 1_000_000),
       outputCostPerMillion: Math.max(0, (output ?? 0) * 1_000_000),
       cacheReadCostPerMillion: optionalMillion(item.cache_read_input_token_cost),
       cacheWriteCostPerMillion: optionalMillion(item.cache_creation_input_token_cost),
+      favorite: isDefaultFavoriteModel(model),
       source: "litellm",
     });
   }
@@ -55,21 +87,30 @@ export function normalizeStoredModelPrices(raw: unknown): ModelPriceRecord[] {
     raw.flatMap((value) => {
       if (!value || typeof value !== "object" || Array.isArray(value)) return [];
       const item = value as Record<string, unknown>;
-      const model = stringValue(item.model);
+      const rawModel = stringValue(item.model);
+      const model = canonicalModelName(rawModel);
       const input = finiteNumber(item.inputCostPerMillion);
       const output = finiteNumber(item.outputCostPerMillion);
       if (!model || input === undefined || output === undefined) return [];
       return [
         {
           model,
-          provider: stringValue(item.provider) || providerFromModel(model),
+          provider:
+            stringValue(item.provider) ||
+            originProviderFromModel(rawModel) ||
+            originProviderFromModel(model) ||
+            providerFromModel(rawModel),
           billingMode: item.billingMode === "per-request" ? "per-request" : "dynamic",
           costPerRequest: optionalNumber(item.costPerRequest),
           inputCostPerMillion: Math.max(0, input),
           outputCostPerMillion: Math.max(0, output),
           cacheReadCostPerMillion: optionalNumber(item.cacheReadCostPerMillion),
           cacheWriteCostPerMillion: optionalNumber(item.cacheWriteCostPerMillion),
-          favorite: item.favorite === true,
+          favorite:
+            item.favoriteCustomized === true
+              ? item.favorite === true
+              : item.favorite === true || isDefaultFavoriteModel(model),
+          favoriteCustomized: item.favoriteCustomized === true,
           source: item.source === "litellm" ? "litellm" : "manual",
           updatedAt: optionalNumber(item.updatedAt),
         } satisfies ModelPriceRecord,
@@ -121,15 +162,14 @@ export function calculateModelCost(
 }
 
 function findModelPrice(model: string, prices: ModelPriceRecord[]): ModelPriceRecord | undefined {
-  const normalized = model.trim().toLowerCase();
-  if (!normalized) return undefined;
-  return (
-    prices.find((price) => price.model.trim().toLowerCase() === normalized) ??
-    prices.find((price) => {
-      const candidate = price.model.trim().toLowerCase();
-      return normalized.endsWith(`/${candidate}`) || candidate.endsWith(`/${normalized}`);
-    })
-  );
+  const aliases = modelAliases(model);
+  if (aliases.size === 0) return undefined;
+  return prices.find((price) => {
+    for (const alias of modelAliases(price.model)) {
+      if (aliases.has(alias)) return true;
+    }
+    return false;
+  });
 }
 
 function dedupeModelPrices(records: ModelPriceRecord[]): ModelPriceRecord[] {
@@ -162,8 +202,47 @@ function stringValue(value: unknown): string {
 }
 
 function providerFromModel(model: string): string {
-  const slash = model.indexOf("/");
-  return slash > 0 ? model.slice(0, slash) : "";
+  const normalized = model.trim().toLowerCase();
+  const slash = normalized.indexOf("/");
+  if (slash > 0) return normalized.slice(0, slash);
+  const dot = normalized.indexOf(".");
+  const prefix = dot > 0 ? normalized.slice(0, dot) : "";
+  return ORIGIN_PROVIDERS.has(prefix) ? prefix : "";
+}
+
+function canonicalModelName(model: string): string {
+  const trimmed = model.trim();
+  const provider = originProviderFromModel(trimmed);
+  if (!provider) return trimmed;
+  const providerPrefix = new RegExp(`(?:^|[/.])${provider}[/.](.+)$`, "i");
+  return trimmed.match(providerPrefix)?.[1]?.trim() || trimmed;
+}
+
+function originProviderFromModel(model: string): string {
+  const normalized = model.trim().toLowerCase();
+  const namespaced = normalized.match(/(?:^|[/.])(anthropic|openai|google|meta|mistral|cohere|xai|deepseek|qwen)[/.]/);
+  if (namespaced?.[1]) return namespaced[1];
+  const canonical = normalized.replace(/^.*\//, "");
+  if (canonical.startsWith("claude-")) return "anthropic";
+  if (/^(?:gpt(?:-|$)|chatgpt-|o[134](?:-|$))/.test(canonical)) return "openai";
+  return "";
+}
+
+function isDefaultFavoriteModel(model: string): boolean {
+  return DEFAULT_FAVORITE_MODELS.has(canonicalModelName(model).toLowerCase());
+}
+
+function modelAliases(model: string): Set<string> {
+  const canonical = canonicalModelName(model)
+    .toLowerCase()
+    .replace(/[\s_]+/g, "-")
+    .replace(/-+/g, "-");
+  if (!canonical) return new Set();
+  const aliases = new Set([canonical]);
+  if (canonical.startsWith("claude-") && canonical.length > "claude-".length) {
+    aliases.add(canonical.slice("claude-".length));
+  }
+  return aliases;
 }
 
 function sumDefined(...values: Array<number | undefined>): number | undefined {

@@ -10,6 +10,7 @@ export interface ModelPrice {
   cacheReadCostPerMillion?: number;
   cacheWriteCostPerMillion?: number;
   favorite?: boolean;
+  favoriteCustomized?: boolean;
   source?: "litellm" | "manual";
   updatedAt?: number;
 }
@@ -121,18 +122,16 @@ export function mergeSettings(partial: unknown): OsheepSettings {
     ? p.pricing.models.flatMap((item): ModelPrice[] => {
         if (!item || typeof item !== "object" || Array.isArray(item)) return [];
         const value = item as Record<string, unknown>;
-        const model = typeof value.model === "string" ? value.model.trim() : "";
+        const rawModel = typeof value.model === "string" ? value.model.trim() : "";
+        const model = canonicalPriceModelName(rawModel);
         const input = typeof value.inputCostPerMillion === "number" ? value.inputCostPerMillion : NaN;
         const output = typeof value.outputCostPerMillion === "number" ? value.outputCostPerMillion : NaN;
         if (!model || !Number.isFinite(input) || !Number.isFinite(output)) return [];
         return [{
           model,
           provider:
-            typeof value.provider === "string"
-              ? value.provider.trim()
-              : model.includes("/")
-                ? model.split("/")[0]
-                : "",
+            (typeof value.provider === "string" ? value.provider.trim() : "") ||
+            inferModelOriginProvider(rawModel),
           billingMode: value.billingMode === "per-request" ? "per-request" : "dynamic",
           costPerRequest:
             typeof value.costPerRequest === "number" && Number.isFinite(value.costPerRequest)
@@ -148,7 +147,11 @@ export function mergeSettings(partial: unknown): OsheepSettings {
             typeof value.cacheWriteCostPerMillion === "number" && Number.isFinite(value.cacheWriteCostPerMillion)
               ? Math.max(0, value.cacheWriteCostPerMillion)
               : undefined,
-          favorite: value.favorite === true,
+          favorite:
+            value.favoriteCustomized === true
+              ? value.favorite === true
+              : value.favorite === true || isDefaultFavoritePriceModel(model),
+          favoriteCustomized: value.favoriteCustomized === true,
           source: value.source === "litellm" ? "litellm" : "manual",
           updatedAt: typeof value.updatedAt === "number" ? value.updatedAt : undefined,
         }];
@@ -161,6 +164,39 @@ export function mergeSettings(partial: unknown): OsheepSettings {
     },
     pricing: { models },
   };
+}
+
+const DEFAULT_FAVORITE_PRICE_MODELS = new Set([
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+  "gpt-5.5",
+  "gpt-5.4",
+  "claude-fable-5",
+  "claude-opus-4-7",
+  "claude-opus-4-8",
+  "claude-opus-5",
+]);
+
+export function inferModelOriginProvider(model: string): string {
+  const normalized = model.trim().toLowerCase();
+  const namespaced = normalized.match(/(?:^|[/.])(anthropic|openai|google|meta|mistral|cohere|xai|deepseek|qwen)[/.]/);
+  if (namespaced?.[1]) return namespaced[1];
+  const canonical = normalized.replace(/^.*\//, "");
+  if (canonical.startsWith("claude-")) return "anthropic";
+  if (/^(?:gpt(?:-|$)|chatgpt-|o[134](?:-|$))/.test(canonical)) return "openai";
+  return "";
+}
+
+export function canonicalPriceModelName(model: string): string {
+  const trimmed = model.trim();
+  const provider = inferModelOriginProvider(trimmed);
+  if (!provider) return trimmed;
+  return trimmed.match(new RegExp(`(?:^|[/.])${provider}[/.](.+)$`, "i"))?.[1]?.trim() || trimmed;
+}
+
+function isDefaultFavoritePriceModel(model: string): boolean {
+  return DEFAULT_FAVORITE_PRICE_MODELS.has(canonicalPriceModelName(model).toLowerCase());
 }
 
 export type ReasoningKind = "cli";

@@ -272,6 +272,7 @@ export interface ModelPriceRecord {
   cacheReadCostPerMillion?: number;
   cacheWriteCostPerMillion?: number;
   favorite?: boolean;
+  favoriteCustomized?: boolean;
   source?: "litellm" | "manual";
   updatedAt?: number;
 }

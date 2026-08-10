@@ -6,7 +6,13 @@ import {
   useUiPreferences,
 } from "../i18n/UiPreferences";
 import { syncModelPrices } from "./api";
-import type { ModelPrice, OsheepSettings, TabSize } from "./settings";
+import {
+  canonicalPriceModelName,
+  inferModelOriginProvider,
+  type ModelPrice,
+  type OsheepSettings,
+  type TabSize,
+} from "./settings";
 
 interface SettingsViewProps {
   settings: OsheepSettings;
@@ -200,7 +206,15 @@ function ModelPricingPanel({ settings, onChange }: SettingsViewProps) {
       for (const model of models) {
         const key = model.model.trim().toLowerCase();
         if (model.source === "manual") merged.set(key, model);
-        else if (model.favorite && merged.has(key)) merged.set(key, { ...merged.get(key)!, favorite: true });
+        else if (model.favoriteCustomized && merged.has(key)) {
+          merged.set(key, {
+            ...merged.get(key)!,
+            favorite: model.favorite,
+            favoriteCustomized: true,
+          });
+        } else if (model.favorite && merged.has(key)) {
+          merged.set(key, { ...merged.get(key)!, favorite: true });
+        }
       }
       updateModels([...merged.values()].sort((a, b) => a.model.localeCompare(b.model)));
     } catch (cause) {
@@ -240,12 +254,12 @@ function ModelPricingPanel({ settings, onChange }: SettingsViewProps) {
           <PriceInput value={draft.outputCostPerMillion} onCommit={(value) => setDraft({ ...draft, outputCostPerMillion: value })} />
           <PriceInput value={draft.cacheReadCostPerMillion} onCommit={(value) => setDraft({ ...draft, cacheReadCostPerMillion: value })} />
           <PriceInput value={draft.cacheWriteCostPerMillion} onCommit={(value) => setDraft({ ...draft, cacheWriteCostPerMillion: value })} />
-          <div className="settings-pricing__row-actions"><button type="button" className="settings-view__icon-button" disabled={!draft.model.trim()} onClick={() => { updateModels([...models, { ...draft, model: draft.model.trim(), provider: draft.provider.trim() }]); setAdding(false); }} title={t("common.save")}><span className="codicon codicon-check" /></button><button type="button" className="settings-view__icon-button" onClick={() => setAdding(false)} title={t("common.cancel")}><span className="codicon codicon-close" /></button></div>
+          <div className="settings-pricing__row-actions"><button type="button" className="settings-view__icon-button" disabled={!draft.model.trim()} onClick={() => { const model = canonicalPriceModelName(draft.model); updateModels([...models, { ...draft, model, provider: draft.provider.trim() || inferModelOriginProvider(draft.model) }]); setAdding(false); }} title={t("common.save")}><span className="codicon codicon-check" /></button><button type="button" className="settings-view__icon-button" onClick={() => setAdding(false)} title={t("common.cancel")}><span className="codicon codicon-close" /></button></div>
         </div>}
         {rendered.map((model) => {
           const index = models.indexOf(model);
           return <div className="settings-pricing__row" key={`${model.model}-${index}`}>
-            <button type="button" className={`settings-pricing__favorite${model.favorite ? " is-active" : ""}`} onClick={() => updateModel(index, { favorite: !model.favorite })} aria-label={t("settings.pricing.favorite")} title={t("settings.pricing.favorite")}><span className={`codicon codicon-star-${model.favorite ? "full" : "empty"}`} /></button>
+            <button type="button" className={`settings-pricing__favorite${model.favorite ? " is-active" : ""}`} onClick={() => updateModel(index, { favorite: !model.favorite, favoriteCustomized: true })} aria-label={t("settings.pricing.favorite")} title={t("settings.pricing.favorite")}><span className={`codicon codicon-star-${model.favorite ? "full" : "empty"}`} /></button>
             <span className="settings-pricing__model" title={model.model}>{model.model}</span>
             <input className="settings-view__input" defaultValue={model.provider} onBlur={(event) => updateModel(index, { provider: event.target.value.trim(), source: "manual" })} />
             <select className="settings-view__input" defaultValue={model.billingMode} onChange={(event) => updateModel(index, { billingMode: event.target.value === "per-request" ? "per-request" : "dynamic", source: "manual" })}><option value="dynamic">{t("settings.pricing.dynamic")}</option><option value="per-request">{t("settings.pricing.perRequestMode")}</option></select>
