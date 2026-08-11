@@ -21,10 +21,8 @@ test("a failing workflow runtime observer does not block other observers", () =>
   const unsubscribeFailing = subscribeWorkflowRuntime("C:/workspace", "wf_12345678", () => {
     throw new Error("socket closed");
   });
-  const unsubscribeHealthy = subscribeWorkflowRuntime(
-    "C:/workspace",
-    "wf_12345678",
-    (event) => received.push(event.type),
+  const unsubscribeHealthy = subscribeWorkflowRuntime("C:/workspace", "wf_12345678", (event) =>
+    received.push(event.type),
   );
 
   publishWorkflowRuntime("C:/workspace", "wf_12345678", { type: "ready", updatedAt: 1 });

@@ -220,17 +220,12 @@ test("workflow scheduler runs sibling branches in parallel and waits before a jo
 test("workflow scheduler respects a per-run parallel limit", async () => {
   let active = 0;
   let peak = 0;
-  await scheduleWorkflowNodes(
-    ["a", "b", "c", "d"],
-    [],
-    1,
-    async () => {
-      active += 1;
-      peak = Math.max(peak, active);
-      await new Promise<void>((resolve) => setTimeout(resolve, 2));
-      active -= 1;
-    },
-  );
+  await scheduleWorkflowNodes(["a", "b", "c", "d"], [], 1, async () => {
+    active += 1;
+    peak = Math.max(peak, active);
+    await new Promise<void>((resolve) => setTimeout(resolve, 2));
+    active -= 1;
+  });
   assert.equal(peak, 1);
 });
 
@@ -271,7 +266,7 @@ test("workflow usage captures Codex input, output, and total tokens", () => {
 
 test("workflow usage derives total tokens and captures Claude cost output", () => {
   assert.deepEqual(
-    parseWorkflowUsage('input_tokens: 1.2k\noutput_tokens: 345\ntotal_cost_usd: 0.0421'),
+    parseWorkflowUsage("input_tokens: 1.2k\noutput_tokens: 345\ntotal_cost_usd: 0.0421"),
     {
       tokens: {
         input: 1_200,
