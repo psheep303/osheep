@@ -59,6 +59,7 @@ export function terminalReplaySegments(
   let cols = validTerminalSize(initialCols) ? initialCols : fallbackCols;
   let rows = validTerminalSize(initialRows) ? initialRows : fallbackRows;
   const segments: TerminalReplaySegment[] = [];
+  const compactStartupBoundaries: number[] = [];
   let offset = 0;
 
   for (const resize of resizes ?? []) {
@@ -77,11 +78,27 @@ export function terminalReplaySegments(
       cols,
       rows,
     });
+    if (resize.compactStartup) compactStartupBoundaries.push(segments.length - 1);
     offset = resize.offset;
     cols = resize.cols;
     rows = resize.rows;
   }
   segments.push({ data: data.slice(offset), cols, rows });
+
+  // ConPTY can emit a partial old-width update immediately after resize,
+  // followed by Claude's complete redraw. The partial update is not a valid
+  // standalone screen and must not enter xterm scrollback.
+  for (const boundary of compactStartupBoundaries) {
+    for (let index = boundary + 1; index < segments.length; index += 1) {
+      const stableRedraw = stableClaudeStartupRedraw(segments[index]!.data);
+      if (stableRedraw === null) continue;
+      for (let transient = boundary + 1; transient < index; transient += 1) {
+        segments[transient]!.data = "";
+      }
+      segments[index]!.data = stableRedraw;
+      break;
+    }
+  }
   return segments;
 }
 
@@ -97,7 +114,37 @@ export function compactSupersededClaudeStartup(data: string): string {
     return data;
   }
   const synchronizedUpdateStart = data.lastIndexOf("\x1b[?2026h", welcomeStart);
-  return data.slice(0, synchronizedUpdateStart >= 0 ? synchronizedUpdateStart : welcomeStart);
+  if (synchronizedUpdateStart < 0 || welcomeStart - synchronizedUpdateStart > 64 * 1024)
+    return data;
+  const removeStart = synchronizedUpdateStart;
+  const synchronizedUpdateEnd = data.indexOf("\x1b[?2026l", welcomeStart);
+  if (synchronizedUpdateEnd < 0) return data.slice(0, removeStart);
+  return data.slice(0, removeStart) + data.slice(synchronizedUpdateEnd + "\x1b[?2026l".length);
+}
+
+/**
+ * Returns the complete Claude welcome redraw and everything after it, dropping
+ * only resize-transition bytes. Returns null until a complete redraw exists.
+ */
+export function stableClaudeStartupRedraw(data: string): string | null {
+  let searchFrom = 0;
+  while (searchFrom < data.length) {
+    const welcomeStart = data.indexOf("╭───", searchFrom);
+    if (welcomeStart < 0) return null;
+    const heading = data.slice(welcomeStart, welcomeStart + 512);
+    if (heading.includes("Claude") && heading.includes("Code") && /v\d+\./.test(heading)) {
+      const nextWelcome = data.indexOf("╭───", welcomeStart + 1);
+      const tableEnd = data.indexOf("╰", welcomeStart);
+      if (tableEnd >= 0 && (nextWelcome < 0 || tableEnd < nextWelcome)) {
+        const synchronizedUpdateStart = data.lastIndexOf("\x1b[?2026h", welcomeStart);
+        if (synchronizedUpdateStart >= 0 && welcomeStart - synchronizedUpdateStart <= 64 * 1024) {
+          return data.slice(synchronizedUpdateStart);
+        }
+      }
+    }
+    searchFrom = welcomeStart + 1;
+  }
+  return null;
 }
 
 export function createTerminalWriteBatcher(

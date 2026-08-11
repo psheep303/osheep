@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  compactSupersededClaudeStartup,
   createTerminalReplayGuard,
   createTerminalWriteBatcher,
+  stableClaudeStartupRedraw,
   terminalReplaySegments,
 } from "./terminal-write-batcher";
 
@@ -76,8 +78,10 @@ test("terminal replay segments preserve the dimensions used by the original outp
 test("terminal replay removes only a superseded Claude startup screen", () => {
   const prelude = "PS> claude\r\nmodel warning\r\n";
   const interrupted = "\x1b[?2026h\x1b[38;5;174m╭───\x1b[6GClaude\x1b[13GCode\x1b[18Gv2.1.226";
+  const transition = "\x1b[?2026h\x1b[2;76Hfile\r\nwith\r\ninstructions\x1b[?2026l";
   const redrawn = "\x1b[?2026h╭─── Claude Code v2.1.226 ───╮\r\n╰───╯\x1b[?2026l";
-  const data = prelude + interrupted + redrawn;
+  const prompt = "\r\n❯ retained prompt";
+  const data = prelude + interrupted + transition + redrawn + prompt;
 
   assert.deepEqual(
     terminalReplaySegments(data, 84, 28, 120, 34, [
@@ -90,9 +94,35 @@ test("terminal replay removes only a superseded Claude startup screen", () => {
     ]),
     [
       { data: prelude, cols: 120, rows: 34 },
-      { data: redrawn, cols: 84, rows: 28 },
+      { data: redrawn + prompt, cols: 84, rows: 28 },
     ],
   );
+});
+
+test("startup compaction preserves output after a completed welcome update", () => {
+  const welcome = "\x1b[?2026h╭─── Claude Code v2.1.226 ───╮\r\n╰───╯\x1b[?2026l";
+  const prompt = "\r\n❯ keep this prompt";
+
+  assert.equal(
+    compactSupersededClaudeStartup(`shell\r\n${welcome}${prompt}`),
+    `shell\r\n${prompt}`,
+  );
+});
+
+test("startup compaction ignores welcome text outside a synchronized terminal update", () => {
+  const copiedText = "answer\r\n╭─── Claude Code v2.1.226 ───╮\r\n╰───╯\r\nmore context";
+
+  assert.equal(compactSupersededClaudeStartup(copiedText), copiedText);
+  assert.equal(stableClaudeStartupRedraw(copiedText), null);
+});
+
+test("startup redraw waits for a complete table before dropping transition bytes", () => {
+  const transition = "\x1b[?2026h\x1b[2;76Hfile\r\nwith\r\ninstructions\x1b[?2026l";
+  const partial = "\x1b[?2026h╭─── Claude Code v2.1.226 ───╮";
+  const complete = `${partial}\r\n╰───╯\x1b[?2026l\r\n❯ prompt`;
+
+  assert.equal(stableClaudeStartupRedraw(transition + partial), null);
+  assert.equal(stableClaudeStartupRedraw(transition + complete), complete);
 });
 
 test("first attach keeps the shell prelude while preparing a clean startup resize", () => {

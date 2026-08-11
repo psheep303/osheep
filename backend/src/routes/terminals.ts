@@ -131,6 +131,7 @@ export async function registerTerminalRoutes(app: FastifyInstance) {
           data?: string;
           cols?: number;
           rows?: number;
+          compactStartup?: boolean;
         };
         try {
           switch (m.type) {
@@ -143,7 +144,9 @@ export async function registerTerminalRoutes(app: FastifyInstance) {
             case "resize":
               if (typeof m.cols === "number" && typeof m.rows === "number") {
                 resizeSession(session, m.cols, m.rows, {
-                  compactStartup: shouldCompactAgentStartupOnResize(session.id),
+                  compactStartup:
+                    (!session.killOnDetach && m.compactStartup === true) ||
+                    shouldCompactAgentStartupOnResize(session.id),
                 });
               }
               break;

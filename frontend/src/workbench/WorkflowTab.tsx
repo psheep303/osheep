@@ -67,6 +67,7 @@ import {
   compactSupersededClaudeStartup,
   createTerminalReplayGuard,
   createTerminalWriteBatcher,
+  stableClaudeStartupRedraw,
   type TerminalReplayResize,
   terminalReplaySegments,
 } from "./terminal-write-batcher";
@@ -3871,8 +3872,16 @@ function WorkflowAgentTerminalInner({
     term.open(hostRef.current);
     termRef.current = term;
     fitRef.current = fit;
+    const fitToUsableDimensions = () => {
+      const dimensions = fit.proposeDimensions();
+      if (!dimensions || dimensions.cols < 20 || dimensions.rows < 4) return null;
+      if (term.cols !== dimensions.cols || term.rows !== dimensions.rows) {
+        term.resize(dimensions.cols, dimensions.rows);
+      }
+      return dimensions;
+    };
     try {
-      fit.fit();
+      fitToUsableDimensions();
     } catch {
       /* layout race */
     }
@@ -3885,8 +3894,39 @@ function WorkflowAgentTerminalInner({
     let replayOutput: string[] = [];
     let suppressStartupOutput = false;
     let suppressedStartupOutputVersion = 0;
+    let awaitingStartupRedraw = false;
+    let startupPreResizeOutput = "";
+    let startupRedrawFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+    let resizeTimer: ReturnType<typeof setTimeout> | null = null;
     const outputWriter = createTerminalWriteBatcher((data) => term.write(data));
     const replayGuard = createTerminalReplayGuard((data, callback) => term.write(data, callback));
+    const drainReplayOutput = (initial: string, onDrained: () => void) => {
+      const pending = initial + replayOutput.join("");
+      replayOutput = [];
+      replayGuard.write(pending, () => {
+        if (replayOutput.length > 0) {
+          drainReplayOutput("", onDrained);
+          return;
+        }
+        onDrained();
+      });
+    };
+    const finishStartupRedraw = (preserveTransition: boolean) => {
+      if (!awaitingStartupRedraw) return false;
+      const postResizeOutput = replayOutput.join("");
+      const stableRedraw = stableClaudeStartupRedraw(postResizeOutput);
+      if (!preserveTransition && stableRedraw === null) return false;
+      if (startupRedrawFallbackTimer) clearTimeout(startupRedrawFallbackTimer);
+      startupRedrawFallbackTimer = null;
+      awaitingStartupRedraw = false;
+      replayOutput = [];
+      const pending = stableRedraw ?? startupPreResizeOutput + postResizeOutput;
+      startupPreResizeOutput = "";
+      drainReplayOutput(pending, () => {
+        replayReady = true;
+      });
+      return true;
+    };
     ws.onopen = () => {
       term.focus();
     };
@@ -3939,15 +3979,27 @@ function WorkflowAgentTerminalInner({
                     return;
                   }
                   suppressStartupOutput = false;
-                  replayReady = true;
+                  startupPreResizeOutput = replayOutput.join("");
+                  replayOutput = [];
+                  awaitingStartupRedraw = true;
                   try {
-                    fit.fit();
+                    fitToUsableDimensions();
                     if (ws.readyState === WebSocket.OPEN) {
-                      ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+                      ws.send(
+                        JSON.stringify({
+                          type: "resize",
+                          cols: term.cols,
+                          rows: term.rows,
+                          compactStartup: true,
+                        }),
+                      );
                     }
                   } catch {
                     /* layout race */
                   }
+                  startupRedrawFallbackTimer = setTimeout(() => {
+                    finishStartupRedraw(true);
+                  }, 700);
                 },
                 true,
                 300,
@@ -3963,7 +4015,7 @@ function WorkflowAgentTerminalInner({
               }
               replayReady = true;
               try {
-                fit.fit();
+                fitToUsableDimensions();
                 if (ws.readyState === WebSocket.OPEN) {
                   ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
                 }
@@ -3991,8 +4043,11 @@ function WorkflowAgentTerminalInner({
         } else if (msg.type === "output" && typeof msg.data === "string") {
           const data = normalizeLightTerminalAnsi(msg.data, resolvedThemeRef.current);
           if (replayReady) outputWriter.push(data);
-          else if (suppressStartupOutput) suppressedStartupOutputVersion += 1;
-          else replayOutput.push(data);
+          else {
+            replayOutput.push(data);
+            if (suppressStartupOutput) suppressedStartupOutputVersion += 1;
+            else if (awaitingStartupRedraw) finishStartupRedraw(false);
+          }
         } else if (msg.type === "exit") {
           outputWriter.flush();
           term.writeln(
@@ -4018,19 +4073,31 @@ function WorkflowAgentTerminalInner({
     });
     const resizeObs = new ResizeObserver(() => {
       if (!replayReady) return;
-      try {
-        fit.fit();
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+      if (resizeTimer) clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        resizeTimer = null;
+        try {
+          const previousCols = term.cols;
+          const previousRows = term.rows;
+          const dimensions = fitToUsableDimensions();
+          if (
+            dimensions &&
+            (previousCols !== dimensions.cols || previousRows !== dimensions.rows) &&
+            ws.readyState === WebSocket.OPEN
+          ) {
+            ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+          }
+        } catch {
+          /* layout race */
         }
-      } catch {
-        /* layout race */
-      }
+      }, 120);
     });
     resizeObs.observe(hostRef.current);
 
     return () => {
       resizeObs.disconnect();
+      if (resizeTimer) clearTimeout(resizeTimer);
+      if (startupRedrawFallbackTimer) clearTimeout(startupRedrawFallbackTimer);
       inputSub.dispose();
       outputWriter.dispose();
       ws.close();
