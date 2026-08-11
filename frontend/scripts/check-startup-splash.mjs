@@ -1,14 +1,18 @@
 import { readFileSync } from "node:fs";
 
 const html = readFileSync("index.html", "utf8");
+const desktopHtml = readFileSync("../desktop/shell/index.html", "utf8");
 
 const checks = [
   {
-    name: "startup splash reads stored and system theme before React mounts",
+    name: "startup splash defaults to dark and honors stored or system theme before React mounts",
     pass:
       /osheep\.uiPreferences\.v1/.test(html) &&
       /prefers-color-scheme: dark/.test(html) &&
-      /dataset\.theme = theme/.test(html),
+      /dataset\.theme = theme/.test(html) &&
+      /preference === "system"/.test(html) &&
+      /: "dark";/.test(html) &&
+      /:root\s*\{[\s\S]*?color-scheme: dark/.test(html),
   },
   {
     name: "startup splash uses the Osheep icon and three cycling dots",
@@ -22,6 +26,13 @@ const checks = [
   {
     name: "startup splash has no visible brand text",
     pass: !/<div id="startup-splash"[\s\S]*?>[\s\S]*?Osheep[\s\S]*?<\/div>/.test(html),
+  },
+  {
+    name: "desktop startup shell defaults to dark and honors explicit system theme",
+    pass:
+      /startupPreference === "system"/.test(desktopHtml) &&
+      /startupPreference === "light" \? "light" : "dark"/.test(desktopHtml) &&
+      /body\s*\{[\s\S]*?background: #181818/.test(desktopHtml),
   },
 ];
 

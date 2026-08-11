@@ -222,19 +222,23 @@ fn require_file(path: &Path, label: &str) -> io::Result<()> {
     }
 }
 
-fn startup_theme(app: &tauri::AppHandle) -> Option<&'static str> {
-    let paths = local_backend_paths(app).ok()?;
-    let settings = fs::read_to_string(paths.working_dir.join(".osheep/settings.json")).ok()?;
+fn startup_theme(app: &tauri::AppHandle) -> &'static str {
+    let settings = local_backend_paths(app)
+        .ok()
+        .and_then(|paths| fs::read_to_string(paths.working_dir.join(".osheep/settings.json")).ok())
+        .unwrap_or_default();
     let compact: String = settings
         .chars()
         .filter(|character| !character.is_whitespace())
         .collect();
     if compact.contains("\"theme\":\"dark\"") {
-        Some("dark")
+        "dark"
     } else if compact.contains("\"theme\":\"light\"") {
-        Some("light")
+        "light"
+    } else if compact.contains("\"theme\":\"system\"") {
+        "system"
     } else {
-        None
+        "dark"
     }
 }
 
@@ -438,9 +442,7 @@ pub fn run() {
             let page_ui = startup_ui.clone();
             let page_backend = backend.clone();
             let configured_theme = startup_theme(app.handle());
-            let startup_url = configured_theme
-                .map(|theme| format!("index.html?osheepTheme={theme}"))
-                .unwrap_or_else(|| "index.html".to_string());
+            let startup_url = format!("index.html?osheepTheme={configured_theme}");
             let builder =
                 WebviewWindowBuilder::new(app, "main", WebviewUrl::App(startup_url.into()))
                     .title("Osheep")
@@ -479,9 +481,7 @@ pub fn run() {
                         // The bundled shell is the desktop loading page. Skip the
                         // web app's initial splash on this navigation so Windows
                         // never shows two consecutive loading screens.
-                        let theme_query = configured_theme
-                            .map(|theme| format!("&osheepTheme={theme}"))
-                            .unwrap_or_default();
+                        let theme_query = format!("&osheepTheme={configured_theme}");
                         let url =
                             match format!("http://127.0.0.1:{port}/?osheepDesktop=1{theme_query}")
                                 .parse::<tauri::Url>()

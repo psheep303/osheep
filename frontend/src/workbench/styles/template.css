@@ -25,6 +25,11 @@
   color: #b9bbc1;
 }
 
+.workflow-toolbar__run-history {
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+
 .workflow-toolbar__template-binding {
   padding: 3px 6px;
   border: 1px solid rgba(167, 139, 250, 0.28);

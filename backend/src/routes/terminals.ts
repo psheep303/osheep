@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { recordAgentTerminalUserInput, shouldCompactAgentStartupOnResize } from "../ai-terminal.js";
 import { platform } from "../config.js";
 import { errors } from "../errors.js";
 import {
@@ -86,13 +87,25 @@ export async function registerTerminalRoutes(app: FastifyInstance) {
         return;
       }
 
-      const { detach, replayed } = attachSink(session, (frame) => {
-        if (socket.readyState === socket.OPEN) socket.send(frame);
-      });
+      const { detach, replayed, replayInitialCols, replayInitialRows, replayResizes } = attachSink(
+        session,
+        (frame) => {
+          if (socket.readyState === socket.OPEN) socket.send(frame);
+        },
+      );
 
-      if (replayed) {
-        socket.send(JSON.stringify({ type: "output", data: replayed }));
-      }
+      socket.send(
+        JSON.stringify({
+          type: "replay",
+          data: replayed,
+          cols: session.cols,
+          rows: session.rows,
+          initialCols: replayInitialCols,
+          initialRows: replayInitialRows,
+          resizes: replayResizes,
+          compactStartup: shouldCompactAgentStartupOnResize(session.id),
+        }),
+      );
 
       const heartbeat = setInterval(() => {
         if (socket.readyState === socket.OPEN) {
@@ -118,15 +131,23 @@ export async function registerTerminalRoutes(app: FastifyInstance) {
           data?: string;
           cols?: number;
           rows?: number;
+          compactStartup?: boolean;
         };
         try {
           switch (m.type) {
             case "input":
-              if (typeof m.data === "string") writeInput(session, m.data);
+              if (typeof m.data === "string") {
+                recordAgentTerminalUserInput(session.id, m.data);
+                writeInput(session, m.data);
+              }
               break;
             case "resize":
               if (typeof m.cols === "number" && typeof m.rows === "number") {
-                resizeSession(session, m.cols, m.rows);
+                resizeSession(session, m.cols, m.rows, {
+                  compactStartup:
+                    (!session.killOnDetach && m.compactStartup === true) ||
+                    shouldCompactAgentStartupOnResize(session.id),
+                });
               }
               break;
             case "ping":

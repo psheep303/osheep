@@ -9,6 +9,7 @@ import {
   deleteAgentSessionsInProject,
   isAgentSessionInProject,
   listAgentSessions,
+  readAgentSessionUsage,
 } from "./agent-sessions.js";
 
 test("project scope filters sessions and batch delete rejects sibling projects", async () => {
@@ -100,6 +101,123 @@ test("Codex sessions use metadata, prompt text, and the title index", async () =
       await fs.readFile(path.join(fixture.roots.codexHome, "session_index.jsonl"), "utf8"),
       new RegExp(id),
     );
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("Codex session usage reads the last cumulative token_count event", async () => {
+  const fixture = await makeFixture();
+  const id = "31111111-2222-4333-8444-555555555555";
+  const sessionPath = codexSessionPath(fixture.roots, id, "12-00-00");
+  try {
+    await writeLines(sessionPath, [
+      codexMetadata(id, fixture.projectPath),
+      {
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            total_token_usage: {
+              input_tokens: 1_000,
+              cached_input_tokens: 700,
+              cache_write_input_tokens: 50,
+              output_tokens: 100,
+              total_tokens: 1_100,
+            },
+          },
+        },
+      },
+      {
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            total_token_usage: {
+              input_tokens: 2_000,
+              cached_input_tokens: 1_400,
+              cache_write_input_tokens: 75,
+              output_tokens: 250,
+              total_tokens: 2_250,
+            },
+          },
+        },
+      },
+    ]);
+
+    assert.deepEqual(await readAgentSessionUsage("codex", id, fixture.roots), {
+      tokens: {
+        input: 2_000,
+        output: 250,
+        cacheRead: 1_400,
+        cacheWrite: 75,
+        total: 2_250,
+      },
+      cost: undefined,
+    });
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("Claude session usage sums assistant message usage", async () => {
+  const fixture = await makeFixture();
+  const id = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";
+  const sessionPath = path.join(
+    fixture.roots.claudeHome,
+    "projects",
+    "fixture-project",
+    `${id}.jsonl`,
+  );
+  try {
+    await writeLines(sessionPath, [
+      {
+        type: "user",
+        sessionId: id,
+        cwd: fixture.projectPath,
+        message: { role: "user", content: "Measure usage" },
+      },
+      {
+        type: "assistant",
+        sessionId: id,
+        message: {
+          role: "assistant",
+          model: "gpt-5.6-sol",
+          usage: {
+            input_tokens: 600,
+            cache_read_input_tokens: 300,
+            cache_creation_input_tokens: 40,
+            output_tokens: 80,
+          },
+        },
+      },
+      {
+        type: "assistant",
+        sessionId: id,
+        message: {
+          role: "assistant",
+          model: "gpt-5.6-sol",
+          usage: {
+            input_tokens: 400,
+            cache_read_input_tokens: 200,
+            cache_creation_input_tokens: 60,
+            output_tokens: 120,
+          },
+        },
+      },
+    ]);
+
+    assert.deepEqual(await readAgentSessionUsage("claude", id, fixture.roots), {
+      model: "gpt-5.6-sol",
+      tokens: {
+        input: 1_000,
+        output: 200,
+        cacheRead: 500,
+        cacheWrite: 100,
+        total: 1_800,
+      },
+      cost: undefined,
+    });
   } finally {
     await fs.rm(fixture.root, { recursive: true, force: true });
   }

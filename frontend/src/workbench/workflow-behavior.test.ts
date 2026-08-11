@@ -39,6 +39,15 @@ test("workflow agent durations use hours minutes and seconds", async () => {
   assert.equal(behavior.formatWorkflowDuration(3_661_000), "1h1m1s");
 });
 
+test("workflow token counts use compact k, m, and b suffixes", async () => {
+  const behavior = await loadBehavior();
+  assert.ok(behavior, "workflow behavior module should exist");
+  assert.equal(behavior.formatCompactTokenCount(620), "620");
+  assert.equal(behavior.formatCompactTokenCount(44_132), "44.1k");
+  assert.equal(behavior.formatCompactTokenCount(2_450_000), "2.45m");
+  assert.equal(behavior.formatCompactTokenCount(1_200_000_000), "1.2b");
+});
+
 test("every workflow kind has a standard empty output", async () => {
   const behavior = await loadBehavior();
   assert.ok(behavior, "workflow behavior module should exist");
@@ -174,5 +183,26 @@ test("workflow refresh is rejected during a drag or pending save", async () => {
       pendingSave: true,
     }),
     false,
+  );
+});
+
+test("completed markdown auto preview works for runtime events and opens once", async () => {
+  const behavior = await loadBehavior();
+  assert.ok(behavior, "workflow behavior module should exist");
+  const running = {
+    ...node("markdown", "codex-cli", { autoSeeResult: true }),
+    status: "running",
+  };
+  const completed = { ...running, status: "success", completedAt: 2_000 };
+  const seen = new Set<string>();
+
+  assert.equal(
+    behavior.findMarkdownAutoPreviewNode([running] as never, [completed] as never, seen, 1_000)?.id,
+    completed.id,
+  );
+  seen.add(`${completed.id}:${completed.completedAt}`);
+  assert.equal(
+    behavior.findMarkdownAutoPreviewNode([running] as never, [completed] as never, seen, 1_000),
+    undefined,
   );
 });

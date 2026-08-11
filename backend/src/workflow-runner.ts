@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { readAgentSessionUsage } from "./agent-sessions.js";
 import { execRun } from "./ai-exec.js";
 import {
   type AgentEffort,
@@ -8,19 +9,26 @@ import {
   type ClaudePermissionMode,
   type CodexApproval,
   type CodexSandbox,
+  extractAgentTerminalContent,
+  hasAgentTerminalFailure,
   runAgentTerminal,
 } from "./ai-terminal.js";
+import { readAppSettings } from "./app-settings.js";
 import { applyClaudePluginSelection } from "./claude-plugins.js";
 import { applyCodexPluginSelection } from "./codex-plugins.js";
 import { readFileText, writeFileText } from "./fs-ops.js";
+import { calculateModelCost, readStoredModelPrices } from "./model-pricing.js";
 import { callRemoteMcp, discoverRemoteMcp, type RemoteMcpTool } from "./remote-mcp.js";
+import { publishWorkflowRuntime } from "./workflow-events.js";
 import {
   getWorkflow,
   updateWorkflow,
+  type WorkflowEdge,
   type WorkflowNode,
   type WorkflowNodeKind,
   type WorkflowRecord,
   type WorkflowRun,
+  type WorkflowRunTrace,
 } from "./workflows.js";
 import { resolveWorkspace, type WorkspaceInfo } from "./workspace.js";
 
@@ -32,6 +40,7 @@ interface LocalNodeResult {
   changedFiles?: boolean;
   error?: string;
   nodePatch?: Partial<WorkflowNode>;
+  conversationSessionId?: string;
 }
 
 interface McpNodeConfig {
@@ -75,6 +84,7 @@ export interface WorkflowRunDetailSnapshot {
   exitCode?: number | null;
   signal?: string | null;
   durationMs?: number;
+  retryReasons?: string[];
 }
 
 interface LiveAgentRunDetailsOptions {
@@ -83,16 +93,11 @@ interface LiveAgentRunDetailsOptions {
   autoSuccess: boolean;
   writeSnapshot: (snapshot: WorkflowRunDetailSnapshot) => Promise<void>;
   logs?: RunLogEntry[];
-  minUpdateIntervalMs?: number;
 }
 
 export interface LiveAgentRunDetails {
   handleFrame: (frame: AgentTerminalFrame) => Promise<void>;
-  update: (
-    status: WorkflowRunDetailSnapshot["status"],
-    completedAt?: number,
-    force?: boolean,
-  ) => Promise<void>;
+  update: (status: WorkflowRunDetailSnapshot["status"], completedAt?: number) => Promise<void>;
   snapshot: (
     status: WorkflowRunDetailSnapshot["status"],
     completedAt?: number,
@@ -111,6 +116,7 @@ export interface AgentTerminalFailure {
 interface AgentTerminalProcessResult {
   content: string;
   transcript: string;
+  rawTranscript?: string;
   exitCode: number | null;
   signal: number | string | null;
 }
@@ -119,6 +125,7 @@ const activeRuns = new Map<string, WorkflowRunState>();
 const RUN_LOG_CHAR_LIMIT = 256 * 1024;
 const RUN_LOG_TRUNCATION_TEXT =
   "[osheep] run detail output exceeded 256 KiB; keeping the latest output only.";
+const runLogSizes = new WeakMap<RunLogEntry[], number>();
 const AGENT_RETAINED_OUTPUT_CHAR_LIMIT = 512 * 1024;
 const AGENT_RETAINED_OUTPUT_TRUNCATION_TEXT =
   "[osheep] retained retry output exceeded 512 KiB; keeping the latest output only.";
@@ -154,42 +161,39 @@ export function createLiveAgentRunDetails(
   options: LiveAgentRunDetailsOptions,
 ): LiveAgentRunDetails {
   const logs = options.logs ?? [];
-  const minUpdateIntervalMs = Math.max(0, options.minUpdateIntervalMs ?? 250);
   let terminalSessionId = "";
   let conversationSessionId = "";
   let terminalStatus = "";
-  let lastUpdateAt = 0;
   let queue = Promise.resolve();
 
-  const snapshot = (status: WorkflowRunDetailSnapshot["status"], completedAt?: number) =>
+  const buildSnapshot = (
+    status: WorkflowRunDetailSnapshot["status"],
+    completedAt: number | undefined,
+    snapshotLogs: RunLogEntry[],
+  ) =>
     agentRunSnapshot(
       options.node,
       status,
       options.startedAt,
       completedAt,
-      logs,
+      snapshotLogs,
       terminalSessionId || undefined,
       conversationSessionId || undefined,
       terminalStatus || undefined,
       options.autoSuccess,
     );
+  const snapshot = (status: WorkflowRunDetailSnapshot["status"], completedAt?: number) =>
+    buildSnapshot(status, completedAt, logs);
 
   const enqueue = (next: WorkflowRunDetailSnapshot) => {
     queue = queue.then(() => options.writeSnapshot(next));
     return queue;
   };
 
-  const update = (
-    status: WorkflowRunDetailSnapshot["status"],
-    completedAt?: number,
-    force = true,
-  ) => {
-    const now = Date.now();
-    if (!force && minUpdateIntervalMs > 0 && now - lastUpdateAt < minUpdateIntervalMs) {
-      return queue;
-    }
-    lastUpdateAt = now;
-    return enqueue(snapshot(status, completedAt));
+  const update = (status: WorkflowRunDetailSnapshot["status"], completedAt?: number) => {
+    // Live output is already available through the PTY stream. Persist only the
+    // metadata needed to reconnect; the complete transcript is saved at finish.
+    return enqueue(buildSnapshot(status, completedAt, []));
   };
 
   const handleFrame = (frame: AgentTerminalFrame) => {
@@ -203,7 +207,7 @@ export function createLiveAgentRunDetails(
     }
     if (frame.type === "output") {
       appendRunLog(logs, { stream: "stdout", content: frame.data });
-      return update("running", undefined, false);
+      return queue;
     }
     if (frame.type === "status") {
       terminalStatus = frame.status;
@@ -224,7 +228,7 @@ export function classifyAgentTerminalFailure(raw: string, prompt: string): Agent
   const text = stripAnsi(raw).replace(/\r/g, "\n");
   const apiError = lastRegexMatch(
     text,
-    /^[ \t]*(?:[●•*✖×!]\s*)?(?:Please run\s+\/login\s*(?:[·•-]\s*)?)?API Error\s*:\s*\S[^\n]*/im,
+    /^[ \t]*(?:[●•*✖✗×!]\s*)?(?:Please run\s+\/login\s*(?:[·•-]\s*)?)?API Error\s*:\s*\S[^\n]*/im,
   );
   if (apiError?.index !== undefined) {
     if (!isAgentErrorSuperseded(text, apiError.index)) {
@@ -247,7 +251,7 @@ export function classifyAgentTerminalFailure(raw: string, prompt: string): Agent
 
   const permanent = lastRegexMatch(
     text,
-    /^[ \t]*(?:[●•*✖×!]\s*)?(?:Please run\s+\/login\b[^\n]*|Image generation is not enabled for this (?:group|organization|account)\b[^\n]*|(?:authentication|authorization) (?:failed|required)\b[^\n]*)/im,
+    /^[ \t]*(?:[●•*✖✗×!]\s*)?(?:Please run\s+\/login\b[^\n]*|Image generation is not enabled for this (?:group|organization|account)\b[^\n]*|(?:authentication|authorization) (?:failed|required)\b[^\n]*)/im,
   );
   if (permanent?.index !== undefined && !isAgentErrorSuperseded(text, permanent.index)) {
     return agentTerminalFailure(text, prompt, permanent, false);
@@ -255,7 +259,7 @@ export function classifyAgentTerminalFailure(raw: string, prompt: string): Agent
 
   const decoratedError = lastRegexMatch(
     text,
-    /^[ \t]*[●•✖×!]\s*(?:(?:fatal|authentication|authorization|request)\s+)?error\s*:\s*\S[^\n]*/im,
+    /^[ \t]*[●•✖✗×!]\s*(?:(?:fatal|authentication|authorization|request)\s+)?error\s*:\s*\S[^\n]*/im,
   );
   if (decoratedError?.index !== undefined && !isAgentErrorSuperseded(text, decoratedError.index)) {
     return agentTerminalFailure(
@@ -283,6 +287,21 @@ export function classifyAgentTerminalResultFailure(
   if (transcriptFailure.failed) return transcriptFailure;
 
   const modelOutput = terminalModelOutputBeforeError(result.content || result.transcript, prompt);
+
+  // The cleaned conversation intentionally removes terminal chrome. Keep the
+  // raw screen as a fallback so provider errors such as Codex 503 responses
+  // cannot disappear when the conversation has no assistant answer.
+  if (result.rawTranscript) {
+    const rawTranscriptFailure = classifyAgentTerminalFailure(
+      terminalTail(result.rawTranscript, 120),
+      prompt,
+    );
+    if (rawTranscriptFailure.failed) return rawTranscriptFailure;
+    if (hasAgentTerminalFailure(result.rawTranscript)) {
+      return agentTerminalLifecycleFailure("Agent terminal reported an error.", false, modelOutput);
+    }
+  }
+
   if (result.signal === "agent-stalled") {
     return agentTerminalLifecycleFailure(
       "Agent terminal stalled without output activity.",
@@ -368,7 +387,9 @@ function isRetryableAgentTerminalMessage(message: string): boolean {
 }
 
 function isAgentErrorSuperseded(text: string, errorAt: number): boolean {
-  const recovery = text.slice(errorAt);
+  const recovery = text
+    .slice(errorAt)
+    .replace(/(?:^|\n)\s*(?:Reconnecting|Retrying)\b[^\n]*/gi, "\n");
   return /(?:^|\n)\s*(?:[\p{S}\p{P}]\s*)?(?:Thought\s+for\s+\d|\p{L}[\p{L}'’-]*(?:…|\.\.\.)?\s*\(\s*\d+(?:\.\d+)?(?:ms|s|m|h)\b)/imu.test(
     recovery,
   );
@@ -451,6 +472,23 @@ export async function startWorkflowRun(
     ),
     runs: [...current.runs.slice(-49), run],
   }));
+  for (const node of record.nodes) {
+    if (resetIds.has(node.id)) {
+      publishWorkflowRuntime(workspace.path, workflowId, {
+        type: "node",
+        updatedAt: record.updatedAt,
+        node,
+      });
+    }
+  }
+  const startedRun = record.runs.find((item) => item.id === run.id);
+  if (startedRun) {
+    publishWorkflowRuntime(workspace.path, workflowId, {
+      type: "run",
+      updatedAt: record.updatedAt,
+      run: startedRun,
+    });
+  }
 
   const abort = new AbortController();
   const done = runWorkflowInBackground(workspace, workflowId, run, ordered, abort).catch(
@@ -488,6 +526,78 @@ export function isWorkflowRunActive(workspaceId: string, workflowId: string): bo
   return activeRuns.has(runKey(workspaceId, workflowId));
 }
 
+export async function scheduleWorkflowNodes(
+  nodeIds: string[],
+  edges: WorkflowEdge[],
+  maxParallel: number,
+  execute: (nodeId: string) => Promise<void>,
+): Promise<void> {
+  const scheduledNodeIds = [...new Set(nodeIds)];
+  const order = new Map(scheduledNodeIds.map((id, index) => [id, index]));
+  const selected = new Set(scheduledNodeIds);
+  const dependencies = new Map<string, Set<string>>();
+  const outgoing = new Map<string, string[]>();
+  for (const id of scheduledNodeIds) {
+    dependencies.set(id, new Set());
+    outgoing.set(id, []);
+  }
+  for (const edge of edges) {
+    if (!selected.has(edge.from) || !selected.has(edge.to)) continue;
+    dependencies.get(edge.to)?.add(edge.from);
+    outgoing.get(edge.from)?.push(edge.to);
+  }
+  const ready = scheduledNodeIds.filter((id) => dependencies.get(id)?.size === 0);
+  const completed = new Set<string>();
+  const running = new Map<
+    string,
+    Promise<{ nodeId: string; ok: true } | { nodeId: string; ok: false; error: unknown }>
+  >();
+  const limit = Math.max(1, Math.min(32, Math.floor(maxParallel) || 1));
+  let failed = false;
+  let firstError: unknown;
+
+  const startReady = () => {
+    ready.sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0));
+    while (!failed && ready.length && running.size < limit) {
+      const nodeId = ready.shift()!;
+      const task = execute(nodeId)
+        .then(() => ({ nodeId, ok: true as const }))
+        .catch((error) => ({ nodeId, ok: false as const, error }));
+      running.set(nodeId, task);
+    }
+  };
+
+  while (completed.size < scheduledNodeIds.length) {
+    startReady();
+    if (!running.size) {
+      if (failed) break;
+      throw new Error("Workflow dependencies could not be resolved.");
+    }
+    const result = await Promise.race(running.values());
+    running.delete(result.nodeId);
+    if (!result.ok) {
+      if (!failed) firstError = result.error;
+      failed = true;
+      continue;
+    }
+    completed.add(result.nodeId);
+    for (const next of outgoing.get(result.nodeId) ?? []) {
+      const pending = dependencies.get(next);
+      pending?.delete(result.nodeId);
+      if (
+        pending?.size === 0 &&
+        !completed.has(next) &&
+        !running.has(next) &&
+        !ready.includes(next)
+      ) {
+        ready.push(next);
+      }
+    }
+  }
+  await Promise.all(running.values());
+  if (failed) throw firstError;
+}
+
 async function runWorkflowInBackground(
   workspace: WorkspaceInfo,
   workflowId: string,
@@ -495,93 +605,43 @@ async function runWorkflowInBackground(
   nodeIds: string[],
   abort: AbortController,
 ): Promise<void> {
+  let fatalError: unknown;
   try {
-    for (const nodeId of nodeIds) {
+    const appSettings = await readAppSettings<{ workflow?: { maxParallelNodes?: unknown } }>({});
+    const configuredLimit = appSettings.workflow?.maxParallelNodes;
+    const maxParallel =
+      typeof configuredLimit === "number" &&
+      Number.isInteger(configuredLimit) &&
+      configuredLimit > 0
+        ? Math.min(32, configuredLimit)
+        : 4;
+    const record = await getWorkflow(workspace.path, workflowId);
+    await scheduleWorkflowNodes(nodeIds, record.edges, maxParallel, async (nodeId) => {
       if (abort.signal.aborted) throw new Error("Stopped");
-      let record = await getWorkflow(workspace.path, workflowId);
-      const node = record.nodes.find((item) => item.id === nodeId);
-      if (!node) continue;
-      const startedAt = Date.now();
-      const kind = nodeKind(node);
-
-      if (isTriggerKind(kind)) {
-        const output = triggerOutput(node, kind);
-        const outputText = stringifyBlockOutput(output);
-        await patchWorkflowNode(workspace.path, workflowId, nodeId, {
-          status: "success",
-          rawOutput: outputText,
-          summary: outputText,
-          error: "",
-          startedAt,
-          completedAt: Date.now(),
-        });
-        continue;
-      }
-
-      await patchWorkflowNode(workspace.path, workflowId, nodeId, {
-        status: "running",
-        rawOutput: "",
-        summary: "",
-        error: "",
-        startedAt,
-        completedAt: undefined,
-      });
-
-      record = await getWorkflow(workspace.path, workflowId);
-      const currentNode = record.nodes.find((item) => item.id === nodeId) ?? node;
-      let result: LocalNodeResult;
       try {
-        result =
-          kind === "agent"
-            ? await executeAgentNode(workspace, record, currentNode, startedAt, abort)
-            : kind === "command"
-              ? await executeCommandNode(workspace.path, record, currentNode, startedAt, abort)
-              : await executeLocalNode(workspace.path, record, currentNode, {
-                  allowMcpToolCall: nodeIds.length === 1,
-                  signal: abort.signal,
-                });
+        await executeWorkflowNode(workspace, workflowId, run, nodeIds, nodeId, abort);
       } catch (error) {
-        const message = (error as Error).message || `${currentNode.title} failed.`;
-        if (abort.signal.aborted || message === "Stopped" || !nodeFailover(currentNode)) {
-          throw error;
+        const message = (error as Error)?.message;
+        if (!(abort.signal.aborted && message === "Stopped")) {
+          fatalError ??= error;
+          if (!abort.signal.aborted) abort.abort();
         }
-        const outputText = stringifyBlockOutput({
-          type: kind,
-          status: "failed",
-          error: message,
-          failover: true,
-          text: message,
-        });
-        await patchWorkflowNode(workspace.path, workflowId, nodeId, {
-          status: "error",
-          rawOutput: outputText,
-          summary: outputText,
-          error: message,
-          completedAt: Date.now(),
-          config: finalizeRunDetailsOnError(currentNode, message),
-        });
-        continue;
+        throw error;
       }
-      const outputText = stringifyBlockOutput(result.output);
-      await patchWorkflowNode(workspace.path, workflowId, nodeId, {
-        ...(result.nodePatch ?? {}),
-        status: result.error ? "error" : "success",
-        rawOutput: outputText,
-        summary: outputText,
-        error: result.error ?? "",
-        completedAt: Date.now(),
-      });
-      if (result.error && !nodeFailover(currentNode)) throw new Error(result.error);
-    }
+    });
+    if (fatalError !== undefined) throw fatalError;
     await finishRun(workspace.path, workflowId, run.id, "success");
   } catch (e) {
-    const message = (e as Error).message || "Workflow failed.";
-    const stopped = abort.signal.aborted || message === "Stopped";
-    await updateWorkflow(workspace.path, workflowId, (record) => {
-      const activeNode = record.nodes.find((node) => node.status === "running");
-      const nodes = activeNode
+    const failure = fatalError ?? e;
+    const message = (failure as Error).message || "Workflow failed.";
+    const stopped = fatalError === undefined && (abort.signal.aborted || message === "Stopped");
+    let failedNodeIds: string[] = [];
+    const failedRecord = await updateWorkflow(workspace.path, workflowId, (record) => {
+      const activeNodes = record.nodes.filter((node) => node.status === "running");
+      failedNodeIds = activeNodes.map((node) => node.id);
+      const nodes = activeNodes.length
         ? record.nodes.map((node) =>
-            node.id === activeNode.id
+            node.status === "running"
               ? {
                   ...node,
                   status: "error" as const,
@@ -594,7 +654,189 @@ async function runWorkflowInBackground(
         : record.nodes;
       return finishRunRecord({ ...record, nodes }, run.id, stopped ? "stopped" : "error", message);
     });
+    for (const nodeId of failedNodeIds) {
+      const node = failedRecord.nodes.find((item) => item.id === nodeId);
+      if (node) {
+        publishWorkflowRuntime(workspace.path, workflowId, {
+          type: "node",
+          updatedAt: failedRecord.updatedAt,
+          node,
+        });
+      }
+    }
+    const failedRun = failedRecord.runs.find((item) => item.id === run.id);
+    if (failedRun) {
+      publishWorkflowRuntime(workspace.path, workflowId, {
+        type: "run",
+        updatedAt: failedRecord.updatedAt,
+        run: failedRun,
+      });
+    }
   }
+}
+
+async function executeWorkflowNode(
+  workspace: WorkspaceInfo,
+  workflowId: string,
+  run: WorkflowRun,
+  nodeIds: string[],
+  nodeId: string,
+  abort: AbortController,
+): Promise<void> {
+  if (abort.signal.aborted) throw new Error("Stopped");
+  let record = await getWorkflow(workspace.path, workflowId);
+  const node = record.nodes.find((item) => item.id === nodeId);
+  if (!node) return;
+  const startedAt = Date.now();
+  const kind = nodeKind(node);
+
+  if (isTriggerKind(kind)) {
+    const output = triggerOutput(node, kind);
+    const outputText = stringifyBlockOutput(output);
+    const completedAt = Date.now();
+    await patchWorkflowNode(workspace.path, workflowId, nodeId, {
+      status: "success",
+      rawOutput: outputText,
+      summary: outputText,
+      error: "",
+      startedAt,
+      completedAt,
+    });
+    await patchWorkflowRun(workspace.path, workflowId, run.id, (current) =>
+      appendRunTrace(current, {
+        nodeId,
+        title: node.title,
+        kind,
+        status: "success",
+        startedAt,
+        completedAt,
+        durationMs: completedAt - startedAt,
+        input: workflowNodeInput(record, node),
+        output,
+      }),
+    );
+    return;
+  }
+
+  await patchWorkflowNode(workspace.path, workflowId, nodeId, {
+    status: "running",
+    rawOutput: "",
+    summary: "",
+    error: "",
+    startedAt,
+    completedAt: undefined,
+  });
+
+  record = await getWorkflow(workspace.path, workflowId);
+  const currentNode = record.nodes.find((item) => item.id === nodeId) ?? node;
+  await patchWorkflowRun(workspace.path, workflowId, run.id, (current) =>
+    appendRunTrace(current, {
+      nodeId,
+      title: currentNode.title,
+      kind,
+      status: "running",
+      startedAt,
+      input: workflowNodeInput(record, currentNode),
+    }),
+  );
+  let result: LocalNodeResult;
+  try {
+    result =
+      kind === "agent"
+        ? await executeAgentNode(workspace, record, currentNode, startedAt, abort)
+        : kind === "command"
+          ? await executeCommandNode(workspace.path, record, currentNode, startedAt, abort)
+          : await executeLocalNode(workspace.path, record, currentNode, {
+              allowMcpToolCall: nodeIds.length === 1,
+              signal: abort.signal,
+            });
+  } catch (error) {
+    const message = (error as Error).message || `${currentNode.title} failed.`;
+    if (abort.signal.aborted || message === "Stopped" || !nodeFailover(currentNode)) {
+      throw error;
+    }
+    const outputText = stringifyBlockOutput({
+      type: kind,
+      status: "failed",
+      error: message,
+      failover: true,
+      text: message,
+    });
+    await patchWorkflowNode(workspace.path, workflowId, nodeId, {
+      status: "error",
+      rawOutput: outputText,
+      summary: outputText,
+      error: message,
+      completedAt: Date.now(),
+      config: finalizeRunDetailsOnError(currentNode, message),
+    });
+    await patchWorkflowRun(workspace.path, workflowId, run.id, (current) =>
+      completeRunTrace(current, nodeId, {
+        status: "error",
+        completedAt: Date.now(),
+        durationMs: Date.now() - startedAt,
+        output: parseJsonObject(outputText) ?? outputText,
+        error: message,
+        retryReasons: [message],
+      }),
+    );
+    return;
+  }
+  const outputText = stringifyBlockOutput(result.output);
+  const completedAt = Date.now();
+  await patchWorkflowNode(workspace.path, workflowId, nodeId, {
+    ...(result.nodePatch ?? {}),
+    status: result.error ? "error" : "success",
+    rawOutput: outputText,
+    summary: outputText,
+    error: result.error ?? "",
+    completedAt,
+  });
+  const detailsConfig = result.nodePatch?.config ?? currentNode.config;
+  const terminal = terminalFromConfig(detailsConfig);
+  const runDetails =
+    detailsConfig && typeof detailsConfig.runDetails === "object"
+      ? (detailsConfig.runDetails as Record<string, unknown>)
+      : undefined;
+  const conversationSessionId =
+    result.conversationSessionId ??
+    (typeof runDetails?.conversationSessionId === "string"
+      ? runDetails.conversationSessionId
+      : undefined);
+  const terminalUsage = usageFromTerminal(terminal);
+  const sessionUsage =
+    conversationSessionId && kind === "agent"
+      ? await readAgentSessionUsage(
+          currentNode.providerKind === "claude-cli" ? "claude" : "codex",
+          conversationSessionId,
+        ).catch(() => ({}))
+      : {};
+  const usage = mergeUsage(terminalUsage, sessionUsage);
+  const usageModel = (usage.model ?? currentNode.model) || "default";
+  const modelCost =
+    usage.cost === undefined
+      ? calculateModelCost(
+          usageModel,
+          usage.tokens,
+          await readStoredModelPrices().catch(() => []),
+          { inputIncludesCache: currentNode.providerKind !== "claude-cli" },
+        )
+      : usage.cost;
+  await patchWorkflowRun(workspace.path, workflowId, run.id, (current) =>
+    completeRunTrace(current, nodeId, {
+      status: result.error ? "error" : "success",
+      completedAt,
+      durationMs: completedAt - startedAt,
+      output: result.output,
+      error: result.error,
+      terminal,
+      retryReasons: retryReasonsFromConfig(detailsConfig),
+      model: usageModel === "default" ? undefined : usageModel,
+      tokens: usage.tokens,
+      cost: modelCost,
+    }),
+  );
+  if (result.error && !nodeFailover(currentNode)) throw new Error(result.error);
 }
 
 async function executeAgentNode(
@@ -633,10 +875,12 @@ async function executeAgentNode(
   let result = null as Awaited<ReturnType<typeof runAgentTerminal>> | null;
   let raw = "";
   let terminalFailure: AgentTerminalFailure | null = null;
+  const retryReasons: string[] = [];
   let terminalTranscript = "";
   const retries = agentRetryCount(node);
   const retryForever = agentRetryForever(node);
-  const conversationSessionId = node.providerKind === "claude-cli" ? randomUUID() : undefined;
+  let conversationSessionId: string | undefined =
+    node.providerKind === "claude-cli" ? randomUUID() : undefined;
   let attempt = 0;
   while (true) {
     if (attempt > 0) {
@@ -648,25 +892,38 @@ async function executeAgentNode(
       });
       await details.update("running");
     }
-    result = await runAgentTerminal({
-      workspace,
-      kind: node.providerKind,
-      model: node.model || "default",
-      prompt: currentPrompt,
-      autoSuccess,
-      claudePermissionMode: agentClaudePermissionMode(node),
-      mode: agentMode(node),
-      codexApproval: agentCodexApproval(node),
-      codexSandbox: agentCodexSandbox(node),
-      effort: agentEffort(node),
-      alwaysEnter: agentAlwaysEnter(node),
-      conversationSessionId,
-      resumeConversation: attempt > 0,
-      signal: abort.signal,
-      onFrame,
-    });
+    try {
+      result = await runAgentTerminal({
+        workspace,
+        kind: node.providerKind,
+        model: node.model || "default",
+        prompt: currentPrompt,
+        autoSuccess,
+        claudePermissionMode: agentClaudePermissionMode(node),
+        mode: agentMode(node),
+        codexApproval: agentCodexApproval(node),
+        codexSandbox: agentCodexSandbox(node),
+        effort: agentEffort(node),
+        retainRawTranscript: true,
+        alwaysEnter: agentAlwaysEnter(node),
+        conversationSessionId,
+        resumeConversation: attempt > 0,
+        signal: abort.signal,
+        onFrame,
+      });
+    } catch (error) {
+      await details.drain();
+      await patchWorkflowNode(workspace.path, record.id, node.id, {
+        config: {
+          ...(node.config ?? {}),
+          runDetails: details.snapshot("error", Date.now()),
+        },
+      });
+      throw error;
+    }
     await details.drain();
     if (abort.signal.aborted) throw new Error("Stopped");
+    conversationSessionId = result.conversationSessionId ?? conversationSessionId;
     terminalTranscript = appendAgentAttemptTranscript(
       terminalTranscript,
       result.transcript || result.content,
@@ -674,12 +931,20 @@ async function executeAgentNode(
       retries,
       retryForever,
     );
+    const terminalContent = extractAgentTerminalContent(
+      result.transcript || result.content,
+      currentPrompt,
+      node.providerKind,
+    );
     raw =
-      result.content ||
-      `${node.providerKind === "codex-cli" ? "Codex CLI" : "Claude Code CLI"} completed without text output.`;
+      result.content && !/completed without text output/i.test(result.content)
+        ? result.content
+        : terminalContent ||
+          `${node.providerKind === "codex-cli" ? "Codex CLI" : "Claude Code CLI"} completed without text output.`;
     terminalFailure = classifyAgentTerminalResultFailure(result, currentPrompt);
     if (!terminalFailure.failed) break;
     if (!shouldRetryAgentTerminalFailure(terminalFailure, attempt, retries, retryForever)) break;
+    retryReasons.push(terminalFailure.message);
     attempt += 1;
     currentPrompt = nextAgentRetryPrompt(originalTerminalPrompt, terminalFailure);
     await sleep(1_000, abort.signal);
@@ -693,6 +958,8 @@ async function executeAgentNode(
         : `${agentLabel} failed: ${terminalFailure.message}`;
     const errorDetails = details.snapshot("error", Date.now());
     errorDetails.terminalSessionId = errorDetails.terminalSessionId ?? result.sessionId;
+    errorDetails.conversationSessionId =
+      errorDetails.conversationSessionId ?? result.conversationSessionId;
     if (terminalTranscript) errorDetails.transcript = terminalTranscript;
     errorDetails.stderr = [errorDetails.stderr, errorMessage].filter(Boolean).join("\n");
     errorDetails.exitCode = result.exitCode;
@@ -700,6 +967,7 @@ async function executeAgentNode(
       typeof result.signal === "string" || result.signal === null
         ? result.signal
         : String(result.signal);
+    if (retryReasons.length) errorDetails.retryReasons = retryReasons;
     return {
       output: {
         type: node.providerKind === "claude-cli" ? "claude" : "codex",
@@ -715,6 +983,7 @@ async function executeAgentNode(
           runDetails: errorDetails,
         },
       },
+      conversationSessionId,
     };
   }
   const toolRun = await maybeRunAgentMcpToolCalls(
@@ -729,12 +998,15 @@ async function executeAgentNode(
   const output = agentOutput(node, raw);
   const finalDetails = details.snapshot("success", Date.now());
   finalDetails.terminalSessionId = finalDetails.terminalSessionId ?? result.sessionId;
+  finalDetails.conversationSessionId =
+    finalDetails.conversationSessionId ?? result.conversationSessionId;
   if (terminalTranscript) finalDetails.transcript = terminalTranscript;
   finalDetails.exitCode = result.exitCode;
   finalDetails.signal =
     typeof result.signal === "string" || result.signal === null
       ? result.signal
       : String(result.signal);
+  if (retryReasons.length) finalDetails.retryReasons = retryReasons;
   return {
     output,
     changedFiles: true,
@@ -744,6 +1016,7 @@ async function executeAgentNode(
         runDetails: finalDetails,
       },
     },
+    conversationSessionId,
   };
 }
 
@@ -1275,13 +1548,222 @@ function topoOrder(
   return { nodeIds: ordered };
 }
 
-function patchWorkflowNode(
+async function patchWorkflowNode(
   workspaceRoot: string,
   workflowId: string,
   nodeId: string,
   patch: Partial<WorkflowNode>,
 ): Promise<WorkflowRecord> {
-  return updateWorkflow(workspaceRoot, workflowId, (record) => patchNode(record, nodeId, patch));
+  const record = await updateWorkflow(workspaceRoot, workflowId, (record) =>
+    patchNode(record, nodeId, patch),
+  );
+  const node = record.nodes.find((item) => item.id === nodeId);
+  if (node) {
+    publishWorkflowRuntime(workspaceRoot, workflowId, {
+      type: "node",
+      updatedAt: record.updatedAt,
+      node,
+    });
+  }
+  return record;
+}
+
+async function patchWorkflowRun(
+  workspaceRoot: string,
+  workflowId: string,
+  runId: string,
+  updater: (run: WorkflowRun) => WorkflowRun,
+): Promise<WorkflowRecord> {
+  const record = await updateWorkflow(workspaceRoot, workflowId, (record) => ({
+    ...record,
+    runs: record.runs.map((run) => (run.id === runId ? updater(run) : run)),
+  }));
+  const run = record.runs.find((item) => item.id === runId);
+  if (run) {
+    publishWorkflowRuntime(workspaceRoot, workflowId, {
+      type: "run",
+      updatedAt: record.updatedAt,
+      run,
+    });
+  }
+  return record;
+}
+
+function appendRunTrace(run: WorkflowRun, trace: WorkflowRunTrace): WorkflowRun {
+  const traces = [...(run.trace ?? []), trace].slice(-500);
+  return { ...run, trace: traces };
+}
+
+function completeRunTrace(
+  run: WorkflowRun,
+  nodeId: string,
+  patch: Partial<WorkflowRunTrace>,
+): WorkflowRun {
+  const trace = [...(run.trace ?? [])];
+  let index = -1;
+  for (let i = trace.length - 1; i >= 0; i -= 1) {
+    if (trace[i]?.nodeId === nodeId && trace[i]?.status === "running") {
+      index = i;
+      break;
+    }
+  }
+  if (index < 0) return run;
+  trace[index] = { ...trace[index], ...patch };
+  return { ...run, trace };
+}
+
+function workflowNodeInput(record: WorkflowRecord, node: WorkflowNode): unknown {
+  const incoming = record.edges
+    .filter((edge) => edge.to === node.id)
+    .map((edge) => record.nodes.find((item) => item.id === edge.from))
+    .filter((item): item is WorkflowNode => !!item)
+    .map(parseBlockOutput);
+  return incoming.length ? incoming : resolveBlockTemplate(node.prompt, record);
+}
+
+function terminalFromConfig(config: WorkflowNode["config"]): WorkflowRunTrace["terminal"] {
+  const details =
+    config && typeof config.runDetails === "object"
+      ? (config.runDetails as Record<string, unknown>)
+      : null;
+  if (!details) return undefined;
+  return {
+    commandLine: typeof details.commandLine === "string" ? details.commandLine : undefined,
+    stdout: typeof details.stdout === "string" ? details.stdout : undefined,
+    stderr: typeof details.stderr === "string" ? details.stderr : undefined,
+    transcript: typeof details.transcript === "string" ? details.transcript : undefined,
+    exitCode:
+      typeof details.exitCode === "number" || details.exitCode === null
+        ? details.exitCode
+        : undefined,
+    signal:
+      typeof details.signal === "string" || details.signal === null ? details.signal : undefined,
+  };
+}
+
+function retryReasonsFromConfig(config: WorkflowNode["config"]): string[] | undefined {
+  const details =
+    config && typeof config.runDetails === "object"
+      ? (config.runDetails as Record<string, unknown>)
+      : null;
+  const captured = Array.isArray(details?.retryReasons)
+    ? details.retryReasons.filter((item): item is string => typeof item === "string")
+    : [];
+  if (captured.length) return captured;
+  const terminal = terminalFromConfig(config);
+  const text = `${terminal?.stderr ?? ""}\n${terminal?.transcript ?? ""}`;
+  const reasons = text.split(/\n+/).filter((line) => /retry/i.test(line));
+  return reasons.length ? reasons.slice(-20) : undefined;
+}
+
+function usageFromTerminal(terminal: WorkflowRunTrace["terminal"]): {
+  tokens?: WorkflowRunTrace["tokens"];
+  cost?: number;
+} {
+  const text = `${terminal?.transcript ?? ""}\n${terminal?.stdout ?? ""}`;
+  return parseWorkflowUsage(text);
+}
+
+function mergeUsage(
+  terminal: { tokens?: WorkflowRunTrace["tokens"]; cost?: number },
+  session: { model?: string; tokens?: WorkflowRunTrace["tokens"]; cost?: number },
+): { model?: string; tokens?: WorkflowRunTrace["tokens"]; cost?: number } {
+  const tokens = session.tokens ?? terminal.tokens;
+  return {
+    model: session.model,
+    tokens,
+    cost: session.cost ?? terminal.cost,
+  };
+}
+
+export function parseWorkflowUsage(text: string): {
+  tokens?: WorkflowRunTrace["tokens"];
+  cost?: number;
+} {
+  const plain = text.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "");
+  const input = lastLabeledTokenCount(
+    plain,
+    /(?:\binput(?:\s+tokens?)?|\binput_tokens)[\s"']*[:=][\s"']*/gi,
+  );
+  const output = lastLabeledTokenCount(
+    plain,
+    /(?:\boutput(?:\s+tokens?)?|\boutput_tokens)[\s"']*[:=][\s"']*/gi,
+  );
+  const cacheRead =
+    lastLabeledTokenCount(
+      plain,
+      /(?:\bcached(?:\s+input)?(?:\s+tokens?)?|\bcached_input_tokens|\bcache[ _-]?read(?:[ _-]?input)?(?:[ _-]?tokens?)?)[\s"']*[:=][\s"']*/gi,
+    ) ?? lastMatchedTokenCount(plain, /\(\+\s*([\d,.]+)\s*([kmb])?\s+cached\)/gi);
+  const cacheWrite = lastLabeledTokenCount(
+    plain,
+    /(?:\bcache[ _-]?(?:write|creation)(?:[ _-]?input)?(?:[ _-]?tokens?)?)[\s"']*[:=][\s"']*/gi,
+  );
+  const explicitTotal = lastLabeledTokenCount(
+    plain,
+    /(?:\btotal(?:\s+tokens?)?|\btotal_tokens)[\s"']*[:=][\s"']*/gi,
+  );
+  let genericTotal: number | undefined;
+  if (input === undefined && output === undefined && explicitTotal === undefined) {
+    for (const match of plain.matchAll(/([\d,.]+)\s*([km])?\s+tokens?\b/gi)) {
+      const count = tokenCount(match[1], match[2]);
+      if (count !== undefined) genericTotal = Math.max(genericTotal ?? 0, count);
+    }
+  }
+  const total =
+    explicitTotal ??
+    (input !== undefined || output !== undefined
+      ? (input ?? 0) +
+        (output ?? 0) +
+        (/cache_(?:read|creation)_input_tokens/i.test(plain)
+          ? (cacheRead ?? 0) + (cacheWrite ?? 0)
+          : 0)
+      : genericTotal);
+  const costMatch = [
+    ...plain.matchAll(/(?:\btotal[ _-]?cost(?:_usd)?|\bcost)[\s"']*[:=][\s"']*\$?([\d.]+)/gi),
+  ].at(-1);
+  const cost = costMatch ? Number(costMatch[1]) : undefined;
+  return {
+    tokens:
+      input !== undefined ||
+      output !== undefined ||
+      cacheRead !== undefined ||
+      cacheWrite !== undefined ||
+      total !== undefined
+        ? { input, output, cacheRead, cacheWrite, total }
+        : undefined,
+    cost: cost !== undefined && Number.isFinite(cost) ? cost : undefined,
+  };
+}
+
+function lastMatchedTokenCount(text: string, pattern: RegExp): number | undefined {
+  let count: number | undefined;
+  for (const match of text.matchAll(pattern)) {
+    count = tokenCount(match[1], match[2]) ?? count;
+  }
+  return count;
+}
+
+function lastLabeledTokenCount(text: string, label: RegExp): number | undefined {
+  let count: number | undefined;
+  const pattern = new RegExp(`${label.source}([\\d,.]+)\\s*([kmb])?`, label.flags);
+  for (const match of text.matchAll(pattern)) {
+    count = tokenCount(match[1], match[2]) ?? count;
+  }
+  return count;
+}
+
+function tokenCount(value: string | undefined, suffix: string | undefined): number | undefined {
+  const base = Number(value?.replace(/,/g, ""));
+  if (!Number.isFinite(base)) return undefined;
+  const multiplier =
+    suffix?.toLowerCase() === "k"
+      ? 1_000
+      : suffix?.toLowerCase() === "m"
+        ? 1_000_000
+        : suffix?.toLowerCase() === "b"
+          ? 1_000_000_000
+          : 1;
+  return Math.round(base * multiplier);
 }
 
 function patchNode(
@@ -1313,9 +1795,18 @@ async function finishRun(
   status: WorkflowRun["status"],
   error?: string,
 ): Promise<WorkflowRecord> {
-  return await updateWorkflow(workspaceRoot, workflowId, (record) =>
+  const record = await updateWorkflow(workspaceRoot, workflowId, (record) =>
     finishRunRecord(record, runId, status, error),
   );
+  const run = record.runs.find((item) => item.id === runId);
+  if (run) {
+    publishWorkflowRuntime(workspaceRoot, workflowId, {
+      type: "run",
+      updatedAt: record.updatedAt,
+      run,
+    });
+  }
+  return record;
 }
 
 function finishRunRecord(
@@ -1324,18 +1815,62 @@ function finishRunRecord(
   status: WorkflowRun["status"],
   error?: string,
 ): WorkflowRecord {
+  const completedAt = Date.now();
   return {
     ...record,
     runs: record.runs.map((run) =>
       run.id === runId
-        ? {
-            ...run,
-            status,
-            completedAt: Date.now(),
-            error: error ?? run.error,
-          }
+        ? (() => {
+            const trace = run.trace?.map((item) =>
+              item.status === "running"
+                ? {
+                    ...item,
+                    status: status === "stopped" ? ("stopped" as const) : ("error" as const),
+                    completedAt,
+                    durationMs: Math.max(0, completedAt - item.startedAt),
+                    error: error ?? item.error,
+                  }
+                : item,
+            );
+            const finalized = { ...run, trace };
+            return {
+              ...run,
+              status,
+              completedAt,
+              error: error ?? run.error,
+              trace,
+              stats: runStats(finalized, completedAt),
+            };
+          })()
         : run,
     ),
+  };
+}
+
+function runStats(run: WorkflowRun, completedAt: number): WorkflowRun["stats"] {
+  const trace = run.trace ?? [];
+  const retryCount = trace.reduce((sum, item) => sum + (item.retryReasons?.length ?? 0), 0);
+  const totalTokens = trace.reduce(
+    (sum, item) =>
+      sum +
+      (item.tokens?.total ??
+        (item.tokens?.input !== undefined || item.tokens?.output !== undefined
+          ? (item.tokens.input ?? 0) + (item.tokens.output ?? 0)
+          : 0)),
+    0,
+  );
+  return {
+    durationMs: Math.max(0, completedAt - run.startedAt),
+    totalTokens: totalTokens || undefined,
+    inputTokens: trace.reduce((sum, item) => sum + (item.tokens?.input ?? 0), 0) || undefined,
+    outputTokens: trace.reduce((sum, item) => sum + (item.tokens?.output ?? 0), 0) || undefined,
+    cacheReadTokens:
+      trace.reduce((sum, item) => sum + (item.tokens?.cacheRead ?? 0), 0) || undefined,
+    cacheWriteTokens:
+      trace.reduce((sum, item) => sum + (item.tokens?.cacheWrite ?? 0), 0) || undefined,
+    cost: trace.reduce((sum, item) => sum + (item.cost ?? 0), 0) || undefined,
+    nodeCount: trace.length,
+    retryCount: retryCount || undefined,
   };
 }
 
@@ -2096,7 +2631,7 @@ function agentEffort(node: WorkflowNode): AgentEffort | undefined {
   ) {
     return value;
   }
-  return undefined;
+  return node.providerKind === "claude-cli" ? "high" : "medium";
 }
 
 function terminalModelOutputBeforeError(text: string, prompt: string): string {
@@ -2140,8 +2675,10 @@ function stripAnsi(text: string): string {
 
 function appendRunLog(logs: RunLogEntry[], entry: RunLogEntry): void {
   if (!entry.content) return;
+  const currentSize =
+    runLogSizes.get(logs) ?? logs.reduce((sum, log) => sum + log.content.length, 0);
   logs.push(entry);
-  trimRunLogs(logs);
+  trimRunLogs(logs, currentSize + entry.content.length);
 }
 
 function appendBoundedJoinedText(
@@ -2158,31 +2695,32 @@ function appendBoundedJoinedText(
   return marker + joined.slice(-tailLength);
 }
 
-function trimRunLogs(logs: RunLogEntry[]): void {
-  const source = logs.filter((log) => !isRunLogTruncationMarker(log));
-  const hadMarker = source.length !== logs.length;
-  const total = source.reduce((sum, log) => sum + log.content.length, 0);
+function trimRunLogs(logs: RunLogEntry[], total: number): void {
   if (total <= RUN_LOG_CHAR_LIMIT) {
-    if (hadMarker) logs.splice(0, logs.length, runLogTruncationMarker(), ...source);
+    runLogSizes.set(logs, total);
     return;
   }
 
   const marker = runLogTruncationMarker();
   const target = Math.max(0, RUN_LOG_CHAR_LIMIT - marker.content.length);
-  const kept: RunLogEntry[] = [];
-  let remaining = target;
-  for (let i = source.length - 1; i >= 0 && remaining > 0; i -= 1) {
-    const log = source[i]!;
-    if (log.content.length <= remaining) {
-      kept.push(log);
-      remaining -= log.content.length;
+  let contentTotal = total;
+  if (logs[0] && isRunLogTruncationMarker(logs[0])) {
+    contentTotal -= logs[0].content.length;
+    logs.shift();
+  }
+  while (contentTotal > target && logs.length > 0) {
+    const overflow = contentTotal - target;
+    const first = logs[0]!;
+    if (first.content.length <= overflow) {
+      contentTotal -= first.content.length;
+      logs.shift();
     } else {
-      kept.push({ ...log, content: log.content.slice(-remaining) });
-      remaining = 0;
+      logs[0] = { ...first, content: first.content.slice(overflow) };
+      contentTotal -= overflow;
     }
   }
-  kept.reverse();
-  logs.splice(0, logs.length, marker, ...kept);
+  logs.unshift(marker);
+  runLogSizes.set(logs, marker.content.length + contentTotal);
 }
 
 function isRunLogTruncationMarker(log: RunLogEntry): boolean {

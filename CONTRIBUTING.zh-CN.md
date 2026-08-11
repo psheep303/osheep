@@ -24,7 +24,7 @@ cd ..\desktop
 npm ci
 ```
 
-Web 开发可从仓库根目录运行 `bash ./dev.sh`（Linux）或 `.\dev.ps1`（Windows）。具体启动方式和端口见 [README.zh-CN.md](README.zh-CN.md)。
+Linux 上先从仓库根目录运行 `chmod +x ./dev.sh`，之后使用 `./dev.sh` 启动 Web 开发环境；Windows 上运行 `.\dev.ps1`。具体启动方式和端口见 [README.zh-CN.md](README.zh-CN.md)。
 
 ## 文档语言
 

@@ -84,6 +84,21 @@ test("clean conversation keeps agent history and removes Claude terminal chrome"
   );
 });
 
+test("Claude terminal fallback removes transcript write warnings from the final answer", () => {
+  const raw = [
+    "● 已在 test/claude/index.html 写好极简羊特效。",
+    "直接用浏览器打开，移动鼠标时会生成向上飘散的羊。",
+    "⚠Transcriptwritesarefailing(permissiondenied—EPERM) ·recentmessagesmayno…",
+  ].join("\n");
+  const conversation = cleanAgentTerminalConversation(raw, "", "claude-cli");
+
+  assert.doesNotMatch(conversation, /Transcript writes|Transcriptwrites|EPERM/);
+  assert.equal(
+    extractLastClaudeAnswer(conversation),
+    "已在 test/claude/index.html 写好极简羊特效。\n直接用浏览器打开，移动鼠标时会生成向上飘散的羊。",
+  );
+});
+
 test("Codex conversation starts at the first real event and removes TUI redraw fragments", () => {
   const raw = [
     "PS D:\\demo> codex --model gpt-5.5",

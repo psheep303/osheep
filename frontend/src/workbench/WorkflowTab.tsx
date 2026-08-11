@@ -4,6 +4,7 @@ import "@xterm/xterm/css/xterm.css";
 import {
   type CSSProperties,
   lazy,
+  memo,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
   type PointerEvent as ReactPointerEvent,
@@ -15,6 +16,7 @@ import {
   useRef,
   useState,
 } from "react";
+import type { MessageKey } from "../i18n/messages";
 import { useUiPreferences } from "../i18n/UiPreferences";
 import {
   type AgentSessionApp,
@@ -42,6 +44,7 @@ import {
   getCodexPlugins,
   listAgentSessions,
   openTerminalSocket,
+  openWorkflowRuntimeSocket,
   pauseAiTerminal,
   type RemoteMcpTool,
   type RunResult,
@@ -54,15 +57,28 @@ import {
   type WorkflowRecord,
   type WorkflowRun,
   type WorkflowRunStatus,
+  type WorkflowRunTrace,
+  type WorkflowRuntimeEvent,
   writeFile,
 } from "./api";
 import { ClaudeLogo, OpenAILogo } from "./BrandIcons";
 import { ContextMenu, type CtxMenuSection } from "./ContextMenu";
 import { cleanAgentTerminalConversation } from "./terminal-conversation";
+import {
+  compactSupersededClaudeStartup,
+  createTerminalReplayGuard,
+  createTerminalWriteBatcher,
+  stableClaudeStartupRedraw,
+  type TerminalReplayResize,
+  terminalReplayHasClaudeStartupRedraw,
+  terminalReplaySegments,
+} from "./terminal-write-batcher";
 import { normalizeLightTerminalAnsi, workflowXtermTheme, xtermAnsiTheme } from "./theme";
 import {
   blockOutputText,
   canApplyWorkflowRefresh,
+  findMarkdownAutoPreviewNode,
+  formatCompactTokenCount,
   formatWorkflowDuration,
   type WorkflowBlockOutput,
 } from "./workflow-behavior";
@@ -167,14 +183,13 @@ type WorkflowIconName =
 
 interface BlockCategory {
   id: BlockCategoryId;
-  label: string;
+  labelKey: MessageKey;
   icon: WorkflowIconName;
 }
 
 interface BlockTemplate {
   category: BlockCategoryId;
-  label: string;
-  title: string;
+  nameKey: MessageKey;
   kind: WorkflowNodeKind;
   providerKind?: WorkflowProviderKind;
   model?: string;
@@ -478,41 +493,37 @@ const IF_OPERATORS = [
 const MERGE_MODES = ["object", "array"] as const;
 const LOOP_MODES = ["items", "batches"] as const;
 const BLOCK_CATEGORIES: BlockCategory[] = [
-  { id: "triggers", label: "Triggers", icon: "trigger" },
-  { id: "input", label: "输入", icon: "input" },
-  { id: "logic", label: "Logic", icon: "if" },
-  { id: "command", label: "命令", icon: "command" },
-  { id: "ai", label: "AI", icon: "ai" },
-  { id: "network", label: "网络", icon: "network" },
-  { id: "file", label: "文件操作", icon: "file" },
-  { id: "output", label: "输出", icon: "output" },
+  { id: "triggers", labelKey: "workflow.blocks.category.triggers", icon: "trigger" },
+  { id: "input", labelKey: "workflow.blocks.category.input", icon: "input" },
+  { id: "logic", labelKey: "workflow.blocks.category.logic", icon: "if" },
+  { id: "command", labelKey: "workflow.blocks.category.command", icon: "command" },
+  { id: "ai", labelKey: "workflow.blocks.category.ai", icon: "ai" },
+  { id: "network", labelKey: "workflow.blocks.category.network", icon: "network" },
+  { id: "file", labelKey: "workflow.blocks.category.file", icon: "file" },
+  { id: "output", labelKey: "workflow.blocks.category.output", icon: "output" },
 ];
 const BLOCK_TEMPLATES: BlockTemplate[] = [
   {
     category: "input",
-    label: "Input",
-    title: "Input",
+    nameKey: "workflow.blocks.input",
     kind: "input",
     icon: "input",
   },
   {
     category: "triggers",
-    label: "工作流运行时",
-    title: "Workflow run",
+    nameKey: "workflow.blocks.workflowRun",
     kind: "trigger",
     icon: "trigger",
   },
   {
     category: "triggers",
-    label: "Manual Trigger",
-    title: "Manual Trigger",
+    nameKey: "workflow.blocks.manualTrigger",
     kind: "manual-trigger",
     icon: "trigger",
   },
   {
     category: "triggers",
-    label: "Cron",
-    title: "Cron",
+    nameKey: "workflow.blocks.cron",
     kind: "cron",
     icon: "cron",
     config: {
@@ -522,8 +533,7 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
   },
   {
     category: "triggers",
-    label: "Webhook Trigger",
-    title: "Webhook Trigger",
+    nameKey: "workflow.blocks.webhookTrigger",
     kind: "webhook-trigger",
     icon: "webhook",
     config: {
@@ -533,15 +543,13 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
   },
   {
     category: "command",
-    label: "终端命令",
-    title: "Run command",
+    nameKey: "workflow.blocks.runCommand",
     kind: "command",
     icon: "command",
   },
   {
     category: "ai",
-    label: "Claude Code CLI",
-    title: "Claude Code",
+    nameKey: "workflow.blocks.claudeCode",
     kind: "agent",
     providerKind: "claude-cli",
     model: "default",
@@ -559,14 +567,13 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
   },
   {
     category: "ai",
-    label: "Codex CLI",
-    title: "Codex",
+    nameKey: "workflow.blocks.codex",
     kind: "agent",
     providerKind: "codex-cli",
     model: "default",
     icon: "codex",
     config: {
-      effort: "high",
+      effort: "medium",
       retries: 0,
       retryForever: false,
       alwaysEnter: false,
@@ -577,32 +584,28 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
   },
   {
     category: "ai",
-    label: "Codex plugins",
-    title: "Codex plugins",
+    nameKey: "workflow.blocks.codexPlugins",
     kind: "codex-plugin",
     icon: "codex",
     config: { pluginSelectors: [] },
   },
   {
     category: "ai",
-    label: "Claude plugins",
-    title: "Claude plugins",
+    nameKey: "workflow.blocks.claudePlugins",
     kind: "claude-plugin",
     icon: "claude",
     config: { pluginSelectors: [] },
   },
   {
     category: "network",
-    label: "获取网页文本",
-    title: "Fetch page text",
+    nameKey: "workflow.blocks.fetchPageText",
     kind: "web",
     prompt: "https://example.com",
     icon: "web",
   },
   {
     category: "network",
-    label: "HTTP Request",
-    title: "HTTP Request",
+    nameKey: "workflow.blocks.httpRequest",
     kind: "http-request",
     icon: "http",
     config: {
@@ -615,8 +618,7 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
   },
   {
     category: "logic",
-    label: "IF",
-    title: "IF",
+    nameKey: "workflow.blocks.if",
     kind: "if",
     icon: "if",
     config: {
@@ -627,16 +629,14 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
   },
   {
     category: "logic",
-    label: "Wait",
-    title: "Wait",
+    nameKey: "workflow.blocks.wait",
     kind: "wait",
     icon: "wait",
     config: { seconds: 1 },
   },
   {
     category: "output",
-    label: "Set Data",
-    title: "Set Data",
+    nameKey: "workflow.blocks.setData",
     kind: "set",
     icon: "set",
     config: {
@@ -645,16 +645,14 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
   },
   {
     category: "output",
-    label: "Merge",
-    title: "Merge",
+    nameKey: "workflow.blocks.merge",
     kind: "merge",
     icon: "merge",
     config: { mode: "object" },
   },
   {
     category: "output",
-    label: "JSON Extract",
-    title: "JSON Extract",
+    nameKey: "workflow.blocks.jsonExtract",
     kind: "json",
     icon: "json",
     config: {
@@ -664,8 +662,7 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
   },
   {
     category: "command",
-    label: "Code in JavaScript",
-    title: "Code in JavaScript",
+    nameKey: "workflow.blocks.javascript",
     kind: "code",
     icon: "code",
     config: {
@@ -674,8 +671,7 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
   },
   {
     category: "logic",
-    label: "Loop Over Items",
-    title: "Loop Over Items",
+    nameKey: "workflow.blocks.loopItems",
     kind: "loop-items",
     icon: "loop",
     config: {
@@ -686,31 +682,27 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
   },
   {
     category: "file",
-    label: "Read",
-    title: "Read file",
+    nameKey: "workflow.blocks.readFile",
     kind: "file-read",
     icon: "read",
   },
   {
     category: "file",
-    label: "Write",
-    title: "Write file",
+    nameKey: "workflow.blocks.writeFile",
     kind: "file-write",
     icon: "write",
     config: { path: "", content: "" },
   },
   {
     category: "output",
-    label: "Markdown render",
-    title: "Markdown",
+    nameKey: "workflow.blocks.markdown",
     kind: "markdown",
     prompt: "## Result\n\n{{blocks[2].text}}",
     icon: "markdown",
   },
   {
     category: "output",
-    label: "MCP tool",
-    title: "MCP",
+    nameKey: "workflow.blocks.mcp",
     kind: "mcp",
     icon: "mcp",
     config: {
@@ -735,7 +727,9 @@ export function WorkflowTab({
   onResumeSession,
   onTemplateBinding,
 }: WorkflowTabProps) {
+  const { t } = useUiPreferences();
   const [workflow, setWorkflow] = useState<WorkflowRecord | null>(null);
+  const [runtimeReadyWorkflowKey, setRuntimeReadyWorkflowKey] = useState("");
   const workflowRef = useRef<WorkflowRecord | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -758,6 +752,8 @@ export function WorkflowTab({
   const [blockPickerOpen, setBlockPickerOpen] = useState(false);
   const [blockPickerCategory, setBlockPickerCategory] = useState<BlockCategoryId>("triggers");
   const [detailNodeId, setDetailNodeId] = useState<string | null>(null);
+  const [observabilityOpen, setObservabilityOpen] = useState(false);
+  const [observabilityRunId, setObservabilityRunId] = useState<string | null>(null);
   const [mpeNodeId, setMpeNodeId] = useState<string | null>(null);
   const [titleMenu, setTitleMenu] = useState<{ x: number; y: number } | null>(null);
   const [titleRenaming, setTitleRenaming] = useState(false);
@@ -779,14 +775,38 @@ export function WorkflowTab({
   const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const abortRef = useRef<AbortController | null>(null);
   const waitingAlertKeyRef = useRef("");
+  const workflowRuntimeConnectedRef = useRef(false);
+  const workflowRuntimeEventSeqRef = useRef(0);
+  const onWorkflowChangedRef = useRef(onWorkflowChanged);
+  const autoSeeRunStartedAtRef = useRef(0);
+  const autoSeenMarkdownRef = useRef<Set<string>>(new Set());
   const undoStackRef = useRef<WorkflowRecord[]>([]);
   const redoStackRef = useRef<WorkflowRecord[]>([]);
   const [historyTick, setHistoryTick] = useState(0);
+  onWorkflowChangedRef.current = onWorkflowChanged;
+
+  const showCompletedMarkdown = useCallback(
+    (previous: WorkflowRecord | null, next: WorkflowRecord) => {
+      const completedMarkdown = findMarkdownAutoPreviewNode(
+        previous?.nodes,
+        next.nodes,
+        autoSeenMarkdownRef.current,
+        autoSeeRunStartedAtRef.current,
+      );
+      if (!completedMarkdown) return;
+      autoSeenMarkdownRef.current.add(
+        `${completedMarkdown.id}:${completedMarkdown.completedAt ?? 0}`,
+      );
+      setMpeNodeId(completedMarkdown.id);
+    },
+    [],
+  );
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
+    setRuntimeReadyWorkflowKey("");
     setSelectedId(null);
     setReadmeOpen(false);
     setReadmeEditing(false);
@@ -800,6 +820,7 @@ export function WorkflowTab({
         localRevisionRef.current = 0;
         workflowRef.current = record;
         setWorkflow(record);
+        setRuntimeReadyWorkflowKey(`${workspaceId}\0${workflowId}`);
         onTemplateBinding(record.templateBinding);
         setRunning(workflowIsRunning(record));
         window.requestAnimationFrame(() => {
@@ -823,6 +844,121 @@ export function WorkflowTab({
   }, [workspaceId, workflowId]);
 
   useEffect(() => {
+    if (runtimeReadyWorkflowKey !== `${workspaceId}\0${workflowId}`) return;
+    let disposed = false;
+    let socket: WebSocket | null = null;
+    let retryTimer: number | null = null;
+
+    const applyEvent = (event: WorkflowRuntimeEvent) => {
+      workflowRuntimeEventSeqRef.current += 1;
+      const current = workflowRef.current;
+      if (!current || event.type === "ready") return;
+      let next = current;
+      if (event.type === "node") {
+        const layout = runtimeLayoutRef.current.get(event.node.id);
+        const node = layout ? { ...event.node, ...layout } : event.node;
+        if (!current.nodes.some((item) => item.id === node.id)) return;
+        next = {
+          ...current,
+          updatedAt: Math.max(current.updatedAt, event.updatedAt),
+          nodes: current.nodes.map((item) => (item.id === node.id ? node : item)),
+        };
+      } else if (event.type === "run") {
+        const exists = current.runs.some((item) => item.id === event.run.id);
+        next = {
+          ...current,
+          updatedAt: Math.max(current.updatedAt, event.updatedAt),
+          runs: exists
+            ? current.runs.map((item) => (item.id === event.run.id ? event.run : item))
+            : [...current.runs.slice(-49), event.run],
+        };
+      }
+      workflowRef.current = next;
+      setWorkflow(next);
+      showCompletedMarkdown(current, next);
+      const isRunning = workflowIsRunning(next);
+      setRunning(isRunning);
+      if (!isRunning && event.type === "run" && event.run.status !== "running") {
+        onWorkflowChangedRef.current();
+      }
+    };
+
+    const refreshIfBehind = (updatedAt: number) => {
+      const current = workflowRef.current;
+      if (
+        !current ||
+        current.updatedAt >= updatedAt ||
+        nodeDragRef.current ||
+        pendingSaveRef.current ||
+        saveInFlightRef.current > 0
+      ) {
+        return;
+      }
+      const requestedRevision = localRevisionRef.current;
+      void apiGetWorkflow(workspaceId, workflowId)
+        .then((record) => {
+          if (
+            disposed ||
+            !canApplyWorkflowRefresh({
+              requestedRevision,
+              currentRevision: localRevisionRef.current,
+              dragging: nodeDragRef.current !== null,
+              pendingSave: pendingSaveRef.current !== null || saveInFlightRef.current > 0,
+            })
+          ) {
+            return;
+          }
+          const next = applyNodePositions(record, runtimeLayoutRef.current);
+          showCompletedMarkdown(current, next);
+          workflowRef.current = next;
+          setWorkflow(next);
+          setRunning(workflowIsRunning(next));
+        })
+        .catch(() => undefined);
+    };
+
+    const connect = () => {
+      if (disposed) return;
+      socket = openWorkflowRuntimeSocket(workspaceId, workflowId);
+      socket.onmessage = (message) => {
+        try {
+          const event = JSON.parse(message.data) as
+            | WorkflowRuntimeEvent
+            | { type: "ping" }
+            | { type: "error"; message?: string };
+          if (event.type === "ping") {
+            if (socket?.readyState === WebSocket.OPEN) {
+              socket.send(JSON.stringify({ type: "pong" }));
+            }
+            return;
+          }
+          if (event.type === "ready") {
+            workflowRuntimeConnectedRef.current = true;
+            refreshIfBehind(event.updatedAt);
+            return;
+          }
+          if (event.type === "node" || event.type === "run") applyEvent(event);
+        } catch {
+          /* ignore malformed runtime events */
+        }
+      };
+      socket.onclose = () => {
+        workflowRuntimeConnectedRef.current = false;
+        if (!disposed) retryTimer = window.setTimeout(connect, 1_000);
+      };
+      socket.onerror = () => socket?.close();
+    };
+
+    connect();
+    return () => {
+      disposed = true;
+      workflowRuntimeConnectedRef.current = false;
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
+      socket?.close();
+    };
+  }, [workspaceId, workflowId, runtimeReadyWorkflowKey, showCompletedMarkdown]);
+
+  useEffect(() => {
     if (!workflowId || !workspaceId) return;
     let cancelled = false;
     const refresh = async () => {
@@ -842,23 +978,27 @@ export function WorkflowTab({
           return;
         }
         const isRunning = workflowIsRunning(record);
+        const previous = workflowRef.current;
         const next = applyNodePositions(record, runtimeLayoutRef.current);
         workflowRef.current = next;
         setWorkflow(next);
+        setRuntimeReadyWorkflowKey(`${workspaceId}\0${workflowId}`);
         setRunning(isRunning);
+        showCompletedMarkdown(previous, next);
         if (!isRunning) onWorkflowChanged();
       } catch {
         /* keep the current snapshot while the workspace is changing */
       }
     };
     const timer = window.setInterval(() => {
+      if (workflowRuntimeConnectedRef.current) return;
       void refresh();
     }, 1500);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [workspaceId, workflowId, onWorkflowChanged]);
+  }, [workspaceId, workflowId, onWorkflowChanged, showCompletedMarkdown]);
 
   useEffect(() => {
     panRef.current = pan;
@@ -885,6 +1025,30 @@ export function WorkflowTab({
     () => workflow?.nodes.find((node) => node.id === selectedId) ?? null,
     [workflow, selectedId],
   );
+  const observabilityRun = useMemo(() => {
+    if (!workflow) return null;
+    return (
+      workflow.runs.find((run) => run.id === observabilityRunId) ??
+      workflow.runs[workflow.runs.length - 1] ??
+      null
+    );
+  }, [workflow, observabilityRunId]);
+
+  const exportRunReport = useCallback(() => {
+    if (!workflow || !observabilityRun) return;
+    const report = {
+      workflow: { id: workflow.id, title: workflow.title },
+      run: observabilityRun,
+      exportedAt: new Date().toISOString(),
+    };
+    const blob = new Blob([JSON.stringify(report, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `${workflow.title || "workflow"}-${observabilityRun.id}-report.json`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }, [workflow, observabilityRun]);
   const waitingForChoiceNode = useMemo(
     () =>
       workflow?.nodes.find((node) => {
@@ -1173,7 +1337,14 @@ export function WorkflowTab({
         const last = record.nodes[record.nodes.length - 1];
         const x = last ? last.x + NODE_W + 96 : 0;
         const y = last ? last.y : 0;
-        const node = nodeFromTemplate(template, nodeId, nextBlockId(record), x, y);
+        const node = nodeFromTemplate(
+          template,
+          nodeId,
+          nextBlockId(record),
+          x,
+          y,
+          t(template.nameKey),
+        );
         return { ...record, nodes: [...record.nodes, node] };
       },
       true,
@@ -1610,14 +1781,19 @@ export function WorkflowTab({
     const current = workflowRef.current;
     if (!current || running) return;
     await flushPendingSave();
+    autoSeeRunStartedAtRef.current = Date.now();
+    autoSeenMarkdownRef.current.clear();
     setRunning(true);
     setBlockPickerOpen(false);
     setError(null);
+    const runtimeEventSeq = workflowRuntimeEventSeqRef.current;
     try {
       const result = await apiRunWorkflow(workspaceId, current.id, nodeIds);
-      const next = applyNodePositions(result.workflow, runtimeLayoutRef.current);
-      workflowRef.current = next;
-      setWorkflow(next);
+      if (workflowRuntimeEventSeqRef.current === runtimeEventSeq) {
+        const next = applyNodePositions(result.workflow, runtimeLayoutRef.current);
+        workflowRef.current = next;
+        setWorkflow(next);
+      }
       onWorkflowChanged();
     } catch (e) {
       setRunning(false);
@@ -1849,6 +2025,7 @@ export function WorkflowTab({
               codexApproval: agentCodexApproval(node),
               codexSandbox: agentCodexSandbox(node),
               effort: agentEffort(node),
+              failOnTerminalError: true,
               alwaysEnter: agentAlwaysEnter(node),
               conversationSessionId: requestedConversationSessionId,
             },
@@ -1893,9 +2070,17 @@ export function WorkflowTab({
             startedAt,
             expectedId: requestedConversationSessionId,
           }));
+        const fallbackRaw = `${node.providerKind === "codex-cli" ? "Codex CLI" : "Claude Code CLI"} completed without text output.`;
+        const transcriptRaw = result.result?.transcript
+          ? cleanAgentTerminalConversation(
+              result.result.transcript,
+              node.providerKind === "claude-cli" ? "claude-cli" : "codex-cli",
+            )
+          : "";
         let raw =
-          result.result?.content ||
-          `${node.providerKind === "codex-cli" ? "Codex CLI" : "Claude Code CLI"} completed without text output.`;
+          result.result?.content && !/completed without text output/i.test(result.result.content)
+            ? result.result.content
+            : transcriptRaw || fallbackRaw;
         const toolRun = result.aborted
           ? null
           : await maybeRunAgentMcpToolCalls(
@@ -2123,6 +2308,14 @@ export function WorkflowTab({
           >
             README
           </button>
+          <button
+            className={`workflow-toolbar__readme workflow-toolbar__run-history${observabilityOpen ? " is-active" : ""}`}
+            onClick={() => setObservabilityOpen((open) => !open)}
+            title={t("workflow.runHistory")}
+            aria-label={t("workflow.runHistory")}
+          >
+            {t("workflow.runHistory")}
+          </button>
           {workflow.templateBinding && (
             <span className="workflow-toolbar__template-binding">
               {workflow.templateBinding.source} template
@@ -2146,8 +2339,8 @@ export function WorkflowTab({
               setBlockPickerOpen(true);
             }}
             disabled={running}
-            title="Add block"
-            aria-label="Add block"
+            title={t("workflow.blocks.add")}
+            aria-label={t("workflow.blocks.add")}
           >
             <IconAddBlock />
           </button>
@@ -2526,6 +2719,7 @@ export function WorkflowTab({
           <WorkflowDetailsPanel
             workspaceId={workspaceId}
             node={workflow.nodes.find((node) => node.id === detailNodeId)!}
+            trace={latestWorkflowNodeTrace(workflow, detailNodeId)}
             onClose={() => setDetailNodeId(null)}
             onResumeSession={onResumeSession}
           />
@@ -2534,11 +2728,27 @@ export function WorkflowTab({
       {mpeNodeId && workflow.nodes.some((node) => node.id === mpeNodeId) && (
         <div className="workflow-panel-shell">
           <WorkflowMpePanel
-            markdown={resolveBlockTemplatePreview(
-              workflow.nodes.find((node) => node.id === mpeNodeId)!.prompt,
+            markdown={markdownResultText(
+              workflow.nodes.find((node) => node.id === mpeNodeId)!,
               workflow,
             )}
             onClose={() => setMpeNodeId(null)}
+          />
+        </div>
+      )}
+      {observabilityOpen && (
+        <div className="workflow-panel-shell workflow-observability-shell">
+          <WorkflowObservabilityPanel
+            workflow={workflow}
+            run={observabilityRun}
+            selectedRunId={observabilityRun?.id ?? null}
+            onSelectRun={setObservabilityRunId}
+            onExport={exportRunReport}
+            onClose={() => setObservabilityOpen(false)}
+            onSelectNode={(nodeId) => {
+              setSelectedId(nodeId);
+              setDetailNodeId(nodeId);
+            }}
           />
         </div>
       )}
@@ -2908,18 +3118,19 @@ function WorkflowBlockPicker({
   onAdd: (template: BlockTemplate) => void;
   onClose: () => void;
 }) {
+  const { t } = useUiPreferences();
   const templates = BLOCK_TEMPLATES.filter((item) => item.category === category);
 
   return (
     <section className="workflow-block-picker">
       <div className="workflow-panel__head">
-        <div className="workflow-inspector__eyebrow">Blocks</div>
+        <div className="workflow-inspector__eyebrow">{t("workflow.blocks.title")}</div>
         <button
           type="button"
           className="workflow-inspector__close"
           onClick={onClose}
-          aria-label="Close blocks"
-          title="Close"
+          aria-label={t("workflow.blocks.close")}
+          title={t("common.close")}
         >
           x
         </button>
@@ -2936,21 +3147,21 @@ function WorkflowBlockPicker({
               <span className="workflow-block-picker__icon">
                 <WorkflowIcon name={item.icon} />
               </span>
-              {item.label}
+              {t(item.labelKey)}
             </button>
           ))}
         </nav>
         <div className="workflow-block-picker__items">
           {templates.map((template) => (
             <button
-              key={`${template.category}:${template.label}`}
+              key={`${template.category}:${template.nameKey}`}
               type="button"
               onClick={() => onAdd(template)}
             >
               <span className="workflow-block-picker__item-icon">
                 <WorkflowIcon name={template.icon} />
               </span>
-              <span>{template.label}</span>
+              <span>{t(template.nameKey)}</span>
             </button>
           ))}
         </div>
@@ -3069,16 +3280,35 @@ function WorkflowNodeBlock({
 function WorkflowDetailsPanel({
   workspaceId,
   node,
+  trace,
   onClose,
   onResumeSession,
 }: {
   workspaceId: string;
   node: WorkflowNode;
+  trace?: WorkflowRunTrace;
   onClose: () => void;
   onResumeSession: (session: { app: AgentSessionApp; id: string; title: string }) => void;
 }) {
   const snapshot = runDetailsSnapshot(node);
   const title = snapshot?.title || node.title;
+  const openAgentSession = async () => {
+    if (snapshot?.kind !== "agent") return;
+    const app: AgentSessionApp = node.providerKind === "claude-cli" ? "claude" : "codex";
+    let sessionId = snapshot.conversationSessionId;
+    if (!sessionId) {
+      try {
+        const sessions = await listAgentSessions(app, workspaceId);
+        const recent = sessions
+          .filter((session) => session.updatedAt >= snapshot.startedAt - 10 * 60 * 1000)
+          .sort((a, b) => b.updatedAt - a.updatedAt);
+        sessionId = (recent[0] ?? sessions.sort((a, b) => b.updatedAt - a.updatedAt)[0])?.id;
+      } catch {
+        return;
+      }
+    }
+    if (sessionId) onResumeSession({ app, id: sessionId, title });
+  };
   return (
     <aside className="workflow-inspector workflow-run-details">
       <div className="workflow-inspector__head">
@@ -3108,29 +3338,27 @@ function WorkflowDetailsPanel({
           </span>
         )}
         {snapshot?.exitCode !== undefined && <span>exit {snapshot.exitCode ?? "signal"}</span>}
+        {snapshot?.kind === "agent" && snapshot.status !== "running" && (
+          <button
+            type="button"
+            className="workflow-run-details__open-session"
+            onClick={() => void openAgentSession()}
+          >
+            Open in {node.providerKind === "claude-cli" ? "Claude Code" : "Codex"}
+          </button>
+        )}
       </div>
-      {snapshot?.kind === "agent" && snapshot.conversationSessionId && (
-        <div className="workflow-run-details__session">
-          <span>Session</span>
-          {snapshot.status === "running" ? (
-            <code>{snapshot.conversationSessionId}</code>
-          ) : (
-            <button
-              type="button"
-              title="Resume this conversation in the terminal"
-              onClick={() =>
-                onResumeSession({
-                  app: node.providerKind === "claude-cli" ? "claude" : "codex",
-                  id: snapshot.conversationSessionId!,
-                  title,
-                })
-              }
-            >
-              {snapshot.conversationSessionId}
-            </button>
-          )}
-        </div>
+      {snapshot?.kind === "agent" && (
+        <WorkflowTraceUsageStats trace={trace} className="workflow-run-details__usage" />
       )}
+      {snapshot?.kind === "agent" &&
+        snapshot.conversationSessionId &&
+        snapshot.status === "running" && (
+          <div className="workflow-run-details__session">
+            <span>Session</span>
+            <code>{snapshot.conversationSessionId}</code>
+          </div>
+        )}
       <div className="workflow-run-details__terminal">
         <div className="workflow-run-details__bar">
           <span />
@@ -3148,40 +3376,431 @@ function WorkflowDetailsPanel({
             initialAutoSuccess={snapshot.autoSuccess ?? true}
           />
         ) : (
-          <WorkflowFinishedRunSnapshot snapshot={snapshot} />
+          <WorkflowFinishedRunResult node={node} snapshot={snapshot} />
         )}
       </div>
     </aside>
   );
 }
 
-function WorkflowFinishedRunSnapshot({ snapshot }: { snapshot: WorkflowRunDetailSnapshot | null }) {
+function WorkflowObservabilityPanel({
+  workflow,
+  run,
+  selectedRunId,
+  onSelectRun,
+  onExport,
+  onClose,
+  onSelectNode,
+}: {
+  workflow: WorkflowRecord;
+  run: WorkflowRun | null;
+  selectedRunId: string | null;
+  onSelectRun: (id: string) => void;
+  onExport: () => void;
+  onClose: () => void;
+  onSelectNode: (id: string) => void;
+}) {
+  const { resolvedLanguage, t } = useUiPreferences();
+  const traces = run?.trace ?? [];
+  const stats = run?.stats;
+  const traceTokenStats = summarizeWorkflowTraceTokens(traces);
+  const inputTokens = stats?.inputTokens ?? traceTokenStats.input;
+  const outputTokens = stats?.outputTokens ?? traceTokenStats.output;
+  const cacheReadTokens = stats?.cacheReadTokens ?? traceTokenStats.cacheRead;
+  const cacheWriteTokens = stats?.cacheWriteTokens ?? traceTokenStats.cacheWrite;
+  const totalTokens =
+    stats?.totalTokens ??
+    traceTokenStats.total ??
+    (inputTokens !== undefined || outputTokens !== undefined
+      ? (inputTokens ?? 0) + (outputTokens ?? 0)
+      : undefined);
+  const [selectedTraceKey, setSelectedTraceKey] = useState("");
+  const selectedTrace: WorkflowRunTrace | null =
+    traces.find((trace) => `${trace.nodeId}:${trace.startedAt}` === selectedTraceKey) ??
+    traces[0] ??
+    null;
+  return (
+    <aside className="workflow-inspector workflow-observability">
+      <div className="workflow-inspector__head">
+        <div>
+          <div className="workflow-inspector__eyebrow">{t("workflow.observability.title")}</div>
+          <strong>{workflow.title}</strong>
+        </div>
+        <div className="workflow-inspector__head-actions">
+          <button
+            type="button"
+            onClick={onExport}
+            disabled={!run}
+            title={t("workflow.observability.exportTitle")}
+          >
+            {t("workflow.observability.export")}
+          </button>
+          <button
+            type="button"
+            className="workflow-inspector__close"
+            onClick={onClose}
+            aria-label={t("common.close")}
+          >
+            x
+          </button>
+        </div>
+      </div>
+      <label className="workflow-observability__run-select">
+        <span>{t("workflow.runHistory")}</span>
+        <select value={selectedRunId ?? ""} onChange={(e) => onSelectRun(e.target.value)}>
+          {workflow.runs.length === 0 && (
+            <option value="">{t("workflow.observability.noRuns")}</option>
+          )}
+          {workflow.runs
+            .slice()
+            .reverse()
+            .map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.id} · {workflowRunStatusLabel(item.status, t)}
+              </option>
+            ))}
+        </select>
+      </label>
+      {run && (
+        <>
+          <div className="workflow-observability__summary">
+            <WorkflowObservabilityStat label={t("workflow.observability.status")}>
+              <strong className={`is-${run.status}`}>
+                {workflowRunStatusLabel(run.status, t)}
+              </strong>
+            </WorkflowObservabilityStat>
+            <WorkflowObservabilityStat label={t("workflow.observability.duration")}>
+              <strong>
+                {formatWorkflowDuration(
+                  stats?.durationMs ?? (run.completedAt ? run.completedAt - run.startedAt : 0),
+                )}
+              </strong>
+            </WorkflowObservabilityStat>
+            <WorkflowObservabilityStat label={t("workflow.observability.nodes")}>
+              <strong>{stats?.nodeCount ?? traces.length}</strong>
+            </WorkflowObservabilityStat>
+            <WorkflowObservabilityStat label={t("workflow.observability.retries")}>
+              <strong>{stats?.retryCount ?? 0}</strong>
+            </WorkflowObservabilityStat>
+            <WorkflowObservabilityStat label={t("workflow.observability.inputTokens")}>
+              <strong>{formatWorkflowTokenCount(inputTokens, resolvedLanguage, t)}</strong>
+            </WorkflowObservabilityStat>
+            <WorkflowObservabilityStat label={t("workflow.observability.outputTokens")}>
+              <strong>{formatWorkflowTokenCount(outputTokens, resolvedLanguage, t)}</strong>
+            </WorkflowObservabilityStat>
+            <WorkflowObservabilityStat label={t("workflow.observability.cacheReadTokens")}>
+              <strong>{formatWorkflowTokenCount(cacheReadTokens, resolvedLanguage, t)}</strong>
+            </WorkflowObservabilityStat>
+            <WorkflowObservabilityStat label={t("workflow.observability.cacheWriteTokens")}>
+              <strong>{formatWorkflowTokenCount(cacheWriteTokens, resolvedLanguage, t)}</strong>
+            </WorkflowObservabilityStat>
+            <WorkflowObservabilityStat label={t("workflow.observability.totalTokens")}>
+              <strong>{formatWorkflowTokenCount(totalTokens, resolvedLanguage, t)}</strong>
+            </WorkflowObservabilityStat>
+            <WorkflowObservabilityStat label={t("workflow.observability.cost")}>
+              <strong>{formatWorkflowCost(stats?.cost, t)}</strong>
+            </WorkflowObservabilityStat>
+          </div>
+          <div className="workflow-observability__timeline">
+            {traces.length === 0 ? (
+              <div className="workflow-inspector__muted">{t("workflow.observability.noTrace")}</div>
+            ) : (
+              traces.map((trace) => (
+                <button
+                  type="button"
+                  className={`workflow-observability__event${selectedTrace === trace ? " is-selected" : ""}`}
+                  key={`${trace.nodeId}:${trace.startedAt}`}
+                  onClick={() => setSelectedTraceKey(`${trace.nodeId}:${trace.startedAt}`)}
+                  onDoubleClick={() => onSelectNode(trace.nodeId)}
+                >
+                  <span className={`workflow-observability__dot is-${trace.status}`} />
+                  <span className="workflow-observability__event-main">
+                    <strong>{trace.title}</strong>
+                    <small>
+                      {trace.kind} · {workflowRunStatusLabel(trace.status, t)}
+                    </small>
+                  </span>
+                  <span className="workflow-observability__event-cost">
+                    {trace.kind === "agent"
+                      ? trace.cost !== undefined
+                        ? formatWorkflowCost(trace.cost, t)
+                        : "—"
+                      : ""}
+                  </span>
+                  <span className="workflow-observability__event-time">
+                    {trace.durationMs !== undefined
+                      ? formatWorkflowDuration(trace.durationMs)
+                      : "..."}
+                  </span>
+                  {trace.retryReasons?.length ? (
+                    <span className="workflow-observability__retry">
+                      {t("workflow.observability.retryCount", { count: trace.retryReasons.length })}
+                    </span>
+                  ) : null}
+                </button>
+              ))
+            )}
+          </div>
+          {selectedTrace && (
+            <div className="workflow-observability__detail">
+              <div className="workflow-observability__detail-head">
+                <strong>{selectedTrace.title}</strong>
+                <button type="button" onClick={() => onSelectNode(selectedTrace.nodeId)}>
+                  {t("workflow.observability.openNode")}
+                </button>
+              </div>
+              {selectedTrace.kind === "agent" && (
+                <WorkflowTraceUsageStats
+                  trace={selectedTrace}
+                  className="workflow-observability__detail-usage"
+                />
+              )}
+              <details open>
+                <summary>{t("workflow.observability.input")}</summary>
+                <pre>{formatTraceValue(selectedTrace.input, t)}</pre>
+              </details>
+              <details open>
+                <summary>{t("workflow.observability.output")}</summary>
+                <pre>{formatTraceValue(selectedTrace.output, t)}</pre>
+              </details>
+              {selectedTrace.retryReasons?.length ? (
+                <details>
+                  <summary>{t("workflow.observability.retryReasons")}</summary>
+                  <pre>{selectedTrace.retryReasons.join("\n")}</pre>
+                </details>
+              ) : null}
+              {selectedTrace.terminal ? (
+                <details>
+                  <summary>{t("workflow.observability.terminalLog")}</summary>
+                  <pre>
+                    {selectedTrace.terminal.transcript ||
+                      selectedTrace.terminal.stdout ||
+                      selectedTrace.terminal.stderr ||
+                      selectedTrace.terminal.commandLine ||
+                      t("workflow.observability.noTerminalOutput")}
+                  </pre>
+                </details>
+              ) : null}
+            </div>
+          )}
+          {run.error && <div className="workflow-inspector__notice is-error">{run.error}</div>}
+        </>
+      )}
+    </aside>
+  );
+}
+
+type WorkflowTranslate = ReturnType<typeof useUiPreferences>["t"];
+
+function WorkflowObservabilityStat({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div>
+      <span>{label}</span>
+      {children}
+    </div>
+  );
+}
+
+function WorkflowTraceUsageStats({
+  trace,
+  className,
+}: {
+  trace?: WorkflowRunTrace;
+  className?: string;
+}) {
+  const { resolvedLanguage, t } = useUiPreferences();
+  const tokens = trace?.tokens;
+  const total =
+    tokens?.total ??
+    (tokens?.input !== undefined || tokens?.output !== undefined
+      ? (tokens.input ?? 0) +
+        (tokens.output ?? 0) +
+        (tokens.cacheRead ?? 0) +
+        (tokens.cacheWrite ?? 0)
+      : undefined);
+  const stats = [
+    [
+      t("workflow.observability.inputTokens"),
+      formatWorkflowTokenCount(tokens?.input, resolvedLanguage, t),
+    ],
+    [
+      t("workflow.observability.outputTokens"),
+      formatWorkflowTokenCount(tokens?.output, resolvedLanguage, t),
+    ],
+    [
+      t("workflow.observability.cacheReadTokens"),
+      formatWorkflowTokenCount(tokens?.cacheRead, resolvedLanguage, t),
+    ],
+    [
+      t("workflow.observability.cacheWriteTokens"),
+      formatWorkflowTokenCount(tokens?.cacheWrite, resolvedLanguage, t),
+    ],
+    [t("workflow.observability.totalTokens"), formatWorkflowTokenCount(total, resolvedLanguage, t)],
+    [t("workflow.observability.cost"), formatWorkflowCost(trace?.cost, t)],
+  ];
+
+  return (
+    <div className={`workflow-usage-stats${className ? ` ${className}` : ""}`}>
+      {stats.map(([label, value]) => (
+        <div key={label}>
+          <span>{label}</span>
+          <strong>{value}</strong>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function workflowRunStatusLabel(status: WorkflowRunStatus, t: WorkflowTranslate): string {
+  return t(`workflow.status.${status}`);
+}
+
+function latestWorkflowNodeTrace(
+  workflow: WorkflowRecord,
+  nodeId: string,
+): WorkflowRunTrace | undefined {
+  for (let runIndex = workflow.runs.length - 1; runIndex >= 0; runIndex -= 1) {
+    const traces = workflow.runs[runIndex]?.trace ?? [];
+    for (let traceIndex = traces.length - 1; traceIndex >= 0; traceIndex -= 1) {
+      if (traces[traceIndex]?.nodeId === nodeId) return traces[traceIndex];
+    }
+  }
+  return undefined;
+}
+
+function summarizeWorkflowTraceTokens(traces: WorkflowRunTrace[]): {
+  input?: number;
+  output?: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  total?: number;
+} {
+  let hasInput = false;
+  let hasOutput = false;
+  let hasCacheRead = false;
+  let hasCacheWrite = false;
+  let hasTotal = false;
+  let input = 0;
+  let output = 0;
+  let cacheRead = 0;
+  let cacheWrite = 0;
+  let total = 0;
+  for (const trace of traces) {
+    if (trace.tokens?.input !== undefined) {
+      hasInput = true;
+      input += trace.tokens.input;
+    }
+    if (trace.tokens?.output !== undefined) {
+      hasOutput = true;
+      output += trace.tokens.output;
+    }
+    if (trace.tokens?.cacheRead !== undefined) {
+      hasCacheRead = true;
+      cacheRead += trace.tokens.cacheRead;
+    }
+    if (trace.tokens?.cacheWrite !== undefined) {
+      hasCacheWrite = true;
+      cacheWrite += trace.tokens.cacheWrite;
+    }
+    const traceTotal =
+      trace.tokens?.total ??
+      (trace.tokens?.input !== undefined || trace.tokens?.output !== undefined
+        ? (trace.tokens.input ?? 0) + (trace.tokens.output ?? 0)
+        : undefined);
+    if (traceTotal !== undefined) {
+      hasTotal = true;
+      total += traceTotal;
+    }
+  }
+  return {
+    input: hasInput ? input : undefined,
+    output: hasOutput ? output : undefined,
+    cacheRead: hasCacheRead ? cacheRead : undefined,
+    cacheWrite: hasCacheWrite ? cacheWrite : undefined,
+    total: hasTotal ? total : undefined,
+  };
+}
+
+function formatWorkflowTokenCount(
+  count: number | undefined,
+  language: string,
+  t: WorkflowTranslate,
+): string {
+  return count === undefined
+    ? t("workflow.observability.unavailable")
+    : formatCompactTokenCount(count, language);
+}
+
+function formatWorkflowCost(cost: number | undefined, t: WorkflowTranslate): string {
+  if (cost === undefined) return t("workflow.observability.unavailable");
+  if (cost === 0) return "$0.0000";
+  return `$${cost.toFixed(cost < 0.0001 ? 8 : 4)}`;
+}
+
+function markdownAutoSeeResult(node: WorkflowNode): boolean {
+  return node.config?.autoSeeResult === true;
+}
+
+function markdownResultText(node: WorkflowNode, workflow: WorkflowRecord): string {
+  if (node.rawOutput) {
+    try {
+      const parsed = JSON.parse(node.rawOutput) as { markdown?: unknown; text?: unknown };
+      if (typeof parsed.markdown === "string") return parsed.markdown;
+      if (typeof parsed.text === "string") return parsed.text;
+    } catch {
+      /* fall back to the configured markdown template */
+    }
+  }
+  return resolveBlockTemplatePreview(node.prompt, workflow);
+}
+
+function formatTraceValue(value: unknown, t: WorkflowTranslate): string {
+  if (value === undefined) return t("workflow.observability.notRecorded");
+  if (typeof value === "string") return value || t("workflow.observability.empty");
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function WorkflowFinishedRunResult({
+  node,
+  snapshot,
+}: {
+  node: WorkflowNode;
+  snapshot: WorkflowRunDetailSnapshot | null;
+}) {
   if (!snapshot) {
     return <pre>Run this block to capture a terminal snapshot.</pre>;
   }
   if (snapshot.kind === "command") {
     return <pre>{snapshot.transcript || snapshot.stdout || snapshot.stderr}</pre>;
   }
-
-  const conversation = readableAgentConversation(snapshot);
-  const label =
-    snapshot.status === "success"
-      ? "Completed"
-      : snapshot.status === "stopped"
-        ? "Stopped"
-        : snapshot.status === "error"
-          ? "Failed"
-          : "Running";
+  const message = workflowAgentLastMessage(node, snapshot);
   return (
-    <div className="workflow-run-details__snapshot">
-      <div className={`workflow-run-details__outcome is-${snapshot.status}`}>
-        <span />
-        <strong>{label}</strong>
-        <small>clean conversation snapshot</small>
-      </div>
-      <pre>{conversation || snapshot.stderr || "No conversation output was captured."}</pre>
+    <div className="workflow-run-details__answer">
+      <Suspense fallback={<div className="tab-loading-fallback" />}>
+        <MarkdownPreview source={message || snapshot.stderr || "No final message was captured."} />
+      </Suspense>
     </div>
   );
+}
+
+function workflowAgentLastMessage(node: WorkflowNode, snapshot: WorkflowRunDetailSnapshot): string {
+  const output = parseJsonObject(node.rawOutput || node.summary || "");
+  const outputText = output ? textFromOutput(output) : "";
+  if (outputText && !/completed without text output/i.test(outputText)) return outputText;
+
+  const conversation = readableAgentConversation(snapshot);
+  const structured = [
+    ...conversation.matchAll(
+      /^(?:Claude|Assistant):\n([\s\S]*?)(?=^(?:User|Claude|Assistant|Tool(?: · \S+)?|Tool result|Tool error):\n|$)/gm,
+    ),
+  ];
+  const lastStructured =
+    structured.length > 0 ? structured[structured.length - 1]?.[1]?.trim() : "";
+  return lastStructured || conversation.trim();
 }
 
 function readableAgentConversation(snapshot: WorkflowRunDetailSnapshot): string {
@@ -3198,7 +3817,7 @@ function readableAgentConversation(snapshot: WorkflowRunDetailSnapshot): string 
   return [cleaned, `[error] ${snapshot.stderr.trim()}`].filter(Boolean).join("\n");
 }
 
-function WorkflowAgentTerminal({
+function WorkflowAgentTerminalInner({
   workspaceId,
   sessionId,
   terminalStatus,
@@ -3240,16 +3859,62 @@ function WorkflowAgentTerminal({
     term.open(hostRef.current);
     termRef.current = term;
     fitRef.current = fit;
+    const fitToUsableDimensions = () => {
+      const dimensions = fit.proposeDimensions();
+      if (!dimensions || dimensions.cols < 20 || dimensions.rows < 4) return null;
+      if (term.cols !== dimensions.cols || term.rows !== dimensions.rows) {
+        term.resize(dimensions.cols, dimensions.rows);
+      }
+      return dimensions;
+    };
     try {
-      fit.fit();
+      fitToUsableDimensions();
     } catch {
       /* layout race */
     }
+    const fittedCols = term.cols;
+    const fittedRows = term.rows;
 
     const ws = openTerminalSocket(`/api/terminals/${encodeURIComponent(sessionId)}/io`);
     wsRef.current = ws;
+    let replayReady = false;
+    let replayOutput: string[] = [];
+    let suppressStartupOutput = false;
+    let suppressedStartupOutputVersion = 0;
+    let awaitingStartupRedraw = false;
+    let startupPreResizeOutput = "";
+    let startupRedrawFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+    let resizeTimer: ReturnType<typeof setTimeout> | null = null;
+    const outputWriter = createTerminalWriteBatcher((data) => term.write(data));
+    const replayGuard = createTerminalReplayGuard((data, callback) => term.write(data, callback));
+    const drainReplayOutput = (initial: string, onDrained: () => void) => {
+      const pending = initial + replayOutput.join("");
+      replayOutput = [];
+      replayGuard.write(pending, () => {
+        if (replayOutput.length > 0) {
+          drainReplayOutput("", onDrained);
+          return;
+        }
+        onDrained();
+      });
+    };
+    const finishStartupRedraw = (preserveTransition: boolean) => {
+      if (!awaitingStartupRedraw) return false;
+      const postResizeOutput = replayOutput.join("");
+      const stableRedraw = stableClaudeStartupRedraw(postResizeOutput);
+      if (!preserveTransition && stableRedraw === null) return false;
+      if (startupRedrawFallbackTimer) clearTimeout(startupRedrawFallbackTimer);
+      startupRedrawFallbackTimer = null;
+      awaitingStartupRedraw = false;
+      replayOutput = [];
+      const pending = stableRedraw ?? startupPreResizeOutput + postResizeOutput;
+      startupPreResizeOutput = "";
+      drainReplayOutput(pending, () => {
+        replayReady = true;
+      });
+      return true;
+    };
     ws.onopen = () => {
-      ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
       term.focus();
     };
     ws.onmessage = (ev) => {
@@ -3257,12 +3922,128 @@ function WorkflowAgentTerminal({
         const msg = JSON.parse(ev.data) as {
           type?: string;
           data?: string;
+          cols?: number;
+          rows?: number;
+          initialCols?: number;
+          initialRows?: number;
+          resizes?: TerminalReplayResize[];
+          compactStartup?: boolean;
           code?: number | null;
           signal?: number | string | null;
         };
-        if (msg.type === "output" && typeof msg.data === "string") {
-          term.write(normalizeLightTerminalAnsi(msg.data, resolvedThemeRef.current));
+        if (msg.type === "replay" && typeof msg.data === "string") {
+          outputWriter.flush();
+          const replayResizes = [...(msg.resizes ?? [])];
+          const hasHistoricalStartupRedraw = terminalReplayHasClaudeStartupRedraw(
+            msg.data,
+            replayResizes,
+          );
+          const hasStartupWelcome =
+            replayResizes.length === 0 &&
+            compactSupersededClaudeStartup(msg.data).length < msg.data.length;
+          const compactOpeningStartup =
+            (msg.compactStartup === true || hasHistoricalStartupRedraw || hasStartupWelcome) &&
+            (msg.cols !== fittedCols || msg.rows !== fittedRows) &&
+            compactSupersededClaudeStartup(msg.data).length < msg.data.length;
+          if (compactOpeningStartup) {
+            replayResizes.push({
+              offset: msg.data.length,
+              cols: fittedCols,
+              rows: fittedRows,
+              compactStartup: true,
+            });
+            suppressStartupOutput = true;
+          }
+          const segments = terminalReplaySegments(
+            msg.data,
+            msg.cols ?? term.cols,
+            msg.rows ?? term.rows,
+            msg.initialCols,
+            msg.initialRows,
+            replayResizes,
+          );
+          const finishReplay = () => {
+            if (suppressStartupOutput) {
+              const outputVersion = suppressedStartupOutputVersion;
+              replayGuard.write(
+                "",
+                () => {
+                  if (outputVersion !== suppressedStartupOutputVersion) {
+                    finishReplay();
+                    return;
+                  }
+                  suppressStartupOutput = false;
+                  startupPreResizeOutput = replayOutput.join("");
+                  replayOutput = [];
+                  awaitingStartupRedraw = true;
+                  try {
+                    fitToUsableDimensions();
+                    if (ws.readyState === WebSocket.OPEN) {
+                      ws.send(
+                        JSON.stringify({
+                          type: "resize",
+                          cols: term.cols,
+                          rows: term.rows,
+                          compactStartup: true,
+                        }),
+                      );
+                    }
+                  } catch {
+                    /* layout race */
+                  }
+                  startupRedrawFallbackTimer = setTimeout(() => {
+                    finishStartupRedraw(true);
+                  }, 700);
+                },
+                true,
+                300,
+              );
+              return;
+            }
+            const pending = replayOutput.join("");
+            replayOutput = [];
+            replayGuard.write(pending, () => {
+              if (replayOutput.length > 0) {
+                finishReplay();
+                return;
+              }
+              replayReady = true;
+              try {
+                fitToUsableDimensions();
+                if (ws.readyState === WebSocket.OPEN) {
+                  ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+                }
+              } catch {
+                /* layout race */
+              }
+            });
+          };
+          const writeSegment = (index: number) => {
+            const segment = segments[index];
+            if (!segment) {
+              finishReplay();
+              return;
+            }
+            if (term.cols !== segment.cols || term.rows !== segment.rows) {
+              term.resize(segment.cols, segment.rows);
+            }
+            replayGuard.write(
+              normalizeLightTerminalAnsi(segment.data, resolvedThemeRef.current),
+              () => writeSegment(index + 1),
+              false,
+            );
+          };
+          writeSegment(0);
+        } else if (msg.type === "output" && typeof msg.data === "string") {
+          const data = normalizeLightTerminalAnsi(msg.data, resolvedThemeRef.current);
+          if (replayReady) outputWriter.push(data);
+          else {
+            replayOutput.push(data);
+            if (suppressStartupOutput) suppressedStartupOutputVersion += 1;
+            else if (awaitingStartupRedraw) finishStartupRedraw(false);
+          }
         } else if (msg.type === "exit") {
+          outputWriter.flush();
           term.writeln(
             `\r\n\x1b[2m[osheep] terminal exited code=${msg.code ?? "null"} signal=${
               msg.signal ?? "null"
@@ -3271,6 +4052,7 @@ function WorkflowAgentTerminal({
         } else if (msg.type === "ping") {
           ws.send(JSON.stringify({ type: "pong" }));
         } else if (msg.type === "error") {
+          outputWriter.flush();
           term.writeln(`\r\n\x1b[31m[osheep] terminal session is no longer available\x1b[0m`);
         }
       } catch {
@@ -3279,25 +4061,39 @@ function WorkflowAgentTerminal({
     };
 
     const inputSub = term.onData((data) => {
-      if (ws.readyState === WebSocket.OPEN) {
+      if (replayReady && replayGuard.acceptsInput() && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: "input", data }));
       }
     });
     const resizeObs = new ResizeObserver(() => {
-      try {
-        fit.fit();
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+      if (!replayReady) return;
+      if (resizeTimer) clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        resizeTimer = null;
+        try {
+          const previousCols = term.cols;
+          const previousRows = term.rows;
+          const dimensions = fitToUsableDimensions();
+          if (
+            dimensions &&
+            (previousCols !== dimensions.cols || previousRows !== dimensions.rows) &&
+            ws.readyState === WebSocket.OPEN
+          ) {
+            ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+          }
+        } catch {
+          /* layout race */
         }
-      } catch {
-        /* layout race */
-      }
+      }, 120);
     });
     resizeObs.observe(hostRef.current);
 
     return () => {
       resizeObs.disconnect();
+      if (resizeTimer) clearTimeout(resizeTimer);
+      if (startupRedrawFallbackTimer) clearTimeout(startupRedrawFallbackTimer);
       inputSub.dispose();
+      outputWriter.dispose();
       ws.close();
       term.dispose();
       wsRef.current = null;
@@ -3397,6 +4193,8 @@ function WorkflowAgentTerminal({
   );
 }
 
+const WorkflowAgentTerminal = memo(WorkflowAgentTerminalInner);
+
 function WorkflowMpePanel({ markdown, onClose }: { markdown: string; onClose: () => void }) {
   return (
     <aside className="workflow-inspector workflow-mpe-panel">
@@ -3453,6 +4251,7 @@ function WorkflowNodeInspector({
   onUpdateEdge: (edgeId: string, patch: Partial<WorkflowEdge>) => void;
   onDeleteEdge: (edgeId: string) => void;
 }) {
+  const { t } = useUiPreferences();
   const outgoing = edges.filter((edge) => edge.from === node.id);
   const incoming = edges.filter((edge) => edge.to === node.id);
   const bodyText = blockOutputText(node);
@@ -3644,16 +4443,15 @@ function WorkflowNodeInspector({
           )}
           <label className="workflow-inspector__field">
             <span>Retries</span>
-            <input
-              type="number"
+            <BlurNumberInput
+              value={agentRetryCount(node)}
               min={0}
               max={5}
-              value={agentRetryCount(node)}
-              onChange={(e) =>
+              onCommit={(value) =>
                 onUpdate({
                   config: {
                     ...(node.config ?? {}),
-                    retries: clamp(Number(e.target.value) || 0, 0, 5),
+                    retries: value,
                   },
                 })
               }
@@ -3937,14 +4735,11 @@ function WorkflowNodeInspector({
           </label>
           <label className="workflow-inspector__field">
             <span>Batch Size</span>
-            <input
-              type="number"
+            <BlurNumberInput
+              value={loopConfig.batchSize}
               min={1}
               step={1}
-              value={loopConfig.batchSize}
-              onChange={(e) =>
-                updateConfig({ batchSize: Math.max(1, Number(e.target.value) || 1) })
-              }
+              onCommit={(value) => updateConfig({ batchSize: value })}
               disabled={running}
             />
           </label>
@@ -3952,12 +4747,11 @@ function WorkflowNodeInspector({
       ) : isWait ? (
         <label className="workflow-inspector__field">
           <span>Seconds</span>
-          <input
-            type="number"
+          <BlurNumberInput
+            value={waitConfig.seconds}
             min={0}
             step={0.1}
-            value={waitConfig.seconds}
-            onChange={(e) => updateConfig({ seconds: Math.max(0, Number(e.target.value) || 0) })}
+            onCommit={(value) => updateConfig({ seconds: value })}
             disabled={running}
           />
         </label>
@@ -4113,8 +4907,17 @@ function WorkflowNodeInspector({
 
       {isMarkdown && (
         <div className="workflow-inspector__mpe-link-row">
+          <label className="workflow-inspector__check">
+            <input
+              type="checkbox"
+              checked={markdownAutoSeeResult(node)}
+              onChange={(event) => updateConfig({ autoSeeResult: event.target.checked })}
+              disabled={running}
+            />
+            <span>{t("workflow.markdown.autoSeeResult")}</span>
+          </label>
           <button type="button" onClick={onShowMpe}>
-            See result
+            {t("workflow.markdown.seeResult")}
           </button>
         </div>
       )}
@@ -5310,6 +6113,7 @@ async function runAiTerminalWithRetries(
     codexApproval?: AiTerminalCodexApproval;
     codexSandbox?: AiTerminalCodexSandbox;
     effort?: AiTerminalEffort;
+    failOnTerminalError?: boolean;
     alwaysEnter?: boolean;
     conversationSessionId?: string;
     resumeConversation?: boolean;
@@ -5322,8 +6126,14 @@ async function runAiTerminalWithRetries(
 ): Promise<{ result: AiTerminalResult | null; aborted: boolean }> {
   let lastError: unknown = null;
   const attempts = Math.max(1, retries + 1);
-  const conversationSessionId =
+  let conversationSessionId =
     input.conversationSessionId || (input.kind === "claude-cli" ? crypto.randomUUID() : undefined);
+  const handleFrame = (frame: AiTerminalFrame) => {
+    if (frame.type === "conversation" && frame.sessionId) {
+      conversationSessionId = frame.sessionId;
+    }
+    onFrame(frame);
+  };
   let attempt = 1;
   while (true) {
     try {
@@ -5340,7 +6150,7 @@ async function runAiTerminalWithRetries(
           conversationSessionId,
           resumeConversation: attempt > 1,
         },
-        onFrame,
+        handleFrame,
         signal,
       );
     } catch (e) {
@@ -6428,12 +7238,13 @@ function nodeFromTemplate(
   blockId: number,
   x: number,
   y: number,
+  title: string,
 ): WorkflowNode {
   return {
     id,
     blockId,
     kind: template.kind,
-    title: template.title,
+    title,
     providerKind: template.providerKind ?? "codex-cli",
     model: template.model ?? "default",
     prompt: template.prompt ?? "",
@@ -7028,6 +7839,74 @@ function displayBlockId(node: WorkflowNode): number {
 
 function nextBlockId(record: WorkflowRecord): number {
   return Math.max(0, ...record.nodes.map(displayBlockId)) + 1;
+}
+
+function BlurNumberInput({
+  value,
+  min,
+  max,
+  step,
+  disabled = false,
+  onCommit,
+}: {
+  value: number;
+  min?: number;
+  max?: number;
+  step?: number;
+  disabled?: boolean;
+  onCommit: (value: number) => void;
+}) {
+  const [draft, setDraft] = useState(String(value));
+  const focused = useRef(false);
+  const cancelled = useRef(false);
+
+  useEffect(() => {
+    if (!focused.current) setDraft(String(value));
+  }, [value]);
+
+  const commit = () => {
+    const parsed = Number(draft);
+    if (!draft.trim() || !Number.isFinite(parsed)) {
+      setDraft(String(value));
+      return;
+    }
+    const next = clamp(parsed, min ?? -Infinity, max ?? Infinity);
+    setDraft(String(next));
+    if (next !== value) onCommit(next);
+  };
+
+  return (
+    <input
+      type="number"
+      min={min}
+      max={max}
+      step={step}
+      value={draft}
+      disabled={disabled}
+      onFocus={() => {
+        focused.current = true;
+        cancelled.current = false;
+      }}
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={() => {
+        focused.current = false;
+        if (cancelled.current) {
+          cancelled.current = false;
+          setDraft(String(value));
+          return;
+        }
+        commit();
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") event.currentTarget.blur();
+        if (event.key === "Escape") {
+          cancelled.current = true;
+          setDraft(String(value));
+          event.currentTarget.blur();
+        }
+      }}
+    />
+  );
 }
 
 function clamp(value: number, min: number, max: number): number {

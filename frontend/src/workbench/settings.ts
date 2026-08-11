@@ -1,5 +1,20 @@
 export type TabSize = 2 | 4;
 
+export interface ModelPrice {
+  model: string;
+  provider: string;
+  billingMode: "dynamic" | "per-request";
+  costPerRequest?: number;
+  inputCostPerMillion: number;
+  outputCostPerMillion: number;
+  cacheReadCostPerMillion?: number;
+  cacheWriteCostPerMillion?: number;
+  favorite?: boolean;
+  favoriteCustomized?: boolean;
+  source?: "litellm" | "manual";
+  updatedAt?: number;
+}
+
 export type AiProviderKind = "codex-cli" | "claude-cli";
 
 export interface AiProvider {
@@ -42,6 +57,12 @@ export interface OsheepSettings {
   ai: {
     autoAllow: AiAutoAllow;
   };
+  workflow: {
+    maxParallelNodes: number;
+  };
+  pricing: {
+    models: ModelPrice[];
+  };
 }
 
 export const DEFAULT_AUTO_ALLOW: AiAutoAllow = {
@@ -59,6 +80,8 @@ export const DEFAULT_SETTINGS: OsheepSettings = {
   ai: {
     autoAllow: { ...DEFAULT_AUTO_ALLOW },
   },
+  workflow: { maxParallelNodes: 4 },
+  pricing: { models: [] },
 };
 
 export function isCliProviderKind(kind: unknown): kind is AiProviderKind {
@@ -89,6 +112,8 @@ export function mergeSettings(partial: unknown): OsheepSettings {
     ai?: {
       autoAllow?: unknown;
     };
+    workflow?: { maxParallelNodes?: unknown };
+    pricing?: { models?: unknown };
   };
   const fontSize =
     typeof p.editor?.fontSize === "number" && p.editor.fontSize >= 8 && p.editor.fontSize <= 64
@@ -98,12 +123,86 @@ export function mergeSettings(partial: unknown): OsheepSettings {
   const autoSave =
     typeof p.editor?.autoSave === "boolean" ? p.editor.autoSave : DEFAULT_SETTINGS.editor.autoSave;
   const autoAllow = sanitizeAutoAllow(p.ai?.autoAllow);
+  const maxParallelNodes =
+    typeof p.workflow?.maxParallelNodes === "number" &&
+    Number.isInteger(p.workflow.maxParallelNodes) &&
+    p.workflow.maxParallelNodes >= 1 &&
+    p.workflow.maxParallelNodes <= 32
+      ? p.workflow.maxParallelNodes
+      : DEFAULT_SETTINGS.workflow.maxParallelNodes;
+  const parsedModels = Array.isArray(p.pricing?.models)
+    ? p.pricing.models.flatMap((item): ModelPrice[] => {
+        if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+        const value = item as Record<string, unknown>;
+        const model = typeof value.model === "string" ? value.model.trim() : "";
+        const provider = typeof value.provider === "string" ? value.provider.trim() : "";
+        const input =
+          typeof value.inputCostPerMillion === "number" ? value.inputCostPerMillion : NaN;
+        const output =
+          typeof value.outputCostPerMillion === "number" ? value.outputCostPerMillion : NaN;
+        if (!model || !Number.isFinite(input) || !Number.isFinite(output)) return [];
+        return [
+          {
+            model,
+            provider,
+            billingMode: value.billingMode === "per-request" ? "per-request" : "dynamic",
+            costPerRequest:
+              typeof value.costPerRequest === "number" && Number.isFinite(value.costPerRequest)
+                ? Math.max(0, value.costPerRequest)
+                : undefined,
+            inputCostPerMillion: Math.max(0, input),
+            outputCostPerMillion: Math.max(0, output),
+            cacheReadCostPerMillion:
+              typeof value.cacheReadCostPerMillion === "number" &&
+              Number.isFinite(value.cacheReadCostPerMillion)
+                ? Math.max(0, value.cacheReadCostPerMillion)
+                : undefined,
+            cacheWriteCostPerMillion:
+              typeof value.cacheWriteCostPerMillion === "number" &&
+              Number.isFinite(value.cacheWriteCostPerMillion)
+                ? Math.max(0, value.cacheWriteCostPerMillion)
+                : undefined,
+            favorite:
+              value.favoriteCustomized === true
+                ? value.favorite === true
+                : value.favorite === true || isDefaultFavoritePriceModel(model, provider),
+            favoriteCustomized: value.favoriteCustomized === true,
+            source: value.source === "litellm" ? "litellm" : "manual",
+            updatedAt: typeof value.updatedAt === "number" ? value.updatedAt : undefined,
+          },
+        ];
+      })
+    : [];
+  const models = [
+    ...new Map(
+      parsedModels.map((model) => [model.model.trim().toLowerCase(), model] as const),
+    ).values(),
+  ];
   return {
     editor: { fontSize, tabSize, autoSave },
     ai: {
       autoAllow,
     },
+    workflow: { maxParallelNodes },
+    pricing: { models },
   };
+}
+
+const DEFAULT_FAVORITE_PRICE_PROVIDERS = new Map([
+  ["gpt-5.6-sol", "openai"],
+  ["gpt-5.6-terra", "openai"],
+  ["gpt-5.6-luna", "openai"],
+  ["gpt-5.5", "openai"],
+  ["gpt-5.4", "openai"],
+  ["claude-fable-5", "anthropic"],
+  ["claude-opus-4-7", "anthropic"],
+  ["claude-opus-4-8", "anthropic"],
+  ["claude-opus-5", "anthropic"],
+]);
+
+function isDefaultFavoritePriceModel(model: string, provider: string): boolean {
+  const normalizedModel = model.trim().toLowerCase();
+  return DEFAULT_FAVORITE_PRICE_PROVIDERS.get(normalizedModel) === provider.trim().toLowerCase();
 }
 
 export type ReasoningKind = "cli";

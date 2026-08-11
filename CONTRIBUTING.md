@@ -23,7 +23,8 @@ cd ..\desktop
 npm ci
 ```
 
-Run `bash ./dev.sh` on Linux or `.\dev.ps1` on Windows from the repository root for web development.
+On Linux, run `chmod +x ./dev.sh` once and then start web development with `./dev.sh` from the
+repository root. On Windows, run `.\dev.ps1` from the repository root.
 
 ## Documentation Language
 

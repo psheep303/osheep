@@ -32,3 +32,12 @@ test("Codex snapshot removes startup, redraw, and progress noise", () => {
     ].join("\n"),
   );
 });
+
+test("Claude snapshot removes transcript write warnings", () => {
+  const raw = [
+    "● 最后一条 Claude 消息",
+    "⚠ Transcript writes are failing (permission denied—EPERM) · recent messages may no…",
+  ].join("\n");
+
+  assert.equal(cleanAgentTerminalConversation(raw, "claude-cli"), "● 最后一条 Claude 消息");
+});

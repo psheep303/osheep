@@ -174,7 +174,7 @@ export function TerminalSession({
           if (cancelled) return;
           try {
             const msg = JSON.parse(ev.data);
-            if (msg.type === "output" && typeof msg.data === "string") {
+            if ((msg.type === "output" || msg.type === "replay") && typeof msg.data === "string") {
               term.write(normalizeLightTerminalAnsi(msg.data, resolvedThemeRef.current));
             } else if (msg.type === "exit") {
               term.writeln(

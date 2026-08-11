@@ -1,4 +1,4 @@
-import type { Dirent } from "node:fs";
+import { type Dirent, existsSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -13,6 +13,18 @@ export interface AgentSessionSummary {
   createdAt: number;
   updatedAt: number;
   size: number;
+}
+
+export interface AgentSessionUsage {
+  model?: string;
+  tokens?: {
+    input?: number;
+    output?: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+    total?: number;
+  };
+  cost?: number;
 }
 
 export interface AgentSessionRoots {
@@ -40,15 +52,146 @@ const JSON_PREFIX_BYTES = 512 * 1024;
 
 export function getAgentSessionRoots(): AgentSessionRoots {
   const home = os.homedir() || ".";
+  const nativeClaude = path.join(home, ".claude");
+  const nativeCodex = path.join(home, ".codex");
   return {
     claudeHome: path.resolve(
-      process.env.OSHEEP_CLAUDE_CONFIG_DIR ||
-        process.env.CLAUDE_CONFIG_DIR ||
-        path.join(home, ".claude"),
+      process.env.CLAUDE_CONFIG_DIR ||
+        (existsSync(path.join(nativeClaude, "projects"))
+          ? nativeClaude
+          : process.env.OSHEEP_CLAUDE_CONFIG_DIR || nativeClaude),
     ),
     codexHome: path.resolve(
-      process.env.OSHEEP_CODEX_CONFIG_DIR || process.env.CODEX_HOME || path.join(home, ".codex"),
+      process.env.CODEX_HOME ||
+        (existsSync(path.join(nativeCodex, "sessions"))
+          ? nativeCodex
+          : process.env.OSHEEP_CODEX_CONFIG_DIR || nativeCodex),
     ),
+  };
+}
+
+export async function readAgentSessionUsage(
+  app: AgentSessionApp,
+  id: string,
+  roots: AgentSessionRoots = getAgentSessionRoots(),
+): Promise<AgentSessionUsage> {
+  const record = await findAgentSessionRecord(app, id, roots);
+  if (!record) return {};
+  const text = await fs.readFile(record.filePath, "utf8");
+  let input = 0;
+  let output = 0;
+  let cacheRead = 0;
+  let cacheWrite = 0;
+  let total: number | undefined;
+  let cost: number | undefined;
+  let model: string | undefined;
+  let sawInput = false;
+  let sawOutput = false;
+  let sawCacheRead = false;
+  let sawCacheWrite = false;
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    let value: unknown;
+    try {
+      value = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const root = objectValue(value);
+    const payload = objectValue(root.payload);
+    if (app === "codex") {
+      model = stringValue(payload.model ?? root.model) || model;
+      const info = objectValue(payload.info);
+      const usage = objectValue(info.total_token_usage);
+      const nextInput = numberValue(usage.input_tokens ?? usage.inputTokens);
+      const nextOutput = numberValue(usage.output_tokens ?? usage.outputTokens);
+      const nextCacheRead = numberValue(
+        usage.cached_input_tokens ?? usage.cache_read_input_tokens ?? usage.cacheRead,
+      );
+      const nextCacheWrite = numberValue(
+        usage.cache_write_input_tokens ?? usage.cache_creation_input_tokens ?? usage.cacheWrite,
+      );
+      const nextTotal = numberValue(usage.total_tokens ?? usage.totalTokens);
+      if (nextInput !== undefined) {
+        input = nextInput;
+        sawInput = true;
+      }
+      if (nextOutput !== undefined) {
+        output = nextOutput;
+        sawOutput = true;
+      }
+      if (nextCacheRead !== undefined) {
+        cacheRead = nextCacheRead;
+        sawCacheRead = true;
+      }
+      if (nextCacheWrite !== undefined) {
+        cacheWrite = nextCacheWrite;
+        sawCacheWrite = true;
+      }
+      if (nextTotal !== undefined) total = nextTotal;
+    } else {
+      const message = objectValue(root.message);
+      model = stringValue(message.model ?? root.model) || model;
+      const nestedUsage = objectValue(message.usage);
+      const directUsage = objectValue(root.usage);
+      const usage = Object.keys(nestedUsage).length > 0 ? nestedUsage : directUsage;
+      const nextInput = numberValue(usage.input_tokens ?? usage.inputTokens);
+      const nextOutput = numberValue(usage.output_tokens ?? usage.outputTokens);
+      const nextCacheRead = numberValue(
+        usage.cache_read_input_tokens ?? usage.cached_input_tokens ?? usage.cacheRead,
+      );
+      const nextCacheWrite = numberValue(
+        usage.cache_creation_input_tokens ?? usage.cache_write_input_tokens ?? usage.cacheWrite,
+      );
+      if (nextInput !== undefined) {
+        input += nextInput;
+        sawInput = true;
+      }
+      if (nextOutput !== undefined) {
+        output += nextOutput;
+        sawOutput = true;
+      }
+      if (nextCacheRead !== undefined) {
+        cacheRead += nextCacheRead;
+        sawCacheRead = true;
+      }
+      if (nextCacheWrite !== undefined) {
+        cacheWrite += nextCacheWrite;
+        sawCacheWrite = true;
+      }
+    }
+    const nextCost = numberValue(
+      root.cost_usd ?? root.total_cost_usd ?? payload.cost_usd ?? payload.total_cost_usd,
+    );
+    if (nextCost !== undefined) cost = nextCost;
+  }
+  if (
+    !sawInput &&
+    !sawOutput &&
+    !sawCacheRead &&
+    !sawCacheWrite &&
+    total === undefined &&
+    cost === undefined &&
+    model === undefined
+  )
+    return {};
+  return {
+    ...(model ? { model } : {}),
+    tokens:
+      sawInput || sawOutput || sawCacheRead || sawCacheWrite || total !== undefined
+        ? {
+            input: sawInput ? input : undefined,
+            output: sawOutput ? output : undefined,
+            cacheRead: sawCacheRead ? cacheRead : undefined,
+            cacheWrite: sawCacheWrite ? cacheWrite : undefined,
+            total:
+              total ??
+              (sawInput || sawOutput || sawCacheRead || sawCacheWrite
+                ? input + output + cacheRead + cacheWrite
+                : undefined),
+          }
+        : undefined,
+    cost,
   };
 }
 
@@ -247,7 +390,9 @@ async function readCodexSession(
 
   if (!id || !SESSION_ID_RE.test(id)) return null;
   const indexed = titles.get(id);
-  const updatedAt = indexed?.updatedAt ?? stat.mtimeMs;
+  // The title index can lag behind the session file while Codex is finishing.
+  // Prefer the newest signal so workflow runs can resolve the session they just created.
+  const updatedAt = Math.max(indexed?.updatedAt ?? 0, stat.mtimeMs);
   return {
     app: "codex",
     id,
@@ -489,6 +634,12 @@ function objectValue(value: unknown): Record<string, unknown> {
 
 function stringValue(value: unknown): string {
   return typeof value === "string" ? value : "";
+}
+
+function numberValue(value: unknown): number | undefined {
+  const number =
+    typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+  return Number.isFinite(number) ? number : undefined;
 }
 
 function parseTimestamp(value: unknown): number | null {

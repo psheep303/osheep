@@ -72,7 +72,8 @@ npm --prefix frontend ci
 在 Linux 上从仓库根目录启动前后端：
 
 ```bash
-bash ./dev.sh
+chmod +x ./dev.sh
+./dev.sh
 ```
 
 脚本会在同一终端管理两个进程。可用 `--backend-only`、`--frontend-only`、`--developer` 或 `--install` 调整启动行为，按 `Ctrl+C` 会同时停止前后端。

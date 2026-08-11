@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   type AgentEffort,
+  agentTerminalChoiceResolutionVisibleForTest,
+  agentTerminalCodexCompletionReadyForTest,
+  agentTerminalPollPriorityForTest,
   agentTerminalPromptEnterCount,
   agentTerminalPromptSubmitDelayMs,
   agentTerminalReadyForAutoFinishForTest,
@@ -15,10 +18,16 @@ import {
   extractAgentTerminalContentForTest,
   finishAgentTerminalSuccess,
   hasAgentTerminalFailureForTest,
+  isExplicitChoiceSubmitInput,
+  isWaitingChoiceStable,
   resolveAgentTerminalContentStateForTest,
+  selectAgentTerminalFinalContentForTest,
   selectConversationSessionIdForTest,
   shouldAutoEnterChoice,
+  shouldClearWaitingForChoice,
+  shouldCompactAgentStartupOnResize,
   shouldExposeWaitingForChoice,
+  shouldFinishAgentTerminalWithErrorForTest,
   shouldFollowUpPastedPromptSubmit,
 } from "./ai-terminal.js";
 
@@ -48,6 +57,73 @@ test("terminal failures are detected independently of auto success", () => {
     hasAgentTerminalFailureForTest(
       "● API Error: 529 Overloaded\n● Retrying… (3s)\n● 已恢复并继续执行",
     ),
+    false,
+  );
+  assert.equal(
+    hasAgentTerminalFailureForTest(
+      "Reconnecting... 1/5 (6s \u2022 esc to interrupt)\n\u2514 Unexpected status 503 Service Unavailable: No available channel for model gpt-5.6-luna under group",
+    ),
+    false,
+  );
+});
+
+test("a visible Codex error at the idle prompt completes as a terminal error", () => {
+  const screen = [
+    "OpenAI Codex (v0.147.0)",
+    "model: gpt-5.6-luna medium /model to change",
+    "directory: D:\\project\\osheep\\backend\\workspaces\\demo",
+    "› 生成一个羊的特效，直接做，不要问我任何细节",
+    "■ unexpected status 503 Service Unavailable: No available channel for model",
+    "gpt-5.6-luna under group default_特价 (distributor)",
+    "› Summarize recent commits",
+    "gpt-5.6-luna medium · D:\\project\\osheep\\backend\\workspaces\\demo",
+  ].join("\n");
+
+  assert.equal(hasAgentTerminalFailureForTest(screen), true);
+  assert.equal(shouldFinishAgentTerminalWithErrorForTest("codex-cli", screen), true);
+});
+
+test("all common terminal error forms finish as errors once Codex is idle", () => {
+  const errors = [
+    "Error: request could not be completed",
+    "Failed to execute request",
+    "Fatal exception while calling provider",
+    "Traceback (most recent call last):",
+    "npm ERR! command failed",
+    "Request failed before completion",
+    "Connection refused by provider",
+    "No available channel for this model",
+    "Something went wrong while sending the request",
+    "■ permission denied while opening the workspace",
+  ];
+
+  for (const error of errors) {
+    const screen = [error, "› Summarize recent commits", "gpt-5.6-luna medium · D:\\demo"].join(
+      "\n",
+    );
+    assert.equal(hasAgentTerminalFailureForTest(screen), true, error);
+    assert.equal(shouldFinishAgentTerminalWithErrorForTest("codex-cli", screen), true, error);
+  }
+});
+
+test("a terminal error does not finish while Codex is still generating", () => {
+  const screen = ["Error: provider request failed", "Working (8s • esc to interrupt)"].join("\n");
+
+  assert.equal(shouldFinishAgentTerminalWithErrorForTest("codex-cli", screen), false);
+});
+
+test("Codex reconnecting always remains running even when a prompt is visible", () => {
+  const screen = [
+    "Error: provider request failed",
+    "Reconnecting... 5/5 (6s • esc to interrupt)",
+    "› Summarize recent commits",
+    "gpt-5.6-luna medium · D:\\demo",
+  ].join("\n");
+
+  assert.equal(hasAgentTerminalFailureForTest(screen), false);
+  assert.equal(shouldFinishAgentTerminalWithErrorForTest("codex-cli", screen), false);
+  assert.equal(
+    agentTerminalReadyForAutoFinishForTest("codex-cli", screen, "ready-for-success"),
     false,
   );
 });
@@ -151,6 +227,21 @@ test("Claude retry resumes the exact conversation session", () => {
   );
 });
 
+test("Codex retry resumes the exact conversation session", () => {
+  const sessionId = "123e4567-e89b-12d3-a456-426614174000";
+
+  assert.equal(
+    buildAgentTerminalCommand("codex-cli", "gpt-5.4", {
+      codexApproval: "never",
+      codexSandbox: "workspace-write",
+      effort: "low",
+      conversationSessionId: sessionId,
+      resumeConversation: true,
+    }).command,
+    `codex resume --ask-for-approval never --sandbox workspace-write -c 'model_reasoning_effort="low"' --model gpt-5.4 ${sessionId}`,
+  );
+});
+
 test("conversation session selection prefers the expected id and newest new Codex session", () => {
   const project = "D:\\project\\demo";
   const sessions = [
@@ -217,6 +308,13 @@ test("Codex terminal command applies reasoning effort without an approval preset
   );
 });
 
+test("Codex terminal command can explicitly pin the default medium effort", () => {
+  assert.equal(
+    buildAgentTerminalCommand("codex-cli", "default", { effort: "medium" }).command,
+    "codex --ask-for-approval on-request --sandbox workspace-write -c 'model_reasoning_effort=\"medium\"'",
+  );
+});
+
 test("Codex terminal command preserves xhigh reasoning effort", () => {
   assert.equal(
     buildAgentTerminalCommand("codex-cli", "gpt-5.1-codex", {
@@ -265,6 +363,70 @@ test("always enter only presses choice prompts after cooldown", () => {
   assert.equal(shouldExposeWaitingForChoice(false, "waiting-for-choice"), true);
 });
 
+test("Claude structured JSON answer takes priority over terminal fallback", () => {
+  assert.equal(
+    selectAgentTerminalFinalContentForTest(
+      "JSONL 中真正的最后一条 Claude 消息",
+      "终端回退文本和状态警告",
+    ),
+    "JSONL 中真正的最后一条 Claude 消息",
+  );
+  assert.equal(selectAgentTerminalFinalContentForTest("", "终端回退文本"), "终端回退文本");
+});
+
+test("only pre-submit Agent resizes compact a superseded startup screen", () => {
+  createAgentTerminalControlForTest("session_starting", { promptSubmitted: false });
+  createAgentTerminalControlForTest("session_submitted", { promptSubmitted: true });
+
+  assert.equal(shouldCompactAgentStartupOnResize("session_starting"), true);
+  assert.equal(shouldCompactAgentStartupOnResize("session_submitted"), false);
+  assert.equal(shouldCompactAgentStartupOnResize("ordinary_terminal"), false);
+});
+
+test("waiting choice stays exposed through redraws until resolution is explicit", () => {
+  assert.equal(shouldClearWaitingForChoice("waiting-for-choice", false), false);
+  assert.equal(shouldClearWaitingForChoice("waiting-for-choice", true), true);
+  assert.equal(shouldClearWaitingForChoice("ready-for-success", true), false);
+});
+
+test("waiting choice must remain stable before it is exposed", () => {
+  assert.equal(isWaitingChoiceStable(undefined, 2_000), false);
+  assert.equal(isWaitingChoiceStable(1_500, 2_000), false);
+  assert.equal(isWaitingChoiceStable(1_250, 2_000), true);
+});
+
+test("only enter or a standalone escape explicitly resolves a waiting choice", () => {
+  assert.equal(isExplicitChoiceSubmitInput("\r"), true);
+  assert.equal(isExplicitChoiceSubmitInput("\n"), true);
+  assert.equal(isExplicitChoiceSubmitInput("\x1b"), true);
+  assert.equal(isExplicitChoiceSubmitInput("\x1b[B"), false);
+  assert.equal(isExplicitChoiceSubmitInput("\x1b[12;40R"), false);
+});
+
+test("Claude answer and idle completion are explicit choice resolution evidence", () => {
+  assert.equal(
+    agentTerminalChoiceResolutionVisibleForTest(
+      "claude-cli",
+      "User answered Claude's questions:\n  language -> C++",
+    ),
+    true,
+  );
+  assert.equal(
+    agentTerminalChoiceResolutionVisibleForTest(
+      "claude-cli",
+      ["Crunched for 16s", ">", "accept edits on (shift+tab to cycle) - 1 agent"].join("\n"),
+    ),
+    true,
+  );
+  assert.equal(
+    agentTerminalChoiceResolutionVisibleForTest(
+      "claude-cli",
+      "accept edits on (shift+tab to cycle) - 1 agent",
+    ),
+    false,
+  );
+});
+
 test("terminal choice prompts are classified as waiting for user input", () => {
   const content = [
     "你希望这次“整理项目”的力度到哪一级？",
@@ -275,6 +437,27 @@ test("terminal choice prompts are classified as waiting for user input", () => {
   ].join("\n");
 
   assert.equal(classifyAgentTerminalContent(content), "waiting-for-choice");
+});
+
+test("Claude command approval is waiting even while the shell command header is busy", () => {
+  const screen = [
+    "Running 1 shell command…",
+    "  └ $ apply_patch <<'PATCH'",
+    "Bash command",
+    "apply_patch <<'PATCH'",
+    "This command requires approval",
+    "Do you want to proceed?",
+    "❯ 1. Yes",
+    "  2. Yes, and don’t ask again for: apply_patch *",
+    "  3. No",
+    "Esc to cancel · Tab to amend · ctrl+e to explain",
+  ].join("\n");
+
+  assert.equal(
+    resolveAgentTerminalContentStateForTest("claude-cli", screen, ""),
+    "waiting-for-choice",
+  );
+  assert.equal(agentTerminalPollPriorityForTest("waiting-for-choice", true), "waiting-for-choice");
 });
 
 test("ordinary numbered suggestions are not an interactive choice", () => {
@@ -471,6 +654,151 @@ test("Claude stable idle final output succeeds without a word-for-duration foote
     agentTerminalReadyForManualSuccessForTest("claude-cli", screen, "ready-for-success"),
     true,
   );
+});
+
+test("Claude update warning after a completion footer still finishes successfully", () => {
+  const screen = [
+    "任务已完成。",
+    "✻ Sautéed for 33s",
+    "❯",
+    "⏵⏵ accept edits on (shift+tab to cycle) · ← for agents",
+    "✗ Auto-update failed · Run claude doctor",
+  ].join("\n");
+  const content = extractAgentTerminalContentForTest(screen, "", "claude-cli");
+  const state = classifyAgentTerminalContent(content);
+
+  assert.equal(content, "");
+  assert.equal(state, "empty");
+  assert.equal(hasAgentTerminalFailureForTest(screen), false);
+  assert.equal(shouldFinishAgentTerminalWithErrorForTest("claude-cli", screen), false);
+  assert.equal(agentTerminalReadyForAutoFinishForTest("claude-cli", screen, state), true);
+});
+
+test("Claude recap does not hide an earlier completion footer on the current screen", () => {
+  const screen = [
+    "已在 test/claude/index.html 写好极简马特效。",
+    "直接用浏览器打开该 HTML 即可查看。",
+    "Crunched for 2m 0s",
+    "recap: 目标是在 test/claude 中用尽量少的代码实现马特效。",
+    "现已完成一匹马循环奔跑的 HTML 页面。",
+    "下一步直接用浏览器打开 test/claude/index.html 查看效果。",
+    "(disable recaps in /config)",
+    "✗ Auto-update failed · Run claude doctor",
+    "",
+    "❯",
+    "",
+    "⏵⏵ accept edits on (shift+tab to cycle) · ← 1 agent",
+    ...Array.from({ length: 4 }, () => ""),
+  ].join("\n");
+
+  assert.equal(
+    resolveAgentTerminalContentStateForTest("claude-cli", screen, ""),
+    "ready-for-success",
+  );
+  assert.equal(agentTerminalReadyForAutoFinishForTest("claude-cli", screen, "empty"), true);
+});
+
+test("Claude singular-agent idle footer finishes the screenshot layout", () => {
+  const screen = [
+    "Error: Exit code 127",
+    "/usr/bin/bash: line 6: apply_patch: command not found",
+    "Thought for 7s (ctrl+o to expand)",
+    "当前环境没有 apply_patch 命令，但目录已创建。",
+    "● Write(test/claude/index.html)",
+    "  └ Wrote 1 line to test/claude/index.html",
+    "已创建 test/claude/index.html。",
+    "✻ Brewed for 1m 51s",
+    "────────────────────────────────────────",
+    "❯",
+    "⏵⏵ accept edits on (shift+tab to cycle) · ← 1 agent",
+    "✗ Auto-update failed · Run claude doctor",
+  ].join("\n");
+  const content = extractAgentTerminalContentForTest(screen, "", "claude-cli");
+  const state = resolveAgentTerminalContentStateForTest("claude-cli", screen, content);
+
+  assert.equal(hasAgentTerminalFailureForTest(screen), false);
+  assert.equal(state, "ready-for-success");
+  assert.equal(agentTerminalReadyForAutoFinishForTest("claude-cli", screen, state), true);
+});
+
+test("Claude word-for-time footer is a completion marker without decoration", () => {
+  const screen = [
+    "● 已完成文件修改并验证结果。",
+    "Crunched for 39s",
+    "✗ Auto-update failed · Run claude doctor",
+  ].join("\n");
+
+  assert.equal(
+    agentTerminalReadyForAutoFinishForTest("claude-cli", screen, "ready-for-success"),
+    true,
+  );
+});
+
+test("Claude word-for-time footer supports compound durations", () => {
+  const screen = ["已完成。", "Sautéed for 1h 2m 3s"].join("\n");
+
+  assert.equal(
+    agentTerminalReadyForAutoFinishForTest("claude-cli", screen, "ready-for-success"),
+    true,
+  );
+});
+
+test("Claude Thought for duration remains generation activity, not completion", () => {
+  const screen = [
+    "Thought for 20s, searched for 1 pattern (ctrl+o to expand)",
+    "● 我先看一下 test/claude 里现有文件。",
+    "accept edits on (shift+tab to cycle) · ← 1 agent",
+  ].join("\n");
+
+  assert.equal(
+    agentTerminalReadyForAutoFinishForTest("claude-cli", screen, "ready-for-success"),
+    false,
+  );
+});
+
+test("Claude completed output releases an earlier waiting choice", () => {
+  const screen = [
+    "Claude has written up a plan and is ready to execute. Would you like to proceed?",
+    "❯ 1. Yes, and use auto mode",
+    "  2. Yes, manually approve edits",
+    "  3. Tell Claude what to change",
+    "shift+tab to approve with this feedback",
+    "已完成修改并通过验证。",
+    "✻ Brewed for 1m 51s",
+    "❯",
+    "⏵⏵ accept edits on (shift+tab to cycle) · ← 1 agent",
+  ].join("\n");
+
+  assert.equal(classifyAgentTerminalContent(screen), "ready-for-success");
+  assert.equal(
+    resolveAgentTerminalContentStateForTest("claude-cli", screen, ""),
+    "ready-for-success",
+  );
+});
+
+test("Claude generation activity releases an earlier waiting choice", () => {
+  const screen = [
+    "Would you like to proceed?",
+    "❯ 1. Yes, and use auto mode",
+    "  2. Yes, manually approve edits",
+    "  3. Tell Claude what to change",
+    "shift+tab to approve with this feedback",
+    "Thought for 3s (ctrl+o to expand)",
+    "● Update(src/index.ts)",
+  ].join("\n");
+
+  assert.equal(resolveAgentTerminalContentStateForTest("claude-cli", screen, ""), "empty");
+});
+
+test("Claude task errors using the ballot-x marker finish as terminal errors", () => {
+  const screen = [
+    "✗ Error: request failed while calling the provider",
+    "❯",
+    "⏵⏵ accept edits on (shift+tab to cycle) · ← for agents",
+  ].join("\n");
+
+  assert.equal(hasAgentTerminalFailureForTest(screen), true);
+  assert.equal(shouldFinishAgentTerminalWithErrorForTest("claude-cli", screen), true);
 });
 
 test("Claude resumed manual-mode footer is recognized as idle", () => {
@@ -789,6 +1117,29 @@ test("Codex completion remains visible when the idle prompt returns", () => {
   const content = extractAgentTerminalContentForTest(transcript, prompt, "codex-cli");
   assert.match(content, /已按方案实现天气爬虫增强/);
   assert.equal(classifyAgentTerminalContent(content), "ready-for-success");
+});
+
+test("Codex completion footer is an output-complete signal after observed work", () => {
+  const screen = [
+    "• 已完成当前工作区检查和修改。",
+    "─ Worked for 3m 00s ─",
+    "› Run /review on my current changes",
+  ].join("\n");
+
+  assert.equal(agentTerminalCodexCompletionReadyForTest(screen, false), false);
+  assert.equal(agentTerminalCodexCompletionReadyForTest(screen, true), true);
+});
+
+test("Codex finishes at the new idle prompt after observed work even if answer extraction is empty", () => {
+  const screen = [
+    "• Edited test\\codex\\index.html (+1 -1)",
+    "• 已在 test/codex/index.html 写好极简鹦鹉飞行动画。",
+    "› Implement {feature}",
+    "gpt-5.6-terra low · D:\\project\\osheep\\backend\\workspaces\\demo",
+  ].join("\n");
+
+  assert.equal(agentTerminalReadyForAutoFinishForTest("codex-cli", screen, "empty"), false);
+  assert.equal(agentTerminalReadyForAutoFinishForTest("codex-cli", screen, "empty", true), true);
 });
 
 test("Codex final answer removes the terminal footer separator", () => {

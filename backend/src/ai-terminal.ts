@@ -74,6 +74,8 @@ export interface AgentTerminalOptions {
   codexApproval?: CodexApproval;
   codexSandbox?: CodexSandbox;
   effort?: AgentEffort;
+  /** Keep the raw terminal stream for workflow-level failure classification. */
+  retainRawTranscript?: boolean;
   alwaysEnter?: boolean;
   conversationSessionId?: string;
   resumeConversation?: boolean;
@@ -96,6 +98,8 @@ export interface AgentTerminalResult {
   conversationSessionId?: string;
   content: string;
   transcript: string;
+  /** Raw terminal output retained for workflow failure classification. */
+  rawTranscript?: string;
   changedFiles: string[];
   verification: string[];
   exitCode: number | null;
@@ -122,6 +126,7 @@ const PROMPT_INPUT_RENDER_QUIET_MS = 350;
 const PROMPT_INPUT_RENDER_NO_ECHO_MS = 900;
 const PROMPT_INPUT_RENDER_TIMEOUT_MS = 8_000;
 const ALWAYS_ENTER_COOLDOWN_MS = 1_500;
+const WAITING_CHOICE_CONFIRM_MS = 750;
 
 interface AgentTerminalControl {
   prompt: string;
@@ -137,6 +142,10 @@ interface AgentTerminalControl {
   manualSuccessRequested: boolean;
   lastCompletionState?: AgentTerminalContentState;
   lastAlwaysEnterAt?: number;
+  waitingForChoiceSince?: number;
+  waitingChoiceDetectedAt?: number;
+  lastChoiceSubmitAt?: number;
+  workObserved?: boolean;
 }
 
 const controls = new Map<string, AgentTerminalControl>();
@@ -264,8 +273,10 @@ export async function runAgentTerminal(opts: AgentTerminalOptions): Promise<Agen
         conversationSessionId,
         structuredConversation,
       );
-      const content =
-        structuredAnswer || extractTerminalContent(transcript, opts.prompt, opts.kind);
+      const content = selectAgentTerminalFinalContent(
+        structuredAnswer,
+        extractTerminalContent(transcript, opts.prompt, opts.kind),
+      );
       const cleanTranscript =
         structuredConversation ||
         conversation.value() ||
@@ -294,6 +305,7 @@ export async function runAgentTerminal(opts: AgentTerminalOptions): Promise<Agen
         conversationSessionId,
         content,
         transcript: cleanTranscript,
+        rawTranscript: opts.retainRawTranscript ? transcript : undefined,
         changedFiles: metadata.changedFiles,
         verification: metadata.verification,
         exitCode: 0,
@@ -326,8 +338,12 @@ export async function runAgentTerminal(opts: AgentTerminalOptions): Promise<Agen
     return {
       sessionId: session.id,
       conversationSessionId,
-      content: structuredAnswer || extractTerminalContent(transcript, opts.prompt, opts.kind),
+      content: selectAgentTerminalFinalContent(
+        structuredAnswer,
+        extractTerminalContent(transcript, opts.prompt, opts.kind),
+      ),
       transcript: cleanTranscript,
+      rawTranscript: opts.retainRawTranscript ? transcript : undefined,
       changedFiles: metadata.changedFiles,
       verification: metadata.verification,
       exitCode,
@@ -467,6 +483,20 @@ async function structuredAgentFinalAnswer(
   return latest;
 }
 
+function selectAgentTerminalFinalContent(
+  structuredAnswer: string,
+  terminalFallback: string,
+): string {
+  return structuredAnswer.trim() || terminalFallback;
+}
+
+export function selectAgentTerminalFinalContentForTest(
+  structuredAnswer: string,
+  terminalFallback: string,
+): string {
+  return selectAgentTerminalFinalContent(structuredAnswer, terminalFallback);
+}
+
 export function setAgentTerminalAutoContinue(
   sessionId: string,
   enabled: boolean,
@@ -580,6 +610,7 @@ export function buildAgentTerminalCommand(
 ): { command: string } {
   const base = kind === "codex-cli" ? "codex" : "claude";
   const args: string[] = [];
+  let codexResumeSessionId = "";
   if (kind === "claude-cli") {
     if (options.resumeConversation && options.conversationSessionId) {
       args.push("--resume", quoteShell(options.conversationSessionId));
@@ -595,6 +626,10 @@ export function buildAgentTerminalCommand(
     const effort = agentEffortCliValue(kind, options.effort);
     if (effort) args.push("--effort", effort);
   } else {
+    if (options.resumeConversation && options.conversationSessionId) {
+      args.push("resume");
+      codexResumeSessionId = options.conversationSessionId;
+    }
     args.push(...codexPermissionArgs(options.codexApproval, options.codexSandbox));
     const effort = agentEffortCliValue(kind, options.effort);
     if (effort) {
@@ -602,6 +637,7 @@ export function buildAgentTerminalCommand(
     }
   }
   if (model && model !== "default") args.push("--model", quoteShell(model));
+  if (codexResumeSessionId) args.push(quoteShell(codexResumeSessionId));
   return { command: [base, ...args].join(" ") };
 }
 
@@ -677,6 +713,51 @@ export function shouldExposeWaitingForChoice(
   state: AgentTerminalContentState,
 ): boolean {
   return !alwaysEnter && state === "waiting-for-choice";
+}
+
+export function isWaitingChoiceStable(firstDetectedAt: number | undefined, now: number): boolean {
+  return firstDetectedAt !== undefined && now - firstDetectedAt >= WAITING_CHOICE_CONFIRM_MS;
+}
+
+export function shouldClearWaitingForChoice(
+  previousState: AgentTerminalContentState | undefined,
+  resolved: boolean,
+): boolean {
+  return previousState === "waiting-for-choice" && resolved;
+}
+
+export function isExplicitChoiceSubmitInput(data: string): boolean {
+  return /[\r\n]/.test(data) || data === "\x1b";
+}
+
+export function recordAgentTerminalUserInput(sessionId: string, data: string): void {
+  const control = controls.get(sessionId);
+  if (control?.lastCompletionState !== "waiting-for-choice" || !isExplicitChoiceSubmitInput(data)) {
+    return;
+  }
+  control.lastChoiceSubmitAt = Date.now();
+}
+
+export function shouldCompactAgentStartupOnResize(sessionId: string): boolean {
+  const control = controls.get(sessionId);
+  return control !== undefined && !control.promptSubmitted;
+}
+
+type AgentTerminalPollPriority = "waiting-for-choice" | "busy" | "continue";
+
+function agentTerminalPollPriority(
+  state: AgentTerminalContentState,
+  busy: boolean,
+): AgentTerminalPollPriority {
+  if (state === "waiting-for-choice") return "waiting-for-choice";
+  return busy ? "busy" : "continue";
+}
+
+export function agentTerminalPollPriorityForTest(
+  state: AgentTerminalContentState,
+  busy: boolean,
+): AgentTerminalPollPriority {
+  return agentTerminalPollPriority(state, busy);
 }
 
 async function writePrompt(
@@ -870,6 +951,14 @@ function extractTerminalContent(transcript: string, prompt = "", kind?: CliProvi
 }
 
 export function extractAgentTerminalContentForTest(
+  transcript: string,
+  prompt = "",
+  kind?: CliProviderKind,
+): string {
+  return extractTerminalContent(transcript, prompt, kind);
+}
+
+export function extractAgentTerminalContent(
   transcript: string,
   prompt = "",
   kind?: CliProviderKind,
@@ -1264,6 +1353,7 @@ function waitForAgentCompletion(
   return new Promise((resolve) => {
     let screenSignature = agentTerminalScreenSignature(rawTranscript());
     let screenChangedAt = Date.now();
+    let completionMarkerArmed = !isAgentTerminalCompletionMarkerVisible(kind, rawTranscript());
     const timer = setInterval(() => {
       if (done()) {
         clearInterval(timer);
@@ -1280,15 +1370,13 @@ function waitForAgentCompletion(
       const now = Date.now();
       const sinceSubmit = now - control.promptSubmittedAt;
       const transcript = rawTranscript();
+      const completionMarkerVisible = isAgentTerminalCompletionMarkerVisible(kind, transcript);
+      if (!completionMarkerVisible) completionMarkerArmed = true;
+      const hasFreshCompletionMarker = completionMarkerArmed && completionMarkerVisible;
       const nextScreenSignature = agentTerminalScreenSignature(transcript);
       if (nextScreenSignature !== screenSignature) {
         screenSignature = nextScreenSignature;
         screenChangedAt = now;
-      }
-      if (hasAgentTerminalFailure(transcript)) {
-        clearInterval(timer);
-        resolve("terminal-error");
-        return;
       }
       if (control.autoFinishPaused) return;
       if (control.manualSuccessRequested) {
@@ -1296,7 +1384,13 @@ function waitForAgentCompletion(
         resolve("manual-success");
         return;
       }
-      const state = resolveAgentTerminalContentState(kind, transcript, content());
+      const extractedContent = content();
+      const state = resolveAgentTerminalContentState(kind, transcript, extractedContent);
+      // Codex may keep repainting its cursor/status chrome after the final
+      // answer. A non-empty extracted answer is still concrete evidence that
+      // this submission produced work, even if the busy marker was missed by
+      // a 500 ms poll.
+      if (kind === "codex-cli" && extractedContent.trim()) control.workObserved = true;
       if (
         shouldFollowUpPastedPromptSubmit({
           prompt: control.prompt,
@@ -1319,7 +1413,10 @@ function waitForAgentCompletion(
         }
         return;
       }
-      if (state === "waiting-for-choice") {
+      const busy = isAgentTerminalBusy(transcript);
+      if (busy) control.workObserved = true;
+      const pollPriority = agentTerminalPollPriority(state, busy);
+      if (pollPriority === "waiting-for-choice") {
         if (control.alwaysEnter) {
           if (
             shouldAutoEnterChoice({
@@ -1340,21 +1437,48 @@ function waitForAgentCompletion(
           }
           return;
         }
-        if (
-          shouldExposeWaitingForChoice(control.alwaysEnter, state) &&
-          state !== control.lastCompletionState
-        ) {
+        if (!shouldExposeWaitingForChoice(control.alwaysEnter, state)) return;
+        if (state === control.lastCompletionState) return;
+        if (control.waitingChoiceDetectedAt === undefined) {
+          control.waitingChoiceDetectedAt = now;
+          return;
+        }
+        if (isWaitingChoiceStable(control.waitingChoiceDetectedAt, now)) {
           control.lastCompletionState = state;
+          control.waitingForChoiceSince = now;
           onStatus("waiting-for-choice");
         }
         return;
       }
+      control.waitingChoiceDetectedAt = undefined;
+      const choiceWasSubmitted =
+        control.waitingForChoiceSince !== undefined &&
+        (control.lastChoiceSubmitAt ?? 0) >= control.waitingForChoiceSince;
+      const choiceResolved =
+        state !== "waiting-for-choice" &&
+        (choiceWasSubmitted || isAgentTerminalChoiceResolutionVisible(kind, transcript));
       if (control.lastCompletionState === "waiting-for-choice") {
+        if (!shouldClearWaitingForChoice(control.lastCompletionState, choiceResolved)) return;
         control.lastCompletionState = "empty";
+        control.waitingForChoiceSince = undefined;
         onStatus("prompt-sent");
-      } else if (state !== control.lastCompletionState && state !== "ready-for-success") {
+      }
+      // A visible approval menu is actionable even when the preceding shell
+      // command remains in the current viewport. Once the menu is gone,
+      // generation activity takes priority over success and error detection.
+      if (pollPriority === "busy") {
+        return;
+      }
+      if (state !== control.lastCompletionState && state !== "ready-for-success") {
         control.lastCompletionState = state;
       }
+      const outputFinished =
+        sinceSubmit >= RESPONSE_MIN_MS &&
+        (hasFreshCompletionMarker ||
+          now - screenChangedAt >= RESPONSE_IDLE_MS ||
+          isClaudeCompletionReady(kind, transcript) ||
+          isCodexCompletionReady(kind, transcript, control.workObserved === true)) &&
+        isAgentTerminalReadyForAutoFinish(kind, transcript, state, control.workObserved === true);
       // Total runtime is intentionally unbounded. Only a continuous period
       // without terminal output is treated as a stalled agent.
       if (
@@ -1369,21 +1493,21 @@ function waitForAgentCompletion(
         resolve("stalled");
         return;
       }
-      if (
-        sinceSubmit >= RESPONSE_MIN_MS &&
-        now - screenChangedAt >= RESPONSE_IDLE_MS &&
-        isAgentTerminalReadyForAutoFinish(kind, transcript, state)
-      ) {
-        if (control.lastCompletionState !== "ready-for-success") {
-          control.lastCompletionState = "ready-for-success";
-          onStatus("ready-for-success");
-        }
-        if (control.autoSuccess) {
-          clearInterval(timer);
-          resolve("idle");
-        } else {
-          onStatus("ready-for-success");
-        }
+      if (!outputFinished) return;
+      if (shouldFinishAgentTerminalWithError(kind, transcript)) {
+        clearInterval(timer);
+        resolve("terminal-error");
+        return;
+      }
+      if (control.lastCompletionState !== "ready-for-success") {
+        control.lastCompletionState = "ready-for-success";
+        onStatus("ready-for-success");
+      }
+      if (control.autoSuccess) {
+        clearInterval(timer);
+        resolve("idle");
+      } else {
+        onStatus("ready-for-success");
       }
     }, 500);
   });
@@ -1408,14 +1532,21 @@ export function agentTerminalStalledForTest(
   return hasAgentTerminalStalled(now, promptSubmittedAt, lastOutputAt, timeoutMs);
 }
 
-function hasAgentTerminalFailure(rawTranscript: string): boolean {
-  const screen = agentTerminalScreenSignature(rawTranscript);
+export function hasAgentTerminalFailure(rawTranscript: string): boolean {
+  const screen = agentTerminalScreenSignature(rawTranscript)
+    .split("\n")
+    .filter((line) => !isClaudeUpdateWarningLine(line.trim()))
+    .join("\n");
+  if (isAgentTerminalRetrying(screen)) return false;
   const patterns = [
-    /^[ \t]*(?:[●•*✖×!]\s*)?(?:Please run\s+\/login\s*(?:[·•-]\s*)?)?API Error\s*:\s*\S[^\n]*/im,
-    /^[ \t]*(?:[●•*✖×!]\s*)?Please run\s+\/login\b[^\n]*/im,
-    /^[ \t]*(?:[●•*✖×!]\s*)?Image generation is not enabled for this (?:group|organization|account)\b[^\n]*/im,
-    /^[ \t]*[●•✖×!]\s*(?:(?:fatal|authentication|authorization|request)\s+)?error\s*:\s*\S[^\n]*/im,
+    /^[ \t]*(?:[●•*✖✗×!]\s*)?(?:Please run\s+\/login\s*(?:[·•-]\s*)?)?API Error\s*:\s*\S[^\n]*/im,
+    /^[ \t]*(?:[●•*✖✗×!]\s*)?Please run\s+\/login\b[^\n]*/im,
+    /^[ \t]*(?:[●•*✖✗×!]\s*)?Image generation is not enabled for this (?:group|organization|account)\b[^\n]*/im,
+    /^[ \t]*[●•✖✗×!]\s*(?:(?:fatal|authentication|authorization|request)\s+)?error\s*:\s*\S[^\n]*/im,
     /\bunexpected status\s+(?:4\d\d|5\d\d)\b[^\n]*/i,
+    /^[ \t]*(?![\u203a\u276f])(?:[\u25a0\u25cf\u2022*\u2716\u2717\u00d7!]\s*[^\n]*(?:\b(?:errors?|failed|failure|fatal|exception|panic(?:ked)?)\b|\bunexpected status\s+\d{3}\b|\b(?:service|temporarily) unavailable\b|\b(?:permission|access|request) denied\b|\b(?:timed?|time)\s*out\b|\bconnection reset\b)|(?:(?:api\s+)?errors?|failed|failure|fatal|exception|panic(?:ked)?|traceback)\b[^\n]*|unexpected status\s+\d{3}\b[^\n]*|(?:service|temporarily) unavailable\b[^\n]*|(?:permission|access|request) denied\b[^\n]*|(?:timed?|time)\s*out\b[^\n]*|connection reset\b[^\n]*|npm\s+ERR![^\n]*)/im,
+    /^[ \t]*(?![\u203a\u276f])(?:request|command|process|task|tool|operation|execution|connection|authentication|authorization|permission|network|server|provider|model)\s+(?:errors?|failed|failure|denied|unavailable|refused|aborted|(?:timed?|time)\s*out)\b[^\n]*/im,
+    /^[ \t]*(?![\u203a\u276f])(?:no available channel\b|something went wrong\b|HTTP\s+[45]\d\d\b|E(?:CONNREFUSED|CONNRESET|TIMEDOUT)\b)[^\n]*/im,
   ];
   let lastErrorAt = -1;
   let lastErrorEnd = -1;
@@ -1429,13 +1560,33 @@ function hasAgentTerminalFailure(rawTranscript: string): boolean {
     }
   }
   if (lastErrorAt < 0) return false;
+  const recovery = screen
+    .slice(lastErrorEnd)
+    .replace(/(?:^|\n)\s*(?:Reconnecting|Retrying)\b[^\n]*/gi, "\n");
   return !/(?:^|\n)\s*(?:[\p{S}\p{P}]\s*)?(?:Thought\s+for\s+\d|\p{L}[\p{L}'’-]*(?:…|\.\.\.)?\s*\(\s*\d+(?:\.\d+)?(?:ms|s|m|h)\b)/imu.test(
-    screen.slice(lastErrorEnd),
+    recovery,
   );
 }
 
 export function hasAgentTerminalFailureForTest(rawTranscript: string): boolean {
   return hasAgentTerminalFailure(rawTranscript);
+}
+
+function shouldFinishAgentTerminalWithError(kind: CliProviderKind, rawTranscript: string): boolean {
+  if (isAgentTerminalBusy(rawTranscript)) return false;
+  if (!hasAgentTerminalFailure(rawTranscript)) return false;
+  const screen = agentTerminalScreenSignature(rawTranscript);
+  if (kind === "claude-cli") {
+    return isClaudeIdlePromptVisible(screen) && !isClaudeChoicePromptVisible(screen);
+  }
+  return isCodexIdlePromptVisible(screen);
+}
+
+export function shouldFinishAgentTerminalWithErrorForTest(
+  kind: CliProviderKind,
+  rawTranscript: string,
+): boolean {
+  return shouldFinishAgentTerminalWithError(kind, rawTranscript);
 }
 
 function agentTerminalScreenSignature(rawTranscript: string): string {
@@ -1449,31 +1600,55 @@ export function agentTerminalScreenSignatureForTest(rawTranscript: string): stri
 
 function isAgentTerminalBusy(rawTranscript: string): boolean {
   const screen = agentTerminalScreenSignature(rawTranscript);
-  return lastAgentActivityIndex(screen) >= 0;
+  const activityAt = lastAgentActivityIndex(screen);
+  if (activityAt < 0) return false;
+  return activityAt > lastClaudeCompletionFooterIndex(screen);
+}
+
+function isAgentTerminalRetrying(screen: string): boolean {
+  return /\b(?:Reconnecting|Retrying)(?:\.\.\.)?(?:\s+\d+\s*\/\s*\d+)?/i.test(screen);
+}
+
+function isClaudeUpdateWarningLine(trimmed: string): boolean {
+  return /^(?:[✖✗×!]\s*)?Auto-update failed\b.*\bclaude doctor\b/i.test(trimmed);
 }
 
 function lastAgentActivityIndex(screen: string): number {
   return maxLastRegexIndex(screen, [
     /\bEsc to interrupt\b/i,
+    /\b(?:Reconnecting|Retrying)(?:\.\.\.)?(?:\s+\d+\s*\/\s*\d+)?/i,
+    /(?:^|\n)\s*Thought\s+for\s+\d+(?:\.\d+)?(?:ms|s|m|h)\b[^\n]*\bctrl\+o\s+to\s+expand\b/iu,
     /(?:^|\n)\s*(?:[\p{S}\p{P}]\s*)?\p{L}[\p{L}'’-]*(?:…|\.\.\.)?\s*\(\s*\d+(?:\.\d+)?(?:ms|s|m|h)\b[^\n)]*\)/iu,
   ]);
+}
+
+function lastClaudeCompletionFooterIndex(screen: string): number {
+  let offset = 0;
+  let last = -1;
+  for (const line of screen.split("\n")) {
+    if (isClaudeCompletionFooterLine(line.trim())) last = offset;
+    offset += line.length + 1;
+  }
+  return last;
 }
 
 function isAgentTerminalReadyForAutoFinish(
   kind: CliProviderKind,
   rawTranscript: string,
   state: AgentTerminalContentState,
+  workObserved = false,
 ): boolean {
   if (isAgentTerminalBusy(rawTranscript)) return false;
   const screen = agentTerminalScreenSignature(rawTranscript);
   if (kind === "claude-cli") {
-    if (state === "empty") return false;
+    const completionMarkerVisible = isClaudeCompletionFooterVisible(screen);
+    if (state === "empty" && !completionMarkerVisible) return false;
     if (hasActiveClaudeBackgroundAgent(screen)) return false;
-    if (!isClaudeIdlePromptVisible(screen)) return false;
-    return !isClaudeChoicePromptVisible(screen);
+    if (isClaudeChoicePromptVisible(screen)) return false;
+    return completionMarkerVisible || isClaudeIdlePromptVisible(screen);
   }
   if (!isCodexIdlePromptVisible(screen)) return false;
-  return state === "ready-for-success" || isCodexCompletionFooterVisible(screen);
+  return state === "ready-for-success" || isCodexCompletionFooterVisible(screen) || workObserved;
 }
 
 function isCodexCompletionFooterVisible(screen: string): boolean {
@@ -1505,8 +1680,9 @@ export function agentTerminalReadyForAutoFinishForTest(
   kind: CliProviderKind,
   rawTranscript: string,
   state: AgentTerminalContentState,
+  workObserved = false,
 ): boolean {
-  return isAgentTerminalReadyForAutoFinish(kind, rawTranscript, state);
+  return isAgentTerminalReadyForAutoFinish(kind, rawTranscript, state, workObserved);
 }
 
 export function agentTerminalReadyForManualSuccessForTest(
@@ -1519,8 +1695,55 @@ export function agentTerminalReadyForManualSuccessForTest(
 
 function isClaudeIdlePromptVisible(screen: string): boolean {
   const tail = terminalTail(screen, 10);
-  return /\b(?:(?:auto|manual|plan)\s+mode|bypass permissions|accept edits)\s+on\b[^\n]*for agents/i.test(
-    tail,
+  return tail.split("\n").some((line) => isClaudeIdleFooterLine(line.trim()));
+}
+
+function isAgentTerminalCompletionMarkerVisible(
+  kind: CliProviderKind,
+  rawTranscript: string,
+): boolean {
+  if (kind !== "claude-cli") return false;
+  return isClaudeCompletionFooterVisible(agentTerminalScreenSignature(rawTranscript));
+}
+
+function isClaudeCompletionReady(kind: CliProviderKind, rawTranscript: string): boolean {
+  if (kind !== "claude-cli") return false;
+  const screen = agentTerminalScreenSignature(rawTranscript);
+  return isClaudeCompletionFooterVisible(screen) && isClaudeIdlePromptVisible(screen);
+}
+
+function isCodexCompletionReady(
+  kind: CliProviderKind,
+  rawTranscript: string,
+  workObserved: boolean,
+): boolean {
+  if (kind !== "codex-cli" || !workObserved) return false;
+  const screen = agentTerminalScreenSignature(rawTranscript);
+  return isCodexCompletionFooterVisible(screen) && isCodexIdlePromptVisible(screen);
+}
+
+export function agentTerminalCodexCompletionReadyForTest(
+  rawTranscript: string,
+  workObserved: boolean,
+): boolean {
+  return isCodexCompletionReady("codex-cli", rawTranscript, workObserved);
+}
+
+function isClaudeIdleFooterLine(trimmed: string): boolean {
+  return /\b(?:(?:auto|manual|plan)\s+mode|bypass permissions|accept edits)\s+on\b[^\n]*\bagents?\b/i.test(
+    trimmed,
+  );
+}
+
+function isClaudeCompletionFooterVisible(screen: string): boolean {
+  return terminalTail(screen, 12)
+    .split("\n")
+    .some((line) => isClaudeCompletionFooterLine(line.trim()));
+}
+
+function isClaudeCompletionFooterLine(trimmed: string): boolean {
+  return /^[^\p{L}\p{N}]*\p{L}[\p{L}'’-]*(?:\s+\p{L}[\p{L}'’-]*)*\s+for\s+\d+(?:\.\d+)?(?:ms|s|m|h)(?:\s+\d+(?:\.\d+)?(?:ms|s|m|h))*\s*$/iu.test(
+    trimmed,
   );
 }
 
@@ -1539,7 +1762,34 @@ function resolveAgentTerminalContentState(
 
   const screen = agentTerminalScreenSignature(rawTranscript);
   if (isClaudeChoicePromptVisible(screen)) return "waiting-for-choice";
+  if (
+    state === "empty" &&
+    isClaudeCompletionFooterVisible(screen) &&
+    isClaudeIdlePromptVisible(screen)
+  ) {
+    return "ready-for-success";
+  }
   return state === "waiting-for-choice" ? "ready-for-success" : state;
+}
+
+function isAgentTerminalChoiceResolutionVisible(
+  kind: CliProviderKind,
+  rawTranscript: string,
+): boolean {
+  const screen = agentTerminalScreenSignature(rawTranscript);
+  if (/\bUser answered Claude(?:'s|’s) questions:/i.test(screen)) return true;
+  if (/\b(?:Question|Prompt) (?:cancelled|canceled)\b/i.test(screen)) return true;
+  if (kind === "claude-cli") {
+    return isClaudeCompletionFooterVisible(screen) && isClaudeIdlePromptVisible(screen);
+  }
+  return isCodexCompletionFooterVisible(screen) && isCodexIdlePromptVisible(screen);
+}
+
+export function agentTerminalChoiceResolutionVisibleForTest(
+  kind: CliProviderKind,
+  rawTranscript: string,
+): boolean {
+  return isAgentTerminalChoiceResolutionVisible(kind, rawTranscript);
 }
 
 export function resolveAgentTerminalContentStateForTest(
@@ -1594,8 +1844,8 @@ function lastInteractiveChoiceBlock(text: string): { startAt: number; endAt: num
   for (let cueLine = lines.length - 1; cueLine >= 0; cueLine -= 1) {
     if (!isTerminalChoiceInteractionCue(lines[cueLine]!.trim())) continue;
     const startLine = Math.max(0, cueLine - 12);
-    const endLine = Math.min(lines.length - 1, cueLine + 4);
-    const window = lines.slice(startLine, endLine + 1).map((line) => line.trim());
+    const endLine = cueLine;
+    const window = lines.slice(startLine, cueLine + 1).map((line) => line.trim());
     const selected = window.filter(isSelectedTerminalChoiceOption).length;
     const options = window.filter(isTerminalChoiceOption).length;
     if (selected < 1 || options < 2) continue;
@@ -1636,6 +1886,9 @@ function isTerminalChoiceReleaseLine(trimmed: string): boolean {
   if (!trimmed) return false;
   if (isAgentTerminalChromeLine(trimmed) || isAgentTerminalPromptLine(trimmed)) return false;
   if (isTerminalChoiceChromeLine(trimmed)) return false;
+  if (/^[●•]\s+\S/.test(trimmed)) return true;
+  if (/^(?:Thought|Thinking)\s+for\s+\d/i.test(trimmed)) return true;
+  if (isClaudeCompletionFooterLine(trimmed) || isClaudeIdleFooterLine(trimmed)) return true;
   if (/\b(?:Done|completed|successfully|auto-finished|manual-success)\b/i.test(trimmed)) {
     return true;
   }
@@ -1650,6 +1903,8 @@ function lastTerminalChoiceReleaseIndex(text: string): number {
     /\bauto-finished\b/i,
     /\bmanual-success\b/i,
     /\b(?:auto mode|bypass permissions) on\s*\(shift\+tab to cycle\)/i,
+    /\baccept edits on\s*\(shift\+tab to cycle\)/i,
+    /(?:^|\n)[^\p{L}\p{N}\n]*\p{L}[\p{L}'’-]*(?:\s+\p{L}[\p{L}'’-]*)*\s+for\s+\d+(?:\.\d+)?(?:ms|s|m|h)(?:\s+\d+(?:\.\d+)?(?:ms|s|m|h))*\s*$/imu,
     /(?:已完成|完成|整理完成|执行完成|通过)/,
   ]);
 }

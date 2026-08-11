@@ -32,6 +32,7 @@ import {
 } from "../fs-ops.js";
 import { detectAiCli } from "../runtime-tools.js";
 import { searchWorkspace } from "../search.js";
+import { classifyAgentTerminalResultFailure } from "../workflow-runner.js";
 import { resolveWorkspace, resolveWorkspacePath } from "../workspace.js";
 
 type ProviderKind = CliProviderKind | "unsupported";
@@ -359,6 +360,7 @@ export async function registerAiRoutes(app: FastifyInstance) {
       codexApproval?: CodexApproval;
       codexSandbox?: CodexSandbox;
       effort?: AgentEffort;
+      failOnTerminalError?: boolean;
       alwaysEnter?: boolean;
       conversationSessionId?: string;
       resumeConversation?: boolean;
@@ -414,6 +416,7 @@ export async function registerAiRoutes(app: FastifyInstance) {
         codexApproval: parseCodexApproval(req.body?.codexApproval),
         codexSandbox: parseCodexSandbox(req.body?.codexSandbox),
         effort: parseAgentEffort(req.body?.effort),
+        retainRawTranscript: req.body?.failOnTerminalError === true,
         alwaysEnter: req.body?.alwaysEnter === true,
         conversationSessionId:
           typeof req.body?.conversationSessionId === "string"
@@ -425,6 +428,16 @@ export async function registerAiRoutes(app: FastifyInstance) {
           send(frame.type, frame);
         },
       });
+      if (req.body?.failOnTerminalError === true) {
+        const failure = classifyAgentTerminalResultFailure(result, prompt);
+        if (failure.failed) {
+          send("error", {
+            message: failure.message,
+            retryable: failure.retryable,
+          });
+          return;
+        }
+      }
       send("result", result);
     } catch (e) {
       if (!abort.signal.aborted) {

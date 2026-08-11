@@ -262,6 +262,29 @@ export async function putGlobalSettings(value: unknown): Promise<void> {
   await http.put("/api/settings", value);
 }
 
+export interface ModelPriceRecord {
+  model: string;
+  provider: string;
+  billingMode: "dynamic" | "per-request";
+  costPerRequest?: number;
+  inputCostPerMillion: number;
+  outputCostPerMillion: number;
+  cacheReadCostPerMillion?: number;
+  cacheWriteCostPerMillion?: number;
+  favorite?: boolean;
+  favoriteCustomized?: boolean;
+  source?: "litellm" | "manual";
+  updatedAt?: number;
+}
+
+export async function syncModelPrices(): Promise<{
+  models: ModelPriceRecord[];
+  source: string;
+  updatedAt: number;
+}> {
+  return await http.post("/api/model-prices/sync", {});
+}
+
 export async function getUiPreferences<T = unknown>(): Promise<T> {
   return await http.get<T>("/api/ui-preferences");
 }
@@ -1139,6 +1162,51 @@ export interface WorkflowRun {
   completedAt?: number;
   nodeIds: string[];
   error?: string;
+  trace?: WorkflowRunTrace[];
+  stats?: WorkflowRunStats;
+}
+
+export interface WorkflowRunTrace {
+  nodeId: string;
+  title: string;
+  kind: WorkflowNodeKind;
+  model?: string;
+  status: WorkflowNodeStatus | "stopped";
+  startedAt: number;
+  completedAt?: number;
+  durationMs?: number;
+  input?: unknown;
+  output?: unknown;
+  error?: string;
+  retryReasons?: string[];
+  terminal?: {
+    commandLine?: string;
+    stdout?: string;
+    stderr?: string;
+    transcript?: string;
+    exitCode?: number | null;
+    signal?: string | null;
+  };
+  tokens?: {
+    input?: number;
+    output?: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+    total?: number;
+  };
+  cost?: number;
+}
+
+export interface WorkflowRunStats {
+  durationMs?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  totalTokens?: number;
+  cost?: number;
+  nodeCount?: number;
+  retryCount?: number;
 }
 
 export interface WorkflowRecord {
@@ -1155,6 +1223,11 @@ export interface WorkflowRecord {
   edges: WorkflowEdge[];
   runs: WorkflowRun[];
 }
+
+export type WorkflowRuntimeEvent =
+  | { type: "ready"; updatedAt: number }
+  | { type: "node"; updatedAt: number; node: WorkflowNode }
+  | { type: "run"; updatedAt: number; run: WorkflowRun };
 
 export interface WorkflowSummary {
   id: string;
@@ -1179,6 +1252,10 @@ export async function getWorkflow(
   workflowId: string,
 ): Promise<WorkflowRecord> {
   return await http.get(workflowsUrl(workspaceId, `/${encodeURIComponent(workflowId)}`));
+}
+
+export function openWorkflowRuntimeSocket(workspaceId: string, workflowId: string): WebSocket {
+  return openTerminalSocket(workflowsUrl(workspaceId, `/${encodeURIComponent(workflowId)}/events`));
 }
 
 export async function createWorkflow(
@@ -1659,6 +1736,7 @@ export async function aiChatTerminalStream(
     codexApproval?: AiTerminalCodexApproval;
     codexSandbox?: AiTerminalCodexSandbox;
     effort?: AiTerminalEffort;
+    failOnTerminalError?: boolean;
     alwaysEnter?: boolean;
     conversationSessionId?: string;
     resumeConversation?: boolean;

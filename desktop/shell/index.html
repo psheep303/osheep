@@ -5,11 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Osheep</title>
     <script>
-      var startupTheme = new URLSearchParams(window.location.search).get("osheepTheme");
-      if (startupTheme === "light" || startupTheme === "dark") {
-        document.documentElement.dataset.theme = startupTheme;
-        document.documentElement.style.colorScheme = startupTheme;
-      }
+      var startupPreference = new URLSearchParams(window.location.search).get("osheepTheme");
+      var startupTheme = startupPreference === "system"
+        ? window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"
+        : startupPreference === "light" ? "light" : "dark";
+      document.documentElement.dataset.theme = startupTheme;
+      document.documentElement.style.colorScheme = startupTheme;
     </script>
     <style>
       html, body { height: 100%; margin: 0; }
@@ -17,8 +18,8 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        background: #f7f8fa;
-        color: #26313d;
+        background: #181818;
+        color: #cccccc;
         font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
       }
       .startup {
@@ -33,7 +34,7 @@
         width: 6px;
         height: 6px;
         border-radius: 50%;
-        background: #0078d4;
+        background: #75beff;
         opacity: 0.28;
         animation: pulse 1.2s ease-in-out infinite;
       }
@@ -47,10 +48,6 @@
         line-height: 1.6;
         text-align: center;
         white-space: pre-wrap;
-      }
-      @media (prefers-color-scheme: dark) {
-        body { background: #181818; color: #cccccc; }
-        .dot { background: #75beff; }
       }
       :root[data-theme="light"] body { background: #f7f8fa; color: #26313d; }
       :root[data-theme="light"] .dot { background: #0078d4; }

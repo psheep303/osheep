@@ -5,6 +5,7 @@ import { config, platform } from "./config.js";
 import { errors } from "./errors.js";
 import { buildBashGuard, buildCmdGuard, buildPowerShellGuard } from "./pty-guard.js";
 import { findExecutable } from "./runtime-tools.js";
+import { TerminalReplayBuffer } from "./terminal-replay-buffer.js";
 import type { WorkspaceInfo } from "./workspace.js";
 
 export interface ShellProfile {
@@ -23,8 +24,12 @@ export interface TerminalSession {
   createdAt: number;
   pty: nodePty.IPty;
   lastActivity: number;
-  // Buffered output that arrived before any WS attached or between attaches.
-  scrollback: string;
+  // Bounded recent output used to reconstruct a newly attached xterm.
+  replayBuffer: TerminalReplayBuffer;
+  replayLength: number;
+  replayInitialCols: number;
+  replayInitialRows: number;
+  replayResizes: TerminalReplayResize[];
   // Currently attached WS sink (single attach per session for MVP).
   sink: ((frame: string) => void) | null;
   taps: Set<(frame: string) => void>;
@@ -43,6 +48,13 @@ export interface TerminalSession {
   // Tear down per-session shell-init temp files when the session ends.
   guardCleanup: (() => void) | null;
   killOnDetach: boolean;
+}
+
+export interface TerminalReplayResize {
+  offset: number;
+  cols: number;
+  rows: number;
+  compactStartup?: boolean;
 }
 
 const sessions = new Map<string, TerminalSession>();
@@ -171,12 +183,16 @@ export function createSession(input: CreateSessionInput): TerminalSession {
       rows,
       cwd: input.workspace.path,
       env: { ...process.env },
+      // The bundled ConPTY DLL avoids node-pty's helper process racing a
+      // shell that has already exited (AttachConsole failed on Windows).
+      useConptyDll: platform === "windows",
     });
   } catch (e) {
     if (guardCleanup) guardCleanup();
     throw errors.ptySpawnFailed((e as Error).message);
   }
 
+  const killOnDetach = input.killOnDetach !== false;
   const session: TerminalSession = {
     id: newSessionId(),
     workspaceId: input.workspace.id,
@@ -186,7 +202,13 @@ export function createSession(input: CreateSessionInput): TerminalSession {
     createdAt: Date.now(),
     pty,
     lastActivity: Date.now(),
-    scrollback: "",
+    // Agent TUIs must replay from their initial terminal state. Cutting an ANSI
+    // stream at an arbitrary byte produces invalid cursor and screen state.
+    replayBuffer: new TerminalReplayBuffer(killOnDetach ? undefined : null),
+    replayLength: 0,
+    replayInitialCols: cols,
+    replayInitialRows: rows,
+    replayResizes: [],
     sink: null,
     taps: new Set(),
     idleTimer: null,
@@ -195,22 +217,14 @@ export function createSession(input: CreateSessionInput): TerminalSession {
     inputBuffer: "",
     bufferDirty: false,
     guardCleanup,
-    killOnDetach: input.killOnDetach !== false,
+    killOnDetach,
   };
   sessions.set(session.id, session);
   bumpActivity(session);
 
   pty.onData((data) => {
     bumpActivity(session);
-    const frame = JSON.stringify({ type: "output", data });
-    for (const tap of session.taps) tap(frame);
-    if (session.sink) {
-      session.sink(frame);
-    } else {
-      // Keep a bounded buffer so a slightly-delayed WS still sees the prompt.
-      const MAX = 64 * 1024;
-      session.scrollback = (session.scrollback + data).slice(-MAX);
-    }
+    publishPtyOutput(session, data);
   });
   pty.onExit(({ exitCode, signal }) => {
     const frame = JSON.stringify({ type: "exit", code: exitCode, signal: signal ?? null });
@@ -219,6 +233,18 @@ export function createSession(input: CreateSessionInput): TerminalSession {
     cleanupSession(session, "pty-exit");
   });
   return session;
+}
+
+function publishPtyOutput(session: TerminalSession, data: string): void {
+  session.replayBuffer.append(data);
+  session.replayLength += data.length;
+  const frame = JSON.stringify({ type: "output", data });
+  for (const tap of session.taps) tap(frame);
+  if (session.sink) session.sink(frame);
+}
+
+export function publishPtyOutputForTest(session: TerminalSession, data: string): void {
+  publishPtyOutput(session, data);
 }
 
 export function getSession(id: string): TerminalSession {
@@ -276,15 +302,23 @@ function cleanupSession(s: TerminalSession, _reason: string): void {
 export function attachSink(
   s: TerminalSession,
   sink: (frame: string) => void,
-): { detach: () => void; replayed: string } {
+): {
+  detach: () => void;
+  replayed: string;
+  replayInitialCols: number;
+  replayInitialRows: number;
+  replayResizes: TerminalReplayResize[];
+} {
   s.sink = sink;
-  const replayed = s.scrollback;
-  s.scrollback = "";
+  const replayed = s.replayBuffer.value();
   return {
     detach: () => {
       if (s.sink === sink) s.sink = null;
     },
     replayed,
+    replayInitialCols: s.replayInitialCols,
+    replayInitialRows: s.replayInitialRows,
+    replayResizes: s.killOnDetach ? [] : s.replayResizes.slice(),
   };
 }
 
@@ -293,7 +327,7 @@ export function addTap(
   tap: (frame: string) => void,
 ): { detach: () => void; replayed: string } {
   s.taps.add(tap);
-  const replayed = s.scrollback;
+  const replayed = s.replayBuffer.value();
   return {
     detach: () => {
       s.taps.delete(tap);
@@ -427,9 +461,26 @@ function handleInputData(s: TerminalSession, data: string): void {
   flush();
 }
 
-export function resizeSession(s: TerminalSession, cols: number, rows: number): void {
+export function resizeSession(
+  s: TerminalSession,
+  cols: number,
+  rows: number,
+  options: { compactStartup?: boolean } = {},
+): void {
   const c = clampSize(cols, s.cols);
   const r = clampSize(rows, s.rows);
+  if (c === s.cols && r === s.rows) return;
+  if (!s.killOnDetach) {
+    const marker: TerminalReplayResize = {
+      offset: s.replayLength,
+      cols: c,
+      rows: r,
+      ...(options.compactStartup ? { compactStartup: true } : {}),
+    };
+    const previous = s.replayResizes.at(-1);
+    if (previous?.offset === marker.offset) s.replayResizes[s.replayResizes.length - 1] = marker;
+    else s.replayResizes.push(marker);
+  }
   s.cols = c;
   s.rows = r;
   try {

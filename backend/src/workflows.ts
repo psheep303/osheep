@@ -6,6 +6,7 @@ const WORKFLOW_ID_RE = /^wf_[a-z0-9]{8,32}$/;
 const NODE_ID_RE = /^node_[a-z0-9]{6,32}$/;
 const EDGE_ID_RE = /^edge_[a-z0-9]{6,32}$/;
 const writeLocks = new Map<string, Promise<void>>();
+const updateLocks = new Map<string, Promise<void>>();
 
 export type WorkflowProviderKind = "codex-cli" | "claude-cli";
 export type WorkflowNodeKind =
@@ -67,6 +68,51 @@ export interface WorkflowRun {
   completedAt?: number;
   nodeIds: string[];
   error?: string;
+  trace?: WorkflowRunTrace[];
+  stats?: WorkflowRunStats;
+}
+
+export interface WorkflowRunTrace {
+  nodeId: string;
+  title: string;
+  kind: WorkflowNodeKind;
+  model?: string;
+  status: WorkflowNodeStatus | "stopped";
+  startedAt: number;
+  completedAt?: number;
+  durationMs?: number;
+  input?: unknown;
+  output?: unknown;
+  error?: string;
+  retryReasons?: string[];
+  terminal?: {
+    commandLine?: string;
+    stdout?: string;
+    stderr?: string;
+    transcript?: string;
+    exitCode?: number | null;
+    signal?: string | null;
+  };
+  tokens?: {
+    input?: number;
+    output?: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+    total?: number;
+  };
+  cost?: number;
+}
+
+export interface WorkflowRunStats {
+  durationMs?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  totalTokens?: number;
+  cost?: number;
+  nodeCount?: number;
+  retryCount?: number;
 }
 
 export interface WorkflowRecord {
@@ -259,6 +305,12 @@ function sanitizeRun(raw: unknown): WorkflowRun | null {
   };
   if (typeof r.completedAt === "number") run.completedAt = r.completedAt;
   if (typeof r.error === "string") run.error = r.error;
+  if (Array.isArray((r as any).trace)) {
+    run.trace = (r as any).trace
+      .filter((item: any) => item && typeof item.nodeId === "string")
+      .slice(-500);
+  }
+  if ((r as any).stats && typeof (r as any).stats === "object") run.stats = (r as any).stats;
   return run;
 }
 
@@ -477,8 +529,20 @@ export async function saveWorkflow(
   await ensureWorkflowDir(workspaceRoot);
   const next = sanitize(record, record.id);
   next.updatedAt = Date.now();
-  await writeWorkflowFile(workspaceRoot, next);
-  return next;
+  const abs = workflowFile(workspaceRoot, record.id);
+  const previous = updateLocks.get(abs) ?? Promise.resolve();
+  const current = previous
+    .catch(() => undefined)
+    .then(async () => {
+      await writeWorkflowFile(workspaceRoot, next);
+    });
+  updateLocks.set(abs, current);
+  try {
+    await current;
+    return next;
+  } finally {
+    if (updateLocks.get(abs) === current) updateLocks.delete(abs);
+  }
 }
 
 export async function updateWorkflow(
@@ -487,12 +551,29 @@ export async function updateWorkflow(
   updater: (record: WorkflowRecord) => WorkflowRecord | Promise<WorkflowRecord>,
 ): Promise<WorkflowRecord> {
   validateWorkflowId(id);
-  const current = await getWorkflow(workspaceRoot, id);
-  const updated = await updater(current);
-  if (!updated || updated.id !== id) {
-    throw errors.invalidPath("workflow id does not match URL");
+  const abs = workflowFile(workspaceRoot, id);
+  const previous = updateLocks.get(abs) ?? Promise.resolve();
+  let result: WorkflowRecord | undefined;
+  const current = previous
+    .catch(() => undefined)
+    .then(async () => {
+      const record = await getWorkflow(workspaceRoot, id);
+      const updated = await updater(record);
+      if (!updated || updated.id !== id) {
+        throw errors.invalidPath("workflow id does not match URL");
+      }
+      const next = sanitize(updated, id);
+      next.updatedAt = Date.now();
+      await writeWorkflowFile(workspaceRoot, next);
+      result = next;
+    });
+  updateLocks.set(abs, current);
+  try {
+    await current;
+    return result!;
+  } finally {
+    if (updateLocks.get(abs) === current) updateLocks.delete(abs);
   }
-  return await saveWorkflow(workspaceRoot, updated);
 }
 
 export async function deleteWorkflow(workspaceRoot: string, id: string): Promise<void> {

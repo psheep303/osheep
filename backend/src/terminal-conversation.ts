@@ -1,4 +1,4 @@
-import type { Dirent } from "node:fs";
+import { type Dirent, existsSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -216,9 +216,10 @@ export async function readClaudeSessionConversation(sessionId: string): Promise<
   if (!/^[a-f0-9-]{36}$/i.test(sessionId)) return "";
   const home = os.homedir() || ".";
   const claudeHome = path.resolve(
-    process.env.OSHEEP_CLAUDE_CONFIG_DIR ||
-      process.env.CLAUDE_CONFIG_DIR ||
-      path.join(home, ".claude"),
+    process.env.CLAUDE_CONFIG_DIR ||
+      (existsSync(path.join(home, ".claude", "projects"))
+        ? path.join(home, ".claude")
+        : process.env.OSHEEP_CLAUDE_CONFIG_DIR || path.join(home, ".claude")),
   );
   const projectsRoot = path.join(claudeHome, "projects");
   let projectDirs: Dirent[];
@@ -244,7 +245,10 @@ export async function readCodexSessionFinalAnswer(sessionId: string): Promise<st
   if (!/^[a-z0-9_-]{8,128}$/i.test(sessionId)) return "";
   const home = os.homedir() || ".";
   const codexHome = path.resolve(
-    process.env.OSHEEP_CODEX_CONFIG_DIR || process.env.CODEX_HOME || path.join(home, ".codex"),
+    process.env.CODEX_HOME ||
+      (existsSync(path.join(home, ".codex", "sessions"))
+        ? path.join(home, ".codex")
+        : process.env.OSHEEP_CODEX_CONFIG_DIR || path.join(home, ".codex")),
   );
   const filePath = await findCodexSessionFile(path.join(codexHome, "sessions"), sessionId);
   if (!filePath) return "";
@@ -310,10 +314,13 @@ function extractLastCodexAnswerFromJsonl(jsonl: string): string {
   for (let index = values.length - 1; index >= 0; index -= 1) {
     const value = values[index]!;
     const payload = objectValue(value.payload);
-    if (stringValue(value.type) === "event_msg" && stringValue(payload.type) === "task_complete") {
-      const answer = cleanStructuredText(stringValue(payload.last_agent_message));
-      if (answer) return answer;
-    }
+    const isComplete =
+      stringValue(value.type) === "task_complete" ||
+      (stringValue(value.type) === "event_msg" && stringValue(payload.type) === "task_complete");
+    const answer = cleanStructuredText(
+      stringValue(value.last_agent_message) || stringValue(payload.last_agent_message),
+    );
+    if (isComplete && answer) return answer;
   }
   for (let index = values.length - 1; index >= 0; index -= 1) {
     const value = values[index]!;
@@ -324,6 +331,10 @@ function extractLastCodexAnswerFromJsonl(jsonl: string): string {
       stringValue(payload.role) === "assistant"
     ) {
       const answer = contentText(payload.content);
+      if (answer) return answer;
+    }
+    if (stringValue(value.type) === "message" && stringValue(value.role) === "assistant") {
+      const answer = contentText(value.content);
       if (answer) return answer;
     }
   }
@@ -495,6 +506,11 @@ function isCodexProgressFragment(line: string): boolean {
 }
 
 function isTerminalChrome(line: string, kind?: AgentTerminalConversationKind): boolean {
+  const compact = line.replace(/\s+/g, "");
+  if (/^[⚠!]?Transcriptwritesarefailing\(permissiondenied[—-]EPERM\)/i.test(compact)) {
+    return true;
+  }
+  if (/^recentmessagesmayno/i.test(compact)) return true;
   if (/^[─━═_\-\s]{8,}$/.test(line)) return true;
   if (/^[❯›]\s*(?:\S.*)?$/.test(line)) return true;
   if (/\b(?:auto|plan) mode on\b/i.test(line)) return true;

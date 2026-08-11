@@ -13,6 +13,7 @@ import {
   listWorkflowIdsByTemplateBinding,
   listWorkflows,
   saveWorkflow,
+  updateWorkflow,
 } from "./workflows.js";
 
 test("workflow GET routes support ETag revalidation", async () => {
@@ -121,6 +122,69 @@ test("workflow README is persisted inside the workflow JSON record", async () =>
   const loaded = await getWorkflow(root, created.id);
 
   assert.equal(loaded.readme, "# Purpose\n\nExplain this workflow.");
+});
+
+test("workflow run observability trace is persisted", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-workflow-trace-"));
+  const created = await createWorkflow(root, {});
+  const node = created.nodes[0]!;
+  await saveWorkflow(root, {
+    ...created,
+    runs: [
+      {
+        id: "run_trace01",
+        status: "success",
+        startedAt: 100,
+        completedAt: 220,
+        nodeIds: [node.id],
+        trace: [
+          {
+            nodeId: node.id,
+            title: node.title,
+            kind: node.kind,
+            status: "success",
+            startedAt: 100,
+            completedAt: 220,
+            durationMs: 120,
+            input: { value: "hello" },
+            output: { text: "done" },
+            retryReasons: ["rate limited"],
+            tokens: { total: 42 },
+            cost: 0.001,
+          },
+        ],
+        stats: { durationMs: 120, totalTokens: 42, cost: 0.001, retryCount: 1 },
+      },
+    ],
+  });
+
+  const loaded = await getWorkflow(root, created.id);
+  assert.equal(
+    loaded.runs[0]?.trace?.[0]?.output &&
+      (loaded.runs[0]!.trace![0]!.output as { text: string }).text,
+    "done",
+  );
+  assert.equal(loaded.runs[0]?.stats?.totalTokens, 42);
+});
+
+test("concurrent workflow updates preserve both node-runner patches", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-workflow-updates-"));
+  try {
+    const created = await createWorkflow(root, { title: "Initial", readme: "Initial" });
+    await Promise.all([
+      updateWorkflow(root, created.id, async (record) => {
+        await new Promise<void>((resolve) => setTimeout(resolve, 5));
+        return { ...record, title: "Updated title" };
+      }),
+      updateWorkflow(root, created.id, (record) => ({ ...record, readme: "Updated readme" })),
+    ]);
+
+    const loaded = await getWorkflow(root, created.id);
+    assert.equal(loaded.title, "Updated title");
+    assert.equal(loaded.readme, "Updated readme");
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
 });
 
 test("template editing workflows are reusable but hidden from the workflow menu", async () => {
