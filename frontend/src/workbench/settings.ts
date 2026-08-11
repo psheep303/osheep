@@ -136,40 +136,48 @@ export function mergeSettings(partial: unknown): OsheepSettings {
         const value = item as Record<string, unknown>;
         const model = typeof value.model === "string" ? value.model.trim() : "";
         const provider = typeof value.provider === "string" ? value.provider.trim() : "";
-        const input = typeof value.inputCostPerMillion === "number" ? value.inputCostPerMillion : NaN;
-        const output = typeof value.outputCostPerMillion === "number" ? value.outputCostPerMillion : NaN;
+        const input =
+          typeof value.inputCostPerMillion === "number" ? value.inputCostPerMillion : NaN;
+        const output =
+          typeof value.outputCostPerMillion === "number" ? value.outputCostPerMillion : NaN;
         if (!model || !Number.isFinite(input) || !Number.isFinite(output)) return [];
-        return [{
-          model,
-          provider,
-          billingMode: value.billingMode === "per-request" ? "per-request" : "dynamic",
-          costPerRequest:
-            typeof value.costPerRequest === "number" && Number.isFinite(value.costPerRequest)
-              ? Math.max(0, value.costPerRequest)
-              : undefined,
-          inputCostPerMillion: Math.max(0, input),
-          outputCostPerMillion: Math.max(0, output),
-          cacheReadCostPerMillion:
-            typeof value.cacheReadCostPerMillion === "number" && Number.isFinite(value.cacheReadCostPerMillion)
-              ? Math.max(0, value.cacheReadCostPerMillion)
-              : undefined,
-          cacheWriteCostPerMillion:
-            typeof value.cacheWriteCostPerMillion === "number" && Number.isFinite(value.cacheWriteCostPerMillion)
-              ? Math.max(0, value.cacheWriteCostPerMillion)
-              : undefined,
-          favorite:
-            value.favoriteCustomized === true
-              ? value.favorite === true
-              : value.favorite === true || isDefaultFavoritePriceModel(model, provider),
-          favoriteCustomized: value.favoriteCustomized === true,
-          source: value.source === "litellm" ? "litellm" : "manual",
-          updatedAt: typeof value.updatedAt === "number" ? value.updatedAt : undefined,
-        }];
+        return [
+          {
+            model,
+            provider,
+            billingMode: value.billingMode === "per-request" ? "per-request" : "dynamic",
+            costPerRequest:
+              typeof value.costPerRequest === "number" && Number.isFinite(value.costPerRequest)
+                ? Math.max(0, value.costPerRequest)
+                : undefined,
+            inputCostPerMillion: Math.max(0, input),
+            outputCostPerMillion: Math.max(0, output),
+            cacheReadCostPerMillion:
+              typeof value.cacheReadCostPerMillion === "number" &&
+              Number.isFinite(value.cacheReadCostPerMillion)
+                ? Math.max(0, value.cacheReadCostPerMillion)
+                : undefined,
+            cacheWriteCostPerMillion:
+              typeof value.cacheWriteCostPerMillion === "number" &&
+              Number.isFinite(value.cacheWriteCostPerMillion)
+                ? Math.max(0, value.cacheWriteCostPerMillion)
+                : undefined,
+            favorite:
+              value.favoriteCustomized === true
+                ? value.favorite === true
+                : value.favorite === true || isDefaultFavoritePriceModel(model, provider),
+            favoriteCustomized: value.favoriteCustomized === true,
+            source: value.source === "litellm" ? "litellm" : "manual",
+            updatedAt: typeof value.updatedAt === "number" ? value.updatedAt : undefined,
+          },
+        ];
       })
     : [];
-  const models = [...new Map(
-    parsedModels.map((model) => [model.model.trim().toLowerCase(), model] as const),
-  ).values()];
+  const models = [
+    ...new Map(
+      parsedModels.map((model) => [model.model.trim().toLowerCase(), model] as const),
+    ).values(),
+  ];
   return {
     editor: { fontSize, tabSize, autoSave },
     ai: {

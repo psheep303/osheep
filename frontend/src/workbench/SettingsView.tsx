@@ -107,41 +107,39 @@ export function SettingsView({ settings, onChange }: SettingsViewProps) {
           </h1>
 
           {section === "general" && (
-            <>
-              <section className="settings-view__group">
-                <h2 className="settings-view__group-title">{t("settings.appearance")}</h2>
+            <section className="settings-view__group">
+              <h2 className="settings-view__group-title">{t("settings.appearance")}</h2>
 
-                <SettingItem
-                  label={t("settings.language")}
-                  description={t("settings.language.description")}
-                >
-                  <Segmented<LanguagePreference>
-                    value={language}
-                    options={[
-                      { label: t("settings.language.system"), value: "system" },
-                      { label: t("settings.language.zhCN"), value: "zh-CN" },
-                      { label: t("settings.language.en"), value: "en" },
-                    ]}
-                    onChange={setLanguage}
-                  />
-                </SettingItem>
+              <SettingItem
+                label={t("settings.language")}
+                description={t("settings.language.description")}
+              >
+                <Segmented<LanguagePreference>
+                  value={language}
+                  options={[
+                    { label: t("settings.language.system"), value: "system" },
+                    { label: t("settings.language.zhCN"), value: "zh-CN" },
+                    { label: t("settings.language.en"), value: "en" },
+                  ]}
+                  onChange={setLanguage}
+                />
+              </SettingItem>
 
-                <SettingItem
-                  label={t("settings.theme")}
-                  description={t("settings.theme.description")}
-                >
-                  <Segmented<ThemePreference>
-                    value={theme}
-                    options={[
-                      { label: t("settings.theme.system"), value: "system" },
-                      { label: t("settings.theme.light"), value: "light" },
-                      { label: t("settings.theme.dark"), value: "dark" },
-                    ]}
-                    onChange={setTheme}
-                  />
-                </SettingItem>
-              </section>
-            </>
+              <SettingItem
+                label={t("settings.theme")}
+                description={t("settings.theme.description")}
+              >
+                <Segmented<ThemePreference>
+                  value={theme}
+                  options={[
+                    { label: t("settings.theme.system"), value: "system" },
+                    { label: t("settings.theme.light"), value: "light" },
+                    { label: t("settings.theme.dark"), value: "dark" },
+                  ]}
+                  onChange={setTheme}
+                />
+              </SettingItem>
+            </section>
           )}
 
           {section === "editor" && (
