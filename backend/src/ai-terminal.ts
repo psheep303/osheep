@@ -610,6 +610,7 @@ export function buildAgentTerminalCommand(
 ): { command: string } {
   const base = kind === "codex-cli" ? "codex" : "claude";
   const args: string[] = [];
+  let codexResumeSessionId = "";
   if (kind === "claude-cli") {
     if (options.resumeConversation && options.conversationSessionId) {
       args.push("--resume", quoteShell(options.conversationSessionId));
@@ -625,6 +626,10 @@ export function buildAgentTerminalCommand(
     const effort = agentEffortCliValue(kind, options.effort);
     if (effort) args.push("--effort", effort);
   } else {
+    if (options.resumeConversation && options.conversationSessionId) {
+      args.push("resume");
+      codexResumeSessionId = options.conversationSessionId;
+    }
     args.push(...codexPermissionArgs(options.codexApproval, options.codexSandbox));
     const effort = agentEffortCliValue(kind, options.effort);
     if (effort) {
@@ -632,6 +637,7 @@ export function buildAgentTerminalCommand(
     }
   }
   if (model && model !== "default") args.push("--model", quoteShell(model));
+  if (codexResumeSessionId) args.push(quoteShell(codexResumeSessionId));
   return { command: [base, ...args].join(" ") };
 }
 

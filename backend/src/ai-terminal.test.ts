@@ -227,6 +227,21 @@ test("Claude retry resumes the exact conversation session", () => {
   );
 });
 
+test("Codex retry resumes the exact conversation session", () => {
+  const sessionId = "123e4567-e89b-12d3-a456-426614174000";
+
+  assert.equal(
+    buildAgentTerminalCommand("codex-cli", "gpt-5.4", {
+      codexApproval: "never",
+      codexSandbox: "workspace-write",
+      effort: "low",
+      conversationSessionId: sessionId,
+      resumeConversation: true,
+    }).command,
+    `codex resume --ask-for-approval never --sandbox workspace-write -c 'model_reasoning_effort="low"' --model gpt-5.4 ${sessionId}`,
+  );
+});
+
 test("conversation session selection prefers the expected id and newest new Codex session", () => {
   const project = "D:\\project\\demo";
   const sessions = [

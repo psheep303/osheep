@@ -76,6 +76,7 @@ import { normalizeLightTerminalAnsi, workflowXtermTheme, xtermAnsiTheme } from "
 import {
   blockOutputText,
   canApplyWorkflowRefresh,
+  findMarkdownAutoPreviewNode,
   formatCompactTokenCount,
   formatWorkflowDuration,
   type WorkflowBlockOutput,
@@ -807,6 +808,23 @@ export function WorkflowTab({
   const [historyTick, setHistoryTick] = useState(0);
   onWorkflowChangedRef.current = onWorkflowChanged;
 
+  const showCompletedMarkdown = useCallback(
+    (previous: WorkflowRecord | null, next: WorkflowRecord) => {
+      const completedMarkdown = findMarkdownAutoPreviewNode(
+        previous?.nodes,
+        next.nodes,
+        autoSeenMarkdownRef.current,
+        autoSeeRunStartedAtRef.current,
+      );
+      if (!completedMarkdown) return;
+      autoSeenMarkdownRef.current.add(
+        `${completedMarkdown.id}:${completedMarkdown.completedAt ?? 0}`,
+      );
+      setMpeNodeId(completedMarkdown.id);
+    },
+    [],
+  );
+
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
@@ -880,6 +898,7 @@ export function WorkflowTab({
       }
       workflowRef.current = next;
       setWorkflow(next);
+      showCompletedMarkdown(current, next);
       const isRunning = workflowIsRunning(next);
       setRunning(isRunning);
       if (!isRunning && event.type === "run" && event.run.status !== "running") {
@@ -913,6 +932,7 @@ export function WorkflowTab({
             return;
           }
           const next = applyNodePositions(record, runtimeLayoutRef.current);
+          showCompletedMarkdown(current, next);
           workflowRef.current = next;
           setWorkflow(next);
           setRunning(workflowIsRunning(next));
@@ -959,7 +979,7 @@ export function WorkflowTab({
       if (retryTimer !== null) window.clearTimeout(retryTimer);
       socket?.close();
     };
-  }, [workspaceId, workflowId, runtimeReadyWorkflowKey]);
+  }, [workspaceId, workflowId, runtimeReadyWorkflowKey, showCompletedMarkdown]);
 
   useEffect(() => {
     if (!workflowId || !workspaceId) return;
@@ -987,26 +1007,7 @@ export function WorkflowTab({
         setWorkflow(next);
         setRuntimeReadyWorkflowKey(`${workspaceId}\0${workflowId}`);
         setRunning(isRunning);
-        const completedMarkdown = next.nodes.find((node) => {
-          if (
-            nodeKind(node) !== "markdown" ||
-            node.status !== "success" ||
-            !markdownAutoSeeResult(node)
-          )
-            return false;
-          if (autoSeenMarkdownRef.current.has(`${node.id}:${node.completedAt ?? 0}`)) return false;
-          return (
-            previous?.nodes.find((item) => item.id === node.id)?.status === "running" ||
-            (autoSeeRunStartedAtRef.current > 0 &&
-              (node.completedAt ?? 0) >= autoSeeRunStartedAtRef.current)
-          );
-        });
-        if (completedMarkdown) {
-          autoSeenMarkdownRef.current.add(
-            `${completedMarkdown.id}:${completedMarkdown.completedAt ?? 0}`,
-          );
-          setMpeNodeId(completedMarkdown.id);
-        }
+        showCompletedMarkdown(previous, next);
         if (!isRunning) onWorkflowChanged();
       } catch {
         /* keep the current snapshot while the workspace is changing */
@@ -1020,7 +1021,7 @@ export function WorkflowTab({
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [workspaceId, workflowId, onWorkflowChanged]);
+  }, [workspaceId, workflowId, onWorkflowChanged, showCompletedMarkdown]);
 
   useEffect(() => {
     panRef.current = pan;
@@ -6140,8 +6141,14 @@ async function runAiTerminalWithRetries(
 ): Promise<{ result: AiTerminalResult | null; aborted: boolean }> {
   let lastError: unknown = null;
   const attempts = Math.max(1, retries + 1);
-  const conversationSessionId =
+  let conversationSessionId =
     input.conversationSessionId || (input.kind === "claude-cli" ? crypto.randomUUID() : undefined);
+  const handleFrame = (frame: AiTerminalFrame) => {
+    if (frame.type === "conversation" && frame.sessionId) {
+      conversationSessionId = frame.sessionId;
+    }
+    onFrame(frame);
+  };
   let attempt = 1;
   while (true) {
     try {
@@ -6158,7 +6165,7 @@ async function runAiTerminalWithRetries(
           conversationSessionId,
           resumeConversation: attempt > 1,
         },
-        onFrame,
+        handleFrame,
         signal,
       );
     } catch (e) {

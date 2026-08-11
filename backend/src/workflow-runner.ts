@@ -879,7 +879,8 @@ async function executeAgentNode(
   let terminalTranscript = "";
   const retries = agentRetryCount(node);
   const retryForever = agentRetryForever(node);
-  const conversationSessionId = node.providerKind === "claude-cli" ? randomUUID() : undefined;
+  let conversationSessionId: string | undefined =
+    node.providerKind === "claude-cli" ? randomUUID() : undefined;
   let attempt = 0;
   while (true) {
     if (attempt > 0) {
@@ -922,6 +923,7 @@ async function executeAgentNode(
     }
     await details.drain();
     if (abort.signal.aborted) throw new Error("Stopped");
+    conversationSessionId = result.conversationSessionId ?? conversationSessionId;
     terminalTranscript = appendAgentAttemptTranscript(
       terminalTranscript,
       result.transcript || result.content,
@@ -981,7 +983,7 @@ async function executeAgentNode(
           runDetails: errorDetails,
         },
       },
-      conversationSessionId: result.conversationSessionId,
+      conversationSessionId,
     };
   }
   const toolRun = await maybeRunAgentMcpToolCalls(
@@ -1014,7 +1016,7 @@ async function executeAgentNode(
         runDetails: finalDetails,
       },
     },
-    conversationSessionId: result.conversationSessionId,
+    conversationSessionId,
   };
 }
 

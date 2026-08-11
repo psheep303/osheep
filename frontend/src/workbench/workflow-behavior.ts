@@ -243,3 +243,25 @@ interface WorkflowRefreshState {
 export function canApplyWorkflowRefresh(state: WorkflowRefreshState): boolean {
   return state.requestedRevision === state.currentRevision && !state.dragging && !state.pendingSave;
 }
+
+export function findMarkdownAutoPreviewNode(
+  previous: WorkflowNode[] | undefined,
+  next: WorkflowNode[],
+  seen: ReadonlySet<string>,
+  runStartedAt: number,
+): WorkflowNode | undefined {
+  return next.find((node) => {
+    if (
+      node.kind !== "markdown" ||
+      node.status !== "success" ||
+      node.config?.autoSeeResult !== true
+    ) {
+      return false;
+    }
+    if (seen.has(`${node.id}:${node.completedAt ?? 0}`)) return false;
+    return (
+      previous?.find((item) => item.id === node.id)?.status === "running" ||
+      (runStartedAt > 0 && (node.completedAt ?? 0) >= runStartedAt)
+    );
+  });
+}

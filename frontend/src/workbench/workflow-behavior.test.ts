@@ -185,3 +185,24 @@ test("workflow refresh is rejected during a drag or pending save", async () => {
     false,
   );
 });
+
+test("completed markdown auto preview works for runtime events and opens once", async () => {
+  const behavior = await loadBehavior();
+  assert.ok(behavior, "workflow behavior module should exist");
+  const running = {
+    ...node("markdown", "codex-cli", { autoSeeResult: true }),
+    status: "running",
+  };
+  const completed = { ...running, status: "success", completedAt: 2_000 };
+  const seen = new Set<string>();
+
+  assert.equal(
+    behavior.findMarkdownAutoPreviewNode([running] as never, [completed] as never, seen, 1_000)?.id,
+    completed.id,
+  );
+  seen.add(`${completed.id}:${completed.completedAt}`);
+  assert.equal(
+    behavior.findMarkdownAutoPreviewNode([running] as never, [completed] as never, seen, 1_000),
+    undefined,
+  );
+});
