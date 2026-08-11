@@ -5,10 +5,16 @@ export class TerminalReplayBuffer {
   private head = 0;
   private length = 0;
 
-  constructor(private readonly limit = TERMINAL_REPLAY_CHAR_LIMIT) {}
+  constructor(private readonly limit: number | null = TERMINAL_REPLAY_CHAR_LIMIT) {}
 
   append(data: string): void {
-    if (!data || this.limit <= 0) return;
+    if (!data) return;
+    if (this.limit === null) {
+      this.chunks.push(data);
+      this.length += data.length;
+      return;
+    }
+    if (this.limit <= 0) return;
 
     if (data.length >= this.limit) {
       const tail = data.slice(-this.limit);

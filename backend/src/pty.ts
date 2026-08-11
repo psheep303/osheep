@@ -26,6 +26,10 @@ export interface TerminalSession {
   lastActivity: number;
   // Bounded recent output used to reconstruct a newly attached xterm.
   replayBuffer: TerminalReplayBuffer;
+  replayLength: number;
+  replayInitialCols: number;
+  replayInitialRows: number;
+  replayResizes: TerminalReplayResize[];
   // Currently attached WS sink (single attach per session for MVP).
   sink: ((frame: string) => void) | null;
   taps: Set<(frame: string) => void>;
@@ -44,6 +48,13 @@ export interface TerminalSession {
   // Tear down per-session shell-init temp files when the session ends.
   guardCleanup: (() => void) | null;
   killOnDetach: boolean;
+}
+
+export interface TerminalReplayResize {
+  offset: number;
+  cols: number;
+  rows: number;
+  compactStartup?: boolean;
 }
 
 const sessions = new Map<string, TerminalSession>();
@@ -181,6 +192,7 @@ export function createSession(input: CreateSessionInput): TerminalSession {
     throw errors.ptySpawnFailed((e as Error).message);
   }
 
+  const killOnDetach = input.killOnDetach !== false;
   const session: TerminalSession = {
     id: newSessionId(),
     workspaceId: input.workspace.id,
@@ -190,7 +202,13 @@ export function createSession(input: CreateSessionInput): TerminalSession {
     createdAt: Date.now(),
     pty,
     lastActivity: Date.now(),
-    replayBuffer: new TerminalReplayBuffer(),
+    // Agent TUIs must replay from their initial terminal state. Cutting an ANSI
+    // stream at an arbitrary byte produces invalid cursor and screen state.
+    replayBuffer: new TerminalReplayBuffer(killOnDetach ? undefined : null),
+    replayLength: 0,
+    replayInitialCols: cols,
+    replayInitialRows: rows,
+    replayResizes: [],
     sink: null,
     taps: new Set(),
     idleTimer: null,
@@ -199,7 +217,7 @@ export function createSession(input: CreateSessionInput): TerminalSession {
     inputBuffer: "",
     bufferDirty: false,
     guardCleanup,
-    killOnDetach: input.killOnDetach !== false,
+    killOnDetach,
   };
   sessions.set(session.id, session);
   bumpActivity(session);
@@ -219,6 +237,7 @@ export function createSession(input: CreateSessionInput): TerminalSession {
 
 function publishPtyOutput(session: TerminalSession, data: string): void {
   session.replayBuffer.append(data);
+  session.replayLength += data.length;
   const frame = JSON.stringify({ type: "output", data });
   for (const tap of session.taps) tap(frame);
   if (session.sink) session.sink(frame);
@@ -283,7 +302,13 @@ function cleanupSession(s: TerminalSession, _reason: string): void {
 export function attachSink(
   s: TerminalSession,
   sink: (frame: string) => void,
-): { detach: () => void; replayed: string } {
+): {
+  detach: () => void;
+  replayed: string;
+  replayInitialCols: number;
+  replayInitialRows: number;
+  replayResizes: TerminalReplayResize[];
+} {
   s.sink = sink;
   const replayed = s.replayBuffer.value();
   return {
@@ -291,6 +316,9 @@ export function attachSink(
       if (s.sink === sink) s.sink = null;
     },
     replayed,
+    replayInitialCols: s.replayInitialCols,
+    replayInitialRows: s.replayInitialRows,
+    replayResizes: s.killOnDetach ? [] : s.replayResizes.slice(),
   };
 }
 
@@ -433,9 +461,26 @@ function handleInputData(s: TerminalSession, data: string): void {
   flush();
 }
 
-export function resizeSession(s: TerminalSession, cols: number, rows: number): void {
+export function resizeSession(
+  s: TerminalSession,
+  cols: number,
+  rows: number,
+  options: { compactStartup?: boolean } = {},
+): void {
   const c = clampSize(cols, s.cols);
   const r = clampSize(rows, s.rows);
+  if (c === s.cols && r === s.rows) return;
+  if (!s.killOnDetach) {
+    const marker: TerminalReplayResize = {
+      offset: s.replayLength,
+      cols: c,
+      rows: r,
+      ...(options.compactStartup ? { compactStartup: true } : {}),
+    };
+    const previous = s.replayResizes.at(-1);
+    if (previous?.offset === marker.offset) s.replayResizes[s.replayResizes.length - 1] = marker;
+    else s.replayResizes.push(marker);
+  }
   s.cols = c;
   s.rows = r;
   try {

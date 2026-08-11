@@ -1,11 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { attachSink, publishPtyOutputForTest, type TerminalSession } from "./pty.js";
+import { attachSink, publishPtyOutputForTest, resizeSession, type TerminalSession } from "./pty.js";
 import { TerminalReplayBuffer } from "./terminal-replay-buffer.js";
 
 function createReplaySession(): TerminalSession {
   return {
     replayBuffer: new TerminalReplayBuffer(1024),
+    replayLength: 0,
+    replayInitialCols: 120,
+    replayInitialRows: 34,
+    replayResizes: [],
+    cols: 120,
+    rows: 34,
+    killOnDetach: false,
+    pty: { resize: () => undefined },
     sink: null,
     taps: new Set(),
   } as unknown as TerminalSession;
@@ -34,4 +42,29 @@ test("reattaching a terminal replays context retained during live and detached o
   assert.equal(second.replayed, initialScreen + liveOutput + choiceMenu);
   assert.deepEqual(secondFrames, []);
   second.detach();
+});
+
+test("persistent terminal replay records the dimensions used by each output range", () => {
+  const session = createReplaySession();
+  publishPtyOutputForTest(session, "wide-screen");
+  resizeSession(session, 84, 28);
+  publishPtyOutputForTest(session, "narrow-screen");
+
+  const replay = attachSink(session, () => undefined);
+  assert.equal(replay.replayed, "wide-screennarrow-screen");
+  assert.equal(replay.replayInitialCols, 120);
+  assert.equal(replay.replayInitialRows, 34);
+  assert.deepEqual(replay.replayResizes, [{ offset: 11, cols: 84, rows: 28 }]);
+  replay.detach();
+});
+
+test("replay layout coalesces resizes that have no output between them", () => {
+  const session = createReplaySession();
+  resizeSession(session, 100, 30, { compactStartup: true });
+  resizeSession(session, 84, 28, { compactStartup: true });
+  resizeSession(session, 84, 28);
+
+  const replay = attachSink(session, () => undefined);
+  assert.deepEqual(replay.replayResizes, [{ offset: 0, cols: 84, rows: 28, compactStartup: true }]);
+  replay.detach();
 });

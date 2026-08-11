@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   type AgentEffort,
+  agentTerminalChoiceResolutionVisibleForTest,
   agentTerminalPollPriorityForTest,
   agentTerminalPromptEnterCount,
   agentTerminalPromptSubmitDelayMs,
@@ -16,13 +17,16 @@ import {
   extractAgentTerminalContentForTest,
   finishAgentTerminalSuccess,
   hasAgentTerminalFailureForTest,
+  isExplicitChoiceSubmitInput,
+  isWaitingChoiceStable,
   resolveAgentTerminalContentStateForTest,
   selectAgentTerminalFinalContentForTest,
   selectConversationSessionIdForTest,
   shouldAutoEnterChoice,
   shouldClearWaitingForChoice,
-  shouldFinishAgentTerminalWithErrorForTest,
+  shouldCompactAgentStartupOnResize,
   shouldExposeWaitingForChoice,
+  shouldFinishAgentTerminalWithErrorForTest,
   shouldFollowUpPastedPromptSubmit,
 } from "./ai-terminal.js";
 
@@ -102,10 +106,7 @@ test("all common terminal error forms finish as errors once Codex is idle", () =
 });
 
 test("a terminal error does not finish while Codex is still generating", () => {
-  const screen = [
-    "Error: provider request failed",
-    "Working (8s • esc to interrupt)",
-  ].join("\n");
+  const screen = ["Error: provider request failed", "Working (8s • esc to interrupt)"].join("\n");
 
   assert.equal(shouldFinishAgentTerminalWithErrorForTest("codex-cli", screen), false);
 });
@@ -357,13 +358,57 @@ test("Claude structured JSON answer takes priority over terminal fallback", () =
   assert.equal(selectAgentTerminalFinalContentForTest("", "终端回退文本"), "终端回退文本");
 });
 
-test("active generation clears a previously exposed choice state", () => {
-  assert.equal(shouldClearWaitingForChoice("waiting-for-choice", "waiting-for-choice", true), true);
+test("only pre-submit Agent resizes compact a superseded startup screen", () => {
+  createAgentTerminalControlForTest("session_starting", { promptSubmitted: false });
+  createAgentTerminalControlForTest("session_submitted", { promptSubmitted: true });
+
+  assert.equal(shouldCompactAgentStartupOnResize("session_starting"), true);
+  assert.equal(shouldCompactAgentStartupOnResize("session_submitted"), false);
+  assert.equal(shouldCompactAgentStartupOnResize("ordinary_terminal"), false);
+});
+
+test("waiting choice stays exposed through redraws until resolution is explicit", () => {
+  assert.equal(shouldClearWaitingForChoice("waiting-for-choice", false), false);
+  assert.equal(shouldClearWaitingForChoice("waiting-for-choice", true), true);
+  assert.equal(shouldClearWaitingForChoice("ready-for-success", true), false);
+});
+
+test("waiting choice must remain stable before it is exposed", () => {
+  assert.equal(isWaitingChoiceStable(undefined, 2_000), false);
+  assert.equal(isWaitingChoiceStable(1_500, 2_000), false);
+  assert.equal(isWaitingChoiceStable(1_250, 2_000), true);
+});
+
+test("only enter or a standalone escape explicitly resolves a waiting choice", () => {
+  assert.equal(isExplicitChoiceSubmitInput("\r"), true);
+  assert.equal(isExplicitChoiceSubmitInput("\n"), true);
+  assert.equal(isExplicitChoiceSubmitInput("\x1b"), true);
+  assert.equal(isExplicitChoiceSubmitInput("\x1b[B"), false);
+  assert.equal(isExplicitChoiceSubmitInput("\x1b[12;40R"), false);
+});
+
+test("Claude answer and idle completion are explicit choice resolution evidence", () => {
   assert.equal(
-    shouldClearWaitingForChoice("waiting-for-choice", "ready-for-success", false),
+    agentTerminalChoiceResolutionVisibleForTest(
+      "claude-cli",
+      "User answered Claude's questions:\n  language -> C++",
+    ),
     true,
   );
-  assert.equal(shouldClearWaitingForChoice("waiting-for-choice", "waiting-for-choice", false), false);
+  assert.equal(
+    agentTerminalChoiceResolutionVisibleForTest(
+      "claude-cli",
+      ["Crunched for 16s", ">", "accept edits on (shift+tab to cycle) - 1 agent"].join("\n"),
+    ),
+    true,
+  );
+  assert.equal(
+    agentTerminalChoiceResolutionVisibleForTest(
+      "claude-cli",
+      "accept edits on (shift+tab to cycle) - 1 agent",
+    ),
+    false,
+  );
 });
 
 test("terminal choice prompts are classified as waiting for user input", () => {
@@ -726,10 +771,7 @@ test("Claude generation activity releases an earlier waiting choice", () => {
     "● Update(src/index.ts)",
   ].join("\n");
 
-  assert.equal(
-    resolveAgentTerminalContentStateForTest("claude-cli", screen, ""),
-    "empty",
-  );
+  assert.equal(resolveAgentTerminalContentStateForTest("claude-cli", screen, ""), "empty");
 });
 
 test("Claude task errors using the ballot-x marker finish as terminal errors", () => {
@@ -1059,6 +1101,18 @@ test("Codex completion remains visible when the idle prompt returns", () => {
   const content = extractAgentTerminalContentForTest(transcript, prompt, "codex-cli");
   assert.match(content, /已按方案实现天气爬虫增强/);
   assert.equal(classifyAgentTerminalContent(content), "ready-for-success");
+});
+
+test("Codex finishes at the new idle prompt after observed work even if answer extraction is empty", () => {
+  const screen = [
+    "• Edited test\\codex\\index.html (+1 -1)",
+    "• 已在 test/codex/index.html 写好极简鹦鹉飞行动画。",
+    "› Implement {feature}",
+    "gpt-5.6-terra low · D:\\project\\osheep\\backend\\workspaces\\demo",
+  ].join("\n");
+
+  assert.equal(agentTerminalReadyForAutoFinishForTest("codex-cli", screen, "empty"), false);
+  assert.equal(agentTerminalReadyForAutoFinishForTest("codex-cli", screen, "empty", true), true);
 });
 
 test("Codex final answer removes the terminal footer separator", () => {

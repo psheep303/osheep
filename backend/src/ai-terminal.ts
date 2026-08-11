@@ -126,6 +126,7 @@ const PROMPT_INPUT_RENDER_QUIET_MS = 350;
 const PROMPT_INPUT_RENDER_NO_ECHO_MS = 900;
 const PROMPT_INPUT_RENDER_TIMEOUT_MS = 8_000;
 const ALWAYS_ENTER_COOLDOWN_MS = 1_500;
+const WAITING_CHOICE_CONFIRM_MS = 750;
 
 interface AgentTerminalControl {
   prompt: string;
@@ -141,6 +142,10 @@ interface AgentTerminalControl {
   manualSuccessRequested: boolean;
   lastCompletionState?: AgentTerminalContentState;
   lastAlwaysEnterAt?: number;
+  waitingForChoiceSince?: number;
+  waitingChoiceDetectedAt?: number;
+  lastChoiceSubmitAt?: number;
+  workObserved?: boolean;
 }
 
 const controls = new Map<string, AgentTerminalControl>();
@@ -478,7 +483,10 @@ async function structuredAgentFinalAnswer(
   return latest;
 }
 
-function selectAgentTerminalFinalContent(structuredAnswer: string, terminalFallback: string): string {
+function selectAgentTerminalFinalContent(
+  structuredAnswer: string,
+  terminalFallback: string,
+): string {
   return structuredAnswer.trim() || terminalFallback;
 }
 
@@ -701,12 +709,32 @@ export function shouldExposeWaitingForChoice(
   return !alwaysEnter && state === "waiting-for-choice";
 }
 
+export function isWaitingChoiceStable(firstDetectedAt: number | undefined, now: number): boolean {
+  return firstDetectedAt !== undefined && now - firstDetectedAt >= WAITING_CHOICE_CONFIRM_MS;
+}
+
 export function shouldClearWaitingForChoice(
   previousState: AgentTerminalContentState | undefined,
-  state: AgentTerminalContentState,
-  busy: boolean,
+  resolved: boolean,
 ): boolean {
-  return previousState === "waiting-for-choice" && (busy || state !== "waiting-for-choice");
+  return previousState === "waiting-for-choice" && resolved;
+}
+
+export function isExplicitChoiceSubmitInput(data: string): boolean {
+  return /[\r\n]/.test(data) || data === "\x1b";
+}
+
+export function recordAgentTerminalUserInput(sessionId: string, data: string): void {
+  const control = controls.get(sessionId);
+  if (control?.lastCompletionState !== "waiting-for-choice" || !isExplicitChoiceSubmitInput(data)) {
+    return;
+  }
+  control.lastChoiceSubmitAt = Date.now();
+}
+
+export function shouldCompactAgentStartupOnResize(sessionId: string): boolean {
+  const control = controls.get(sessionId);
+  return control !== undefined && !control.promptSubmitted;
 }
 
 type AgentTerminalPollPriority = "waiting-for-choice" | "busy" | "continue";
@@ -1373,7 +1401,9 @@ function waitForAgentCompletion(
         }
         return;
       }
-      const pollPriority = agentTerminalPollPriority(state, isAgentTerminalBusy(transcript));
+      const busy = isAgentTerminalBusy(transcript);
+      if (busy) control.workObserved = true;
+      const pollPriority = agentTerminalPollPriority(state, busy);
       if (pollPriority === "waiting-for-choice") {
         if (control.alwaysEnter) {
           if (
@@ -1395,36 +1425,47 @@ function waitForAgentCompletion(
           }
           return;
         }
-        if (
-          shouldExposeWaitingForChoice(control.alwaysEnter, state) &&
-          state !== control.lastCompletionState
-        ) {
+        if (!shouldExposeWaitingForChoice(control.alwaysEnter, state)) return;
+        if (state === control.lastCompletionState) return;
+        if (control.waitingChoiceDetectedAt === undefined) {
+          control.waitingChoiceDetectedAt = now;
+          return;
+        }
+        if (isWaitingChoiceStable(control.waitingChoiceDetectedAt, now)) {
           control.lastCompletionState = state;
+          control.waitingForChoiceSince = now;
           onStatus("waiting-for-choice");
         }
         return;
+      }
+      control.waitingChoiceDetectedAt = undefined;
+      const choiceWasSubmitted =
+        control.waitingForChoiceSince !== undefined &&
+        (control.lastChoiceSubmitAt ?? 0) >= control.waitingForChoiceSince;
+      const choiceResolved =
+        state !== "waiting-for-choice" &&
+        (choiceWasSubmitted || isAgentTerminalChoiceResolutionVisible(kind, transcript));
+      if (control.lastCompletionState === "waiting-for-choice") {
+        if (!shouldClearWaitingForChoice(control.lastCompletionState, choiceResolved)) return;
+        control.lastCompletionState = "empty";
+        control.waitingForChoiceSince = undefined;
+        onStatus("prompt-sent");
       }
       // A visible approval menu is actionable even when the preceding shell
       // command remains in the current viewport. Once the menu is gone,
       // generation activity takes priority over success and error detection.
       if (pollPriority === "busy") {
-        if (shouldClearWaitingForChoice(control.lastCompletionState, state, true)) {
-          control.lastCompletionState = "empty";
-          onStatus("prompt-sent");
-        }
         return;
       }
-      if (shouldClearWaitingForChoice(control.lastCompletionState, state, false)) {
-        control.lastCompletionState = "empty";
-        onStatus("prompt-sent");
-      } else if (state !== control.lastCompletionState && state !== "ready-for-success") {
+      if (state !== control.lastCompletionState && state !== "ready-for-success") {
         control.lastCompletionState = state;
       }
-      if (shouldFinishAgentTerminalWithError(kind, transcript)) {
-        clearInterval(timer);
-        resolve("terminal-error");
-        return;
-      }
+      const outputFinished =
+        sinceSubmit >= RESPONSE_MIN_MS &&
+        (hasFreshCompletionMarker ||
+          now - screenChangedAt >= RESPONSE_IDLE_MS ||
+          isClaudeCompletionReady(kind, transcript)) &&
+        isAgentTerminalReadyForAutoFinish(kind, transcript, state, control.workObserved === true);
       // Total runtime is intentionally unbounded. Only a continuous period
       // without terminal output is treated as a stalled agent.
       if (
@@ -1439,23 +1480,21 @@ function waitForAgentCompletion(
         resolve("stalled");
         return;
       }
-      if (
-        sinceSubmit >= RESPONSE_MIN_MS &&
-        (hasFreshCompletionMarker ||
-          now - screenChangedAt >= RESPONSE_IDLE_MS ||
-          isClaudeCompletionReady(kind, transcript)) &&
-        isAgentTerminalReadyForAutoFinish(kind, transcript, state)
-      ) {
-        if (control.lastCompletionState !== "ready-for-success") {
-          control.lastCompletionState = "ready-for-success";
-          onStatus("ready-for-success");
-        }
-        if (control.autoSuccess) {
-          clearInterval(timer);
-          resolve("idle");
-        } else {
-          onStatus("ready-for-success");
-        }
+      if (!outputFinished) return;
+      if (shouldFinishAgentTerminalWithError(kind, transcript)) {
+        clearInterval(timer);
+        resolve("terminal-error");
+        return;
+      }
+      if (control.lastCompletionState !== "ready-for-success") {
+        control.lastCompletionState = "ready-for-success";
+        onStatus("ready-for-success");
+      }
+      if (control.autoSuccess) {
+        clearInterval(timer);
+        resolve("idle");
+      } else {
+        onStatus("ready-for-success");
       }
     }, 500);
   });
@@ -1584,6 +1623,7 @@ function isAgentTerminalReadyForAutoFinish(
   kind: CliProviderKind,
   rawTranscript: string,
   state: AgentTerminalContentState,
+  workObserved = false,
 ): boolean {
   if (isAgentTerminalBusy(rawTranscript)) return false;
   const screen = agentTerminalScreenSignature(rawTranscript);
@@ -1595,7 +1635,7 @@ function isAgentTerminalReadyForAutoFinish(
     return completionMarkerVisible || isClaudeIdlePromptVisible(screen);
   }
   if (!isCodexIdlePromptVisible(screen)) return false;
-  return state === "ready-for-success" || isCodexCompletionFooterVisible(screen);
+  return state === "ready-for-success" || isCodexCompletionFooterVisible(screen) || workObserved;
 }
 
 function isCodexCompletionFooterVisible(screen: string): boolean {
@@ -1627,8 +1667,9 @@ export function agentTerminalReadyForAutoFinishForTest(
   kind: CliProviderKind,
   rawTranscript: string,
   state: AgentTerminalContentState,
+  workObserved = false,
 ): boolean {
-  return isAgentTerminalReadyForAutoFinish(kind, rawTranscript, state);
+  return isAgentTerminalReadyForAutoFinish(kind, rawTranscript, state, workObserved);
 }
 
 export function agentTerminalReadyForManualSuccessForTest(
@@ -1691,10 +1732,34 @@ function resolveAgentTerminalContentState(
 
   const screen = agentTerminalScreenSignature(rawTranscript);
   if (isClaudeChoicePromptVisible(screen)) return "waiting-for-choice";
-  if (state === "empty" && isClaudeCompletionFooterVisible(screen) && isClaudeIdlePromptVisible(screen)) {
+  if (
+    state === "empty" &&
+    isClaudeCompletionFooterVisible(screen) &&
+    isClaudeIdlePromptVisible(screen)
+  ) {
     return "ready-for-success";
   }
   return state === "waiting-for-choice" ? "ready-for-success" : state;
+}
+
+function isAgentTerminalChoiceResolutionVisible(
+  kind: CliProviderKind,
+  rawTranscript: string,
+): boolean {
+  const screen = agentTerminalScreenSignature(rawTranscript);
+  if (/\bUser answered Claude(?:'s|’s) questions:/i.test(screen)) return true;
+  if (/\b(?:Question|Prompt) (?:cancelled|canceled)\b/i.test(screen)) return true;
+  if (kind === "claude-cli") {
+    return isClaudeCompletionFooterVisible(screen) && isClaudeIdlePromptVisible(screen);
+  }
+  return isCodexCompletionFooterVisible(screen) && isCodexIdlePromptVisible(screen);
+}
+
+export function agentTerminalChoiceResolutionVisibleForTest(
+  kind: CliProviderKind,
+  rawTranscript: string,
+): boolean {
+  return isAgentTerminalChoiceResolutionVisible(kind, rawTranscript);
 }
 
 export function resolveAgentTerminalContentStateForTest(

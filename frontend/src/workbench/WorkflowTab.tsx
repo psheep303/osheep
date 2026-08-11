@@ -63,7 +63,13 @@ import {
 import { ClaudeLogo, OpenAILogo } from "./BrandIcons";
 import { ContextMenu, type CtxMenuSection } from "./ContextMenu";
 import { cleanAgentTerminalConversation } from "./terminal-conversation";
-import { createTerminalReplayGuard, createTerminalWriteBatcher } from "./terminal-write-batcher";
+import {
+  compactSupersededClaudeStartup,
+  createTerminalReplayGuard,
+  createTerminalWriteBatcher,
+  type TerminalReplayResize,
+  terminalReplaySegments,
+} from "./terminal-write-batcher";
 import { normalizeLightTerminalAnsi, workflowXtermTheme, xtermAnsiTheme } from "./theme";
 import {
   blockOutputText,
@@ -3870,13 +3876,18 @@ function WorkflowAgentTerminalInner({
     } catch {
       /* layout race */
     }
+    const fittedCols = term.cols;
+    const fittedRows = term.rows;
 
     const ws = openTerminalSocket(`/api/terminals/${encodeURIComponent(sessionId)}/io`);
     wsRef.current = ws;
+    let replayReady = false;
+    let replayOutput: string[] = [];
+    let suppressStartupOutput = false;
+    let suppressedStartupOutputVersion = 0;
     const outputWriter = createTerminalWriteBatcher((data) => term.write(data));
     const replayGuard = createTerminalReplayGuard((data, callback) => term.write(data, callback));
     ws.onopen = () => {
-      ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
       term.focus();
     };
     ws.onmessage = (ev) => {
@@ -3884,14 +3895,104 @@ function WorkflowAgentTerminalInner({
         const msg = JSON.parse(ev.data) as {
           type?: string;
           data?: string;
+          cols?: number;
+          rows?: number;
+          initialCols?: number;
+          initialRows?: number;
+          resizes?: TerminalReplayResize[];
+          compactStartup?: boolean;
           code?: number | null;
           signal?: number | string | null;
         };
         if (msg.type === "replay" && typeof msg.data === "string") {
           outputWriter.flush();
-          replayGuard.write(normalizeLightTerminalAnsi(msg.data, resolvedThemeRef.current));
+          const replayResizes = [...(msg.resizes ?? [])];
+          const compactOpeningStartup =
+            msg.compactStartup === true &&
+            (msg.cols !== fittedCols || msg.rows !== fittedRows) &&
+            compactSupersededClaudeStartup(msg.data).length < msg.data.length;
+          if (compactOpeningStartup) {
+            replayResizes.push({
+              offset: msg.data.length,
+              cols: fittedCols,
+              rows: fittedRows,
+              compactStartup: true,
+            });
+            suppressStartupOutput = true;
+          }
+          const segments = terminalReplaySegments(
+            msg.data,
+            msg.cols ?? term.cols,
+            msg.rows ?? term.rows,
+            msg.initialCols,
+            msg.initialRows,
+            replayResizes,
+          );
+          const finishReplay = () => {
+            if (suppressStartupOutput) {
+              const outputVersion = suppressedStartupOutputVersion;
+              replayGuard.write(
+                "",
+                () => {
+                  if (outputVersion !== suppressedStartupOutputVersion) {
+                    finishReplay();
+                    return;
+                  }
+                  suppressStartupOutput = false;
+                  replayReady = true;
+                  try {
+                    fit.fit();
+                    if (ws.readyState === WebSocket.OPEN) {
+                      ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+                    }
+                  } catch {
+                    /* layout race */
+                  }
+                },
+                true,
+                300,
+              );
+              return;
+            }
+            const pending = replayOutput.join("");
+            replayOutput = [];
+            replayGuard.write(pending, () => {
+              if (replayOutput.length > 0) {
+                finishReplay();
+                return;
+              }
+              replayReady = true;
+              try {
+                fit.fit();
+                if (ws.readyState === WebSocket.OPEN) {
+                  ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+                }
+              } catch {
+                /* layout race */
+              }
+            });
+          };
+          const writeSegment = (index: number) => {
+            const segment = segments[index];
+            if (!segment) {
+              finishReplay();
+              return;
+            }
+            if (term.cols !== segment.cols || term.rows !== segment.rows) {
+              term.resize(segment.cols, segment.rows);
+            }
+            replayGuard.write(
+              normalizeLightTerminalAnsi(segment.data, resolvedThemeRef.current),
+              () => writeSegment(index + 1),
+              false,
+            );
+          };
+          writeSegment(0);
         } else if (msg.type === "output" && typeof msg.data === "string") {
-          outputWriter.push(normalizeLightTerminalAnsi(msg.data, resolvedThemeRef.current));
+          const data = normalizeLightTerminalAnsi(msg.data, resolvedThemeRef.current);
+          if (replayReady) outputWriter.push(data);
+          else if (suppressStartupOutput) suppressedStartupOutputVersion += 1;
+          else replayOutput.push(data);
         } else if (msg.type === "exit") {
           outputWriter.flush();
           term.writeln(
@@ -3911,11 +4012,12 @@ function WorkflowAgentTerminalInner({
     };
 
     const inputSub = term.onData((data) => {
-      if (replayGuard.acceptsInput() && ws.readyState === WebSocket.OPEN) {
+      if (replayReady && replayGuard.acceptsInput() && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: "input", data }));
       }
     });
     const resizeObs = new ResizeObserver(() => {
+      if (!replayReady) return;
       try {
         fit.fit();
         if (ws.readyState === WebSocket.OPEN) {

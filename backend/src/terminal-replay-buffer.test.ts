@@ -32,3 +32,15 @@ test("terminal replay buffer handles a single chunk larger than its limit", () =
 
   assert.equal(replay.value(), "56789");
 });
+
+test("unbounded terminal replay preserves the initial ANSI state across a long session", () => {
+  const replay = new TerminalReplayBuffer(null);
+  const initialState = "\x1b[?1049h\x1b[2J\x1b[HClaude Code";
+  replay.append(initialState);
+  for (let index = 0; index < 10_000; index += 1) {
+    replay.append(`\x1b[${(index % 20) + 1};1Hframe-${index}`);
+  }
+
+  assert.equal(replay.value().startsWith(initialState), true);
+  assert.equal(replay.value().endsWith("frame-9999"), true);
+});
