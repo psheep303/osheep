@@ -1378,7 +1378,13 @@ function waitForAgentCompletion(
         resolve("manual-success");
         return;
       }
-      const state = resolveAgentTerminalContentState(kind, transcript, content());
+      const extractedContent = content();
+      const state = resolveAgentTerminalContentState(kind, transcript, extractedContent);
+      // Codex may keep repainting its cursor/status chrome after the final
+      // answer. A non-empty extracted answer is still concrete evidence that
+      // this submission produced work, even if the busy marker was missed by
+      // a 500 ms poll.
+      if (kind === "codex-cli" && extractedContent.trim()) control.workObserved = true;
       if (
         shouldFollowUpPastedPromptSubmit({
           prompt: control.prompt,
@@ -1464,7 +1470,8 @@ function waitForAgentCompletion(
         sinceSubmit >= RESPONSE_MIN_MS &&
         (hasFreshCompletionMarker ||
           now - screenChangedAt >= RESPONSE_IDLE_MS ||
-          isClaudeCompletionReady(kind, transcript)) &&
+          isClaudeCompletionReady(kind, transcript) ||
+          isCodexCompletionReady(kind, transcript, control.workObserved === true)) &&
         isAgentTerminalReadyForAutoFinish(kind, transcript, state, control.workObserved === true);
       // Total runtime is intentionally unbounded. Only a continuous period
       // without terminal output is treated as a stalled agent.
@@ -1697,6 +1704,23 @@ function isClaudeCompletionReady(kind: CliProviderKind, rawTranscript: string): 
   if (kind !== "claude-cli") return false;
   const screen = agentTerminalScreenSignature(rawTranscript);
   return isClaudeCompletionFooterVisible(screen) && isClaudeIdlePromptVisible(screen);
+}
+
+function isCodexCompletionReady(
+  kind: CliProviderKind,
+  rawTranscript: string,
+  workObserved: boolean,
+): boolean {
+  if (kind !== "codex-cli" || !workObserved) return false;
+  const screen = agentTerminalScreenSignature(rawTranscript);
+  return isCodexCompletionFooterVisible(screen) && isCodexIdlePromptVisible(screen);
+}
+
+export function agentTerminalCodexCompletionReadyForTest(
+  rawTranscript: string,
+  workObserved: boolean,
+): boolean {
+  return isCodexCompletionReady("codex-cli", rawTranscript, workObserved);
 }
 
 function isClaudeIdleFooterLine(trimmed: string): boolean {

@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   type AgentEffort,
   agentTerminalChoiceResolutionVisibleForTest,
+  agentTerminalCodexCompletionReadyForTest,
   agentTerminalPollPriorityForTest,
   agentTerminalPromptEnterCount,
   agentTerminalPromptSubmitDelayMs,
@@ -1101,6 +1102,17 @@ test("Codex completion remains visible when the idle prompt returns", () => {
   const content = extractAgentTerminalContentForTest(transcript, prompt, "codex-cli");
   assert.match(content, /已按方案实现天气爬虫增强/);
   assert.equal(classifyAgentTerminalContent(content), "ready-for-success");
+});
+
+test("Codex completion footer is an output-complete signal after observed work", () => {
+  const screen = [
+    "• 已完成当前工作区检查和修改。",
+    "─ Worked for 3m 00s ─",
+    "› Run /review on my current changes",
+  ].join("\n");
+
+  assert.equal(agentTerminalCodexCompletionReadyForTest(screen, false), false);
+  assert.equal(agentTerminalCodexCompletionReadyForTest(screen, true), true);
 });
 
 test("Codex finishes at the new idle prompt after observed work even if answer extraction is empty", () => {
