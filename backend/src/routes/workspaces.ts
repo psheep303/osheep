@@ -23,6 +23,7 @@ import {
 export async function registerWorkspaceRoutes(app: FastifyInstance) {
   app.get("/api/settings", async () =>
     readAppSettings({
+      ui: { language: "system", theme: "dark" },
       editor: { fontSize: 14, tabSize: 2, autoSave: false },
       ai: { autoAllow: {} },
       workflow: { maxParallelNodes: 4 },
@@ -46,7 +47,7 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
 
   app.get("/api/ui-preferences", async () => {
     const settings = await readAppSettings<{ ui?: unknown }>({});
-    return settings.ui ?? { language: "system", theme: "system" };
+    return settings.ui ?? { language: "system", theme: "dark" };
   });
 
   app.put<{ Body: unknown }>("/api/ui-preferences", async (req) => {

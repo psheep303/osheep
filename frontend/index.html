@@ -10,11 +10,19 @@
           const raw = localStorage.getItem("osheep.uiPreferences.v1");
           const preference = raw ? JSON.parse(raw).theme : null;
           const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-          const theme = preference === "dark" || (preference !== "light" && prefersDark) ? "dark" : "light";
+          const theme =
+            preference === "light"
+              ? "light"
+              : preference === "system"
+                ? prefersDark
+                  ? "dark"
+                  : "light"
+                : "dark";
           document.documentElement.dataset.theme = theme;
           document.documentElement.style.colorScheme = theme;
         } catch {
-          // The React preference provider will recover if storage is unavailable or malformed.
+          document.documentElement.dataset.theme = "dark";
+          document.documentElement.style.colorScheme = "dark";
         }
       })();
 
@@ -22,7 +30,13 @@
         document.documentElement.dataset.desktopNavigation = "true";
       }
 
-      const startupTheme = new URLSearchParams(window.location.search).get("osheepTheme");
+      const startupPreference = new URLSearchParams(window.location.search).get("osheepTheme");
+      const startupTheme =
+        startupPreference === "system"
+          ? window.matchMedia("(prefers-color-scheme: dark)").matches
+            ? "dark"
+            : "light"
+          : startupPreference;
       if (startupTheme === "light" || startupTheme === "dark") {
         document.documentElement.dataset.theme = startupTheme;
         document.documentElement.style.colorScheme = startupTheme;
@@ -30,19 +44,10 @@
     </script>
     <style>
       :root {
-        color-scheme: light;
-        --startup-bg: #f7f8fa;
-        --startup-fg: #26313d;
-        --startup-accent: #0078d4;
-      }
-
-      @media (prefers-color-scheme: dark) {
-        :root {
-          color-scheme: dark;
-          --startup-bg: #181818;
-          --startup-fg: #d7d7d7;
-          --startup-accent: #75beff;
-        }
+        color-scheme: dark;
+        --startup-bg: #181818;
+        --startup-fg: #d7d7d7;
+        --startup-accent: #75beff;
       }
 
       :root[data-theme="light"] {

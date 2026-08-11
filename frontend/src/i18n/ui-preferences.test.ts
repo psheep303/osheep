@@ -7,15 +7,20 @@ import {
   resolveSystemTheme,
 } from "./UiPreferences";
 
-test("UI preferences default to following the operating system", () => {
+test("UI preferences default to dark while language follows the operating system", () => {
   assert.deepEqual(parseUiPreferences(null), DEFAULT_UI_PREFERENCES);
   assert.deepEqual(parseUiPreferences("not json"), DEFAULT_UI_PREFERENCES);
+  assert.deepEqual(DEFAULT_UI_PREFERENCES, { language: "system", theme: "dark" });
 });
 
 test("UI preferences discard unsupported stored values independently", () => {
   assert.deepEqual(parseUiPreferences('{"language":"fr","theme":"light"}'), {
     language: "system",
     theme: "light",
+  });
+  assert.deepEqual(parseUiPreferences('{"language":"en","theme":"sepia"}'), {
+    language: "en",
+    theme: "dark",
   });
 });
 

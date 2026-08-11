@@ -16,6 +16,7 @@ import {
   useRef,
   useState,
 } from "react";
+import type { MessageKey } from "../i18n/messages";
 import { useUiPreferences } from "../i18n/UiPreferences";
 import {
   type AgentSessionApp,
@@ -182,14 +183,13 @@ type WorkflowIconName =
 
 interface BlockCategory {
   id: BlockCategoryId;
-  label: string;
+  labelKey: MessageKey;
   icon: WorkflowIconName;
 }
 
 interface BlockTemplate {
   category: BlockCategoryId;
-  label: string;
-  title: string;
+  nameKey: MessageKey;
   kind: WorkflowNodeKind;
   providerKind?: WorkflowProviderKind;
   model?: string;
@@ -493,41 +493,37 @@ const IF_OPERATORS = [
 const MERGE_MODES = ["object", "array"] as const;
 const LOOP_MODES = ["items", "batches"] as const;
 const BLOCK_CATEGORIES: BlockCategory[] = [
-  { id: "triggers", label: "Triggers", icon: "trigger" },
-  { id: "input", label: "输入", icon: "input" },
-  { id: "logic", label: "Logic", icon: "if" },
-  { id: "command", label: "命令", icon: "command" },
-  { id: "ai", label: "AI", icon: "ai" },
-  { id: "network", label: "网络", icon: "network" },
-  { id: "file", label: "文件操作", icon: "file" },
-  { id: "output", label: "输出", icon: "output" },
+  { id: "triggers", labelKey: "workflow.blocks.category.triggers", icon: "trigger" },
+  { id: "input", labelKey: "workflow.blocks.category.input", icon: "input" },
+  { id: "logic", labelKey: "workflow.blocks.category.logic", icon: "if" },
+  { id: "command", labelKey: "workflow.blocks.category.command", icon: "command" },
+  { id: "ai", labelKey: "workflow.blocks.category.ai", icon: "ai" },
+  { id: "network", labelKey: "workflow.blocks.category.network", icon: "network" },
+  { id: "file", labelKey: "workflow.blocks.category.file", icon: "file" },
+  { id: "output", labelKey: "workflow.blocks.category.output", icon: "output" },
 ];
 const BLOCK_TEMPLATES: BlockTemplate[] = [
   {
     category: "input",
-    label: "Input",
-    title: "Input",
+    nameKey: "workflow.blocks.input",
     kind: "input",
     icon: "input",
   },
   {
     category: "triggers",
-    label: "工作流运行时",
-    title: "Workflow run",
+    nameKey: "workflow.blocks.workflowRun",
     kind: "trigger",
     icon: "trigger",
   },
   {
     category: "triggers",
-    label: "Manual Trigger",
-    title: "Manual Trigger",
+    nameKey: "workflow.blocks.manualTrigger",
     kind: "manual-trigger",
     icon: "trigger",
   },
   {
     category: "triggers",
-    label: "Cron",
-    title: "Cron",
+    nameKey: "workflow.blocks.cron",
     kind: "cron",
     icon: "cron",
     config: {
@@ -537,8 +533,7 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
   },
   {
     category: "triggers",
-    label: "Webhook Trigger",
-    title: "Webhook Trigger",
+    nameKey: "workflow.blocks.webhookTrigger",
     kind: "webhook-trigger",
     icon: "webhook",
     config: {
@@ -548,15 +543,13 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
   },
   {
     category: "command",
-    label: "终端命令",
-    title: "Run command",
+    nameKey: "workflow.blocks.runCommand",
     kind: "command",
     icon: "command",
   },
   {
     category: "ai",
-    label: "Claude Code CLI",
-    title: "Claude Code",
+    nameKey: "workflow.blocks.claudeCode",
     kind: "agent",
     providerKind: "claude-cli",
     model: "default",
@@ -574,8 +567,7 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
   },
   {
     category: "ai",
-    label: "Codex CLI",
-    title: "Codex",
+    nameKey: "workflow.blocks.codex",
     kind: "agent",
     providerKind: "codex-cli",
     model: "default",
@@ -592,32 +584,28 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
   },
   {
     category: "ai",
-    label: "Codex plugins",
-    title: "Codex plugins",
+    nameKey: "workflow.blocks.codexPlugins",
     kind: "codex-plugin",
     icon: "codex",
     config: { pluginSelectors: [] },
   },
   {
     category: "ai",
-    label: "Claude plugins",
-    title: "Claude plugins",
+    nameKey: "workflow.blocks.claudePlugins",
     kind: "claude-plugin",
     icon: "claude",
     config: { pluginSelectors: [] },
   },
   {
     category: "network",
-    label: "获取网页文本",
-    title: "Fetch page text",
+    nameKey: "workflow.blocks.fetchPageText",
     kind: "web",
     prompt: "https://example.com",
     icon: "web",
   },
   {
     category: "network",
-    label: "HTTP Request",
-    title: "HTTP Request",
+    nameKey: "workflow.blocks.httpRequest",
     kind: "http-request",
     icon: "http",
     config: {
@@ -630,8 +618,7 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
   },
   {
     category: "logic",
-    label: "IF",
-    title: "IF",
+    nameKey: "workflow.blocks.if",
     kind: "if",
     icon: "if",
     config: {
@@ -642,16 +629,14 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
   },
   {
     category: "logic",
-    label: "Wait",
-    title: "Wait",
+    nameKey: "workflow.blocks.wait",
     kind: "wait",
     icon: "wait",
     config: { seconds: 1 },
   },
   {
     category: "output",
-    label: "Set Data",
-    title: "Set Data",
+    nameKey: "workflow.blocks.setData",
     kind: "set",
     icon: "set",
     config: {
@@ -660,16 +645,14 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
   },
   {
     category: "output",
-    label: "Merge",
-    title: "Merge",
+    nameKey: "workflow.blocks.merge",
     kind: "merge",
     icon: "merge",
     config: { mode: "object" },
   },
   {
     category: "output",
-    label: "JSON Extract",
-    title: "JSON Extract",
+    nameKey: "workflow.blocks.jsonExtract",
     kind: "json",
     icon: "json",
     config: {
@@ -679,8 +662,7 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
   },
   {
     category: "command",
-    label: "Code in JavaScript",
-    title: "Code in JavaScript",
+    nameKey: "workflow.blocks.javascript",
     kind: "code",
     icon: "code",
     config: {
@@ -689,8 +671,7 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
   },
   {
     category: "logic",
-    label: "Loop Over Items",
-    title: "Loop Over Items",
+    nameKey: "workflow.blocks.loopItems",
     kind: "loop-items",
     icon: "loop",
     config: {
@@ -701,31 +682,27 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
   },
   {
     category: "file",
-    label: "Read",
-    title: "Read file",
+    nameKey: "workflow.blocks.readFile",
     kind: "file-read",
     icon: "read",
   },
   {
     category: "file",
-    label: "Write",
-    title: "Write file",
+    nameKey: "workflow.blocks.writeFile",
     kind: "file-write",
     icon: "write",
     config: { path: "", content: "" },
   },
   {
     category: "output",
-    label: "Markdown render",
-    title: "Markdown",
+    nameKey: "workflow.blocks.markdown",
     kind: "markdown",
     prompt: "## Result\n\n{{blocks[2].text}}",
     icon: "markdown",
   },
   {
     category: "output",
-    label: "MCP tool",
-    title: "MCP",
+    nameKey: "workflow.blocks.mcp",
     kind: "mcp",
     icon: "mcp",
     config: {
@@ -1360,7 +1337,14 @@ export function WorkflowTab({
         const last = record.nodes[record.nodes.length - 1];
         const x = last ? last.x + NODE_W + 96 : 0;
         const y = last ? last.y : 0;
-        const node = nodeFromTemplate(template, nodeId, nextBlockId(record), x, y);
+        const node = nodeFromTemplate(
+          template,
+          nodeId,
+          nextBlockId(record),
+          x,
+          y,
+          t(template.nameKey),
+        );
         return { ...record, nodes: [...record.nodes, node] };
       },
       true,
@@ -2355,8 +2339,8 @@ export function WorkflowTab({
               setBlockPickerOpen(true);
             }}
             disabled={running}
-            title="Add block"
-            aria-label="Add block"
+            title={t("workflow.blocks.add")}
+            aria-label={t("workflow.blocks.add")}
           >
             <IconAddBlock />
           </button>
@@ -3134,18 +3118,19 @@ function WorkflowBlockPicker({
   onAdd: (template: BlockTemplate) => void;
   onClose: () => void;
 }) {
+  const { t } = useUiPreferences();
   const templates = BLOCK_TEMPLATES.filter((item) => item.category === category);
 
   return (
     <section className="workflow-block-picker">
       <div className="workflow-panel__head">
-        <div className="workflow-inspector__eyebrow">Blocks</div>
+        <div className="workflow-inspector__eyebrow">{t("workflow.blocks.title")}</div>
         <button
           type="button"
           className="workflow-inspector__close"
           onClick={onClose}
-          aria-label="Close blocks"
-          title="Close"
+          aria-label={t("workflow.blocks.close")}
+          title={t("common.close")}
         >
           x
         </button>
@@ -3162,21 +3147,21 @@ function WorkflowBlockPicker({
               <span className="workflow-block-picker__icon">
                 <WorkflowIcon name={item.icon} />
               </span>
-              {item.label}
+              {t(item.labelKey)}
             </button>
           ))}
         </nav>
         <div className="workflow-block-picker__items">
           {templates.map((template) => (
             <button
-              key={`${template.category}:${template.label}`}
+              key={`${template.category}:${template.nameKey}`}
               type="button"
               onClick={() => onAdd(template)}
             >
               <span className="workflow-block-picker__item-icon">
                 <WorkflowIcon name={template.icon} />
               </span>
-              <span>{template.label}</span>
+              <span>{t(template.nameKey)}</span>
             </button>
           ))}
         </div>
@@ -7253,12 +7238,13 @@ function nodeFromTemplate(
   blockId: number,
   x: number,
   y: number,
+  title: string,
 ): WorkflowNode {
   return {
     id,
     blockId,
     kind: template.kind,
-    title: template.title,
+    title,
     providerKind: template.providerKind ?? "codex-cli",
     model: template.model ?? "default",
     prompt: template.prompt ?? "",

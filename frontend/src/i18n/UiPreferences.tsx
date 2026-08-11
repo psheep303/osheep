@@ -31,7 +31,7 @@ interface UiPreferencesContextValue extends UiPreferences {
 export const UI_PREFERENCES_STORAGE_KEY = "osheep.uiPreferences.v1";
 export const DEFAULT_UI_PREFERENCES: UiPreferences = {
   language: "system",
-  theme: "system",
+  theme: "dark",
 };
 
 function isLanguagePreference(value: unknown): value is LanguagePreference {
@@ -48,7 +48,7 @@ export function parseUiPreferences(raw: string | null): UiPreferences {
     const value = JSON.parse(raw) as Partial<UiPreferences>;
     return {
       language: isLanguagePreference(value.language) ? value.language : "system",
-      theme: isThemePreference(value.theme) ? value.theme : "system",
+      theme: isThemePreference(value.theme) ? value.theme : DEFAULT_UI_PREFERENCES.theme,
     };
   } catch {
     return DEFAULT_UI_PREFERENCES;
