@@ -72,7 +72,8 @@ npm --prefix frontend ci
 Start both web development processes from the repository root on Linux:
 
 ```bash
-bash ./dev.sh
+chmod +x ./dev.sh
+./dev.sh
 ```
 
 The script manages both processes in one terminal. Use `--backend-only`, `--frontend-only`, `--developer`, or `--install` as needed; `Ctrl+C` stops both processes.
