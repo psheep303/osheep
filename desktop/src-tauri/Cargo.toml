@@ -16,7 +16,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
-rfd = "0.15"
+rfd = "0.17"
 
 [profile.release]
 codegen-units = 1
