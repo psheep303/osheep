@@ -69,6 +69,7 @@ import {
   createTerminalWriteBatcher,
   stableClaudeStartupRedraw,
   type TerminalReplayResize,
+  terminalReplayHasClaudeStartupRedraw,
   terminalReplaySegments,
 } from "./terminal-write-batcher";
 import { normalizeLightTerminalAnsi, workflowXtermTheme, xtermAnsiTheme } from "./theme";
@@ -3947,8 +3948,15 @@ function WorkflowAgentTerminalInner({
         if (msg.type === "replay" && typeof msg.data === "string") {
           outputWriter.flush();
           const replayResizes = [...(msg.resizes ?? [])];
+          const hasHistoricalStartupRedraw = terminalReplayHasClaudeStartupRedraw(
+            msg.data,
+            replayResizes,
+          );
+          const hasStartupWelcome =
+            replayResizes.length === 0 &&
+            compactSupersededClaudeStartup(msg.data).length < msg.data.length;
           const compactOpeningStartup =
-            msg.compactStartup === true &&
+            (msg.compactStartup === true || hasHistoricalStartupRedraw || hasStartupWelcome) &&
             (msg.cols !== fittedCols || msg.rows !== fittedRows) &&
             compactSupersededClaudeStartup(msg.data).length < msg.data.length;
           if (compactOpeningStartup) {

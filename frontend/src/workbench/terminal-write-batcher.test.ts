@@ -99,6 +99,23 @@ test("terminal replay removes only a superseded Claude startup screen", () => {
   );
 });
 
+test("terminal replay repairs an unmarked resize transition around Claude startup", () => {
+  const prelude = "PS> claude\r\n";
+  const oldWelcome = "\x1b[?2026h╭─── Claude Code v2.1.226 ───╮\r\n╰───╯\x1b[?2026l";
+  const transition = "\x1b[?2026h\x1b[2;76Hfile\r\nwith\r\ninstructions\x1b[?2026l";
+  const newWelcome = "\x1b[?2026h╭─── Claude Code v2.1.226 ───╮\r\n╰───╯\x1b[?2026l";
+  const data = prelude + oldWelcome + transition + newWelcome;
+  const offset = (prelude + oldWelcome).length;
+
+  assert.deepEqual(
+    terminalReplaySegments(data, 84, 28, 120, 34, [{ offset, cols: 84, rows: 28 }]),
+    [
+      { data: prelude, cols: 120, rows: 34 },
+      { data: newWelcome, cols: 84, rows: 28 },
+    ],
+  );
+});
+
 test("startup compaction preserves output after a completed welcome update", () => {
   const welcome = "\x1b[?2026h╭─── Claude Code v2.1.226 ───╮\r\n╰───╯\x1b[?2026l";
   const prompt = "\r\n❯ keep this prompt";

@@ -59,7 +59,7 @@ export function terminalReplaySegments(
   let cols = validTerminalSize(initialCols) ? initialCols : fallbackCols;
   let rows = validTerminalSize(initialRows) ? initialRows : fallbackRows;
   const segments: TerminalReplaySegment[] = [];
-  const compactStartupBoundaries: number[] = [];
+  const explicitCompactBoundaries: number[] = [];
   let offset = 0;
 
   for (const resize of resizes ?? []) {
@@ -78,7 +78,7 @@ export function terminalReplaySegments(
       cols,
       rows,
     });
-    if (resize.compactStartup) compactStartupBoundaries.push(segments.length - 1);
+    if (resize.compactStartup) explicitCompactBoundaries.push(segments.length - 1);
     offset = resize.offset;
     cols = resize.cols;
     rows = resize.rows;
@@ -88,15 +88,35 @@ export function terminalReplaySegments(
   // ConPTY can emit a partial old-width update immediately after resize,
   // followed by Claude's complete redraw. The partial update is not a valid
   // standalone screen and must not enter xterm scrollback.
+  const compactStartupBoundaries = new Set(explicitCompactBoundaries);
+  if (!data.includes("Claude") || !data.includes("Code") || !data.includes("╭───")) {
+    return segments;
+  }
+  const stableRedraws = segments.map((segment) => stableClaudeStartupRedraw(segment.data));
+  const nextStableSegment = new Array<number>(segments.length).fill(-1);
+  let nextStable = -1;
+  for (let index = segments.length - 1; index >= 0; index -= 1) {
+    if (stableRedraws[index] !== null) nextStable = index;
+    nextStableSegment[index] = nextStable;
+  }
+  // Older sessions may have recorded the resize before the startup phase was
+  // marked. A complete Claude welcome redraw immediately after any resize is
+  // sufficient evidence to apply the same one-time cleanup.
+  for (let boundary = 0; boundary < segments.length - 1; boundary += 1) {
+    if (nextStableSegment[boundary + 1] >= 0) {
+      segments[boundary]!.data = compactSupersededClaudeStartup(segments[boundary]!.data);
+      compactStartupBoundaries.add(boundary);
+    }
+  }
   for (const boundary of compactStartupBoundaries) {
-    for (let index = boundary + 1; index < segments.length; index += 1) {
-      const stableRedraw = stableClaudeStartupRedraw(segments[index]!.data);
+    const index = nextStableSegment[boundary + 1] ?? -1;
+    if (index >= 0) {
+      const stableRedraw = stableRedraws[index];
       if (stableRedraw === null) continue;
       for (let transient = boundary + 1; transient < index; transient += 1) {
         segments[transient]!.data = "";
       }
       segments[index]!.data = stableRedraw;
-      break;
     }
   }
   return segments;
@@ -145,6 +165,25 @@ export function stableClaudeStartupRedraw(data: string): string | null {
     searchFrom = welcomeStart + 1;
   }
   return null;
+}
+
+export function terminalReplayHasClaudeStartupRedraw(
+  data: string,
+  resizes: TerminalReplayResize[] | undefined,
+): boolean {
+  let offset = 0;
+  for (const resize of resizes ?? []) {
+    if (!Number.isInteger(resize.offset) || resize.offset < offset || resize.offset > data.length) {
+      continue;
+    }
+    offset = resize.offset;
+    const nextResize = (resizes ?? []).find(
+      (candidate) => Number.isInteger(candidate.offset) && candidate.offset > offset,
+    );
+    const end = nextResize?.offset ?? data.length;
+    if (stableClaudeStartupRedraw(data.slice(offset, end)) !== null) return true;
+  }
+  return false;
 }
 
 export function createTerminalWriteBatcher(
