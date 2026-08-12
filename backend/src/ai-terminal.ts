@@ -116,12 +116,23 @@ export async function runAgentTerminal(opts: AgentTerminalOptions): Promise<Agen
   const workspaceBaseline = await captureWorkspaceChanges(opts.workspace.path).catch(
     () => null as WorkspaceChangeBaseline | null,
   );
+  const command = buildAgentTerminalCommand(opts.kind, opts.model, {
+    claudePermissionMode: opts.claudePermissionMode,
+    mode: opts.mode,
+    codexApproval: opts.codexApproval,
+    codexSandbox: opts.codexSandbox,
+    effort: opts.effort,
+    conversationSessionId: opts.conversationSessionId,
+    resumeConversation: opts.resumeConversation,
+    prompt: opts.prompt,
+  }).command;
   const session = createSession({
     workspace: opts.workspace,
     shell: platform === "windows" ? "powershell" : "bash",
     cols: DEFAULT_COLS,
     rows: DEFAULT_ROWS,
     killOnDetach: false,
+    initialCommand: command,
   });
   controls.set(session.id, {
     autoSuccess: opts.autoSuccess !== false,
@@ -137,17 +148,6 @@ export async function runAgentTerminal(opts: AgentTerminalOptions): Promise<Agen
 
   try {
     opts.onFrame?.({ type: "status", status: "starting" });
-    const command = buildAgentTerminalCommand(opts.kind, opts.model, {
-      claudePermissionMode: opts.claudePermissionMode,
-      mode: opts.mode,
-      codexApproval: opts.codexApproval,
-      codexSandbox: opts.codexSandbox,
-      effort: opts.effort,
-      conversationSessionId: opts.conversationSessionId,
-      resumeConversation: opts.resumeConversation,
-      prompt: opts.prompt,
-    }).command;
-    writeRawInput(session, `${command}\r`);
     opts.onFrame?.({ type: "status", status: "prompt-sent" });
 
     const conversationSessionId = await resolveConversationSessionId(opts, conversationBaseline);

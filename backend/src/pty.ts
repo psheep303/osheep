@@ -134,6 +134,8 @@ export interface CreateSessionInput {
   rows: number;
   killOnDetach?: boolean;
   guardRoot?: string;
+  /** Internal command run by the shell only after its startup guard is installed. */
+  initialCommand?: string;
 }
 
 export function createSession(input: CreateSessionInput): TerminalSession {
@@ -154,15 +156,20 @@ export function createSession(input: CreateSessionInput): TerminalSession {
   let guardCleanup: (() => void) | null = null;
   try {
     if (profile.id === "powershell") {
-      const g = buildPowerShellGuard(profile.args, workspacesRootAbs, initialCwd);
+      const g = buildPowerShellGuard(
+        profile.args,
+        workspacesRootAbs,
+        initialCwd,
+        input.initialCommand,
+      );
       spawnArgs = g.args;
       guardCleanup = g.cleanup;
     } else if (profile.id === "cmd") {
-      const g = buildCmdGuard(profile.args, workspacesRootAbs, initialCwd);
+      const g = buildCmdGuard(profile.args, workspacesRootAbs, initialCwd, input.initialCommand);
       spawnArgs = g.args;
       guardCleanup = g.cleanup;
     } else if (profile.id === "bash" || profile.id === "zsh") {
-      const g = buildBashGuard(profile.args, workspacesRootAbs, initialCwd);
+      const g = buildBashGuard(profile.args, workspacesRootAbs, initialCwd, input.initialCommand);
       spawnArgs = g.args;
       guardCleanup = g.cleanup;
     }
@@ -172,6 +179,10 @@ export function createSession(input: CreateSessionInput): TerminalSession {
     // If guard generation fails (e.g., tmp write), fall back silently.
     spawnArgs = profile.args;
     guardCleanup = null;
+  }
+
+  if (input.initialCommand && !guardCleanup) {
+    throw errors.ptySpawnFailed("Unable to prepare the terminal startup command.");
   }
 
   let pty: nodePty.IPty;
