@@ -2092,7 +2092,6 @@ export function WorkflowTab({
               codexApproval: agentCodexApproval(node),
               codexSandbox: agentCodexSandbox(node),
               effort: agentEffort(node),
-              failOnTerminalError: true,
               alwaysEnter: agentAlwaysEnter(node),
               conversationSessionId: requestedConversationSessionId,
             },
@@ -2103,8 +2102,6 @@ export function WorkflowTab({
               } else if (frame.type === "conversation" && frame.sessionId) {
                 conversationSessionId = frame.sessionId;
                 updateAgentDetails("running");
-              } else if (frame.type === "output" && typeof frame.data === "string") {
-                appendLog({ stream: "stdout", content: frame.data });
               } else if (frame.type === "status" && frame.status) {
                 terminalStatus = frame.status;
                 updateAgentDetails("running");
@@ -4305,17 +4302,11 @@ function WorkflowAgentTerminalInner({
             ? "manual input enabled"
             : terminalStatus === "ready-for-success"
               ? "ready to mark success"
-              : terminalStatus === "waiting-for-input"
-                ? "waiting for CLI input"
-                : terminalStatus === "prompt-injected"
-                  ? "prompt injected"
-                  : terminalStatus === "prompt-sent"
-                    ? "prompt injected"
-                    : terminalStatus === "prompt-timeout"
-                      ? "auto inject timed out"
-                      : terminalStatus === "auto-finished"
-                        ? "answer captured"
-                        : "live terminal"}
+              : terminalStatus === "prompt-sent"
+                ? "prompt injected"
+                : terminalStatus === "auto-finished"
+                  ? "answer captured"
+                  : "live terminal"}
         </span>
       </div>
       <div className="workflow-run-details__xterm-host" ref={hostRef} />
@@ -6457,7 +6448,6 @@ async function runAiTerminalWithRetries(
     codexApproval?: AiTerminalCodexApproval;
     codexSandbox?: AiTerminalCodexSandbox;
     effort?: AiTerminalEffort;
-    failOnTerminalError?: boolean;
     alwaysEnter?: boolean;
     conversationSessionId?: string;
     resumeConversation?: boolean;

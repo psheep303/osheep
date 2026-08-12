@@ -42,6 +42,14 @@ interface AgentSessionRecord extends AgentSessionSummary {
   auxiliaryPath?: string;
 }
 
+export async function findAgentSessionFilePath(
+  app: AgentSessionApp,
+  id: string,
+  roots: AgentSessionRoots = getAgentSessionRoots(),
+): Promise<string | null> {
+  return (await findAgentSessionRecord(app, id, roots))?.filePath ?? null;
+}
+
 interface CodexTitle {
   title: string;
   updatedAt: number | null;

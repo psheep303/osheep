@@ -1710,24 +1710,18 @@ export async function aiChatStream(
 }
 
 export interface AiTerminalFrame {
-  type: "session" | "conversation" | "output" | "status" | "exit";
+  type: "session" | "conversation" | "status";
   sessionId?: string;
   data?: string;
   status?:
     | "starting"
-    | "waiting-for-input"
-    | "ready"
-    | "prompt-injected"
     | "prompt-sent"
-    | "prompt-timeout"
     | "waiting-for-choice"
     | "ready-for-success"
     | "auto-error"
     | "auto-finished"
     | "manual-success"
     | "exited";
-  code?: number | null;
-  signal?: number | string | null;
 }
 
 export interface AiTerminalResult {
@@ -1739,6 +1733,8 @@ export interface AiTerminalResult {
   verification: string[];
   exitCode: number | null;
   signal: number | string | null;
+  outcome?: "success" | "error" | "cancelled";
+  errorMessage?: string;
 }
 
 export type AiTerminalMode = "default" | "goal" | "plan";
@@ -1773,7 +1769,6 @@ export async function aiChatTerminalStream(
     codexApproval?: AiTerminalCodexApproval;
     codexSandbox?: AiTerminalCodexSandbox;
     effort?: AiTerminalEffort;
-    failOnTerminalError?: boolean;
     alwaysEnter?: boolean;
     conversationSessionId?: string;
     resumeConversation?: boolean;
@@ -1891,32 +1886,6 @@ export async function aiChatTerminalStream(
   return { result, aborted };
 }
 
-export async function injectAiTerminalPrompt(
-  workspaceId: string,
-  sessionId: string,
-  options?: { submit?: boolean },
-): Promise<void> {
-  await http.post(
-    `/api/workspaces/${encodeURIComponent(workspaceId)}/ai/chat/terminal/${encodeURIComponent(
-      sessionId,
-    )}/inject`,
-    options ?? {},
-  );
-}
-
-export async function setAiTerminalAutoContinue(
-  workspaceId: string,
-  sessionId: string,
-  autoContinue: boolean,
-): Promise<void> {
-  await http.post(
-    `/api/workspaces/${encodeURIComponent(workspaceId)}/ai/chat/terminal/${encodeURIComponent(
-      sessionId,
-    )}/auto-continue`,
-    { autoContinue },
-  );
-}
-
 export async function setAiTerminalAutoSuccess(
   workspaceId: string,
   sessionId: string,
@@ -1946,14 +1915,6 @@ export async function finishAiTerminalSuccess(
     `/api/workspaces/${encodeURIComponent(workspaceId)}/ai/chat/terminal/${encodeURIComponent(
       sessionId,
     )}/success`,
-  );
-}
-
-export async function continueAiTerminal(workspaceId: string, sessionId: string): Promise<void> {
-  await http.post(
-    `/api/workspaces/${encodeURIComponent(workspaceId)}/ai/chat/terminal/${encodeURIComponent(
-      sessionId,
-    )}/continue`,
   );
 }
 

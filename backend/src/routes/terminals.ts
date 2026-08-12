@@ -1,5 +1,4 @@
 import type { FastifyInstance } from "fastify";
-import { recordAgentTerminalUserInput, shouldCompactAgentStartupOnResize } from "../ai-terminal.js";
 import { platform } from "../config.js";
 import { errors } from "../errors.js";
 import {
@@ -103,7 +102,7 @@ export async function registerTerminalRoutes(app: FastifyInstance) {
           initialCols: replayInitialCols,
           initialRows: replayInitialRows,
           resizes: replayResizes,
-          compactStartup: shouldCompactAgentStartupOnResize(session.id),
+          compactStartup: false,
         }),
       );
 
@@ -137,16 +136,13 @@ export async function registerTerminalRoutes(app: FastifyInstance) {
           switch (m.type) {
             case "input":
               if (typeof m.data === "string") {
-                recordAgentTerminalUserInput(session.id, m.data);
                 writeInput(session, m.data);
               }
               break;
             case "resize":
               if (typeof m.cols === "number" && typeof m.rows === "number") {
                 resizeSession(session, m.cols, m.rows, {
-                  compactStartup:
-                    (!session.killOnDetach && m.compactStartup === true) ||
-                    shouldCompactAgentStartupOnResize(session.id),
+                  compactStartup: !session.killOnDetach && m.compactStartup === true,
                 });
               }
               break;

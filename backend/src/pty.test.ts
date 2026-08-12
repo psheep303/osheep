@@ -15,7 +15,6 @@ function createReplaySession(): TerminalSession {
     killOnDetach: false,
     pty: { resize: () => undefined },
     sink: null,
-    taps: new Set(),
   } as unknown as TerminalSession;
 }
 

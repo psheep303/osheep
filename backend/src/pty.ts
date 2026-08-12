@@ -32,7 +32,6 @@ export interface TerminalSession {
   replayResizes: TerminalReplayResize[];
   // Currently attached WS sink (single attach per session for MVP).
   sink: ((frame: string) => void) | null;
-  taps: Set<(frame: string) => void>;
   idleTimer: NodeJS.Timeout | null;
   // Logical cwd inside the workspaces root, updated when we recognize a `cd`.
   // Best-effort: covers plain `cd <path>` / `chdir` / `Set-Location` / `pushd`.
@@ -210,7 +209,6 @@ export function createSession(input: CreateSessionInput): TerminalSession {
     replayInitialRows: rows,
     replayResizes: [],
     sink: null,
-    taps: new Set(),
     idleTimer: null,
     logicalCwd: initialCwd,
     workspacesRoot: workspacesRootAbs,
@@ -228,7 +226,6 @@ export function createSession(input: CreateSessionInput): TerminalSession {
   });
   pty.onExit(({ exitCode, signal }) => {
     const frame = JSON.stringify({ type: "exit", code: exitCode, signal: signal ?? null });
-    for (const tap of session.taps) tap(frame);
     if (session.sink) session.sink(frame);
     cleanupSession(session, "pty-exit");
   });
@@ -239,7 +236,6 @@ function publishPtyOutput(session: TerminalSession, data: string): void {
   session.replayBuffer.append(data);
   session.replayLength += data.length;
   const frame = JSON.stringify({ type: "output", data });
-  for (const tap of session.taps) tap(frame);
   if (session.sink) session.sink(frame);
 }
 
@@ -319,20 +315,6 @@ export function attachSink(
     replayInitialCols: s.replayInitialCols,
     replayInitialRows: s.replayInitialRows,
     replayResizes: s.killOnDetach ? [] : s.replayResizes.slice(),
-  };
-}
-
-export function addTap(
-  s: TerminalSession,
-  tap: (frame: string) => void,
-): { detach: () => void; replayed: string } {
-  s.taps.add(tap);
-  const replayed = s.replayBuffer.value();
-  return {
-    detach: () => {
-      s.taps.delete(tap);
-    },
-    replayed,
   };
 }
 

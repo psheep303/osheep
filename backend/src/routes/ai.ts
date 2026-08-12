@@ -13,12 +13,9 @@ import {
   type ClaudePermissionMode,
   type CodexApproval,
   type CodexSandbox,
-  continueAgentTerminal,
   finishAgentTerminalSuccess,
-  injectAgentTerminalPrompt,
   pauseAgentTerminal,
   runAgentTerminal,
-  setAgentTerminalAutoContinue,
   setAgentTerminalAutoSuccess,
 } from "../ai-terminal.js";
 import { errors } from "../errors.js";
@@ -360,7 +357,6 @@ export async function registerAiRoutes(app: FastifyInstance) {
       codexApproval?: CodexApproval;
       codexSandbox?: CodexSandbox;
       effort?: AgentEffort;
-      failOnTerminalError?: boolean;
       alwaysEnter?: boolean;
       conversationSessionId?: string;
       resumeConversation?: boolean;
@@ -416,7 +412,6 @@ export async function registerAiRoutes(app: FastifyInstance) {
         codexApproval: parseCodexApproval(req.body?.codexApproval),
         codexSandbox: parseCodexSandbox(req.body?.codexSandbox),
         effort: parseAgentEffort(req.body?.effort),
-        retainRawTranscript: req.body?.failOnTerminalError === true,
         alwaysEnter: req.body?.alwaysEnter === true,
         conversationSessionId:
           typeof req.body?.conversationSessionId === "string"
@@ -428,15 +423,13 @@ export async function registerAiRoutes(app: FastifyInstance) {
           send(frame.type, frame);
         },
       });
-      if (req.body?.failOnTerminalError === true) {
-        const failure = classifyAgentTerminalResultFailure(result, prompt);
-        if (failure.failed) {
-          send("error", {
-            message: failure.message,
-            retryable: failure.retryable,
-          });
-          return;
-        }
+      const failure = classifyAgentTerminalResultFailure(result, prompt);
+      if (failure.failed) {
+        send("error", {
+          message: failure.message,
+          retryable: failure.retryable,
+        });
+        return;
       }
       send("result", result);
     } catch (e) {
@@ -449,29 +442,6 @@ export async function registerAiRoutes(app: FastifyInstance) {
       if (!reply.raw.destroyed && !reply.raw.writableEnded) reply.raw.end();
       reply.raw.off("close", onSocketClose);
     }
-  });
-
-  app.post<{
-    Params: { id: string; sessionId: string };
-    Body: { submit?: boolean };
-  }>("/api/workspaces/:id/ai/chat/terminal/:sessionId/inject", async (req) => {
-    await resolveWorkspace(req.params.id);
-    await injectAgentTerminalPrompt(req.params.sessionId, {
-      submit: req.body?.submit,
-    });
-    return { ok: true };
-  });
-
-  app.post<{
-    Params: { id: string; sessionId: string };
-    Body: { autoContinue?: boolean };
-  }>("/api/workspaces/:id/ai/chat/terminal/:sessionId/auto-continue", async (req) => {
-    await resolveWorkspace(req.params.id);
-    const result = setAgentTerminalAutoContinue(
-      req.params.sessionId,
-      req.body?.autoContinue !== false,
-    );
-    return { ok: true, ...result };
   });
 
   app.post<{
@@ -491,14 +461,6 @@ export async function registerAiRoutes(app: FastifyInstance) {
   }>("/api/workspaces/:id/ai/chat/terminal/:sessionId/pause", async (req) => {
     await resolveWorkspace(req.params.id);
     pauseAgentTerminal(req.params.sessionId);
-    return { ok: true };
-  });
-
-  app.post<{
-    Params: { id: string; sessionId: string };
-  }>("/api/workspaces/:id/ai/chat/terminal/:sessionId/continue", async (req) => {
-    await resolveWorkspace(req.params.id);
-    continueAgentTerminal(req.params.sessionId);
     return { ok: true };
   });
 
