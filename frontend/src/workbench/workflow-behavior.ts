@@ -126,6 +126,16 @@ export function emptyBlockOutput(node: WorkflowNode): WorkflowBlockOutput {
         right: null,
         text: "",
       };
+    case "diff-approval":
+      return { type: kind, status: "", approved: null, diff: "", text: "" };
+    case "git-commit":
+      return { type: kind, status: "", head: "", message: "", text: "" };
+    case "git-checkout":
+      return { type: kind, status: "", branch: "", created: false, text: "" };
+    case "git-delete-branch":
+      return { type: kind, status: "", branch: "", remote: null, force: false, text: "" };
+    case "github-pr":
+      return { type: kind, status: "", url: "", number: null, text: "" };
     case "merge": {
       const mode = configString(node, "mode", "object") === "array" ? "array" : "object";
       return {

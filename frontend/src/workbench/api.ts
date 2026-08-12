@@ -671,6 +671,7 @@ export interface GitCommitDetails {
 
 export interface GitCommitFile {
   path: string;
+  status: string;
   insertions: number | null;
   deletions: number | null;
   binary: boolean;
@@ -1115,6 +1116,11 @@ export type WorkflowNodeKind =
   | "http-request"
   | "set"
   | "if"
+  | "diff-approval"
+  | "git-commit"
+  | "git-checkout"
+  | "git-delete-branch"
+  | "github-pr"
   | "merge"
   | "code"
   | "loop-items"
@@ -1153,6 +1159,7 @@ export interface WorkflowEdge {
   from: string;
   to: string;
   passSummary: boolean;
+  sourceHandle?: string;
 }
 
 export interface WorkflowRun {
@@ -1287,6 +1294,36 @@ export async function stopWorkflow(
   workflowId: string,
 ): Promise<{ ok: boolean; stopped: boolean }> {
   return await http.post(workflowsUrl(workspaceId, `/${encodeURIComponent(workflowId)}/stop`));
+}
+
+export async function resolveWorkflowApproval(
+  workspaceId: string,
+  workflowId: string,
+  nodeId: string,
+  approved: boolean,
+): Promise<{ ok: boolean }> {
+  return await http.post(
+    workflowsUrl(
+      workspaceId,
+      `/${encodeURIComponent(workflowId)}/nodes/${encodeURIComponent(nodeId)}/approval`,
+    ),
+    { approved },
+  );
+}
+
+export async function resolveWorkflowInput(
+  workspaceId: string,
+  workflowId: string,
+  nodeId: string,
+  value: string,
+): Promise<{ ok: boolean }> {
+  return await http.post(
+    workflowsUrl(
+      workspaceId,
+      `/${encodeURIComponent(workflowId)}/nodes/${encodeURIComponent(nodeId)}/input`,
+    ),
+    { value },
+  );
 }
 
 export async function deleteWorkflow(workspaceId: string, workflowId: string): Promise<void> {

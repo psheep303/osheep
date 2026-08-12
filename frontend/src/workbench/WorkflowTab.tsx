@@ -40,6 +40,8 @@ import {
   execRun,
   execRunStream,
   finishAiTerminalSuccess,
+  getGitDiff,
+  getGitStatus,
   getClaudePlugins,
   getCodexPlugins,
   listAgentSessions,
@@ -49,6 +51,8 @@ import {
   type RemoteMcpTool,
   type RunResult,
   readFile,
+  resolveWorkflowApproval,
+  resolveWorkflowInput,
   setAiTerminalAutoSuccess,
   type WorkflowEdge,
   type WorkflowNode,
@@ -62,6 +66,8 @@ import {
   writeFile,
 } from "./api";
 import { ClaudeLogo, OpenAILogo } from "./BrandIcons";
+import type { MultiDiffEntry } from "./MultiDiffPane";
+import { evaluateConditionExpression } from "./condition-expression";
 import { ContextMenu, type CtxMenuSection } from "./ContextMenu";
 import { cleanAgentTerminalConversation } from "./terminal-conversation";
 import {
@@ -94,6 +100,7 @@ interface WorkflowTabProps {
   onFilesChanged: () => void;
   onResumeSession: (session: { app: AgentSessionApp; id: string; title: string }) => void;
   onTemplateBinding: (binding: WorkflowRecord["templateBinding"]) => void;
+  onOpenDiff: (title: string, entries: MultiDiffEntry[]) => void;
 }
 
 interface CanvasPoint {
@@ -103,6 +110,7 @@ interface CanvasPoint {
 
 interface DraftEdge extends CanvasPoint {
   from: string;
+  sourceHandle?: string;
 }
 
 interface NodeDragState {
@@ -151,6 +159,7 @@ type BlockCategoryId =
   | "input"
   | "logic"
   | "command"
+  | "git"
   | "ai"
   | "network"
   | "file"
@@ -179,7 +188,8 @@ type WorkflowIconName =
   | "read"
   | "write"
   | "markdown"
-  | "mcp";
+  | "mcp"
+  | "git";
 
 interface BlockCategory {
   id: BlockCategoryId;
@@ -238,11 +248,7 @@ interface SetNodeConfig {
   data: string;
 }
 
-interface IfNodeConfig {
-  left: string;
-  operator: string;
-  right: string;
-}
+interface IfNodeConfig { expression: string }
 
 interface MergeNodeConfig {
   mode: string;
@@ -346,6 +352,11 @@ const CONFIGURED_LOCAL_KINDS = new Set<WorkflowNodeKind>([
   "http-request",
   "set",
   "if",
+  "diff-approval",
+  "git-commit",
+  "git-checkout",
+  "git-delete-branch",
+  "github-pr",
   "merge",
   "code",
   "loop-items",
@@ -481,15 +492,6 @@ const CLAUDE_EFFORT_OPTIONS: AgentEffortOption[] = [
   { value: "max", title: "Max" },
   { value: "ultracode", title: "Ultracode" },
 ];
-const IF_OPERATORS = [
-  "equals",
-  "notEquals",
-  "contains",
-  "greaterThan",
-  "lessThan",
-  "exists",
-  "isEmpty",
-] as const;
 const MERGE_MODES = ["object", "array"] as const;
 const LOOP_MODES = ["items", "batches"] as const;
 const BLOCK_CATEGORIES: BlockCategory[] = [
@@ -497,6 +499,7 @@ const BLOCK_CATEGORIES: BlockCategory[] = [
   { id: "input", labelKey: "workflow.blocks.category.input", icon: "input" },
   { id: "logic", labelKey: "workflow.blocks.category.logic", icon: "if" },
   { id: "command", labelKey: "workflow.blocks.category.command", icon: "command" },
+  { id: "git", labelKey: "workflow.blocks.category.git", icon: "git" },
   { id: "ai", labelKey: "workflow.blocks.category.ai", icon: "ai" },
   { id: "network", labelKey: "workflow.blocks.category.network", icon: "network" },
   { id: "file", labelKey: "workflow.blocks.category.file", icon: "file" },
@@ -508,6 +511,7 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
     nameKey: "workflow.blocks.input",
     kind: "input",
     icon: "input",
+    config: { inputTitle: "Input" },
   },
   {
     category: "triggers",
@@ -622,10 +626,42 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
     kind: "if",
     icon: "if",
     config: {
-      left: "{{blocks[1].status}}",
-      operator: "equals",
-      right: "success",
+      expression: '{{blocks[1].status}} == "success"',
     },
+  },
+  {
+    category: "git",
+    nameKey: "workflow.blocks.diffApproval",
+    kind: "diff-approval",
+    icon: "git",
+  },
+  {
+    category: "git",
+    nameKey: "workflow.blocks.commit",
+    kind: "git-commit",
+    icon: "git",
+    config: { message: "", stageAll: false },
+  },
+  {
+    category: "git",
+    nameKey: "workflow.blocks.checkout",
+    kind: "git-checkout",
+    icon: "git",
+    config: { branch: "", createIfMissing: false },
+  },
+  {
+    category: "git",
+    nameKey: "workflow.blocks.deleteBranch",
+    kind: "git-delete-branch",
+    icon: "git",
+    config: { branch: "", force: false, remote: false, remoteName: "origin" },
+  },
+  {
+    category: "git",
+    nameKey: "workflow.blocks.pullRequest",
+    kind: "github-pr",
+    icon: "git",
+    config: { title: "", body: "", base: "", compare: "", draft: false, push: true },
   },
   {
     category: "logic",
@@ -726,6 +762,7 @@ export function WorkflowTab({
   onFilesChanged,
   onResumeSession,
   onTemplateBinding,
+  onOpenDiff,
 }: WorkflowTabProps) {
   const { t } = useUiPreferences();
   const [workflow, setWorkflow] = useState<WorkflowRecord | null>(null);
@@ -1060,6 +1097,20 @@ export function WorkflowTab({
   const waitingForChoiceSnapshot = waitingForChoiceNode
     ? runDetailsSnapshot(waitingForChoiceNode)
     : null;
+  const waitingForDiffApprovalNode =
+    workflow?.nodes.find(
+      (node) =>
+        node.kind === "diff-approval" &&
+        node.status === "running" &&
+        node.config?.waitingForApproval === true,
+    ) ?? null;
+  const waitingForInputNode =
+    workflow?.nodes.find(
+      (node) =>
+        node.kind === "input" &&
+        node.status === "running" &&
+        node.config?.waitingForInput === true,
+    ) ?? null;
   const waitingAlertKey = waitingForChoiceNode
     ? `${waitingForChoiceNode.id}:${waitingForChoiceSnapshot?.terminalSessionId ?? ""}`
     : "";
@@ -1404,16 +1455,28 @@ export function WorkflowTab({
     setSelectedId(nodeId);
   };
 
-  const addEdgeWithHistory = (from: string, to: string, recordHistory: boolean) => {
+  const addEdgeWithHistory = (
+    from: string,
+    to: string,
+    recordHistory: boolean,
+    sourceHandle?: string,
+  ) => {
     if (!from || !to || from === to) return;
     updateWorkflow(
       (record) => {
-        if (record.edges.some((edge) => edge.from === from && edge.to === to)) {
+        if (
+          record.edges.some(
+            (edge) => edge.from === from && edge.to === to && edge.sourceHandle === sourceHandle,
+          )
+        ) {
           return record;
         }
         return {
           ...record,
-          edges: [...record.edges, { id: makeId("edge"), from, to, passSummary: true }],
+          edges: [
+            ...record.edges,
+            { id: makeId("edge"), from, to, passSummary: true, sourceHandle },
+          ],
         };
       },
       true,
@@ -1514,12 +1577,16 @@ export function WorkflowTab({
     }
   };
 
-  const startEdgeDrag = (from: string, e: ReactPointerEvent<HTMLButtonElement>) => {
+  const startEdgeDrag = (
+    from: string,
+    e: ReactPointerEvent<HTMLButtonElement>,
+    sourceHandle?: string,
+  ) => {
     if (running || e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation();
     const point = clientToCanvas(e.clientX, e.clientY);
-    setDraftEdgeState({ from, ...point });
+    setDraftEdgeState({ from, sourceHandle, ...point });
     setConnectHoverId(null);
     e.currentTarget.setPointerCapture(e.pointerId);
   };
@@ -1554,7 +1621,7 @@ export function WorkflowTab({
     const target = hovering && hovering !== current.from ? hovering : null;
     setDraftEdgeState(null);
     setConnectHoverId(null);
-    if (target) addEdgeWithHistory(current.from, target, true);
+    if (target) addEdgeWithHistory(current.from, target, true, current.sourceHandle);
   };
 
   const centerView = useCallback((record?: WorkflowRecord) => {
@@ -2457,6 +2524,43 @@ export function WorkflowTab({
         </div>
       )}
 
+      {waitingForDiffApprovalNode && (
+        <div className="workflow-waiting-choice" role="alert" aria-live="assertive">
+          <span className="workflow-waiting-choice__signal" aria-hidden="true">
+            !
+          </span>
+          <div className="workflow-waiting-choice__message">
+            <strong>等待 Diff 审批</strong>
+            <span>{waitingForDiffApprovalNode.title} 需要批准或拒绝后才能继续。</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setBlockPickerOpen(false);
+              setSelectedId(waitingForDiffApprovalNode.id);
+            }}
+          >
+            查看 Diff
+          </button>
+        </div>
+      )}
+
+      {waitingForInputNode && workflow && (
+        <WorkflowInputDialog
+          key={waitingForInputNode.id}
+          title={workflowInputTitle(waitingForInputNode)}
+          onSubmit={async (value) => {
+            await resolveWorkflowInput(
+              workspaceId,
+              workflow.id,
+              waitingForInputNode.id,
+              value,
+            );
+          }}
+          onError={(message) => setError(message)}
+        />
+      )}
+
       {error && (
         <div className="workflow-error">
           <span>{error}</span>
@@ -2511,7 +2615,7 @@ export function WorkflowTab({
                 const from = workflow.nodes.find((node) => node.id === edge.from);
                 const to = workflow.nodes.find((node) => node.id === edge.to);
                 if (!from || !to) return null;
-                const path = edgePath(from, to);
+                const path = edgePath(from, to, edge.sourceHandle);
                 return (
                   <g key={edge.id} className="workflow-edge-group">
                     <path
@@ -2535,7 +2639,7 @@ export function WorkflowTab({
               {draftEdge && draftFrom && (
                 <path
                   className="workflow-edge is-draft"
-                  d={edgePathToPoint(draftFrom, draftEdge)}
+                  d={edgePathToPoint(draftFrom, draftEdge, draftEdge.sourceHandle)}
                   markerEnd="url(#workflow-arrow)"
                 />
               )}
@@ -2567,7 +2671,7 @@ export function WorkflowTab({
                 onNodePointerMove={moveNodeDrag}
                 onNodePointerUp={finishNodeDrag}
                 onNodePointerCancel={finishNodeDrag}
-                onStartEdgeDrag={(e) => startEdgeDrag(node.id, e)}
+                onStartEdgeDrag={(e, sourceHandle) => startEdgeDrag(node.id, e, sourceHandle)}
                 onStartInputEdgeDrag={(e) => startInputEdgeDrag(node.id, e)}
                 onMoveEdgeDrag={moveEdgeDrag}
                 onFinishEdgeDrag={finishEdgeDrag}
@@ -2638,6 +2742,7 @@ export function WorkflowTab({
                   : `insp-${selectedNode.id}`
               }
               node={selectedNode}
+              workspaceId={workspaceId}
               autoFocusName={renameTarget === selectedNode.id}
               nodes={workflow.nodes}
               edges={workflow.edges}
@@ -2646,6 +2751,10 @@ export function WorkflowTab({
               onConnectMcp={() => void connectMcpNode(selectedNode.id)}
               onShowDetails={() => setDetailNodeId(selectedNode.id)}
               onShowMpe={() => setMpeNodeId(selectedNode.id)}
+              onResolveApproval={(approved) =>
+                resolveWorkflowApproval(workspaceId, workflow.id, selectedNode.id, approved)
+              }
+              onOpenDiff={onOpenDiff}
               onClose={() => setSelectedId(null)}
               onDelete={() => deleteNode(selectedNode.id)}
               onUpdateEdge={updateEdge}
@@ -3198,7 +3307,7 @@ function WorkflowNodeBlock({
   onNodePointerMove: (e: ReactPointerEvent<HTMLDivElement>) => void;
   onNodePointerUp: (e: ReactPointerEvent<HTMLDivElement>) => void;
   onNodePointerCancel: (e: ReactPointerEvent<HTMLDivElement>) => void;
-  onStartEdgeDrag: (e: ReactPointerEvent<HTMLButtonElement>) => void;
+  onStartEdgeDrag: (e: ReactPointerEvent<HTMLButtonElement>, sourceHandle?: string) => void;
   onStartInputEdgeDrag: (e: ReactPointerEvent<HTMLButtonElement>) => void;
   onMoveEdgeDrag: (e: ReactPointerEvent<HTMLButtonElement>) => void;
   onFinishEdgeDrag: (e: ReactPointerEvent<HTMLButtonElement>) => void;
@@ -3217,6 +3326,7 @@ function WorkflowNodeBlock({
     ` is-${node.status}`;
   const hasInputHandle = !isTriggerNodeKind(nodeKind(node));
   const hasOutputHandle = nodeKind(node) !== "markdown";
+  const outputHandles = workflowOutputHandles(nodeKind(node));
 
   return (
     <div
@@ -3256,14 +3366,14 @@ function WorkflowNodeBlock({
         <WorkflowIcon name={nodeIconName(node)} />
       </span>
       <span className="workflow-node__name">{node.title}</span>
-      {hasOutputHandle && (
+      {hasOutputHandle && outputHandles.length === 0 && (
         <button
           type="button"
           className="workflow-node__handle workflow-node__handle--out"
           aria-label="Output connector"
           title="Output"
           disabled={running}
-          onPointerDown={onStartEdgeDrag}
+          onPointerDown={(event) => onStartEdgeDrag(event)}
           onPointerMove={onMoveEdgeDrag}
           onPointerUp={onFinishEdgeDrag}
           onPointerCancel={onFinishEdgeDrag}
@@ -3273,6 +3383,26 @@ function WorkflowNodeBlock({
           }}
         />
       )}
+
+      {outputHandles.map((handle, index) => (
+        <button
+          key={handle}
+          type="button"
+          className={`workflow-node__handle workflow-node__handle--out workflow-node__handle--branch is-${handle}`}
+          style={{ top: `${((index + 1) / (outputHandles.length + 1)) * 100}%` }}
+          aria-label={`${handle} output connector`}
+          title={handle}
+          disabled={running}
+          onPointerDown={(event) => onStartEdgeDrag(event, handle)}
+          onPointerMove={onMoveEdgeDrag}
+          onPointerUp={onFinishEdgeDrag}
+          onPointerCancel={onFinishEdgeDrag}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+          }}
+        />
+      ))}
     </div>
   );
 }
@@ -4222,7 +4352,67 @@ function WorkflowMpePanel({ markdown, onClose }: { markdown: string; onClose: ()
   );
 }
 
+function WorkflowInputDialog({
+  title,
+  onSubmit,
+  onError,
+}: {
+  title: string;
+  onSubmit: (value: string) => Promise<void>;
+  onError: (message: string) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const [value, setValue] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
+  return (
+    <div
+      className="workflow-input-dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="workflow-input-dialog-title"
+    >
+      <form
+        className="workflow-input-dialog__panel"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (submitting) return;
+          setSubmitting(true);
+          void onSubmit(value).catch((error) => {
+            setSubmitting(false);
+            onError((error as Error).message);
+            inputRef.current?.focus();
+          });
+        }}
+      >
+        <label id="workflow-input-dialog-title" htmlFor="workflow-runtime-input">
+          {title}
+        </label>
+        <div className="workflow-input-dialog__control">
+          <input
+            ref={inputRef}
+            id="workflow-runtime-input"
+            value={value}
+            onChange={(event) => setValue(event.target.value)}
+            disabled={submitting}
+            autoComplete="off"
+            spellCheck={false}
+          />
+          <button type="submit" disabled={submitting}>
+            Submit
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
 function WorkflowNodeInspector({
+  workspaceId,
   node,
   autoFocusName,
   nodes,
@@ -4232,11 +4422,14 @@ function WorkflowNodeInspector({
   onConnectMcp,
   onShowDetails,
   onShowMpe,
+  onResolveApproval,
+  onOpenDiff,
   onClose,
   onDelete,
   onUpdateEdge,
   onDeleteEdge,
 }: {
+  workspaceId: string;
   node: WorkflowNode;
   autoFocusName?: boolean;
   nodes: WorkflowNode[];
@@ -4246,6 +4439,8 @@ function WorkflowNodeInspector({
   onConnectMcp: () => void;
   onShowDetails: () => void;
   onShowMpe: () => void;
+  onResolveApproval: (approved: boolean) => Promise<unknown>;
+  onOpenDiff: (title: string, entries: MultiDiffEntry[]) => void;
   onClose: () => void;
   onDelete: () => void;
   onUpdateEdge: (edgeId: string, patch: Partial<WorkflowEdge>) => void;
@@ -4261,6 +4456,7 @@ function WorkflowNodeInspector({
   const isCron = kind === "cron";
   const isWebhookTrigger = kind === "webhook-trigger";
   const isAgent = kind === "agent";
+  const isInput = kind === "input";
   const isCodexPlugin = kind === "codex-plugin";
   const isClaudePlugin = kind === "claude-plugin";
   const isFileWrite = kind === "file-write";
@@ -4269,6 +4465,11 @@ function WorkflowNodeInspector({
   const isHttpRequest = kind === "http-request";
   const isSet = kind === "set";
   const isIf = kind === "if";
+  const isDiffApproval = kind === "diff-approval";
+  const isGitCommit = kind === "git-commit";
+  const isGitCheckout = kind === "git-checkout";
+  const isGitDeleteBranch = kind === "git-delete-branch";
+  const isGithubPr = kind === "github-pr";
   const isMerge = kind === "merge";
   const isCode = kind === "code";
   const isLoopItems = kind === "loop-items";
@@ -4364,6 +4565,21 @@ function WorkflowNodeInspector({
           <button type="button" onClick={onShowDetails}>
             see details
           </button>
+        </div>
+      )}
+
+      {isDiffApproval && node.status === "running" && node.config?.waitingForApproval === true && (
+        <div className="workflow-inspector__approval">
+          <div className="workflow-inspector__section-title">Diff waiting for approval</div>
+          <DiffApprovalView workspaceId={workspaceId} onOpenDiff={onOpenDiff} />
+          <div className="workflow-inspector__approval-actions">
+            <button type="button" className="is-primary" onClick={() => void onResolveApproval(true)}>
+              Approve
+            </button>
+            <button type="button" className="is-danger" onClick={() => void onResolveApproval(false)}>
+              Reject
+            </button>
+          </div>
         </div>
       )}
 
@@ -4668,31 +4884,151 @@ function WorkflowNodeInspector({
           />
         </label>
       ) : isIf ? (
+        <label className="workflow-inspector__field">
+          <span>Condition</span>
+          <input
+            className="workflow-inspector__condition-input"
+            value={ifConfig.expression}
+            onChange={(event) => updateConfig({ expression: event.target.value })}
+            disabled={running}
+            spellCheck={false}
+          />
+        </label>
+      ) : isDiffApproval ? (
+        <div className="workflow-inspector__section-title">
+          Pauses the workflow for review. Approved runs the success output; rejected runs failure.
+        </div>
+      ) : isGitCommit ? (
         <>
           <label className="workflow-inspector__field">
-            <span>Left</span>
+            <span>Commit message</span>
+            <TemplateTextarea
+              value={typeof node.config?.message === "string" ? node.config.message : ""}
+              onChange={(value) => updateConfig({ message: value })}
+              disabled={running}
+            />
+          </label>
+          <label className="workflow-inspector__check">
+            <input
+              type="checkbox"
+              checked={node.config?.stageAll === true}
+              onChange={(event) => updateConfig({ stageAll: event.target.checked })}
+              disabled={running}
+            />
+            <span>Stage all changes</span>
+          </label>
+        </>
+      ) : isGitCheckout ? (
+        <>
+          <label className="workflow-inspector__field">
+            <span>Branch</span>
             <TemplateInput
-              value={ifConfig.left}
-              onChange={(value) => updateConfig({ left: value })}
+              value={typeof node.config?.branch === "string" ? node.config.branch : ""}
+              onChange={(value) => updateConfig({ branch: value })}
+              disabled={running}
+            />
+          </label>
+          <label className="workflow-inspector__check">
+            <input
+              type="checkbox"
+              checked={node.config?.createIfMissing === true}
+              onChange={(event) => updateConfig({ createIfMissing: event.target.checked })}
+              disabled={running}
+            />
+            <span>Create branch if it does not exist</span>
+          </label>
+        </>
+      ) : isGitDeleteBranch ? (
+        <>
+          <label className="workflow-inspector__field">
+            <span>Branch</span>
+            <TemplateInput
+              value={typeof node.config?.branch === "string" ? node.config.branch : ""}
+              onChange={(value) => updateConfig({ branch: value })}
+              disabled={running}
+            />
+          </label>
+          <label className="workflow-inspector__check workflow-inspector__check--danger">
+            <input
+              type="checkbox"
+              checked={node.config?.force === true}
+              onChange={(event) => updateConfig({ force: event.target.checked })}
+              disabled={running}
+            />
+            <span>Force delete</span>
+            <small>Warning</small>
+          </label>
+          <label className="workflow-inspector__check">
+            <input
+              type="checkbox"
+              checked={node.config?.remote === true}
+              onChange={(event) => updateConfig({ remote: event.target.checked })}
+              disabled={running}
+            />
+            <span>Delete remote branch</span>
+          </label>
+          {node.config?.remote === true && (
+            <label className="workflow-inspector__field">
+              <span>Remote</span>
+              <TemplateInput
+                value={typeof node.config?.remoteName === "string" ? node.config.remoteName : "origin"}
+                onChange={(value) => updateConfig({ remoteName: value })}
+                disabled={running}
+              />
+            </label>
+          )}
+        </>
+      ) : isGithubPr ? (
+        <>
+          <label className="workflow-inspector__field">
+            <span>Title</span>
+            <TemplateInput
+              value={typeof node.config?.title === "string" ? node.config.title : ""}
+              onChange={(value) => updateConfig({ title: value })}
               disabled={running}
             />
           </label>
           <label className="workflow-inspector__field">
-            <span>Operator</span>
-            <SegmentedControl
-              value={ifConfig.operator}
-              options={IF_OPERATORS}
-              onChange={(value) => updateConfig({ operator: value })}
+            <span>Body</span>
+            <TemplateTextarea
+              value={typeof node.config?.body === "string" ? node.config.body : ""}
+              onChange={(value) => updateConfig({ body: value })}
               disabled={running}
             />
           </label>
           <label className="workflow-inspector__field">
-            <span>Right</span>
+            <span>Base branch (optional)</span>
             <TemplateInput
-              value={ifConfig.right}
-              onChange={(value) => updateConfig({ right: value })}
+              value={typeof node.config?.base === "string" ? node.config.base : ""}
+              onChange={(value) => updateConfig({ base: value })}
               disabled={running}
             />
+          </label>
+          <label className="workflow-inspector__field">
+            <span>Compare branch (optional)</span>
+            <TemplateInput
+              value={typeof node.config?.compare === "string" ? node.config.compare : ""}
+              onChange={(value) => updateConfig({ compare: value })}
+              disabled={running}
+            />
+          </label>
+          <label className="workflow-inspector__check">
+            <input
+              type="checkbox"
+              checked={node.config?.push !== false}
+              onChange={(event) => updateConfig({ push: event.target.checked })}
+              disabled={running}
+            />
+            <span>Push branch before creating PR</span>
+          </label>
+          <label className="workflow-inspector__check">
+            <input
+              type="checkbox"
+              checked={node.config?.draft === true}
+              onChange={(event) => updateConfig({ draft: event.target.checked })}
+              disabled={running}
+            />
+            <span>Create as draft</span>
           </label>
         </>
       ) : isMerge ? (
@@ -4890,6 +5226,16 @@ function WorkflowNodeInspector({
             />
           </label>
         </>
+      ) : isInput ? (
+        <label className="workflow-inspector__field">
+          <span>Input title</span>
+          <input
+            value={workflowInputTitle(node)}
+            onChange={(event) => updateConfig({ inputTitle: event.target.value })}
+            disabled={running}
+            spellCheck={false}
+          />
+        </label>
       ) : (
         !isTrigger &&
         !isCodexPlugin &&
@@ -5632,17 +5978,15 @@ async function executeLocalNode(
 
   if (kind === "if") {
     const config = ifNodeConfig(node);
-    const left = resolveTemplateValue(config.left, record);
-    const right = resolveTemplateValue(config.right, record);
-    const result = compareValues(left, config.operator, right);
+    const result = evaluateConditionExpression(config.expression, (template) =>
+      resolveTemplateValue(template, record),
+    );
     return {
       output: {
         type: "if",
         status: "success",
         result,
-        operator: config.operator,
-        left,
-        right,
+        expression: config.expression,
         text: result ? "true" : "false",
       },
     };
@@ -6857,52 +7201,6 @@ function incomingOutputs(record: WorkflowRecord, node: WorkflowNode): WorkflowBl
     .filter((item): item is WorkflowBlockOutput => !!item);
 }
 
-function compareValues(left: unknown, operator: string, right: unknown): boolean {
-  const lhs = parseMaybeJson(left);
-  const rhs = parseMaybeJson(right);
-  if (operator === "exists") return lhs !== undefined && lhs !== null && lhs !== "";
-  if (operator === "isEmpty") {
-    if (lhs === undefined || lhs === null || lhs === "") return true;
-    if (Array.isArray(lhs)) return lhs.length === 0;
-    if (typeof lhs === "object") return Object.keys(lhs).length === 0;
-    return false;
-  }
-  if (operator === "contains") {
-    if (typeof lhs === "string") return lhs.includes(String(rhs ?? ""));
-    if (Array.isArray(lhs)) return lhs.some((item) => valuesEqual(item, rhs));
-    if (lhs && typeof lhs === "object")
-      return Object.prototype.hasOwnProperty.call(lhs, String(rhs));
-    return false;
-  }
-  if (operator === "greaterThan" || operator === "lessThan") {
-    const leftNumber = Number(lhs);
-    const rightNumber = Number(rhs);
-    if (!Number.isNaN(leftNumber) && !Number.isNaN(rightNumber)) {
-      return operator === "greaterThan" ? leftNumber > rightNumber : leftNumber < rightNumber;
-    }
-    const leftText = String(lhs ?? "");
-    const rightText = String(rhs ?? "");
-    return operator === "greaterThan" ? leftText > rightText : leftText < rightText;
-  }
-  const equal = valuesEqual(lhs, rhs);
-  return operator === "notEquals" ? !equal : equal;
-}
-
-function valuesEqual(left: unknown, right: unknown): boolean {
-  if (left === right) return true;
-  if (
-    (typeof left === "number" || typeof left === "string") &&
-    (typeof right === "number" || typeof right === "string")
-  ) {
-    const leftNumber = Number(left);
-    const rightNumber = Number(right);
-    if (!Number.isNaN(leftNumber) && !Number.isNaN(rightNumber)) {
-      return leftNumber === rightNumber;
-    }
-  }
-  return jsonPreview(left) === jsonPreview(right);
-}
-
 async function runCodeBlock(
   code: string,
   input: WorkflowBlockOutput,
@@ -7085,12 +7383,16 @@ function parseFileWriteInput(raw: string): { path: string; content: string } {
   };
 }
 
-function edgePath(from: WorkflowNode, to: WorkflowNode): string {
-  return bezierPath(outputPoint(from), inputPoint(to));
+function edgePath(from: WorkflowNode, to: WorkflowNode, sourceHandle?: string): string {
+  return bezierPath(outputPoint(from, sourceHandle), inputPoint(to));
 }
 
-function edgePathToPoint(from: WorkflowNode, point: CanvasPoint): string {
-  return bezierPath(outputPoint(from), worldPointToCanvas(point));
+function edgePathToPoint(
+  from: WorkflowNode,
+  point: CanvasPoint,
+  sourceHandle?: string,
+): string {
+  return bezierPath(outputPoint(from, sourceHandle), worldPointToCanvas(point));
 }
 
 function inputPoint(node: WorkflowNode): CanvasPoint {
@@ -7100,11 +7402,20 @@ function inputPoint(node: WorkflowNode): CanvasPoint {
   };
 }
 
-function outputPoint(node: WorkflowNode): CanvasPoint {
+function outputPoint(node: WorkflowNode, sourceHandle?: string): CanvasPoint {
+  const handles = workflowOutputHandles(nodeKind(node));
+  const index = sourceHandle ? handles.indexOf(sourceHandle) : -1;
+  const ratio = index >= 0 ? (index + 1) / (handles.length + 1) : 0.5;
   return {
     x: worldToCanvasX(node.x + NODE_W),
-    y: worldToCanvasY(node.y + NODE_H / 2),
+    y: worldToCanvasY(node.y + NODE_H * ratio),
   };
+}
+
+function workflowOutputHandles(kind: WorkflowNodeKind): string[] {
+  if (kind === "if") return ["true", "false"];
+  if (kind === "diff-approval") return ["success", "failure"];
+  return [];
 }
 
 function worldToCanvasX(value: number): number {
@@ -7167,8 +7478,15 @@ function blockEyebrow(kind: WorkflowNodeKind): string {
   )
     return "Trigger";
   if (kind === "command") return "Command";
+  if (kind === "git-commit" || kind === "git-checkout" || kind === "git-delete-branch" || kind === "github-pr") return "Git";
   if (kind === "web" || kind === "http-request") return "Network";
-  if (kind === "if" || kind === "wait" || kind === "loop-items") return "Logic";
+  if (
+    kind === "if" ||
+    kind === "diff-approval" ||
+    kind === "wait" ||
+    kind === "loop-items"
+  )
+    return "Logic";
   if (kind === "code") return "Code";
   if (kind === "file-read" || kind === "file-write") return "File";
   if (kind === "markdown" || kind === "set" || kind === "merge" || kind === "json") return "Data";
@@ -7184,6 +7502,11 @@ function inputLabelForKind(kind: WorkflowNodeKind): string {
   if (kind === "http-request") return "Request";
   if (kind === "set") return "Data JSON";
   if (kind === "if") return "Condition";
+  if (kind === "diff-approval") return "Diff";
+  if (kind === "git-commit") return "Commit";
+  if (kind === "git-checkout") return "Switch branch";
+  if (kind === "git-delete-branch") return "Delete branch";
+  if (kind === "github-pr") return "Pull request";
   if (kind === "merge") return "Merge";
   if (kind === "code") return "JavaScript";
   if (kind === "loop-items") return "Items";
@@ -7209,6 +7532,11 @@ function nodeKind(node: WorkflowNode): WorkflowNodeKind {
     node.kind === "http-request" ||
     node.kind === "set" ||
     node.kind === "if" ||
+    node.kind === "diff-approval" ||
+    node.kind === "git-commit" ||
+    node.kind === "git-checkout" ||
+    node.kind === "git-delete-branch" ||
+    node.kind === "github-pr" ||
     node.kind === "merge" ||
     node.kind === "code" ||
     node.kind === "loop-items" ||
@@ -7273,6 +7601,7 @@ function nodeIconName(node: WorkflowNode): WorkflowIconName {
   if (kind === "http-request") return "http";
   if (kind === "set") return "set";
   if (kind === "if") return "if";
+  if (kind === "diff-approval" || kind === "git-commit" || kind === "git-checkout" || kind === "git-delete-branch" || kind === "github-pr") return "git";
   if (kind === "merge") return "merge";
   if (kind === "code") return "code";
   if (kind === "loop-items") return "loop";
@@ -7315,6 +7644,7 @@ function toWorkflowIconName(value: unknown): WorkflowIconName | null {
     "write",
     "markdown",
     "mcp",
+    "git",
   ]);
   if (current.has(icon as WorkflowIconName)) return icon as WorkflowIconName;
   const legacy: Record<string, WorkflowIconName> = {
@@ -7583,14 +7913,37 @@ function setNodeConfig(node: WorkflowNode): SetNodeConfig {
 
 function ifNodeConfig(node: WorkflowNode): IfNodeConfig {
   const config = node.config ?? {};
+  if (typeof config.expression === "string") return { expression: config.expression };
+  const left = typeof config.left === "string" ? config.left : "";
+  const right = typeof config.right === "string" ? config.right : "";
   const operator = typeof config.operator === "string" ? config.operator : "equals";
+  const symbol =
+    operator === "equals"
+      ? "=="
+      : operator === "notEquals"
+        ? "!="
+        : operator === "greaterThan"
+          ? ">"
+          : operator === "lessThan"
+            ? "<"
+            : "==";
   return {
-    left: typeof config.left === "string" ? config.left : "",
-    operator: IF_OPERATORS.includes(operator as (typeof IF_OPERATORS)[number])
-      ? operator
-      : "equals",
-    right: typeof config.right === "string" ? config.right : "",
+    expression:
+      operator === "exists"
+        ? `${left} != null`
+        : operator === "isEmpty"
+          ? `${left} == ""`
+          : `${left} ${symbol} ${right}`,
   };
+}
+
+function workflowInputTitle(node: WorkflowNode): string {
+  const configured = node.config?.inputTitle;
+  if (Object.prototype.hasOwnProperty.call(node.config ?? {}, "inputTitle")) {
+    return typeof configured === "string" ? configured : "";
+  }
+  if (node.prompt.trim()) return node.prompt.trim();
+  return node.title || "Input";
 }
 
 function mergeNodeConfig(node: WorkflowNode): MergeNodeConfig {
@@ -7759,6 +8112,73 @@ function jsonPreview(value: unknown): string {
   }
 }
 
+function DiffApprovalView({
+  workspaceId,
+  onOpenDiff,
+}: {
+  workspaceId: string;
+  onOpenDiff: (title: string, entries: MultiDiffEntry[]) => void;
+}) {
+  const { resolvedLanguage } = useUiPreferences();
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const openDiff = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const status = await getGitStatus(workspaceId);
+      const changes = status.changes.filter(
+        (change) => change.indexStatus !== " " || change.worktreeStatus !== " ",
+      );
+      const entries = await Promise.all(
+        changes.map(async (change) => {
+          const staged = change.indexStatus !== " " && change.indexStatus !== "?";
+          const diff = await getGitDiff(
+            workspaceId,
+            change.path,
+            staged ? "HEAD" : "INDEX",
+            staged ? "INDEX" : "WORKTREE",
+          );
+          return {
+            path: diff.path,
+            leftContent: diff.leftContent,
+            rightContent: diff.rightContent,
+            leftMissing: diff.leftMissing,
+            rightMissing: diff.rightMissing,
+            binary: diff.binary,
+          } satisfies MultiDiffEntry;
+        }),
+      );
+      if (entries.length === 0) {
+        setError(resolvedLanguage === "zh-CN" ? "当前没有可审批的改动" : "No changes to review.");
+        return;
+      }
+      onOpenDiff(resolvedLanguage === "zh-CN" ? "待审批的 Diff" : "Diff for approval", entries);
+    } catch (reason) {
+      setError((reason as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="workflow-inspector__approval-open">
+      <button type="button" disabled={loading} onClick={() => void openDiff()}>
+        <i className="codicon codicon-diff-multiple" aria-hidden="true" />
+        {loading
+          ? resolvedLanguage === "zh-CN"
+            ? "正在打开..."
+            : "Opening..."
+          : resolvedLanguage === "zh-CN"
+            ? "打开 Diff"
+            : "Open Diff"}
+      </button>
+      {error && <div className="workflow-inspector__mcp-error">{error}</div>}
+    </div>
+  );
+}
+
 function mcpConnectionLabel(config: McpNodeConfig): string {
   if (config.connectionStatus === "connecting") return "Connecting";
   if (config.connectionStatus === "error") return "Connection failed";
@@ -7798,9 +8218,16 @@ function cloneWorkflow(record: WorkflowRecord): WorkflowRecord {
 }
 
 function clearRunDetails(config: WorkflowNode["config"]): WorkflowNode["config"] | undefined {
-  if (!config || !Object.prototype.hasOwnProperty.call(config, "runDetails")) return config;
-  const { runDetails: _runDetails, ...rest } = config;
+  if (!config) return config;
+  const {
+    runDetails: _runDetails,
+    waitingForInput: _waitingForInput,
+    waitingForApproval: _waitingForApproval,
+    ...rest
+  } = config;
   void _runDetails;
+  void _waitingForInput;
+  void _waitingForApproval;
   return rest;
 }
 

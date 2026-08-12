@@ -820,6 +820,80 @@
   right: -8px;
 }
 
+.workflow-node__handle--branch {
+  overflow: visible;
+}
+
+.workflow-node__handle--branch.is-true,
+.workflow-node__handle--branch.is-success {
+  border-color: #4b9b69;
+}
+
+.workflow-node__handle--branch.is-false,
+.workflow-node__handle--branch.is-failure {
+  border-color: #c15f51;
+}
+
+.workflow-inspector__approval {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border-control);
+  background: var(--surface-1);
+}
+
+.workflow-inspector__approval .workflow-inspector__output {
+  max-height: 320px;
+}
+
+.workflow-inspector__approval-open {
+  display: grid;
+  gap: 6px;
+}
+
+.workflow-inspector__approval-open > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: fit-content;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-sm);
+  color: var(--fg-strong);
+  background: var(--surface-3);
+  cursor: pointer;
+}
+
+.workflow-inspector__approval-open > button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.workflow-inspector__approval-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.workflow-inspector__approval-actions button {
+  height: 30px;
+  padding: 0 14px;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-sm);
+  color: var(--fg-strong);
+  background: var(--surface-3);
+  cursor: pointer;
+}
+
+.workflow-inspector__approval-actions button.is-primary {
+  border-color: #4b9b69;
+}
+
+.workflow-inspector__approval-actions button.is-danger {
+  border-color: #c15f51;
+}
+
 .workflow-node__handle:hover:not(:disabled),
 .workflow-node__handle.is-connect-hover {
   background: var(--color-link);
@@ -1195,6 +1269,12 @@
 .workflow-inspector__field input:focus,
 .workflow-inspector__field textarea:focus {
   border-color: var(--color-link);
+}
+
+.workflow-inspector__field .workflow-inspector__condition-input {
+  font-family: var(--wf-font-mono);
+  font-variant-ligatures: none;
+  letter-spacing: 0;
 }
 
 .workflow-inspector__field input:disabled,
@@ -2278,6 +2358,79 @@
 .workflow-waiting-choice button:hover {
   border-color: rgba(250, 204, 21, 0.62);
   background: rgba(250, 204, 21, 0.18);
+}
+
+.workflow-input-dialog {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.52);
+  pointer-events: auto;
+}
+
+.workflow-input-dialog__panel {
+  width: min(460px, 100%);
+  display: grid;
+  gap: 12px;
+  padding: 18px;
+  border: 1px solid var(--wf-border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--wf-panel);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.42);
+}
+
+.workflow-input-dialog__panel > label {
+  color: var(--wf-text);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.workflow-input-dialog__control {
+  display: flex;
+  gap: 8px;
+}
+
+.workflow-input-dialog__control input {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  padding: 6px 8px;
+  border: 1px solid var(--wf-border);
+  border-radius: var(--radius-md);
+  background: rgba(9, 9, 11, 0.72);
+  color: var(--wf-text);
+  font: 12px var(--wf-font-mono);
+  outline: none;
+}
+
+.workflow-input-dialog__control input:focus {
+  border-color: rgba(96, 165, 250, 0.7);
+  box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.12);
+}
+
+.workflow-input-dialog__control button {
+  flex: none;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--wf-border-strong);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--wf-text);
+  font: 12px var(--wf-font-sans);
+  cursor: pointer;
+}
+
+.workflow-input-dialog__control button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.workflow-input-dialog__control button:disabled,
+.workflow-input-dialog__control input:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .workflow-body {

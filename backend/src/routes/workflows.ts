@@ -9,7 +9,13 @@ import { errors } from "../errors.js";
 import { calculateModelCost, readStoredModelPrices } from "../model-pricing.js";
 import { updateTemplateFromWorkflow } from "../templates.js";
 import { subscribeWorkflowRuntime } from "../workflow-events.js";
-import { startWorkflowRun, stopWorkflowRun, stopWorkflowRunAndWait } from "../workflow-runner.js";
+import {
+  resolveWorkflowDiffApproval,
+  resolveWorkflowInput,
+  startWorkflowRun,
+  stopWorkflowRun,
+  stopWorkflowRunAndWait,
+} from "../workflow-runner.js";
 import {
   createWorkflow,
   deleteWorkflow,
@@ -176,6 +182,40 @@ export async function registerWorkflowRoutes(app: FastifyInstance) {
       return { ok: true, stopped };
     },
   );
+
+  app.post<{
+    Params: { id: string; wid: string; nodeId: string };
+    Body: { approved?: unknown };
+  }>("/api/workspaces/:id/workflows/:wid/nodes/:nodeId/approval", async (req) => {
+    if (typeof req.body?.approved !== "boolean") {
+      throw errors.invalidPath("approved must be a boolean");
+    }
+    const resolved = await resolveWorkflowDiffApproval(
+      req.params.id,
+      req.params.wid,
+      req.params.nodeId,
+      req.body.approved,
+    );
+    if (!resolved) throw errors.invalidPath("approval is no longer pending");
+    return { ok: true };
+  });
+
+  app.post<{
+    Params: { id: string; wid: string; nodeId: string };
+    Body: { value?: unknown };
+  }>("/api/workspaces/:id/workflows/:wid/nodes/:nodeId/input", async (req) => {
+    if (typeof req.body?.value !== "string") {
+      throw errors.invalidPath("value must be a string");
+    }
+    const resolved = await resolveWorkflowInput(
+      req.params.id,
+      req.params.wid,
+      req.params.nodeId,
+      req.body.value,
+    );
+    if (!resolved) throw errors.invalidPath("input is no longer pending");
+    return { ok: true };
+  });
 
   app.delete<{ Params: { id: string; wid: string } }>(
     "/api/workspaces/:id/workflows/:wid",

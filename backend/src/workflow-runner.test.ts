@@ -229,6 +229,66 @@ test("workflow scheduler respects a per-run parallel limit", async () => {
   assert.equal(peak, 1);
 });
 
+test("workflow scheduler follows only the matching conditional output", async () => {
+  const executed: string[] = [];
+  await scheduleWorkflowNodes(
+    ["if", "true-node", "false-node"],
+    [
+      {
+        id: "edge_if_true",
+        from: "if",
+        to: "true-node",
+        passSummary: true,
+        sourceHandle: "true",
+      },
+      {
+        id: "edge_if_false",
+        from: "if",
+        to: "false-node",
+        passSummary: true,
+        sourceHandle: "false",
+      },
+    ],
+    2,
+    async (nodeId) => {
+      executed.push(nodeId);
+      return nodeId === "if" ? "false" : undefined;
+    },
+  );
+  assert.deepEqual(executed, ["if", "false-node"]);
+});
+
+test("workflow scheduler rejoins after an unselected branch without duplicating the join", async () => {
+  const executed: string[] = [];
+  await scheduleWorkflowNodes(
+    ["approval", "success-node", "failure-node", "join"],
+    [
+      {
+        id: "edge_approval_success",
+        from: "approval",
+        to: "success-node",
+        passSummary: true,
+        sourceHandle: "success",
+      },
+      {
+        id: "edge_approval_failure",
+        from: "approval",
+        to: "failure-node",
+        passSummary: true,
+        sourceHandle: "failure",
+      },
+      { id: "edge_success_join", from: "success-node", to: "join", passSummary: true },
+      { id: "edge_failure_join", from: "failure-node", to: "join", passSummary: true },
+    ],
+    2,
+    async (nodeId) => {
+      executed.push(nodeId);
+      return nodeId === "approval" ? "success" : undefined;
+    },
+  );
+  assert.deepEqual(executed, ["approval", "success-node", "join"]);
+});
+
 test("separate workflow schedules do not share their parallel limit", async () => {
   let active = 0;
   let peak = 0;

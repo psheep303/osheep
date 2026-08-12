@@ -421,7 +421,6 @@ export function GitView({
             workspaceId={workspaceId}
             refreshKey={graphVersion}
             status={status}
-            remoteUrl={remotes.find((remote) => remote.name === "origin")?.url ?? remotes[0]?.url}
             busy={busy}
             onFetch={doFetch}
             onPull={doPull}
@@ -920,7 +919,6 @@ function GraphSection({
   workspaceId,
   refreshKey,
   status,
-  remoteUrl,
   busy,
   onFetch,
   onPull,
@@ -932,7 +930,6 @@ function GraphSection({
   workspaceId: string;
   refreshKey: number;
   status: GitStatus | null;
-  remoteUrl?: string | null;
   busy: boolean;
   onFetch: () => void;
   onPull: () => void;
@@ -1008,7 +1005,6 @@ function GraphSection({
           workspaceId={workspaceId}
           refreshKey={refreshKey}
           scope={scope}
-          remoteUrl={remoteUrl}
           onOpenCommitDiff={onOpenCommitDiff}
         />
       )}
