@@ -354,6 +354,7 @@ const CONFIGURED_LOCAL_KINDS = new Set<WorkflowNodeKind>([
   "if",
   "diff-approval",
   "git-commit",
+  "git-checkout",
   "github-pr",
   "merge",
   "code",
@@ -639,6 +640,13 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
     kind: "git-commit",
     icon: "git",
     config: { message: "", stageAll: false },
+  },
+  {
+    category: "git",
+    nameKey: "workflow.blocks.checkout",
+    kind: "git-checkout",
+    icon: "git",
+    config: { branch: "", createIfMissing: false },
   },
   {
     category: "git",
@@ -4451,6 +4459,7 @@ function WorkflowNodeInspector({
   const isIf = kind === "if";
   const isDiffApproval = kind === "diff-approval";
   const isGitCommit = kind === "git-commit";
+  const isGitCheckout = kind === "git-checkout";
   const isGithubPr = kind === "github-pr";
   const isMerge = kind === "merge";
   const isCode = kind === "code";
@@ -4898,6 +4907,26 @@ function WorkflowNodeInspector({
               disabled={running}
             />
             <span>Stage all changes</span>
+          </label>
+        </>
+      ) : isGitCheckout ? (
+        <>
+          <label className="workflow-inspector__field">
+            <span>Branch</span>
+            <TemplateInput
+              value={typeof node.config?.branch === "string" ? node.config.branch : ""}
+              onChange={(value) => updateConfig({ branch: value })}
+              disabled={running}
+            />
+          </label>
+          <label className="workflow-inspector__check">
+            <input
+              type="checkbox"
+              checked={node.config?.createIfMissing === true}
+              onChange={(event) => updateConfig({ createIfMissing: event.target.checked })}
+              disabled={running}
+            />
+            <span>Create branch if it does not exist</span>
           </label>
         </>
       ) : isGithubPr ? (
@@ -7400,7 +7429,7 @@ function blockEyebrow(kind: WorkflowNodeKind): string {
   )
     return "Trigger";
   if (kind === "command") return "Command";
-  if (kind === "git-commit" || kind === "github-pr") return "Git";
+  if (kind === "git-commit" || kind === "git-checkout" || kind === "github-pr") return "Git";
   if (kind === "web" || kind === "http-request") return "Network";
   if (
     kind === "if" ||
@@ -7426,6 +7455,7 @@ function inputLabelForKind(kind: WorkflowNodeKind): string {
   if (kind === "if") return "Condition";
   if (kind === "diff-approval") return "Diff";
   if (kind === "git-commit") return "Commit";
+  if (kind === "git-checkout") return "Switch branch";
   if (kind === "github-pr") return "Pull request";
   if (kind === "merge") return "Merge";
   if (kind === "code") return "JavaScript";
@@ -7454,6 +7484,7 @@ function nodeKind(node: WorkflowNode): WorkflowNodeKind {
     node.kind === "if" ||
     node.kind === "diff-approval" ||
     node.kind === "git-commit" ||
+    node.kind === "git-checkout" ||
     node.kind === "github-pr" ||
     node.kind === "merge" ||
     node.kind === "code" ||
@@ -7519,7 +7550,7 @@ function nodeIconName(node: WorkflowNode): WorkflowIconName {
   if (kind === "http-request") return "http";
   if (kind === "set") return "set";
   if (kind === "if") return "if";
-  if (kind === "diff-approval" || kind === "git-commit" || kind === "github-pr") return "git";
+  if (kind === "diff-approval" || kind === "git-commit" || kind === "git-checkout" || kind === "github-pr") return "git";
   if (kind === "merge") return "merge";
   if (kind === "code") return "code";
   if (kind === "loop-items") return "loop";

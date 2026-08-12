@@ -23,6 +23,7 @@ export type WorkflowNodeKind =
   | "if"
   | "diff-approval"
   | "git-commit"
+  | "git-checkout"
   | "github-pr"
   | "merge"
   | "code"
@@ -201,6 +202,7 @@ function asNodeKind(value: unknown): WorkflowNodeKind {
     value === "if" ||
     value === "diff-approval" ||
     value === "git-commit" ||
+    value === "git-checkout" ||
     value === "github-pr" ||
     value === "merge" ||
     value === "code" ||

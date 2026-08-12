@@ -25,6 +25,8 @@ import {
   commit as gitCommit,
   isRepo,
   listRemotes,
+  listBranches,
+  checkoutBranch,
   pushCurrent,
   stageAllChanges,
 } from "./git-ops.js";
@@ -160,6 +162,7 @@ const CONFIGURED_LOCAL_KINDS = new Set<WorkflowNodeKind>([
   "if",
   "diff-approval",
   "git-commit",
+  "git-checkout",
   "github-pr",
   "merge",
   "code",
@@ -1394,6 +1397,26 @@ async function executeLocalNode(
     const head = await gitCommit(workspaceRoot, message);
     return {
       output: { type: "git-commit", status: "success", head, message, text: head },
+      changedFiles: true,
+    };
+  }
+
+  if (kind === "git-checkout") {
+    if (!(await isRepo(workspaceRoot))) throw new Error(`${node.title} requires a Git repository.`);
+    const branch = resolveBlockTemplate(configString(node, "branch"), record).trim();
+    if (!branch) throw new Error(`${node.title} requires a branch name.`);
+    const createIfMissing = node.config?.createIfMissing === true;
+    const branches = await listBranches(workspaceRoot);
+    const exists = branches.branches.some((item) => item.name === branch);
+    if (exists) {
+      await checkoutBranch(workspaceRoot, branch);
+    } else if (createIfMissing) {
+      await checkoutBranch(workspaceRoot, branch, { create: true });
+    } else {
+      await checkoutBranch(workspaceRoot, branch);
+    }
+    return {
+      output: { type: "git-checkout", status: "success", branch, created: !exists, text: branch },
       changedFiles: true,
     };
   }
