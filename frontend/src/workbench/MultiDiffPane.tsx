@@ -15,9 +15,11 @@ interface MultiDiffPaneProps {
   entries: MultiDiffEntry[];
   fontSize: number;
   title: string;
+  /** Hide the SCM-style file tree and use the full editor surface. */
+  showFileList?: boolean;
 }
 
-export function MultiDiffPane({ entries, fontSize, title }: MultiDiffPaneProps) {
+export function MultiDiffPane({ entries, fontSize, title, showFileList = true }: MultiDiffPaneProps) {
   const { resolvedLanguage } = useUiPreferences();
   const [selectedPath, setSelectedPath] = useState(entries[0]?.path ?? null);
   const selected = entries.find((entry) => entry.path === selectedPath) ?? entries[0] ?? null;
@@ -26,6 +28,31 @@ export function MultiDiffPane({ entries, fontSize, title }: MultiDiffPaneProps) 
     return (
       <div className="empty-hint">
         {resolvedLanguage === "zh-CN" ? "没有可显示的更改" : "No changes to display"}
+      </div>
+    );
+  }
+
+  if (!showFileList) {
+    return (
+      <div className="multi-diff-pane multi-diff-pane--stacked">
+        {entries.map((entry) => (
+          <div key={entry.path} className="multi-diff-pane__stacked-editor">
+            {entry.binary ? (
+              <div className="empty-hint">
+                {resolvedLanguage === "zh-CN"
+                  ? "浜岃繘鍒舵枃浠舵棤娉曟樉绀烘枃鏈?Diff"
+                  : "Binary files cannot display a text diff"}
+              </div>
+            ) : (
+              <DiffPane
+                path={entry.path}
+                fontSize={fontSize}
+                leftContent={entry.leftContent}
+                rightContent={entry.rightContent}
+              />
+            )}
+          </div>
+        ))}
       </div>
     );
   }

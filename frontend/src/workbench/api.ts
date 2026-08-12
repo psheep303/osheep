@@ -671,6 +671,7 @@ export interface GitCommitDetails {
 
 export interface GitCommitFile {
   path: string;
+  status: string;
   insertions: number | null;
   deletions: number | null;
   binary: boolean;

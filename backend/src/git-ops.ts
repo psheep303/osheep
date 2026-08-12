@@ -326,12 +326,13 @@ export interface PullRequestResult {
 
 export async function createPullRequest(
   workspaceRoot: string,
-  options: { title: string; body: string; base?: string; draft?: boolean },
+  options: { title: string; body: string; base?: string; head?: string; draft?: boolean },
 ): Promise<PullRequestResult> {
   const title = options.title.trim();
   if (!title) throw errors.gitFailed("Pull request title is required.");
   const args = ["pr", "create", "--title", title, "--body", options.body];
   if (options.base?.trim()) args.push("--base", options.base.trim());
+  if (options.head?.trim()) args.push("--head", options.head.trim());
   if (options.draft) args.push("--draft");
   const result = await runProcess(workspaceRoot, "gh", args);
   if (result.code !== 0) {
@@ -454,6 +455,7 @@ export interface GitCommitDetails {
 
 export interface GitCommitFile {
   path: string;
+  status: string;
   insertions: number | null;
   deletions: number | null;
   binary: boolean;
@@ -571,6 +573,27 @@ export async function getCommitDetails(
   ]);
   if (r.code !== 0) throw errors.gitFailed(r.stderr.trim() || "git show 失败");
 
+  const statusResult = await runGit(workspaceRoot, [
+    "-c",
+    "core.quotepath=false",
+    "diff-tree",
+    "--root",
+    "--no-commit-id",
+    "--no-renames",
+    "--name-status",
+    "-r",
+    sha,
+  ]);
+  if (statusResult.code !== 0) {
+    throw errors.gitFailed(statusResult.stderr.trim() || "git diff-tree 失败");
+  }
+  const fileStatuses = new Map<string, string>();
+  for (const line of statusResult.stdout.toString("utf-8").trim().split(/\r?\n/)) {
+    if (!line) continue;
+    const [status = "M", filePath = ""] = line.split("\t", 2);
+    if (filePath) fileStatuses.set(filePath, status.slice(0, 1));
+  }
+
   const text = r.stdout.toString("utf-8");
   const separator = text.indexOf("\x1e");
   if (separator < 0) throw errors.gitFailed("无法解析 commit 详情");
@@ -593,6 +616,7 @@ export async function getCommitDetails(
     if (/^\d+$/.test(removed)) deletions += Number.parseInt(removed, 10);
     files.push({
       path: filePath,
+      status: fileStatuses.get(filePath) ?? "M",
       insertions: /^\d+$/.test(added) ? Number.parseInt(added, 10) : null,
       deletions: /^\d+$/.test(removed) ? Number.parseInt(removed, 10) : null,
       binary: added === "-" || removed === "-",

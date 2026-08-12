@@ -43,7 +43,7 @@ test("Git history returns VS Code graph data and full commit details", async (co
     assert.equal(details.insertions, 1);
     assert.equal(details.deletions, 0);
     assert.deepEqual(details.files, [
-      { path: "README.md", insertions: 1, deletions: 0, binary: false },
+      { path: "README.md", status: "M", insertions: 1, deletions: 0, binary: false },
     ]);
 
     const diff = await getCommitDiff(root, details.sha, "README.md");

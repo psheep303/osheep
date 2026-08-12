@@ -846,6 +846,17 @@
   max-height: 320px;
 }
 
+.workflow-inspector__approval-diff {
+  height: 360px;
+  min-height: 240px;
+  border: 1px solid var(--border-edge);
+  overflow: hidden;
+}
+
+.workflow-inspector__approval-diff .multi-diff-pane {
+  height: 100%;
+}
+
 .workflow-inspector__approval-actions {
   display: flex;
   gap: 8px;

@@ -40,6 +40,8 @@ import {
   execRun,
   execRunStream,
   finishAiTerminalSuccess,
+  getGitDiff,
+  getGitStatus,
   getClaudePlugins,
   getCodexPlugins,
   listAgentSessions,
@@ -63,6 +65,7 @@ import {
   writeFile,
 } from "./api";
 import { ClaudeLogo, OpenAILogo } from "./BrandIcons";
+import { MultiDiffPane, type MultiDiffEntry } from "./MultiDiffPane";
 import { ContextMenu, type CtxMenuSection } from "./ContextMenu";
 import { cleanAgentTerminalConversation } from "./terminal-conversation";
 import {
@@ -653,7 +656,7 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
     nameKey: "workflow.blocks.pullRequest",
     kind: "github-pr",
     icon: "git",
-    config: { title: "", body: "", base: "", draft: false, push: true },
+    config: { title: "", body: "", base: "", compare: "", draft: false, push: true },
   },
   {
     category: "logic",
@@ -2710,6 +2713,7 @@ export function WorkflowTab({
                   : `insp-${selectedNode.id}`
               }
               node={selectedNode}
+              workspaceId={workspaceId}
               autoFocusName={renameTarget === selectedNode.id}
               nodes={workflow.nodes}
               edges={workflow.edges}
@@ -4319,6 +4323,7 @@ function WorkflowMpePanel({ markdown, onClose }: { markdown: string; onClose: ()
 }
 
 function WorkflowNodeInspector({
+  workspaceId,
   node,
   autoFocusName,
   nodes,
@@ -4334,6 +4339,7 @@ function WorkflowNodeInspector({
   onUpdateEdge,
   onDeleteEdge,
 }: {
+  workspaceId: string;
   node: WorkflowNode;
   autoFocusName?: boolean;
   nodes: WorkflowNode[];
@@ -4471,7 +4477,7 @@ function WorkflowNodeInspector({
       {isDiffApproval && node.status === "running" && node.config?.waitingForApproval === true && (
         <div className="workflow-inspector__approval">
           <div className="workflow-inspector__section-title">Diff waiting for approval</div>
-          <pre className="workflow-inspector__output">{approvalDiff(node)}</pre>
+          <DiffApprovalView workspaceId={workspaceId} />
           <div className="workflow-inspector__approval-actions">
             <button type="button" className="is-primary" onClick={() => void onResolveApproval(true)}>
               Approve
@@ -4858,6 +4864,14 @@ function WorkflowNodeInspector({
             <TemplateInput
               value={typeof node.config?.base === "string" ? node.config.base : ""}
               onChange={(value) => updateConfig({ base: value })}
+              disabled={running}
+            />
+          </label>
+          <label className="workflow-inspector__field">
+            <span>Compare branch (optional)</span>
+            <TemplateInput
+              value={typeof node.config?.compare === "string" ? node.config.compare : ""}
+              onChange={(value) => updateConfig({ compare: value })}
               disabled={running}
             />
           </label>
@@ -7972,13 +7986,67 @@ function jsonPreview(value: unknown): string {
   }
 }
 
-function approvalDiff(node: WorkflowNode): string {
-  try {
-    const output = JSON.parse(node.rawOutput || node.summary || "{}") as Record<string, unknown>;
-    return typeof output.diff === "string" ? output.diff : "No diff captured.";
-  } catch {
-    return "No diff captured.";
+function DiffApprovalView({ workspaceId }: { workspaceId: string }) {
+  const { resolvedLanguage } = useUiPreferences();
+  const [entries, setEntries] = useState<MultiDiffEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    void getGitStatus(workspaceId)
+      .then(async (status) => {
+        const changes = status.changes.filter(
+          (change) => change.indexStatus !== " " || change.worktreeStatus !== " ",
+        );
+        const next = await Promise.all(
+          changes.map(async (change) => {
+            const staged = change.indexStatus !== " " && change.indexStatus !== "?";
+            const diff = await getGitDiff(
+              workspaceId,
+              change.path,
+              staged ? "HEAD" : "INDEX",
+              staged ? "INDEX" : "WORKTREE",
+            );
+            return {
+              path: diff.path,
+              leftContent: diff.leftContent,
+              rightContent: diff.rightContent,
+              leftMissing: diff.leftMissing,
+              rightMissing: diff.rightMissing,
+              binary: diff.binary,
+            } satisfies MultiDiffEntry;
+          }),
+        );
+        if (!cancelled) setEntries(next);
+      })
+      .catch((reason) => {
+        if (!cancelled) setError((reason as Error).message);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [workspaceId]);
+
+  if (loading) return <div className="workflow-inspector__output">Loading diff...</div>;
+  if (error) return <div className="workflow-inspector__mcp-error">{error}</div>;
+  if (!entries.length) {
+    return (
+      <div className="workflow-inspector__output">
+        {resolvedLanguage === "zh-CN" ? "当前没有可审批的改动" : "No changes to review."}
+      </div>
+    );
   }
+  return (
+    <div className="workflow-inspector__approval-diff">
+      <MultiDiffPane entries={entries} fontSize={12} title="Diff" showFileList={false} />
+    </div>
+  );
 }
 
 function mcpConnectionLabel(config: McpNodeConfig): string {

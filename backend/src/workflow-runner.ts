@@ -1374,6 +1374,7 @@ async function executeLocalNode(
     const title = resolveBlockTemplate(configString(node, "title"), record).trim();
     const body = resolveBlockTemplate(configString(node, "body"), record);
     const base = resolveBlockTemplate(configString(node, "base"), record).trim();
+    const head = resolveBlockTemplate(configString(node, "compare"), record).trim();
     if (node.config?.push !== false) {
       const info = await getRepoInfo(workspaceRoot);
       if (!info.upstream) {
@@ -1395,6 +1396,7 @@ async function executeLocalNode(
       title,
       body,
       base: base || undefined,
+      head: head || undefined,
       draft: node.config?.draft === true,
     });
     return {
