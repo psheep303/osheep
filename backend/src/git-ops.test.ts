@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
-import { getCommitDetails, getCommitDiff, getLog } from "./git-ops.js";
+import { deleteBranch, getCommitDetails, getCommitDiff, getLog } from "./git-ops.js";
 import { findExecutable } from "./runtime-tools.js";
 
 const execFileAsync = promisify(execFile);
@@ -53,5 +53,55 @@ test("Git history returns VS Code graph data and full commit details", async (co
     assert.equal(diff.rightMissing, false);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("branch deletion supports local, forced, and remote branches", async (context) => {
+  const git = findExecutable("git");
+  if (!git) {
+    context.skip("git is not installed");
+    return;
+  }
+
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "osheep delete branch "));
+  const remote = await fs.mkdtemp(path.join(os.tmpdir(), "osheep delete branch remote "));
+  try {
+    await execFileAsync(git, ["init", "--bare"], { cwd: remote });
+    await execFileAsync(git, ["init", "-b", "main"], { cwd: root });
+    await execFileAsync(git, ["config", "user.name", "Osheep Test"], { cwd: root });
+    await execFileAsync(git, ["config", "user.email", "git-test@osheep.invalid"], { cwd: root });
+    await fs.writeFile(path.join(root, "README.md"), "main\n", "utf8");
+    await execFileAsync(git, ["add", "README.md"], { cwd: root });
+    await execFileAsync(git, ["commit", "-m", "initial"], { cwd: root });
+
+    await execFileAsync(git, ["branch", "merged"], { cwd: root });
+    await deleteBranch(root, "merged");
+    await assert.rejects(
+      execFileAsync(git, ["rev-parse", "--verify", "refs/heads/merged"], { cwd: root }),
+    );
+
+    await execFileAsync(git, ["checkout", "-b", "unmerged"], { cwd: root });
+    await fs.writeFile(path.join(root, "feature.txt"), "feature\n", "utf8");
+    await execFileAsync(git, ["add", "feature.txt"], { cwd: root });
+    await execFileAsync(git, ["commit", "-m", "feature"], { cwd: root });
+    await execFileAsync(git, ["checkout", "main"], { cwd: root });
+    await assert.rejects(deleteBranch(root, "unmerged"));
+    await deleteBranch(root, "unmerged", { force: true });
+
+    await execFileAsync(git, ["remote", "add", "origin", remote], { cwd: root });
+    await execFileAsync(git, ["push", "origin", "main:remote-feature"], { cwd: root });
+    await deleteBranch(root, "remote-feature", { remote: "origin" });
+    await assert.rejects(
+      execFileAsync(git, [
+        "--git-dir",
+        remote,
+        "rev-parse",
+        "--verify",
+        "refs/heads/remote-feature",
+      ]),
+    );
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+    await fs.rm(remote, { recursive: true, force: true });
   }
 });

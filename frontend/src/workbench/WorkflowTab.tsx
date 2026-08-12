@@ -355,6 +355,7 @@ const CONFIGURED_LOCAL_KINDS = new Set<WorkflowNodeKind>([
   "diff-approval",
   "git-commit",
   "git-checkout",
+  "git-delete-branch",
   "github-pr",
   "merge",
   "code",
@@ -647,6 +648,13 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
     kind: "git-checkout",
     icon: "git",
     config: { branch: "", createIfMissing: false },
+  },
+  {
+    category: "git",
+    nameKey: "workflow.blocks.deleteBranch",
+    kind: "git-delete-branch",
+    icon: "git",
+    config: { branch: "", force: false, remote: false, remoteName: "origin" },
   },
   {
     category: "git",
@@ -4460,6 +4468,7 @@ function WorkflowNodeInspector({
   const isDiffApproval = kind === "diff-approval";
   const isGitCommit = kind === "git-commit";
   const isGitCheckout = kind === "git-checkout";
+  const isGitDeleteBranch = kind === "git-delete-branch";
   const isGithubPr = kind === "github-pr";
   const isMerge = kind === "merge";
   const isCode = kind === "code";
@@ -4928,6 +4937,46 @@ function WorkflowNodeInspector({
             />
             <span>Create branch if it does not exist</span>
           </label>
+        </>
+      ) : isGitDeleteBranch ? (
+        <>
+          <label className="workflow-inspector__field">
+            <span>Branch</span>
+            <TemplateInput
+              value={typeof node.config?.branch === "string" ? node.config.branch : ""}
+              onChange={(value) => updateConfig({ branch: value })}
+              disabled={running}
+            />
+          </label>
+          <label className="workflow-inspector__check workflow-inspector__check--danger">
+            <input
+              type="checkbox"
+              checked={node.config?.force === true}
+              onChange={(event) => updateConfig({ force: event.target.checked })}
+              disabled={running}
+            />
+            <span>Force delete</span>
+            <small>Warning</small>
+          </label>
+          <label className="workflow-inspector__check">
+            <input
+              type="checkbox"
+              checked={node.config?.remote === true}
+              onChange={(event) => updateConfig({ remote: event.target.checked })}
+              disabled={running}
+            />
+            <span>Delete remote branch</span>
+          </label>
+          {node.config?.remote === true && (
+            <label className="workflow-inspector__field">
+              <span>Remote</span>
+              <TemplateInput
+                value={typeof node.config?.remoteName === "string" ? node.config.remoteName : "origin"}
+                onChange={(value) => updateConfig({ remoteName: value })}
+                disabled={running}
+              />
+            </label>
+          )}
         </>
       ) : isGithubPr ? (
         <>
@@ -7429,7 +7478,7 @@ function blockEyebrow(kind: WorkflowNodeKind): string {
   )
     return "Trigger";
   if (kind === "command") return "Command";
-  if (kind === "git-commit" || kind === "git-checkout" || kind === "github-pr") return "Git";
+  if (kind === "git-commit" || kind === "git-checkout" || kind === "git-delete-branch" || kind === "github-pr") return "Git";
   if (kind === "web" || kind === "http-request") return "Network";
   if (
     kind === "if" ||
@@ -7456,6 +7505,7 @@ function inputLabelForKind(kind: WorkflowNodeKind): string {
   if (kind === "diff-approval") return "Diff";
   if (kind === "git-commit") return "Commit";
   if (kind === "git-checkout") return "Switch branch";
+  if (kind === "git-delete-branch") return "Delete branch";
   if (kind === "github-pr") return "Pull request";
   if (kind === "merge") return "Merge";
   if (kind === "code") return "JavaScript";
@@ -7485,6 +7535,7 @@ function nodeKind(node: WorkflowNode): WorkflowNodeKind {
     node.kind === "diff-approval" ||
     node.kind === "git-commit" ||
     node.kind === "git-checkout" ||
+    node.kind === "git-delete-branch" ||
     node.kind === "github-pr" ||
     node.kind === "merge" ||
     node.kind === "code" ||
@@ -7550,7 +7601,7 @@ function nodeIconName(node: WorkflowNode): WorkflowIconName {
   if (kind === "http-request") return "http";
   if (kind === "set") return "set";
   if (kind === "if") return "if";
-  if (kind === "diff-approval" || kind === "git-commit" || kind === "git-checkout" || kind === "github-pr") return "git";
+  if (kind === "diff-approval" || kind === "git-commit" || kind === "git-checkout" || kind === "git-delete-branch" || kind === "github-pr") return "git";
   if (kind === "merge") return "merge";
   if (kind === "code") return "code";
   if (kind === "loop-items") return "loop";

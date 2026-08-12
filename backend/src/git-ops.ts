@@ -883,6 +883,22 @@ export async function checkoutBranch(
   if (r.code !== 0) throw classifyGitError(r.stderr);
 }
 
+export async function deleteBranch(
+  workspaceRoot: string,
+  branch: string,
+  opts: { force?: boolean; remote?: string | null } = {},
+): Promise<void> {
+  validateBranchName(branch);
+  if (opts.remote) {
+    validateRemoteName(opts.remote);
+    const r = await runGit(workspaceRoot, ["push", opts.remote, "--delete", branch]);
+    if (r.code !== 0) throw classifyGitError(r.stderr);
+    return;
+  }
+  const r = await runGit(workspaceRoot, ["branch", opts.force ? "-D" : "-d", "--", branch]);
+  if (r.code !== 0) throw classifyGitError(r.stderr);
+}
+
 // ─── Remote ops: fetch / pull / push ───
 
 const REMOTE_TOKEN_RE = /^[A-Za-z0-9._-]{1,64}$/;

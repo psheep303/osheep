@@ -132,6 +132,8 @@ export function emptyBlockOutput(node: WorkflowNode): WorkflowBlockOutput {
       return { type: kind, status: "", head: "", message: "", text: "" };
     case "git-checkout":
       return { type: kind, status: "", branch: "", created: false, text: "" };
+    case "git-delete-branch":
+      return { type: kind, status: "", branch: "", remote: null, force: false, text: "" };
     case "github-pr":
       return { type: kind, status: "", url: "", number: null, text: "" };
     case "merge": {

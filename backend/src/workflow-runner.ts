@@ -14,19 +14,20 @@ import {
   runAgentTerminal,
 } from "./ai-terminal.js";
 import { readAppSettings } from "./app-settings.js";
-import { evaluateConditionExpression } from "./condition-expression.js";
 import { applyClaudePluginSelection } from "./claude-plugins.js";
 import { applyCodexPluginSelection } from "./codex-plugins.js";
+import { evaluateConditionExpression } from "./condition-expression.js";
 import { readFileText, writeFileText } from "./fs-ops.js";
 import {
+  checkoutBranch,
   createPullRequest,
+  deleteBranch,
   getRepoInfo,
   getWorkflowDiff,
   commit as gitCommit,
   isRepo,
-  listRemotes,
   listBranches,
-  checkoutBranch,
+  listRemotes,
   pushCurrent,
   stageAllChanges,
 } from "./git-ops.js";
@@ -163,6 +164,7 @@ const CONFIGURED_LOCAL_KINDS = new Set<WorkflowNodeKind>([
   "diff-approval",
   "git-commit",
   "git-checkout",
+  "git-delete-branch",
   "github-pr",
   "merge",
   "code",
@@ -1417,6 +1419,30 @@ async function executeLocalNode(
     }
     return {
       output: { type: "git-checkout", status: "success", branch, created: !exists, text: branch },
+      changedFiles: true,
+    };
+  }
+
+  if (kind === "git-delete-branch") {
+    if (!(await isRepo(workspaceRoot))) throw new Error(`${node.title} requires a Git repository.`);
+    const branch = resolveBlockTemplate(configString(node, "branch"), record).trim();
+    if (!branch) throw new Error(`${node.title} requires a branch name.`);
+    const remote = node.config?.remote === true
+      ? resolveBlockTemplate(configString(node, "remoteName", "origin"), record).trim() || "origin"
+      : null;
+    await deleteBranch(workspaceRoot, branch, {
+      force: node.config?.force === true,
+      remote,
+    });
+    return {
+      output: {
+        type: "git-delete-branch",
+        status: "success",
+        branch,
+        remote,
+        force: node.config?.force === true,
+        text: branch,
+      },
       changedFiles: true,
     };
   }

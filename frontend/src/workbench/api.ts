@@ -1119,6 +1119,7 @@ export type WorkflowNodeKind =
   | "diff-approval"
   | "git-commit"
   | "git-checkout"
+  | "git-delete-branch"
   | "github-pr"
   | "merge"
   | "code"
