@@ -14,6 +14,7 @@ import {
   runAgentTerminal,
 } from "./ai-terminal.js";
 import { readAppSettings } from "./app-settings.js";
+import { evaluateConditionExpression } from "./condition-expression.js";
 import { applyClaudePluginSelection } from "./claude-plugins.js";
 import { applyCodexPluginSelection } from "./codex-plugins.js";
 import { readFileText, writeFileText } from "./fs-ops.js";
@@ -1302,17 +1303,15 @@ async function executeLocalNode(
 
   if (kind === "if") {
     const config = ifNodeConfig(node);
-    const left = resolveTemplateValue(config.left, record);
-    const right = resolveTemplateValue(config.right, record);
-    const result = compareValues(left, config.operator, right);
+    const result = evaluateConditionExpression(config.expression, (template) =>
+      resolveTemplateValue(template, record),
+    );
     return {
       output: {
         type: "if",
         status: "success",
         result,
-        operator: config.operator,
-        left,
-        right,
+        expression: config.expression,
         text: result ? "true" : "false",
       },
     };
@@ -2452,49 +2451,6 @@ function incomingOutputs(record: WorkflowRecord, node: WorkflowNode): WorkflowBl
     .filter((item): item is WorkflowBlockOutput => !!item);
 }
 
-function compareValues(left: unknown, operator: string, right: unknown): boolean {
-  const lhs = parseMaybeJson(left);
-  const rhs = parseMaybeJson(right);
-  if (operator === "exists") return lhs !== undefined && lhs !== null && lhs !== "";
-  if (operator === "isEmpty") {
-    if (lhs === undefined || lhs === null || lhs === "") return true;
-    if (Array.isArray(lhs)) return lhs.length === 0;
-    if (typeof lhs === "object") return Object.keys(lhs).length === 0;
-    return false;
-  }
-  if (operator === "contains") {
-    if (typeof lhs === "string") return lhs.includes(String(rhs ?? ""));
-    if (Array.isArray(lhs)) return lhs.some((item) => valuesEqual(item, rhs));
-    if (lhs && typeof lhs === "object") return Object.hasOwn(lhs, String(rhs));
-    return false;
-  }
-  if (operator === "greaterThan" || operator === "lessThan") {
-    const leftNumber = Number(lhs);
-    const rightNumber = Number(rhs);
-    if (!Number.isNaN(leftNumber) && !Number.isNaN(rightNumber)) {
-      return operator === "greaterThan" ? leftNumber > rightNumber : leftNumber < rightNumber;
-    }
-    const leftText = String(lhs ?? "");
-    const rightText = String(rhs ?? "");
-    return operator === "greaterThan" ? leftText > rightText : leftText < rightText;
-  }
-  const equal = valuesEqual(lhs, rhs);
-  return operator === "notEquals" ? !equal : equal;
-}
-
-function valuesEqual(left: unknown, right: unknown): boolean {
-  if (left === right) return true;
-  if (
-    (typeof left === "number" || typeof left === "string") &&
-    (typeof right === "number" || typeof right === "string")
-  ) {
-    const leftNumber = Number(left);
-    const rightNumber = Number(right);
-    if (!Number.isNaN(leftNumber) && !Number.isNaN(rightNumber)) return leftNumber === rightNumber;
-  }
-  return jsonPreview(left) === jsonPreview(right);
-}
-
 async function runCodeBlock(
   code: string,
   input: WorkflowBlockOutput,
@@ -2610,12 +2566,16 @@ function setNodeConfig(node: WorkflowNode): { data: string } {
   return { data: typeof config.data === "string" ? config.data : '{\n  "text": ""\n}' };
 }
 
-function ifNodeConfig(node: WorkflowNode): { left: string; operator: string; right: string } {
+function ifNodeConfig(node: WorkflowNode): { expression: string } {
   const config = node.config ?? {};
+  if (typeof config.expression === "string") return { expression: config.expression };
+  const left = typeof config.left === "string" ? config.left : "";
+  const right = typeof config.right === "string" ? config.right : "";
+  const operator = typeof config.operator === "string" ? config.operator : "equals";
+  const symbol =
+    operator === "equals" ? "==" : operator === "notEquals" ? "!=" : operator === "greaterThan" ? ">" : operator === "lessThan" ? "<" : operator === "contains" ? "==" : "==";
   return {
-    left: typeof config.left === "string" ? config.left : "",
-    operator: typeof config.operator === "string" ? config.operator : "equals",
-    right: typeof config.right === "string" ? config.right : "",
+    expression: operator === "exists" ? `${left} != null` : operator === "isEmpty" ? `${left} == ""` : `${left} ${symbol} ${right}`,
   };
 }
 

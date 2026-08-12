@@ -66,6 +66,7 @@ import {
 } from "./api";
 import { ClaudeLogo, OpenAILogo } from "./BrandIcons";
 import type { MultiDiffEntry } from "./MultiDiffPane";
+import { evaluateConditionExpression } from "./condition-expression";
 import { ContextMenu, type CtxMenuSection } from "./ContextMenu";
 import { cleanAgentTerminalConversation } from "./terminal-conversation";
 import {
@@ -246,11 +247,7 @@ interface SetNodeConfig {
   data: string;
 }
 
-interface IfNodeConfig {
-  left: string;
-  operator: string;
-  right: string;
-}
+interface IfNodeConfig { expression: string }
 
 interface MergeNodeConfig {
   mode: string;
@@ -492,15 +489,6 @@ const CLAUDE_EFFORT_OPTIONS: AgentEffortOption[] = [
   { value: "max", title: "Max" },
   { value: "ultracode", title: "Ultracode" },
 ];
-const IF_OPERATORS = [
-  "equals",
-  "notEquals",
-  "contains",
-  "greaterThan",
-  "lessThan",
-  "exists",
-  "isEmpty",
-] as const;
 const MERGE_MODES = ["object", "array"] as const;
 const LOOP_MODES = ["items", "batches"] as const;
 const BLOCK_CATEGORIES: BlockCategory[] = [
@@ -634,9 +622,7 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
     kind: "if",
     icon: "if",
     config: {
-      left: "{{blocks[1].status}}",
-      operator: "equals",
-      right: "success",
+      expression: '{{blocks[1].status}} == "success"',
     },
   },
   {
@@ -4795,33 +4781,14 @@ function WorkflowNodeInspector({
           />
         </label>
       ) : isIf ? (
-        <>
-          <label className="workflow-inspector__field">
-            <span>Left</span>
-            <TemplateInput
-              value={ifConfig.left}
-              onChange={(value) => updateConfig({ left: value })}
-              disabled={running}
-            />
-          </label>
-          <label className="workflow-inspector__field">
-            <span>Operator</span>
-            <SegmentedControl
-              value={ifConfig.operator}
-              options={IF_OPERATORS}
-              onChange={(value) => updateConfig({ operator: value })}
-              disabled={running}
-            />
-          </label>
-          <label className="workflow-inspector__field">
-            <span>Right</span>
-            <TemplateInput
-              value={ifConfig.right}
-              onChange={(value) => updateConfig({ right: value })}
-              disabled={running}
-            />
-          </label>
-        </>
+        <label className="workflow-inspector__field">
+          <span>Condition</span>
+          <TemplateInput
+            value={ifConfig.expression}
+            onChange={(value) => updateConfig({ expression: value })}
+            disabled={running}
+          />
+        </label>
       ) : isDiffApproval ? (
         <div className="workflow-inspector__section-title">
           Pauses the workflow for review. Approved runs the success output; rejected runs failure.
@@ -5836,17 +5803,15 @@ async function executeLocalNode(
 
   if (kind === "if") {
     const config = ifNodeConfig(node);
-    const left = resolveTemplateValue(config.left, record);
-    const right = resolveTemplateValue(config.right, record);
-    const result = compareValues(left, config.operator, right);
+    const result = evaluateConditionExpression(config.expression, (template) =>
+      resolveTemplateValue(template, record),
+    );
     return {
       output: {
         type: "if",
         status: "success",
         result,
-        operator: config.operator,
-        left,
-        right,
+        expression: config.expression,
         text: result ? "true" : "false",
       },
     };
@@ -7061,52 +7026,6 @@ function incomingOutputs(record: WorkflowRecord, node: WorkflowNode): WorkflowBl
     .filter((item): item is WorkflowBlockOutput => !!item);
 }
 
-function compareValues(left: unknown, operator: string, right: unknown): boolean {
-  const lhs = parseMaybeJson(left);
-  const rhs = parseMaybeJson(right);
-  if (operator === "exists") return lhs !== undefined && lhs !== null && lhs !== "";
-  if (operator === "isEmpty") {
-    if (lhs === undefined || lhs === null || lhs === "") return true;
-    if (Array.isArray(lhs)) return lhs.length === 0;
-    if (typeof lhs === "object") return Object.keys(lhs).length === 0;
-    return false;
-  }
-  if (operator === "contains") {
-    if (typeof lhs === "string") return lhs.includes(String(rhs ?? ""));
-    if (Array.isArray(lhs)) return lhs.some((item) => valuesEqual(item, rhs));
-    if (lhs && typeof lhs === "object")
-      return Object.prototype.hasOwnProperty.call(lhs, String(rhs));
-    return false;
-  }
-  if (operator === "greaterThan" || operator === "lessThan") {
-    const leftNumber = Number(lhs);
-    const rightNumber = Number(rhs);
-    if (!Number.isNaN(leftNumber) && !Number.isNaN(rightNumber)) {
-      return operator === "greaterThan" ? leftNumber > rightNumber : leftNumber < rightNumber;
-    }
-    const leftText = String(lhs ?? "");
-    const rightText = String(rhs ?? "");
-    return operator === "greaterThan" ? leftText > rightText : leftText < rightText;
-  }
-  const equal = valuesEqual(lhs, rhs);
-  return operator === "notEquals" ? !equal : equal;
-}
-
-function valuesEqual(left: unknown, right: unknown): boolean {
-  if (left === right) return true;
-  if (
-    (typeof left === "number" || typeof left === "string") &&
-    (typeof right === "number" || typeof right === "string")
-  ) {
-    const leftNumber = Number(left);
-    const rightNumber = Number(right);
-    if (!Number.isNaN(leftNumber) && !Number.isNaN(rightNumber)) {
-      return leftNumber === rightNumber;
-    }
-  }
-  return jsonPreview(left) === jsonPreview(right);
-}
-
 async function runCodeBlock(
   code: string,
   input: WorkflowBlockOutput,
@@ -7815,13 +7734,27 @@ function setNodeConfig(node: WorkflowNode): SetNodeConfig {
 
 function ifNodeConfig(node: WorkflowNode): IfNodeConfig {
   const config = node.config ?? {};
+  if (typeof config.expression === "string") return { expression: config.expression };
+  const left = typeof config.left === "string" ? config.left : "";
+  const right = typeof config.right === "string" ? config.right : "";
   const operator = typeof config.operator === "string" ? config.operator : "equals";
+  const symbol =
+    operator === "equals"
+      ? "=="
+      : operator === "notEquals"
+        ? "!="
+        : operator === "greaterThan"
+          ? ">"
+          : operator === "lessThan"
+            ? "<"
+            : "==";
   return {
-    left: typeof config.left === "string" ? config.left : "",
-    operator: IF_OPERATORS.includes(operator as (typeof IF_OPERATORS)[number])
-      ? operator
-      : "equals",
-    right: typeof config.right === "string" ? config.right : "",
+    expression:
+      operator === "exists"
+        ? `${left} != null`
+        : operator === "isEmpty"
+          ? `${left} == ""`
+          : `${left} ${symbol} ${right}`,
   };
 }
 
