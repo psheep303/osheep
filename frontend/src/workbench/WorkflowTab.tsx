@@ -4783,10 +4783,12 @@ function WorkflowNodeInspector({
       ) : isIf ? (
         <label className="workflow-inspector__field">
           <span>Condition</span>
-          <TemplateInput
+          <input
+            className="workflow-inspector__condition-input"
             value={ifConfig.expression}
-            onChange={(value) => updateConfig({ expression: value })}
+            onChange={(event) => updateConfig({ expression: event.target.value })}
             disabled={running}
+            spellCheck={false}
           />
         </label>
       ) : isDiffApproval ? (

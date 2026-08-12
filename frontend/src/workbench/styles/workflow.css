@@ -1271,6 +1271,12 @@
   border-color: var(--color-link);
 }
 
+.workflow-inspector__field .workflow-inspector__condition-input {
+  font-family: var(--wf-font-mono);
+  font-variant-ligatures: none;
+  letter-spacing: 0;
+}
+
 .workflow-inspector__field input:disabled,
 .workflow-inspector__field textarea:disabled {
   opacity: 0.55;
