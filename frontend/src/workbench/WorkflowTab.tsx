@@ -3419,6 +3419,11 @@ function WorkflowDetailsPanel({
 }) {
   const snapshot = runDetailsSnapshot(node);
   const title = snapshot?.title || node.title;
+  const status = snapshot?.status ?? node.status;
+  const displayedStatus =
+    status === "running" && snapshot?.terminalStatus === "waiting-for-choice"
+      ? "waiting for choice"
+      : status;
   const openAgentSession = async () => {
     if (snapshot?.kind !== "agent") return;
     const app: AgentSessionApp = node.providerKind === "claude-cli" ? "claude" : "codex";
@@ -3441,9 +3446,7 @@ function WorkflowDetailsPanel({
       <div className="workflow-inspector__head">
         <div>
           <div className="workflow-inspector__eyebrow">Run details</div>
-          <span className={`workflow-inspector__status is-${snapshot?.status ?? node.status}`}>
-            {snapshot?.status ?? node.status}
-          </span>
+          <span className={`workflow-inspector__status is-${status}`}>{displayedStatus}</span>
         </div>
         <button
           type="button"
@@ -4302,11 +4305,13 @@ function WorkflowAgentTerminalInner({
             ? "manual input enabled"
             : terminalStatus === "ready-for-success"
               ? "ready to mark success"
-              : terminalStatus === "prompt-sent"
-                ? "prompt injected"
-                : terminalStatus === "auto-finished"
-                  ? "answer captured"
-                  : "live terminal"}
+              : terminalStatus === "waiting-for-choice"
+                ? "waiting for your choice"
+                : terminalStatus === "prompt-sent"
+                  ? "prompt injected"
+                  : terminalStatus === "auto-finished"
+                    ? "answer captured"
+                    : "live terminal"}
         </span>
       </div>
       <div className="workflow-run-details__xterm-host" ref={hostRef} />

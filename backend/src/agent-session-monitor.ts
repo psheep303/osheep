@@ -15,7 +15,9 @@ const POLL_INTERVAL_MS = 120;
 export class AgentSessionEventReducer {
   private readonly app: AgentSessionApp;
   private readonly pendingQuestions = new Set<string>();
+  private readonly pendingClaudePermissionTools = new Set<string>();
   private readonly pendingCodexQuestions = new Set<string>();
+  private claudePermissionMode = "default";
   private activeCodexTurnId = "";
 
   constructor(app: AgentSessionApp) {
@@ -33,20 +35,28 @@ export class AgentSessionEventReducer {
     const events: AgentSessionEvent[] = [];
     const message = objectValue(root.message);
     const content = Array.isArray(message.content) ? message.content : [];
+    const type = stringValue(root.type);
+    if (type === "permission-mode") {
+      this.claudePermissionMode = stringValue(root.permissionMode) || "default";
+      return [];
+    }
 
     if (stringValue(message.role) === "assistant") {
+      let waiting = false;
       for (const item of content) {
         const block = objectValue(item);
-        if (
-          stringValue(block.type) !== "tool_use" ||
-          stringValue(block.name) !== "AskUserQuestion"
-        ) {
-          continue;
-        }
+        if (stringValue(block.type) !== "tool_use") continue;
         const id = stringValue(block.id);
-        if (id) this.pendingQuestions.add(id);
+        const name = stringValue(block.name);
+        if (name === "AskUserQuestion") {
+          if (id) this.pendingQuestions.add(id);
+          waiting = true;
+        } else if (id && claudeToolMayRequirePermission(name, this.claudePermissionMode)) {
+          this.pendingClaudePermissionTools.add(id);
+          waiting = true;
+        }
       }
-      if (this.pendingQuestions.size > 0) events.push({ state: "waiting-for-choice" });
+      if (waiting) events.push({ state: "waiting-for-choice" });
     }
 
     if (stringValue(message.role) === "user") {
@@ -62,20 +72,31 @@ export class AgentSessionEventReducer {
         }
         if (stringValue(block.type) !== "tool_result") continue;
         const id = stringValue(block.tool_use_id);
-        if (id && this.pendingQuestions.delete(id)) resolved = true;
+        if (
+          id &&
+          (this.pendingQuestions.delete(id) || this.pendingClaudePermissionTools.delete(id))
+        ) {
+          resolved = true;
+        }
       }
       if (interrupted) {
         this.pendingQuestions.clear();
+        this.pendingClaudePermissionTools.clear();
         events.push({
           state: "completed",
           outcome: "cancelled",
           error: "Claude Code turn was interrupted.",
         });
       }
-      if (resolved && this.pendingQuestions.size === 0) events.push({ state: "running" });
+      if (
+        resolved &&
+        this.pendingQuestions.size === 0 &&
+        this.pendingClaudePermissionTools.size === 0
+      ) {
+        events.push({ state: "running" });
+      }
     }
 
-    const type = stringValue(root.type);
     const subtype = stringValue(root.subtype);
     const error = claudeErrorMessage(root, message);
     if (events.some((event) => event.state === "completed")) return events;
@@ -90,7 +111,8 @@ export class AgentSessionEventReducer {
     } else if (
       type === "system" &&
       subtype === "turn_duration" &&
-      this.pendingQuestions.size === 0
+      this.pendingQuestions.size === 0 &&
+      this.pendingClaudePermissionTools.size === 0
     ) {
       events.push({ state: "completed", outcome: "success" });
     }
@@ -152,6 +174,14 @@ export class AgentSessionEventReducer {
     }
     return [];
   }
+}
+
+function claudeToolMayRequirePermission(name: string, permissionMode: string): boolean {
+  if (!name || permissionMode === "bypassPermissions" || permissionMode === "dontAsk") return false;
+  if (/^(?:Edit|Write|NotebookEdit)$/.test(name)) return permissionMode !== "acceptEdits";
+  return (
+    name === "Bash" || name === "WebFetch" || name === "ExitPlanMode" || name.startsWith("mcp__")
+  );
 }
 
 export async function watchAgentSession(input: {

@@ -51,6 +51,92 @@ test("Claude AskUserQuestion waits until its tool result and ignores turn comple
   ]);
 });
 
+test("Claude permission-gated Bash waits from tool use until its result", () => {
+  const reducer = new AgentSessionEventReducer("claude");
+  assert.deepEqual(reducer.push({ type: "permission-mode", permissionMode: "acceptEdits" }), []);
+  assert.deepEqual(
+    reducer.push({
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "bash_1", name: "Bash", input: {} }],
+      },
+    }),
+    [{ state: "waiting-for-choice" }],
+  );
+  assert.deepEqual(reducer.push({ type: "system", subtype: "turn_duration" }), []);
+  assert.deepEqual(
+    reducer.push({
+      type: "user",
+      message: { role: "user", content: [{ type: "tool_result", tool_use_id: "bash_1" }] },
+    }),
+    [{ state: "running" }],
+  );
+  assert.deepEqual(reducer.push({ type: "system", subtype: "turn_duration" }), [
+    { state: "completed", outcome: "success" },
+  ]);
+});
+
+test("Claude acceptEdits and bypass modes do not invent permission waits", () => {
+  const acceptEdits = new AgentSessionEventReducer("claude");
+  acceptEdits.push({ type: "permission-mode", permissionMode: "acceptEdits" });
+  assert.deepEqual(
+    acceptEdits.push({
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "edit_1", name: "Edit", input: {} }],
+      },
+    }),
+    [],
+  );
+
+  const bypass = new AgentSessionEventReducer("claude");
+  bypass.push({ type: "permission-mode", permissionMode: "bypassPermissions" });
+  assert.deepEqual(
+    bypass.push({
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "bash_1", name: "Bash", input: {} }],
+      },
+    }),
+    [],
+  );
+});
+
+test("Claude automatic tool results do not release a pending permission tool", () => {
+  const reducer = new AgentSessionEventReducer("claude");
+  reducer.push({ type: "permission-mode", permissionMode: "acceptEdits" });
+  assert.deepEqual(
+    reducer.push({
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "read_1", name: "Read", input: {} },
+          { type: "tool_use", id: "bash_1", name: "Bash", input: {} },
+        ],
+      },
+    }),
+    [{ state: "waiting-for-choice" }],
+  );
+  assert.deepEqual(
+    reducer.push({
+      type: "user",
+      message: { role: "user", content: [{ type: "tool_result", tool_use_id: "read_1" }] },
+    }),
+    [],
+  );
+  assert.deepEqual(
+    reducer.push({
+      type: "user",
+      message: { role: "user", content: [{ type: "tool_result", tool_use_id: "bash_1" }] },
+    }),
+    [{ state: "running" }],
+  );
+});
+
 test("Claude ignores sidechain questions and reports structured errors", () => {
   const reducer = new AgentSessionEventReducer("claude");
   assert.deepEqual(
