@@ -820,6 +820,55 @@
   right: -8px;
 }
 
+.workflow-node__handle--branch {
+  overflow: visible;
+}
+
+.workflow-node__handle--branch.is-true,
+.workflow-node__handle--branch.is-success {
+  border-color: #4b9b69;
+}
+
+.workflow-node__handle--branch.is-false,
+.workflow-node__handle--branch.is-failure {
+  border-color: #c15f51;
+}
+
+.workflow-inspector__approval {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border-control);
+  background: var(--surface-1);
+}
+
+.workflow-inspector__approval .workflow-inspector__output {
+  max-height: 320px;
+}
+
+.workflow-inspector__approval-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.workflow-inspector__approval-actions button {
+  height: 30px;
+  padding: 0 14px;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-sm);
+  color: var(--fg-strong);
+  background: var(--surface-3);
+  cursor: pointer;
+}
+
+.workflow-inspector__approval-actions button.is-primary {
+  border-color: #4b9b69;
+}
+
+.workflow-inspector__approval-actions button.is-danger {
+  border-color: #c15f51;
+}
+
 .workflow-node__handle:hover:not(:disabled),
 .workflow-node__handle.is-connect-hover {
   background: var(--color-link);

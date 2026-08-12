@@ -279,6 +279,95 @@ export async function commit(workspaceRoot: string, message: string): Promise<st
   return head;
 }
 
+export async function stageAllChanges(workspaceRoot: string): Promise<void> {
+  await runGitText(workspaceRoot, ["add", "-A"]);
+}
+
+export async function getWorkflowDiff(workspaceRoot: string): Promise<string> {
+  const repoStatus = await getStatus(workspaceRoot);
+  const status = repoStatus.changes
+    .map((change) => `${change.indexStatus}${change.worktreeStatus} ${change.path}`)
+    .join("\n");
+  const hasExistingHead = await hasHead(workspaceRoot);
+  const args = hasExistingHead
+    ? ["diff", "--no-ext-diff", "--binary", "HEAD"]
+    : ["diff", "--no-ext-diff", "--binary", "--cached"];
+  const diff = await runGitText(workspaceRoot, args);
+  const unstaged = hasExistingHead
+    ? ""
+    : await runGitText(workspaceRoot, ["diff", "--no-ext-diff", "--binary"]);
+  const untrackedDiffs: string[] = [];
+  for (const change of repoStatus.changes) {
+    if (change.indexStatus !== "?" || change.worktreeStatus !== "?") continue;
+    const result = await runGit(workspaceRoot, [
+      "diff",
+      "--no-index",
+      "--binary",
+      "--",
+      "/dev/null",
+      change.path,
+    ]);
+    if (result.code === 0 || result.code === 1) {
+      untrackedDiffs.push(result.stdout.toString("utf-8"));
+    }
+  }
+  return [
+    `# git status --short\n${status}`,
+    `# git diff\n${diff}${unstaged}${untrackedDiffs.join("\n")}`,
+  ]
+    .filter((part) => part.trim())
+    .join("\n");
+}
+
+export interface PullRequestResult {
+  url: string;
+  number: number | null;
+}
+
+export async function createPullRequest(
+  workspaceRoot: string,
+  options: { title: string; body: string; base?: string; draft?: boolean },
+): Promise<PullRequestResult> {
+  const title = options.title.trim();
+  if (!title) throw errors.gitFailed("Pull request title is required.");
+  const args = ["pr", "create", "--title", title, "--body", options.body];
+  if (options.base?.trim()) args.push("--base", options.base.trim());
+  if (options.draft) args.push("--draft");
+  const result = await runProcess(workspaceRoot, "gh", args);
+  if (result.code !== 0) {
+    throw errors.gitFailed(result.stderr.trim() || "GitHub CLI failed to create the pull request.");
+  }
+  const url = result.stdout.toString("utf-8").trim().split(/\r?\n/).at(-1) ?? "";
+  const match = url.match(/\/pull\/(\d+)(?:\/?$)/);
+  return { url, number: match ? Number(match[1]) : null };
+}
+
+function runProcess(cwd: string, command: string, args: string[]): Promise<GitCmdResult> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GH_PROMPT_DISABLED: "1" },
+      windowsHide: true,
+    });
+    const stdoutChunks: Buffer[] = [];
+    let stderr = "";
+    child.stdout.on("data", (chunk: Buffer) => stdoutChunks.push(chunk));
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf-8");
+    });
+    child.on("error", (error) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        resolve({ stdout: Buffer.alloc(0), stderr: `${command} is not installed.`, code: -1 });
+      } else {
+        reject(error);
+      }
+    });
+    child.on("close", (code) => {
+      resolve({ stdout: Buffer.concat(stdoutChunks), stderr, code: code ?? -1 });
+    });
+  });
+}
+
 export async function gitInit(workspaceRoot: string): Promise<void> {
   await runGitText(workspaceRoot, ["init"]);
 }

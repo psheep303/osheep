@@ -17,6 +17,16 @@ import { readAppSettings } from "./app-settings.js";
 import { applyClaudePluginSelection } from "./claude-plugins.js";
 import { applyCodexPluginSelection } from "./codex-plugins.js";
 import { readFileText, writeFileText } from "./fs-ops.js";
+import {
+  createPullRequest,
+  getRepoInfo,
+  getWorkflowDiff,
+  commit as gitCommit,
+  isRepo,
+  listRemotes,
+  pushCurrent,
+  stageAllChanges,
+} from "./git-ops.js";
 import { calculateModelCost, readStoredModelPrices } from "./model-pricing.js";
 import { callRemoteMcp, discoverRemoteMcp, type RemoteMcpTool } from "./remote-mcp.js";
 import { publishWorkflowRuntime } from "./workflow-events.js";
@@ -66,6 +76,13 @@ interface WorkflowRunState {
   abort: AbortController;
   done: Promise<void>;
 }
+
+interface PendingDiffApproval {
+  resolve: (approved: boolean) => void;
+  dispose: () => void;
+}
+
+const pendingDiffApprovals = new Map<string, PendingDiffApproval>();
 
 export interface WorkflowRunDetailSnapshot {
   kind: "agent" | "command";
@@ -134,6 +151,9 @@ const CONFIGURED_LOCAL_KINDS = new Set<WorkflowNodeKind>([
   "http-request",
   "set",
   "if",
+  "diff-approval",
+  "git-commit",
+  "github-pr",
   "merge",
   "code",
   "loop-items",
@@ -530,27 +550,35 @@ export async function scheduleWorkflowNodes(
   nodeIds: string[],
   edges: WorkflowEdge[],
   maxParallel: number,
-  execute: (nodeId: string) => Promise<void>,
+  execute: (nodeId: string) => Promise<unknown>,
 ): Promise<void> {
   const scheduledNodeIds = [...new Set(nodeIds)];
   const order = new Map(scheduledNodeIds.map((id, index) => [id, index]));
   const selected = new Set(scheduledNodeIds);
   const dependencies = new Map<string, Set<string>>();
-  const outgoing = new Map<string, string[]>();
+  const outgoing = new Map<string, WorkflowEdge[]>();
+  const incomingCount = new Map<string, number>();
+  const activeIncoming = new Map<string, number>();
   for (const id of scheduledNodeIds) {
     dependencies.set(id, new Set());
     outgoing.set(id, []);
+    incomingCount.set(id, 0);
+    activeIncoming.set(id, 0);
   }
   for (const edge of edges) {
     if (!selected.has(edge.from) || !selected.has(edge.to)) continue;
     dependencies.get(edge.to)?.add(edge.from);
-    outgoing.get(edge.from)?.push(edge.to);
+    outgoing.get(edge.from)?.push(edge);
+    incomingCount.set(edge.to, (incomingCount.get(edge.to) ?? 0) + 1);
   }
   const ready = scheduledNodeIds.filter((id) => dependencies.get(id)?.size === 0);
   const completed = new Set<string>();
   const running = new Map<
     string,
-    Promise<{ nodeId: string; ok: true } | { nodeId: string; ok: false; error: unknown }>
+    Promise<
+      | { nodeId: string; ok: true; sourceHandle?: string }
+      | { nodeId: string; ok: false; error: unknown }
+    >
   >();
   const limit = Math.max(1, Math.min(32, Math.floor(maxParallel) || 1));
   let failed = false;
@@ -561,7 +589,11 @@ export async function scheduleWorkflowNodes(
     while (!failed && ready.length && running.size < limit) {
       const nodeId = ready.shift()!;
       const task = execute(nodeId)
-        .then(() => ({ nodeId, ok: true as const }))
+        .then((sourceHandle) => ({
+          nodeId,
+          ok: true as const,
+          sourceHandle: typeof sourceHandle === "string" ? sourceHandle : undefined,
+        }))
         .catch((error) => ({ nodeId, ok: false as const, error }));
       running.set(nodeId, task);
     }
@@ -581,16 +613,33 @@ export async function scheduleWorkflowNodes(
       continue;
     }
     completed.add(result.nodeId);
-    for (const next of outgoing.get(result.nodeId) ?? []) {
-      const pending = dependencies.get(next);
+    const propagation: Array<{ nodeId: string; sourceHandle?: string; skipped?: boolean }> = [
+      { nodeId: result.nodeId, sourceHandle: result.sourceHandle },
+    ];
+    while (propagation.length) {
+      const source = propagation.shift()!;
+      for (const edge of outgoing.get(source.nodeId) ?? []) {
+        const next = edge.to;
+        const pending = dependencies.get(next);
+        const matches =
+          !source.skipped &&
+          (!edge.sourceHandle || !source.sourceHandle || edge.sourceHandle === source.sourceHandle);
+        if (matches) activeIncoming.set(next, (activeIncoming.get(next) ?? 0) + 1);
       pending?.delete(result.nodeId);
+        pending?.delete(source.nodeId);
       if (
         pending?.size === 0 &&
         !completed.has(next) &&
         !running.has(next) &&
         !ready.includes(next)
       ) {
-        ready.push(next);
+          if ((incomingCount.get(next) ?? 0) > 0 && (activeIncoming.get(next) ?? 0) === 0) {
+            completed.add(next);
+            propagation.push({ nodeId: next, skipped: true });
+          } else {
+            ready.push(next);
+          }
+        }
       }
     }
   }
@@ -619,7 +668,7 @@ async function runWorkflowInBackground(
     await scheduleWorkflowNodes(nodeIds, record.edges, maxParallel, async (nodeId) => {
       if (abort.signal.aborted) throw new Error("Stopped");
       try {
-        await executeWorkflowNode(workspace, workflowId, run, nodeIds, nodeId, abort);
+        return await executeWorkflowNode(workspace, workflowId, run, nodeIds, nodeId, abort);
       } catch (error) {
         const message = (error as Error)?.message;
         if (!(abort.signal.aborted && message === "Stopped")) {
@@ -682,7 +731,7 @@ async function executeWorkflowNode(
   nodeIds: string[],
   nodeId: string,
   abort: AbortController,
-): Promise<void> {
+): Promise<string | undefined> {
   if (abort.signal.aborted) throw new Error("Stopped");
   let record = await getWorkflow(workspace.path, workflowId);
   const node = record.nodes.find((item) => item.id === nodeId);
@@ -715,7 +764,7 @@ async function executeWorkflowNode(
         output,
       }),
     );
-    return;
+    return undefined;
   }
 
   await patchWorkflowNode(workspace.path, workflowId, nodeId, {
@@ -837,6 +886,7 @@ async function executeWorkflowNode(
     }),
   );
   if (result.error && !nodeFailover(currentNode)) throw new Error(result.error);
+  return sourceHandleForOutput(kind, result.output);
 }
 
 async function executeAgentNode(
@@ -1264,6 +1314,96 @@ async function executeLocalNode(
         left,
         right,
         text: result ? "true" : "false",
+      },
+    };
+  }
+
+  if (kind === "diff-approval") {
+    if (!(await isRepo(workspaceRoot))) throw new Error(`${node.title} requires a Git repository.`);
+    const diff = await getWorkflowDiff(workspaceRoot);
+    const approvalOutput = {
+      type: "diff-approval",
+      status: "waiting",
+      approved: null,
+      diff,
+      text: diff || "No changes to review.",
+    };
+    const approval = waitForDiffApproval(workspaceRoot, record.id, node.id, options.signal);
+    try {
+      await patchWorkflowNode(workspaceRoot, record.id, node.id, {
+        rawOutput: stringifyBlockOutput(approvalOutput),
+        summary: stringifyBlockOutput(approvalOutput),
+        config: { ...(node.config ?? {}), waitingForApproval: true },
+      });
+    } catch (error) {
+      pendingDiffApprovals
+        .get(approvalKey(workspaceRoot, record.id, node.id))
+        ?.dispose();
+      throw error;
+    }
+    const approved = await approval;
+    return {
+      output: {
+        ...approvalOutput,
+        status: approved ? "approved" : "rejected",
+        approved,
+        text: approved ? "Diff approved." : "Diff rejected.",
+      },
+      nodePatch: {
+        config: { ...(node.config ?? {}), waitingForApproval: false },
+      },
+    };
+  }
+
+  if (kind === "git-commit") {
+    if (!(await isRepo(workspaceRoot))) throw new Error(`${node.title} requires a Git repository.`);
+    const message = resolveBlockTemplate(configString(node, "message"), record).trim();
+    if (!message) throw new Error(`${node.title} requires a commit message.`);
+    if (node.config?.stageAll === true) {
+      await stageAllChanges(workspaceRoot);
+    }
+    const head = await gitCommit(workspaceRoot, message);
+    return {
+      output: { type: "git-commit", status: "success", head, message, text: head },
+      changedFiles: true,
+    };
+  }
+
+  if (kind === "github-pr") {
+    if (!(await isRepo(workspaceRoot))) throw new Error(`${node.title} requires a Git repository.`);
+    const title = resolveBlockTemplate(configString(node, "title"), record).trim();
+    const body = resolveBlockTemplate(configString(node, "body"), record);
+    const base = resolveBlockTemplate(configString(node, "base"), record).trim();
+    if (node.config?.push !== false) {
+      const info = await getRepoInfo(workspaceRoot);
+      if (!info.upstream) {
+        const remotes = await listRemotes(workspaceRoot);
+        const remote = remotes.find((item) => item.name === "origin") ?? remotes[0];
+        if (!remote || !info.branch || info.detached) {
+          throw new Error(`${node.title} cannot determine a remote branch to push.`);
+        }
+        await pushCurrent(workspaceRoot, {
+          remote: remote.name,
+          branch: info.branch,
+          setUpstream: true,
+        });
+      } else {
+        await pushCurrent(workspaceRoot, {});
+      }
+    }
+    const created = await createPullRequest(workspaceRoot, {
+      title,
+      body,
+      base: base || undefined,
+      draft: node.config?.draft === true,
+    });
+    return {
+      output: {
+        type: "github-pr",
+        status: "success",
+        url: created.url,
+        number: created.number,
+        text: created.url,
       },
     };
   }
@@ -2938,6 +3078,64 @@ function displayBlockId(node: WorkflowNode): number {
 
 function nodeKind(node: WorkflowNode): WorkflowNodeKind {
   return node.kind ?? "agent";
+}
+
+function configString(node: WorkflowNode, key: string, fallback = ""): string {
+  const value = node.config?.[key];
+  return typeof value === "string" ? value : fallback;
+}
+
+function sourceHandleForOutput(
+  kind: WorkflowNodeKind,
+  output: WorkflowBlockOutput,
+): string | undefined {
+  if (kind === "if") return output.result === true ? "true" : "false";
+  if (kind === "diff-approval") return output.approved === true ? "success" : "failure";
+  return undefined;
+}
+
+function approvalKey(workspaceRoot: string, workflowId: string, nodeId: string): string {
+  return `${workspaceRoot}\u0000${workflowId}\u0000${nodeId}`;
+}
+
+function waitForDiffApproval(
+  workspaceRoot: string,
+  workflowId: string,
+  nodeId: string,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  const key = approvalKey(workspaceRoot, workflowId, nodeId);
+  return new Promise<boolean>((resolve, reject) => {
+    const dispose = () => {
+      signal?.removeEventListener("abort", onAbort);
+      pendingDiffApprovals.delete(key);
+    };
+    const onAbort = () => {
+      dispose();
+      reject(new Error("Stopped"));
+    };
+    pendingDiffApprovals.set(key, {
+      resolve: (approved) => {
+        dispose();
+        resolve(approved);
+      },
+      dispose,
+    });
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+export async function resolveWorkflowDiffApproval(
+  workspaceId: string,
+  workflowId: string,
+  nodeId: string,
+  approved: boolean,
+): Promise<boolean> {
+  const workspace = await resolveWorkspace(workspaceId);
+  const pending = pendingDiffApprovals.get(approvalKey(workspace.path, workflowId, nodeId));
+  if (!pending) return false;
+  pending.resolve(approved);
+  return true;
 }
 
 function nodeFailover(node: WorkflowNode): boolean {

@@ -21,6 +21,9 @@ export type WorkflowNodeKind =
   | "http-request"
   | "set"
   | "if"
+  | "diff-approval"
+  | "git-commit"
+  | "github-pr"
   | "merge"
   | "code"
   | "loop-items"
@@ -59,6 +62,7 @@ export interface WorkflowEdge {
   from: string;
   to: string;
   passSummary: boolean;
+  sourceHandle?: string;
 }
 
 export interface WorkflowRun {
@@ -195,6 +199,9 @@ function asNodeKind(value: unknown): WorkflowNodeKind {
     value === "http-request" ||
     value === "set" ||
     value === "if" ||
+    value === "diff-approval" ||
+    value === "git-commit" ||
+    value === "github-pr" ||
     value === "merge" ||
     value === "code" ||
     value === "loop-items" ||
@@ -283,12 +290,16 @@ function sanitizeEdge(raw: unknown, nodeIds: Set<string>): WorkflowEdge | null {
   if (typeof r.from !== "string" || typeof r.to !== "string") return null;
   if (!nodeIds.has(r.from) || !nodeIds.has(r.to) || r.from === r.to) return null;
   const id = typeof r.id === "string" && EDGE_ID_RE.test(r.id) ? r.id : generateWorkflowEdgeId();
-  return {
+  const edge: WorkflowEdge = {
     id,
     from: r.from,
     to: r.to,
     passSummary: r.passSummary !== false,
   };
+  if (typeof r.sourceHandle === "string" && r.sourceHandle.trim()) {
+    edge.sourceHandle = r.sourceHandle.trim().slice(0, 32);
+  }
+  return edge;
 }
 
 function sanitizeRun(raw: unknown): WorkflowRun | null {
