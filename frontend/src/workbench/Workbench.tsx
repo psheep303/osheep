@@ -427,6 +427,23 @@ export function Workbench() {
     [tabs, workspaceId, t],
   );
 
+  const openPreparedMultiDiffTab = useCallback(
+    (title: string, entries: MultiDiffTab["entries"]) => {
+      if (entries.length === 0) return;
+      const diffId = `__workflow-diff__:${entries
+        .map((entry) => encodeURIComponent(entry.path))
+        .join("|")}`;
+      setTabs((current) => {
+        const nextTab: MultiDiffTab = { kind: "multi-diff", path: diffId, title, entries };
+        const existingIndex = current.findIndex((tab) => tab.path === diffId);
+        if (existingIndex < 0) return [...current, nextTab];
+        return current.map((tab, index) => (index === existingIndex ? nextTab : tab));
+      });
+      setActivePath(diffId);
+    },
+    [],
+  );
+
   const openSettingsTab = useCallback(() => {
     setTabs((prev) => {
       if (prev.some((t) => t.kind === "settings")) return prev;
@@ -970,6 +987,7 @@ export function Workbench() {
                     <WorkflowTab
                       workspaceId={workspaceId}
                       workflowId={activeTab.workflowId}
+                      onOpenDiff={openPreparedMultiDiffTab}
                       onWorkflowChanged={bumpAiRefresh}
                       onFilesChanged={bumpFileTree}
                       onResumeSession={resumeAgentSession}

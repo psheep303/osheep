@@ -52,6 +52,12 @@ export function DiffPane({ path, fontSize, leftContent, rightContent }: DiffPane
         minimap: { enabled: false },
         scrollBeyondLastLine: false,
         wordWrap: "on",
+        hideUnchangedRegions: {
+          enabled: true,
+          contextLineCount: 3,
+          minimumLineCount: 3,
+          revealLineCount: 20,
+        },
       }}
     />
   );

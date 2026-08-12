@@ -901,25 +901,6 @@
   font-size: 12px;
 }
 
-.git-graph__commit-summary {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  min-width: 0;
-  height: 22px;
-  padding: 0 8px 0 34px;
-}
-
-.git-graph__details-meta {
-  min-width: 0;
-  flex: 1 1 auto;
-  color: var(--fg-faint);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.git-graph__commit-body,
 .git-graph__details-loading,
 .git-graph__details-error {
   padding: 2px 8px 4px 34px;
@@ -928,7 +909,6 @@
   overflow-wrap: anywhere;
 }
 
-.git-graph__commit-body,
 .git-graph__details-loading {
   color: var(--fg-muted);
 }
@@ -967,6 +947,21 @@
   font: inherit;
   text-align: left;
   cursor: pointer;
+}
+
+.git-graph__change-icon,
+.multi-diff-pane__item-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+}
+
+.git-graph__change-icon svg,
+.multi-diff-pane__item-icon svg {
+  display: block;
 }
 
 .git-graph__history-item-change:hover {
@@ -1059,119 +1054,71 @@
 
 /* VS Code-style multi-file diff editor opened from SCM groups and history. */
 .multi-diff-pane {
-  display: flex;
+  display: block;
   width: 100%;
   height: 100%;
   min-width: 0;
   min-height: 0;
+  overflow: auto;
   background: var(--bg-editor);
 }
 
-.multi-diff-pane__files {
-  display: flex;
-  flex: 0 0 230px;
-  flex-direction: column;
+.multi-diff-pane__item {
   min-width: 0;
-  min-height: 0;
-  border-right: 1px solid var(--border-faint);
-  background: var(--bg-shell);
-}
-
-.multi-diff-pane__header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 35px;
-  padding: 0 10px;
   border-bottom: 1px solid var(--border-faint);
-  color: var(--fg-default);
-  font-size: 12px;
-  font-weight: 600;
 }
 
-.multi-diff-pane__header > span:first-child {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.multi-diff-pane__count {
-  margin-left: auto;
-  color: var(--fg-faint);
-  font-family: var(--font-mono);
-  font-size: 11px;
-}
-
-.multi-diff-pane__list {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow: auto;
-  padding: 4px 0;
-}
-
-.multi-diff-pane__file {
+.multi-diff-pane__item-header {
   display: flex;
   align-items: center;
   gap: 6px;
   width: 100%;
-  height: 22px;
-  padding: 0 10px;
+  height: 34px;
+  padding: 0 12px;
   border: 0;
-  background: transparent;
-  color: var(--fg-muted);
+  border-bottom: 1px solid var(--border-faint);
+  background: var(--bg-shell);
+  color: var(--fg-default);
   font: inherit;
-  font-size: 12px;
+  font-size: 13px;
   text-align: left;
   cursor: pointer;
 }
 
-.multi-diff-pane__file:hover {
+.multi-diff-pane__item-header:hover {
   background: var(--bg-hover);
-  color: var(--fg-default);
 }
 
-.multi-diff-pane__file.is-active {
-  background: var(--ui-surface-selected, var(--bg-hover));
-  color: var(--fg-default);
-}
-
-.multi-diff-pane__file .codicon {
+.multi-diff-pane__item-header .codicon {
   flex: 0 0 auto;
-  font-size: 14px;
+  font-size: 15px;
 }
 
-.multi-diff-pane__file-name {
+.multi-diff-pane__item-name,
+.multi-diff-pane__item-parent {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.multi-diff-pane__editor {
+.multi-diff-pane__item-name {
+  flex: 0 1 auto;
+}
+
+.multi-diff-pane__item-parent {
   flex: 1 1 auto;
-  min-width: 0;
-  min-height: 0;
+  color: var(--fg-faint);
+  font-size: 12px;
 }
 
-.multi-diff-pane--stacked {
-  display: block;
-  overflow: auto;
-}
-
-.multi-diff-pane__stacked-editor {
-  height: 360px;
+.multi-diff-pane__item-editor {
+  height: 420px;
   min-height: 240px;
-  border-bottom: 1px solid var(--border-faint);
+  background: var(--bg-editor);
 }
 
-.multi-diff-pane__stacked-editor:last-child {
+.multi-diff-pane__item.is-collapsed .multi-diff-pane__item-header {
   border-bottom: 0;
-}
-
-@media (max-width: 700px) {
-  .multi-diff-pane__files {
-    flex-basis: 170px;
-  }
 }
 

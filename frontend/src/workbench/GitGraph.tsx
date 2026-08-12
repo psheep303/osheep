@@ -1,6 +1,7 @@
 import { Fragment, type ReactNode, useEffect, useMemo, useState } from "react";
 import { useUiPreferences } from "../i18n/UiPreferences";
 import { type GitCommit, type GitCommitDetails, getGitCommitDetails, getGitLog } from "./api";
+import { FileIcon } from "./FileIcon";
 import { gitGraphPalette, gitGraphRefColors } from "./theme";
 
 interface GitGraphProps {
@@ -8,7 +9,6 @@ interface GitGraphProps {
   /** Bumped externally to force a refetch. */
   refreshKey: number;
   scope: "auto" | "all";
-  remoteUrl?: string | null;
   onOpenCommitDiff: (sha: string, title: string, paths: string[]) => void;
 }
 
@@ -47,7 +47,6 @@ export function GitGraph({
   workspaceId,
   refreshKey,
   scope,
-  remoteUrl,
   onOpenCommitDiff,
 }: GitGraphProps) {
   const { resolvedLanguage, t } = useUiPreferences();
@@ -164,7 +163,6 @@ export function GitGraph({
               error={detailsError}
               graphColumns={row.outputSwimlanes}
               highlightIndex={findLastIndex(row.outputSwimlanes, row.commit.parents[0] ?? "")}
-              remoteUrl={remoteUrl}
               language={resolvedLanguage}
               onOpenChanges={(paths) => {
                 if (!details) return;
@@ -255,7 +253,6 @@ function CommitDetailsCard({
   error,
   graphColumns,
   highlightIndex,
-  remoteUrl,
   language,
   onOpenChanges,
 }: {
@@ -265,7 +262,6 @@ function CommitDetailsCard({
   error: string | null;
   graphColumns: GraphNode[];
   highlightIndex: number;
-  remoteUrl?: string | null;
   language: "zh-CN" | "en";
   onOpenChanges: (paths?: string[]) => void;
 }) {
@@ -283,53 +279,9 @@ function CommitDetailsCard({
   };
   const lines = value.message.split(/\r?\n/);
   const subject = lines.shift() || commit.subject;
-  const body = lines.join("\n").trim();
-  const commitUrl = githubCommitUrl(remoteUrl, value.sha);
 
   return (
     <div className="git-graph__children" aria-label={subject}>
-      <div className="git-graph__commit-summary">
-        <span className="git-graph__details-sha">{value.shortSha}</span>
-        <span className="git-graph__details-meta">
-          {value.author}
-          {value.authorEmail ? ` <${value.authorEmail}>` : ""}
-          {` · ${formatRelativeTime(value.date, language)}`}
-        </span>
-        {!loading && (
-          <span className="git-graph__details-stat">
-            <span className="is-added">+{value.insertions}</span>
-            <span className="is-deleted">-{value.deletions}</span>
-          </span>
-        )}
-        <button
-          type="button"
-          className="git-graph__details-action"
-          title={language === "zh-CN" ? "复制提交 ID" : "Copy commit ID"}
-          onClick={() => void navigator.clipboard.writeText(value.sha)}
-        >
-          <i className="codicon codicon-copy" aria-hidden="true" />
-        </button>
-        <button
-          type="button"
-          className="git-graph__details-action"
-          title={language === "zh-CN" ? "打开提交更改" : "Open Commit Changes"}
-          disabled={loading || !details || details.files.length === 0}
-          onClick={() => onOpenChanges()}
-        >
-          <i className="codicon codicon-diff-multiple" aria-hidden="true" />
-        </button>
-        {commitUrl && (
-          <a
-            className="git-graph__details-action git-graph__details-link"
-            href={commitUrl}
-            target="_blank"
-            rel="noreferrer"
-          >
-            <i className="codicon codicon-github" aria-hidden="true" />
-          </a>
-        )}
-      </div>
-      {body && <div className="git-graph__commit-body">{body}</div>}
       {loading && (
         <div className="git-graph__details-loading">
           {language === "zh-CN" ? "加载提交详情..." : "Loading commit details..."}
@@ -352,10 +304,9 @@ function CommitDetailsCard({
           <span className="git-graph__graph-placeholder">
             <HistoryGraphPlaceholder columns={graphColumns} highlightIndex={highlightIndex} />
           </span>
-          <i
-            className={`codicon codicon-${file.binary ? "file-binary" : "file"}`}
-            aria-hidden="true"
-          />
+          <span className="git-graph__change-icon" aria-hidden="true">
+            <FileIcon name={file.path} />
+          </span>
           <span className="git-graph__change-path">{file.path}</span>
           <span className={`git-graph__change-status is-${file.status.toLowerCase()}`}>
             {file.status}
@@ -396,26 +347,6 @@ function HistoryGraphPlaceholder({
       )}
     </svg>
   );
-}
-
-function githubCommitUrl(remoteUrl: string | null | undefined, sha: string): string | null {
-  if (!remoteUrl) return null;
-  const match = remoteUrl.match(
-    /^(?:https?:\/\/github\.com\/|git@github\.com:)([^/]+\/[^/]+?)(?:\.git)?$/i,
-  );
-  return match ? `https://github.com/${match[1]}/commit/${sha}` : null;
-}
-
-function formatRelativeTime(timestamp: number, language: "zh-CN" | "en"): string {
-  const seconds = timestamp - Math.floor(Date.now() / 1000);
-  const absolute = Math.abs(seconds);
-  const [value, unit]: [number, Intl.RelativeTimeFormatUnit] =
-    absolute >= 86400
-      ? [Math.round(seconds / 86400), "day"]
-      : absolute >= 3600
-        ? [Math.round(seconds / 3600), "hour"]
-        : [Math.round(seconds / 60), "minute"];
-  return new Intl.RelativeTimeFormat(language, { numeric: "auto" }).format(value, unit);
 }
 
 function RefBadge({ badge }: { badge: ReferenceBadge }) {

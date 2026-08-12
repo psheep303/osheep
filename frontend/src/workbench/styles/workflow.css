@@ -846,15 +846,29 @@
   max-height: 320px;
 }
 
-.workflow-inspector__approval-diff {
-  height: 360px;
-  min-height: 240px;
-  border: 1px solid var(--border-edge);
-  overflow: hidden;
+.workflow-inspector__approval-open {
+  display: grid;
+  gap: 6px;
 }
 
-.workflow-inspector__approval-diff .multi-diff-pane {
-  height: 100%;
+.workflow-inspector__approval-open > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: fit-content;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-sm);
+  color: var(--fg-strong);
+  background: var(--surface-3);
+  cursor: pointer;
+}
+
+.workflow-inspector__approval-open > button:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 
 .workflow-inspector__approval-actions {

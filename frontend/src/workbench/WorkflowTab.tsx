@@ -65,7 +65,7 @@ import {
   writeFile,
 } from "./api";
 import { ClaudeLogo, OpenAILogo } from "./BrandIcons";
-import { MultiDiffPane, type MultiDiffEntry } from "./MultiDiffPane";
+import type { MultiDiffEntry } from "./MultiDiffPane";
 import { ContextMenu, type CtxMenuSection } from "./ContextMenu";
 import { cleanAgentTerminalConversation } from "./terminal-conversation";
 import {
@@ -98,6 +98,7 @@ interface WorkflowTabProps {
   onFilesChanged: () => void;
   onResumeSession: (session: { app: AgentSessionApp; id: string; title: string }) => void;
   onTemplateBinding: (binding: WorkflowRecord["templateBinding"]) => void;
+  onOpenDiff: (title: string, entries: MultiDiffEntry[]) => void;
 }
 
 interface CanvasPoint {
@@ -757,6 +758,7 @@ export function WorkflowTab({
   onFilesChanged,
   onResumeSession,
   onTemplateBinding,
+  onOpenDiff,
 }: WorkflowTabProps) {
   const { t } = useUiPreferences();
   const [workflow, setWorkflow] = useState<WorkflowRecord | null>(null);
@@ -2725,6 +2727,7 @@ export function WorkflowTab({
               onResolveApproval={(approved) =>
                 resolveWorkflowApproval(workspaceId, workflow.id, selectedNode.id, approved)
               }
+              onOpenDiff={onOpenDiff}
               onClose={() => setSelectedId(null)}
               onDelete={() => deleteNode(selectedNode.id)}
               onUpdateEdge={updateEdge}
@@ -4334,6 +4337,7 @@ function WorkflowNodeInspector({
   onShowDetails,
   onShowMpe,
   onResolveApproval,
+  onOpenDiff,
   onClose,
   onDelete,
   onUpdateEdge,
@@ -4350,6 +4354,7 @@ function WorkflowNodeInspector({
   onShowDetails: () => void;
   onShowMpe: () => void;
   onResolveApproval: (approved: boolean) => Promise<unknown>;
+  onOpenDiff: (title: string, entries: MultiDiffEntry[]) => void;
   onClose: () => void;
   onDelete: () => void;
   onUpdateEdge: (edgeId: string, patch: Partial<WorkflowEdge>) => void;
@@ -4477,7 +4482,7 @@ function WorkflowNodeInspector({
       {isDiffApproval && node.status === "running" && node.config?.waitingForApproval === true && (
         <div className="workflow-inspector__approval">
           <div className="workflow-inspector__section-title">Diff waiting for approval</div>
-          <DiffApprovalView workspaceId={workspaceId} />
+          <DiffApprovalView workspaceId={workspaceId} onOpenDiff={onOpenDiff} />
           <div className="workflow-inspector__approval-actions">
             <button type="button" className="is-primary" onClick={() => void onResolveApproval(true)}>
               Approve
@@ -7986,65 +7991,69 @@ function jsonPreview(value: unknown): string {
   }
 }
 
-function DiffApprovalView({ workspaceId }: { workspaceId: string }) {
+function DiffApprovalView({
+  workspaceId,
+  onOpenDiff,
+}: {
+  workspaceId: string;
+  onOpenDiff: (title: string, entries: MultiDiffEntry[]) => void;
+}) {
   const { resolvedLanguage } = useUiPreferences();
-  const [entries, setEntries] = useState<MultiDiffEntry[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
+  const openDiff = async () => {
     setLoading(true);
     setError(null);
-    void getGitStatus(workspaceId)
-      .then(async (status) => {
-        const changes = status.changes.filter(
-          (change) => change.indexStatus !== " " || change.worktreeStatus !== " ",
-        );
-        const next = await Promise.all(
-          changes.map(async (change) => {
-            const staged = change.indexStatus !== " " && change.indexStatus !== "?";
-            const diff = await getGitDiff(
-              workspaceId,
-              change.path,
-              staged ? "HEAD" : "INDEX",
-              staged ? "INDEX" : "WORKTREE",
-            );
-            return {
-              path: diff.path,
-              leftContent: diff.leftContent,
-              rightContent: diff.rightContent,
-              leftMissing: diff.leftMissing,
-              rightMissing: diff.rightMissing,
-              binary: diff.binary,
-            } satisfies MultiDiffEntry;
-          }),
-        );
-        if (!cancelled) setEntries(next);
-      })
-      .catch((reason) => {
-        if (!cancelled) setError((reason as Error).message);
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [workspaceId]);
+    try {
+      const status = await getGitStatus(workspaceId);
+      const changes = status.changes.filter(
+        (change) => change.indexStatus !== " " || change.worktreeStatus !== " ",
+      );
+      const entries = await Promise.all(
+        changes.map(async (change) => {
+          const staged = change.indexStatus !== " " && change.indexStatus !== "?";
+          const diff = await getGitDiff(
+            workspaceId,
+            change.path,
+            staged ? "HEAD" : "INDEX",
+            staged ? "INDEX" : "WORKTREE",
+          );
+          return {
+            path: diff.path,
+            leftContent: diff.leftContent,
+            rightContent: diff.rightContent,
+            leftMissing: diff.leftMissing,
+            rightMissing: diff.rightMissing,
+            binary: diff.binary,
+          } satisfies MultiDiffEntry;
+        }),
+      );
+      if (entries.length === 0) {
+        setError(resolvedLanguage === "zh-CN" ? "当前没有可审批的改动" : "No changes to review.");
+        return;
+      }
+      onOpenDiff(resolvedLanguage === "zh-CN" ? "待审批的 Diff" : "Diff for approval", entries);
+    } catch (reason) {
+      setError((reason as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  };
 
-  if (loading) return <div className="workflow-inspector__output">Loading diff...</div>;
-  if (error) return <div className="workflow-inspector__mcp-error">{error}</div>;
-  if (!entries.length) {
-    return (
-      <div className="workflow-inspector__output">
-        {resolvedLanguage === "zh-CN" ? "当前没有可审批的改动" : "No changes to review."}
-      </div>
-    );
-  }
   return (
-    <div className="workflow-inspector__approval-diff">
-      <MultiDiffPane entries={entries} fontSize={12} title="Diff" showFileList={false} />
+    <div className="workflow-inspector__approval-open">
+      <button type="button" disabled={loading} onClick={() => void openDiff()}>
+        <i className="codicon codicon-diff-multiple" aria-hidden="true" />
+        {loading
+          ? resolvedLanguage === "zh-CN"
+            ? "正在打开..."
+            : "Opening..."
+          : resolvedLanguage === "zh-CN"
+            ? "打开 Diff"
+            : "Open Diff"}
+      </button>
+      {error && <div className="workflow-inspector__mcp-error">{error}</div>}
     </div>
   );
 }
