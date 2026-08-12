@@ -11,6 +11,7 @@ import { updateTemplateFromWorkflow } from "../templates.js";
 import { subscribeWorkflowRuntime } from "../workflow-events.js";
 import {
   resolveWorkflowDiffApproval,
+  resolveWorkflowInput,
   startWorkflowRun,
   stopWorkflowRun,
   stopWorkflowRunAndWait,
@@ -196,6 +197,23 @@ export async function registerWorkflowRoutes(app: FastifyInstance) {
       req.body.approved,
     );
     if (!resolved) throw errors.invalidPath("approval is no longer pending");
+    return { ok: true };
+  });
+
+  app.post<{
+    Params: { id: string; wid: string; nodeId: string };
+    Body: { value?: unknown };
+  }>("/api/workspaces/:id/workflows/:wid/nodes/:nodeId/input", async (req) => {
+    if (typeof req.body?.value !== "string") {
+      throw errors.invalidPath("value must be a string");
+    }
+    const resolved = await resolveWorkflowInput(
+      req.params.id,
+      req.params.wid,
+      req.params.nodeId,
+      req.body.value,
+    );
+    if (!resolved) throw errors.invalidPath("input is no longer pending");
     return { ok: true };
   });
 

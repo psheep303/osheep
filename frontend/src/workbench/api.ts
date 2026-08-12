@@ -1309,6 +1309,21 @@ export async function resolveWorkflowApproval(
   );
 }
 
+export async function resolveWorkflowInput(
+  workspaceId: string,
+  workflowId: string,
+  nodeId: string,
+  value: string,
+): Promise<{ ok: boolean }> {
+  return await http.post(
+    workflowsUrl(
+      workspaceId,
+      `/${encodeURIComponent(workflowId)}/nodes/${encodeURIComponent(nodeId)}/input`,
+    ),
+    { value },
+  );
+}
+
 export async function deleteWorkflow(workspaceId: string, workflowId: string): Promise<void> {
   await http.delete(workflowsUrl(workspaceId, `/${encodeURIComponent(workflowId)}`));
 }

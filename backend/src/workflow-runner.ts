@@ -83,7 +83,13 @@ interface PendingDiffApproval {
   dispose: () => void;
 }
 
+interface PendingWorkflowInput {
+  resolve: (value: string) => void;
+  dispose: () => void;
+}
+
 const pendingDiffApprovals = new Map<string, PendingDiffApproval>();
+const pendingWorkflowInputs = new Map<string, PendingWorkflowInput>();
 
 export interface WorkflowRunDetailSnapshot {
   kind: "agent" | "command";
@@ -1160,14 +1166,38 @@ async function executeLocalNode(
   const input = resolveBlockTemplate(node.prompt, record).trim();
   const kind = nodeKind(node);
   if (kind === "input") {
-    const value = resolveBlockTemplate(node.prompt, record);
+    const inputTitle = Object.prototype.hasOwnProperty.call(node.config ?? {}, "inputTitle")
+      ? configString(node, "inputTitle").trim()
+      : configString(node, "inputTitle", node.prompt || node.title).trim();
+    const waitingOutput = {
+      type: "input",
+      status: "waiting",
+      title: inputTitle,
+      text: "",
+    };
+    const inputValue = waitForWorkflowInput(workspaceRoot, record.id, node.id, options.signal);
+    try {
+      await patchWorkflowNode(workspaceRoot, record.id, node.id, {
+        rawOutput: stringifyBlockOutput(waitingOutput),
+        summary: stringifyBlockOutput(waitingOutput),
+        config: { ...(node.config ?? {}), waitingForInput: true },
+      });
+    } catch (error) {
+      pendingWorkflowInputs.get(interactionKey(workspaceRoot, record.id, node.id))?.dispose();
+      throw error;
+    }
+    const value = await inputValue;
     return {
       output: {
         type: "input",
         status: "success",
+        title: inputTitle,
         value,
         data: value,
         text: value,
+      },
+      nodePatch: {
+        config: { ...(node.config ?? {}), waitingForInput: false },
       },
     };
   }
@@ -1336,7 +1366,7 @@ async function executeLocalNode(
       });
     } catch (error) {
       pendingDiffApprovals
-        .get(approvalKey(workspaceRoot, record.id, node.id))
+        .get(interactionKey(workspaceRoot, record.id, node.id))
         ?.dispose();
       throw error;
     }
@@ -2909,9 +2939,13 @@ function commandRunSnapshot(
 function finalizeRunDetailsOnError(node: WorkflowNode, message: string): Record<string, unknown> {
   const config = node.config ?? {};
   const raw = objectValue(config.runDetails);
-  if (!raw || (raw.kind !== "agent" && raw.kind !== "command")) return config;
+  if (!raw || (raw.kind !== "agent" && raw.kind !== "command")) {
+    return { ...config, waitingForInput: false, waitingForApproval: false };
+  }
   return {
     ...config,
+    waitingForInput: false,
+    waitingForApproval: false,
     runDetails: {
       ...raw,
       status: "error",
@@ -2922,9 +2956,16 @@ function finalizeRunDetailsOnError(node: WorkflowNode, message: string): Record<
 }
 
 function clearRunDetails(config: WorkflowNode["config"]): WorkflowNode["config"] | undefined {
-  if (!config || !Object.hasOwn(config, "runDetails")) return config;
-  const { runDetails: _runDetails, ...rest } = config;
+  if (!config) return config;
+  const {
+    runDetails: _runDetails,
+    waitingForInput: _waitingForInput,
+    waitingForApproval: _waitingForApproval,
+    ...rest
+  } = config;
   void _runDetails;
+  void _waitingForInput;
+  void _waitingForApproval;
   return rest;
 }
 
@@ -3056,7 +3097,7 @@ function sourceHandleForOutput(
   return undefined;
 }
 
-function approvalKey(workspaceRoot: string, workflowId: string, nodeId: string): string {
+function interactionKey(workspaceRoot: string, workflowId: string, nodeId: string): string {
   return `${workspaceRoot}\u0000${workflowId}\u0000${nodeId}`;
 }
 
@@ -3066,7 +3107,7 @@ function waitForDiffApproval(
   nodeId: string,
   signal?: AbortSignal,
 ): Promise<boolean> {
-  const key = approvalKey(workspaceRoot, workflowId, nodeId);
+  const key = interactionKey(workspaceRoot, workflowId, nodeId);
   return new Promise<boolean>((resolve, reject) => {
     const dispose = () => {
       signal?.removeEventListener("abort", onAbort);
@@ -3094,9 +3135,49 @@ export async function resolveWorkflowDiffApproval(
   approved: boolean,
 ): Promise<boolean> {
   const workspace = await resolveWorkspace(workspaceId);
-  const pending = pendingDiffApprovals.get(approvalKey(workspace.path, workflowId, nodeId));
+  const pending = pendingDiffApprovals.get(interactionKey(workspace.path, workflowId, nodeId));
   if (!pending) return false;
   pending.resolve(approved);
+  return true;
+}
+
+function waitForWorkflowInput(
+  workspaceRoot: string,
+  workflowId: string,
+  nodeId: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  const key = interactionKey(workspaceRoot, workflowId, nodeId);
+  return new Promise<string>((resolve, reject) => {
+    const dispose = () => {
+      signal?.removeEventListener("abort", onAbort);
+      pendingWorkflowInputs.delete(key);
+    };
+    const onAbort = () => {
+      dispose();
+      reject(new Error("Stopped"));
+    };
+    pendingWorkflowInputs.set(key, {
+      resolve: (value) => {
+        dispose();
+        resolve(value);
+      },
+      dispose,
+    });
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+export async function resolveWorkflowInput(
+  workspaceId: string,
+  workflowId: string,
+  nodeId: string,
+  value: string,
+): Promise<boolean> {
+  const workspace = await resolveWorkspace(workspaceId);
+  const pending = pendingWorkflowInputs.get(interactionKey(workspace.path, workflowId, nodeId));
+  if (!pending) return false;
+  pending.resolve(value);
   return true;
 }
 

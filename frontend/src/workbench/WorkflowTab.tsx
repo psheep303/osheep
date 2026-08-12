@@ -52,6 +52,7 @@ import {
   type RunResult,
   readFile,
   resolveWorkflowApproval,
+  resolveWorkflowInput,
   setAiTerminalAutoSuccess,
   type WorkflowEdge,
   type WorkflowNode,
@@ -508,6 +509,7 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
     nameKey: "workflow.blocks.input",
     kind: "input",
     icon: "input",
+    config: { inputTitle: "Input" },
   },
   {
     category: "triggers",
@@ -1085,6 +1087,13 @@ export function WorkflowTab({
         node.kind === "diff-approval" &&
         node.status === "running" &&
         node.config?.waitingForApproval === true,
+    ) ?? null;
+  const waitingForInputNode =
+    workflow?.nodes.find(
+      (node) =>
+        node.kind === "input" &&
+        node.status === "running" &&
+        node.config?.waitingForInput === true,
     ) ?? null;
   const waitingAlertKey = waitingForChoiceNode
     ? `${waitingForChoiceNode.id}:${waitingForChoiceSnapshot?.terminalSessionId ?? ""}`
@@ -2518,6 +2527,22 @@ export function WorkflowTab({
             查看 Diff
           </button>
         </div>
+      )}
+
+      {waitingForInputNode && workflow && (
+        <WorkflowInputDialog
+          key={waitingForInputNode.id}
+          title={workflowInputTitle(waitingForInputNode)}
+          onSubmit={async (value) => {
+            await resolveWorkflowInput(
+              workspaceId,
+              workflow.id,
+              waitingForInputNode.id,
+              value,
+            );
+          }}
+          onError={(message) => setError(message)}
+        />
       )}
 
       {error && (
@@ -4311,6 +4336,65 @@ function WorkflowMpePanel({ markdown, onClose }: { markdown: string; onClose: ()
   );
 }
 
+function WorkflowInputDialog({
+  title,
+  onSubmit,
+  onError,
+}: {
+  title: string;
+  onSubmit: (value: string) => Promise<void>;
+  onError: (message: string) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const [value, setValue] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
+  return (
+    <div
+      className="workflow-input-dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="workflow-input-dialog-title"
+    >
+      <form
+        className="workflow-input-dialog__panel"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (submitting) return;
+          setSubmitting(true);
+          void onSubmit(value).catch((error) => {
+            setSubmitting(false);
+            onError((error as Error).message);
+            inputRef.current?.focus();
+          });
+        }}
+      >
+        <label id="workflow-input-dialog-title" htmlFor="workflow-runtime-input">
+          {title}
+        </label>
+        <div className="workflow-input-dialog__control">
+          <input
+            ref={inputRef}
+            id="workflow-runtime-input"
+            value={value}
+            onChange={(event) => setValue(event.target.value)}
+            disabled={submitting}
+            autoComplete="off"
+            spellCheck={false}
+          />
+          <button type="submit" disabled={submitting}>
+            Submit
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
 function WorkflowNodeInspector({
   workspaceId,
   node,
@@ -4356,6 +4440,7 @@ function WorkflowNodeInspector({
   const isCron = kind === "cron";
   const isWebhookTrigger = kind === "webhook-trigger";
   const isAgent = kind === "agent";
+  const isInput = kind === "input";
   const isCodexPlugin = kind === "codex-plugin";
   const isClaudePlugin = kind === "claude-plugin";
   const isFileWrite = kind === "file-write";
@@ -5063,6 +5148,16 @@ function WorkflowNodeInspector({
             />
           </label>
         </>
+      ) : isInput ? (
+        <label className="workflow-inspector__field">
+          <span>Input title</span>
+          <input
+            value={workflowInputTitle(node)}
+            onChange={(event) => updateConfig({ inputTitle: event.target.value })}
+            disabled={running}
+            spellCheck={false}
+          />
+        </label>
       ) : (
         !isTrigger &&
         !isCodexPlugin &&
@@ -7760,6 +7855,15 @@ function ifNodeConfig(node: WorkflowNode): IfNodeConfig {
   };
 }
 
+function workflowInputTitle(node: WorkflowNode): string {
+  const configured = node.config?.inputTitle;
+  if (Object.prototype.hasOwnProperty.call(node.config ?? {}, "inputTitle")) {
+    return typeof configured === "string" ? configured : "";
+  }
+  if (node.prompt.trim()) return node.prompt.trim();
+  return node.title || "Input";
+}
+
 function mergeNodeConfig(node: WorkflowNode): MergeNodeConfig {
   const config = node.config ?? {};
   const mode = typeof config.mode === "string" ? config.mode : "object";
@@ -8032,9 +8136,16 @@ function cloneWorkflow(record: WorkflowRecord): WorkflowRecord {
 }
 
 function clearRunDetails(config: WorkflowNode["config"]): WorkflowNode["config"] | undefined {
-  if (!config || !Object.prototype.hasOwnProperty.call(config, "runDetails")) return config;
-  const { runDetails: _runDetails, ...rest } = config;
+  if (!config) return config;
+  const {
+    runDetails: _runDetails,
+    waitingForInput: _waitingForInput,
+    waitingForApproval: _waitingForApproval,
+    ...rest
+  } = config;
   void _runDetails;
+  void _waitingForInput;
+  void _waitingForApproval;
   return rest;
 }
 
