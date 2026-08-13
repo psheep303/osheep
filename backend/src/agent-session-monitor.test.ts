@@ -678,8 +678,8 @@ test("Codex silent exec falls back to waiting and resumes on matching output", (
     },
     100,
   );
-  assert.deepEqual(reducer.poll(1_599), []);
-  assert.deepEqual(reducer.poll(1_600), [{ state: "waiting-for-choice" }]);
+  assert.deepEqual(reducer.poll(4_099), []);
+  assert.deepEqual(reducer.poll(4_100), [{ state: "waiting-for-choice" }]);
   assert.deepEqual(reducer.poll(5_000), []);
   assert.deepEqual(
     reducer.push({
@@ -1132,7 +1132,7 @@ test("JSONL watcher falls back to waiting for a silent Codex exec", async () => 
         internal_chat_message_metadata_passthrough: { turn_id: "model_turn" },
       },
     });
-    await new Promise<void>((resolve) => setTimeout(resolve, 1_650));
+    await new Promise<void>((resolve) => setTimeout(resolve, 4_150));
     assert.deepEqual(events, ["running", "waiting-for-choice"]);
     await appendJsonl(filePath, {
       type: "response_item",
@@ -1142,6 +1142,7 @@ test("JSONL watcher falls back to waiting for a silent Codex exec", async () => 
     await watched;
     assert.deepEqual(events, ["running", "waiting-for-choice", "running"]);
   } finally {
+    controller.abort();
     await fs.rm(directory, { recursive: true, force: true });
   }
 });

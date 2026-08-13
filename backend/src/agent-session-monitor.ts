@@ -11,7 +11,7 @@ export interface AgentSessionEvent {
 }
 
 const POLL_INTERVAL_MS = 120;
-const CODEX_SILENT_EXEC_WAIT_MS = 1_500;
+const CODEX_SILENT_EXEC_WAIT_MS = 4_000;
 const CODEX_ABORT_SETTLE_MS = 250;
 
 export class AgentSessionEventReducer {
