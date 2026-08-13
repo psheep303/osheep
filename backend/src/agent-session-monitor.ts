@@ -16,8 +16,10 @@ export class AgentSessionEventReducer {
   private readonly app: AgentSessionApp;
   private readonly pendingQuestions = new Set<string>();
   private readonly pendingClaudePermissionTools = new Set<string>();
+  private readonly unresolvedClaudeTools = new Map<string, string>();
+  private readonly unboundClaudePermissions: Array<{ key: string; toolName: string }> = [];
   private readonly pendingCodexQuestions = new Set<string>();
-  private claudePermissionMode = "default";
+  private nextClaudePermissionKey = 1;
   private activeCodexTurnId = "";
 
   constructor(app: AgentSessionApp) {
@@ -30,16 +32,49 @@ export class AgentSessionEventReducer {
     return this.app === "claude" ? this.pushClaude(root) : this.pushCodex(root);
   }
 
+  pushClaudePermission(value: unknown): AgentSessionEvent[] {
+    if (this.app !== "claude" || !value || typeof value !== "object" || Array.isArray(value)) {
+      return [];
+    }
+    const root = value as Record<string, unknown>;
+    if (stringValue(root.osheep_event) !== "claude-permission-request") return [];
+    const payload = objectValue(root.payload);
+    const sessionId = stringValue(payload.session_id);
+    const expectedSessionId = stringValue(root.session_id);
+    if (expectedSessionId && sessionId && sessionId !== expectedSessionId) return [];
+
+    const toolUseId = stringValue(payload.tool_use_id ?? payload.toolUseId);
+    const toolName = stringValue(payload.tool_name ?? payload.toolName);
+    const candidate = toolUseId || this.latestUnresolvedClaudeTool(toolName);
+    if (candidate) {
+      if (this.pendingQuestions.has(candidate)) return [];
+      const unboundPermission = this.takeUnboundClaudePermission(toolName);
+      if (unboundPermission) this.pendingClaudePermissionTools.delete(unboundPermission.key);
+      if (this.pendingClaudePermissionTools.has(candidate)) return [];
+      this.pendingClaudePermissionTools.add(candidate);
+    } else {
+      if (
+        this.unboundClaudePermissions.some(
+          (permission) => !permission.toolName || !toolName || permission.toolName === toolName,
+        )
+      ) {
+        return [];
+      }
+      const key = `permission-${this.nextClaudePermissionKey}`;
+      this.nextClaudePermissionKey += 1;
+      this.unboundClaudePermissions.push({ key, toolName });
+      this.pendingClaudePermissionTools.add(key);
+    }
+    return [{ state: "waiting-for-choice" }];
+  }
+
   private pushClaude(root: Record<string, unknown>): AgentSessionEvent[] {
     if (root.isSidechain === true || root.isMeta === true) return [];
     const events: AgentSessionEvent[] = [];
     const message = objectValue(root.message);
     const content = Array.isArray(message.content) ? message.content : [];
     const type = stringValue(root.type);
-    if (type === "permission-mode") {
-      this.claudePermissionMode = stringValue(root.permissionMode) || "default";
-      return [];
-    }
+    if (type === "permission-mode") return [];
 
     if (stringValue(message.role) === "assistant") {
       let waiting = false;
@@ -48,11 +83,15 @@ export class AgentSessionEventReducer {
         if (stringValue(block.type) !== "tool_use") continue;
         const id = stringValue(block.id);
         const name = stringValue(block.name);
+        if (id) this.unresolvedClaudeTools.set(id, name);
+        const unboundPermission = id ? this.takeUnboundClaudePermission(name) : undefined;
+        if (id && unboundPermission) {
+          this.pendingClaudePermissionTools.delete(unboundPermission.key);
+          this.pendingClaudePermissionTools.add(id);
+        }
         if (name === "AskUserQuestion") {
           if (id) this.pendingQuestions.add(id);
-          waiting = true;
-        } else if (id && claudeToolMayRequirePermission(name, this.claudePermissionMode)) {
-          this.pendingClaudePermissionTools.add(id);
+          if (id) this.pendingClaudePermissionTools.delete(id);
           waiting = true;
         }
       }
@@ -72,16 +111,18 @@ export class AgentSessionEventReducer {
         }
         if (stringValue(block.type) !== "tool_result") continue;
         const id = stringValue(block.tool_use_id);
-        if (
-          id &&
-          (this.pendingQuestions.delete(id) || this.pendingClaudePermissionTools.delete(id))
-        ) {
-          resolved = true;
+        if (id) {
+          this.unresolvedClaudeTools.delete(id);
+          const resolvedQuestion = this.pendingQuestions.delete(id);
+          const resolvedPermission = this.pendingClaudePermissionTools.delete(id);
+          if (resolvedQuestion || resolvedPermission) resolved = true;
         }
       }
       if (interrupted) {
         this.pendingQuestions.clear();
         this.pendingClaudePermissionTools.clear();
+        this.unresolvedClaudeTools.clear();
+        this.unboundClaudePermissions.length = 0;
         events.push({
           state: "completed",
           outcome: "cancelled",
@@ -117,6 +158,25 @@ export class AgentSessionEventReducer {
       events.push({ state: "completed", outcome: "success" });
     }
     return events;
+  }
+
+  private latestUnresolvedClaudeTool(toolName: string): string {
+    const entries = [...this.unresolvedClaudeTools.entries()];
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+      const [id, name] = entries[index];
+      if (!toolName || name === toolName) return id;
+    }
+    return "";
+  }
+
+  private takeUnboundClaudePermission(
+    toolName: string,
+  ): { key: string; toolName: string } | undefined {
+    const index = this.unboundClaudePermissions.findIndex(
+      (permission) => !permission.toolName || permission.toolName === toolName,
+    );
+    if (index < 0) return undefined;
+    return this.unboundClaudePermissions.splice(index, 1)[0];
   }
 
   private pushCodex(root: Record<string, unknown>): AgentSessionEvent[] {
@@ -176,19 +236,12 @@ export class AgentSessionEventReducer {
   }
 }
 
-function claudeToolMayRequirePermission(name: string, permissionMode: string): boolean {
-  if (!name || permissionMode === "bypassPermissions" || permissionMode === "dontAsk") return false;
-  if (/^(?:Edit|Write|NotebookEdit)$/.test(name)) return permissionMode !== "acceptEdits";
-  return (
-    name === "Bash" || name === "WebFetch" || name === "ExitPlanMode" || name.startsWith("mcp__")
-  );
-}
-
 export async function watchAgentSession(input: {
   app: AgentSessionApp;
   sessionId: string;
   filePath?: string;
   startOffset?: number;
+  claudePermissionFilePath?: string;
   signal?: AbortSignal;
   onEvent: (event: AgentSessionEvent) => void;
   acceptCompletion?: (event: AgentSessionEvent) => boolean;
@@ -197,12 +250,27 @@ export async function watchAgentSession(input: {
   let filePath: string | null = input.filePath ?? null;
   let offset = input.startOffset ?? 0;
   let remainder = Buffer.alloc(0);
+  let permissionOffset = 0;
+  let permissionRemainder: Buffer<ArrayBufferLike> = Buffer.alloc(0);
 
   while (!input.signal?.aborted) {
     filePath ??= await findAgentSessionFilePath(input.app, input.sessionId).catch(() => null);
     if (!filePath) {
       await delay(POLL_INTERVAL_MS, input.signal);
       continue;
+    }
+
+    if (input.app === "claude" && input.claudePermissionFilePath) {
+      const read = await readJsonlIncrement(
+        input.claudePermissionFilePath,
+        permissionOffset,
+        permissionRemainder,
+      );
+      permissionOffset = read.offset;
+      permissionRemainder = read.remainder;
+      for (const value of read.values) {
+        for (const event of reducer.pushClaudePermission(value)) input.onEvent(event);
+      }
     }
 
     try {
@@ -262,6 +330,61 @@ export async function watchAgentSession(input: {
     await delay(POLL_INTERVAL_MS, input.signal);
   }
   return { state: "completed", outcome: "cancelled", error: "Agent run was stopped." };
+}
+
+async function readJsonlIncrement(
+  filePath: string,
+  offset: number,
+  remainder: Buffer,
+): Promise<{ offset: number; remainder: Buffer; values: unknown[] }> {
+  try {
+    const handle = await fs.open(filePath, "r");
+    try {
+      const stat = await handle.stat();
+      if (stat.size < offset) {
+        offset = 0;
+        remainder = Buffer.alloc(0);
+      }
+      if (stat.size <= offset) return { offset, remainder, values: [] };
+      const buffer = Buffer.alloc(stat.size - offset);
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, offset);
+      const combined = Buffer.concat([remainder, buffer.subarray(0, bytesRead)]);
+      const values: unknown[] = [];
+      let lineStart = 0;
+      for (let index = 0; index < combined.length; index += 1) {
+        if (combined[index] !== 0x0a) continue;
+        parseJsonlValue(combined.subarray(lineStart, index), values);
+        lineStart = index + 1;
+      }
+      remainder = combined.subarray(lineStart);
+      if (remainder.length > 0) {
+        try {
+          values.push(JSON.parse(remainder.toString("utf8")));
+          remainder = Buffer.alloc(0);
+        } catch {
+          /* partial final line */
+        }
+      }
+      return { offset: offset + bytesRead, remainder, values };
+    } finally {
+      await handle.close();
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { offset, remainder, values: [] };
+    }
+    throw error;
+  }
+}
+
+function parseJsonlValue(lineBuffer: Buffer, values: unknown[]): void {
+  const line = lineBuffer.toString("utf8").replace(/\r$/, "");
+  if (!line.trim()) return;
+  try {
+    values.push(JSON.parse(line));
+  } catch {
+    /* malformed lines do not stop the live watcher */
+  }
 }
 
 function isCodexWaitingEvent(type: string, payload: Record<string, unknown>): boolean {

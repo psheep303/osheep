@@ -51,9 +51,8 @@ test("Claude AskUserQuestion waits until its tool result and ignores turn comple
   ]);
 });
 
-test("Claude permission-gated Bash waits from tool use until its result", () => {
+test("Claude Bash waits only after Claude emits a permission prompt", () => {
   const reducer = new AgentSessionEventReducer("claude");
-  assert.deepEqual(reducer.push({ type: "permission-mode", permissionMode: "acceptEdits" }), []);
   assert.deepEqual(
     reducer.push({
       type: "assistant",
@@ -61,6 +60,13 @@ test("Claude permission-gated Bash waits from tool use until its result", () => 
         role: "assistant",
         content: [{ type: "tool_use", id: "bash_1", name: "Bash", input: {} }],
       },
+    }),
+    [],
+  );
+  assert.deepEqual(
+    reducer.pushClaudePermission({
+      osheep_event: "claude-permission-request",
+      payload: { hook_event_name: "PermissionRequest", tool_name: "Bash", tool_use_id: "bash_1" },
     }),
     [{ state: "waiting-for-choice" }],
   );
@@ -77,37 +83,152 @@ test("Claude permission-gated Bash waits from tool use until its result", () => 
   ]);
 });
 
-test("Claude acceptEdits and bypass modes do not invent permission waits", () => {
-  const acceptEdits = new AgentSessionEventReducer("claude");
-  acceptEdits.push({ type: "permission-mode", permissionMode: "acceptEdits" });
-  assert.deepEqual(
-    acceptEdits.push({
-      type: "assistant",
-      message: {
-        role: "assistant",
-        content: [{ type: "tool_use", id: "edit_1", name: "Edit", input: {} }],
-      },
-    }),
-    [],
-  );
+test("Claude tools do not invent permission waits in any permission mode", () => {
+  for (const permissionMode of [
+    "manual",
+    "acceptEdits",
+    "plan",
+    "auto",
+    "dontAsk",
+    "bypassPermissions",
+  ]) {
+    const reducer = new AgentSessionEventReducer("claude");
+    reducer.push({ type: "permission-mode", permissionMode });
+    assert.deepEqual(
+      reducer.push({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [{ type: "tool_use", id: `skill_${permissionMode}`, name: "Skill", input: {} }],
+        },
+      }),
+      [],
+    );
+  }
+});
 
-  const bypass = new AgentSessionEventReducer("claude");
-  bypass.push({ type: "permission-mode", permissionMode: "bypassPermissions" });
+test("Claude Skill permission prompt waits and its matching result resumes", () => {
+  const reducer = new AgentSessionEventReducer("claude");
   assert.deepEqual(
-    bypass.push({
+    reducer.push({
       type: "assistant",
       message: {
         role: "assistant",
-        content: [{ type: "tool_use", id: "bash_1", name: "Bash", input: {} }],
+        content: [{ type: "tool_use", id: "skill_1", name: "Skill", input: {} }],
       },
     }),
     [],
   );
+  assert.deepEqual(
+    reducer.pushClaudePermission({
+      osheep_event: "claude-permission-request",
+      payload: {
+        hook_event_name: "PermissionRequest",
+        tool_name: "Skill",
+        tool_use_id: "skill_1",
+      },
+    }),
+    [{ state: "waiting-for-choice" }],
+  );
+  assert.deepEqual(
+    reducer.push({
+      type: "user",
+      message: {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "skill_1", is_error: true }],
+      },
+    }),
+    [{ state: "running" }],
+  );
+});
+
+test("Claude Skill permission without tool_use_id binds after session tool use", () => {
+  const reducer = new AgentSessionEventReducer("claude");
+  assert.deepEqual(
+    reducer.pushClaudePermission({
+      osheep_event: "claude-permission-request",
+      payload: { hook_event_name: "PermissionRequest", tool_name: "Skill" },
+    }),
+    [{ state: "waiting-for-choice" }],
+  );
+  assert.deepEqual(
+    reducer.push({
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "skill_late", name: "Skill", input: {} }],
+      },
+    }),
+    [],
+  );
+  assert.deepEqual(
+    reducer.push({
+      type: "user",
+      message: { role: "user", content: [{ type: "tool_result", tool_use_id: "skill_late" }] },
+    }),
+    [{ state: "running" }],
+  );
+});
+
+test("Claude Bash permission without tool_use_id binds to an existing session tool", () => {
+  const reducer = new AgentSessionEventReducer("claude");
+  reducer.push({
+    type: "assistant",
+    message: {
+      role: "assistant",
+      content: [{ type: "tool_use", id: "bash_early", name: "Bash", input: {} }],
+    },
+  });
+  assert.deepEqual(
+    reducer.pushClaudePermission({
+      osheep_event: "claude-permission-request",
+      payload: { hook_event_name: "PermissionRequest", tool_name: "Bash" },
+    }),
+    [{ state: "waiting-for-choice" }],
+  );
+  assert.deepEqual(
+    reducer.push({
+      type: "user",
+      message: { role: "user", content: [{ type: "tool_result", tool_use_id: "bash_early" }] },
+    }),
+    [{ state: "running" }],
+  );
+});
+
+test("Claude PermissionRequest directly waits for tools selected by Claude's permission engine", () => {
+  const reducer = new AgentSessionEventReducer("claude");
+  reducer.push({
+    type: "assistant",
+    message: {
+      role: "assistant",
+      content: [{ type: "tool_use", id: "skill_auto", name: "Skill", input: {} }],
+    },
+  });
+  assert.deepEqual(
+    reducer.pushClaudePermission({
+      osheep_event: "claude-permission-request",
+      payload: {
+        hook_event_name: "PermissionRequest",
+        tool_name: "Skill",
+        tool_use_id: "skill_auto",
+      },
+    }),
+    [{ state: "waiting-for-choice" }],
+  );
+  assert.deepEqual(
+    reducer.push({
+      type: "user",
+      message: { role: "user", content: [{ type: "tool_result", tool_use_id: "skill_auto" }] },
+    }),
+    [{ state: "running" }],
+  );
+  assert.deepEqual(reducer.push({ type: "system", subtype: "turn_duration" }), [
+    { state: "completed", outcome: "success" },
+  ]);
 });
 
 test("Claude automatic tool results do not release a pending permission tool", () => {
   const reducer = new AgentSessionEventReducer("claude");
-  reducer.push({ type: "permission-mode", permissionMode: "acceptEdits" });
   assert.deepEqual(
     reducer.push({
       type: "assistant",
@@ -118,6 +239,13 @@ test("Claude automatic tool results do not release a pending permission tool", (
           { type: "tool_use", id: "bash_1", name: "Bash", input: {} },
         ],
       },
+    }),
+    [],
+  );
+  assert.deepEqual(
+    reducer.pushClaudePermission({
+      osheep_event: "claude-permission-request",
+      payload: { hook_event_name: "PermissionRequest", tool_name: "Bash", tool_use_id: "bash_1" },
     }),
     [{ state: "waiting-for-choice" }],
   );
@@ -358,6 +486,44 @@ test("JSONL watcher can reject a paused abort and accept a later turn completion
 
     assert.deepEqual(await watched, { state: "completed", outcome: "success" });
     assert.deepEqual(events, ["running:", "completed:cancelled", "running:", "completed:success"]);
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("JSONL watcher combines Claude permission sidecar and session results", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-claude-monitor-"));
+  const filePath = path.join(directory, "session.jsonl");
+  const permissionFilePath = path.join(directory, "permission.jsonl");
+  await fs.writeFile(filePath, "");
+  const events: string[] = [];
+  try {
+    const watched = watchAgentSession({
+      app: "claude",
+      sessionId: "session",
+      filePath,
+      claudePermissionFilePath: permissionFilePath,
+      onEvent: (event) => events.push(`${event.state}:${event.outcome ?? ""}`),
+    });
+    await appendJsonl(filePath, {
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "skill_1", name: "Skill" }],
+      },
+    });
+    await appendJsonl(permissionFilePath, {
+      osheep_event: "claude-permission-request",
+      payload: { hook_event_name: "PermissionRequest", tool_name: "Skill", tool_use_id: "skill_1" },
+    });
+    await appendJsonl(filePath, {
+      type: "user",
+      message: { role: "user", content: [{ type: "tool_result", tool_use_id: "skill_1" }] },
+    });
+    await appendJsonl(filePath, { type: "system", subtype: "turn_duration" });
+
+    assert.deepEqual(await watched, { state: "completed", outcome: "success" });
+    assert.deepEqual(events, ["waiting-for-choice:", "running:", "completed:success"]);
   } finally {
     await fs.rm(directory, { recursive: true, force: true });
   }

@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import * as fs from "node:fs/promises";
 import test from "node:test";
 import {
   type AgentEffort,
   buildAgentTerminalCommand,
   createAgentTerminalControlForTest,
+  createClaudePermissionHookRuntimeForTest,
   finishAgentTerminalSuccess,
   selectConversationSessionIdForTest,
   waitForAgentTerminalManualSuccessForTest,
@@ -26,8 +29,67 @@ test("Claude Code TUI command preserves permission, session, model, effort and p
       resumeConversation: true,
       prompt: "continue",
     }).command,
-    `claude --resume ${id} continue`,
+    `claude --permission-mode acceptEdits --resume ${id} continue`,
   );
+});
+
+test("Claude Code TUI command maps all six UI permission modes", () => {
+  const modes = [
+    ["default", "manual"],
+    ["acceptEdits", "acceptEdits"],
+    ["auto", "auto"],
+    ["dontAsk", "dontAsk"],
+    ["bypassPermissions", "bypassPermissions"],
+  ] as const;
+  for (const [configured, cli] of modes) {
+    assert.match(
+      buildAgentTerminalCommand("claude-cli", "default", {
+        claudePermissionMode: configured,
+        settingsPath: "C:\\Temp\\osheep settings.json",
+      }).command,
+      new RegExp(`^claude --permission-mode ${cli} --settings `),
+    );
+  }
+  assert.match(
+    buildAgentTerminalCommand("claude-cli", "default", {
+      mode: "plan",
+      settingsPath: "/tmp/osheep settings.json",
+    }).command,
+    /^claude --permission-mode plan --settings /,
+  );
+});
+
+test("Claude permission hook appends a structured sidecar event", async () => {
+  const runtime = await createClaudePermissionHookRuntimeForTest();
+  try {
+    const settings = JSON.parse(await fs.readFile(runtime.settingsPath, "utf8"));
+    const command = settings.hooks.PermissionRequest[0].hooks[0].command as string;
+    const match = command.match(/^"([^"]+)" "([^"]+)" "([^"]+)"$/);
+    assert.ok(match);
+    assert.equal("matcher" in settings.hooks.PermissionRequest[0], false);
+    assert.equal(settings.hooks.Notification[0].matcher, "permission_prompt");
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(match[1], [match[2], match[3]], { stdio: ["pipe", "ignore", "ignore"] });
+      child.once("error", reject);
+      child.once("exit", (code) =>
+        code === 0 ? resolve() : reject(new Error(`hook exit ${code}`)),
+      );
+      child.stdin.end(
+        JSON.stringify({
+          session_id: "session-1",
+          hook_event_name: "PermissionRequest",
+          tool_use_id: "skill-1",
+          tool_name: "Skill",
+        }),
+      );
+    });
+    const event = JSON.parse(await fs.readFile(runtime.eventsPath, "utf8"));
+    assert.equal(event.osheep_event, "claude-permission-request");
+    assert.equal(event.payload.hook_event_name, "PermissionRequest");
+    assert.equal(event.payload.tool_name, "Skill");
+  } finally {
+    await fs.rm(runtime.directory, { recursive: true, force: true });
+  }
 });
 
 test("Codex TUI command preserves approval, sandbox, resume, effort and prompt", () => {

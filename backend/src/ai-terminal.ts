@@ -1,4 +1,6 @@
 import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import { type AgentSessionEvent, watchAgentSession } from "./agent-session-monitor.js";
 import {
   type AgentSessionApp,
@@ -116,6 +118,8 @@ export async function runAgentTerminal(opts: AgentTerminalOptions): Promise<Agen
   const workspaceBaseline = await captureWorkspaceChanges(opts.workspace.path).catch(
     () => null as WorkspaceChangeBaseline | null,
   );
+  const claudeHook =
+    opts.kind === "claude-cli" ? await createClaudePermissionHookRuntime() : undefined;
   const command = buildAgentTerminalCommand(opts.kind, opts.model, {
     claudePermissionMode: opts.claudePermissionMode,
     mode: opts.mode,
@@ -125,15 +129,22 @@ export async function runAgentTerminal(opts: AgentTerminalOptions): Promise<Agen
     conversationSessionId: opts.conversationSessionId,
     resumeConversation: opts.resumeConversation,
     prompt: opts.prompt,
+    settingsPath: claudeHook?.settingsPath,
   }).command;
-  const session = createSession({
-    workspace: opts.workspace,
-    shell: platform === "windows" ? "powershell" : "bash",
-    cols: DEFAULT_COLS,
-    rows: DEFAULT_ROWS,
-    killOnDetach: false,
-    initialCommand: command,
-  });
+  let session: TerminalSession;
+  try {
+    session = createSession({
+      workspace: opts.workspace,
+      shell: platform === "windows" ? "powershell" : "bash",
+      cols: DEFAULT_COLS,
+      rows: DEFAULT_ROWS,
+      killOnDetach: false,
+      initialCommand: command,
+    });
+  } catch (error) {
+    if (claudeHook) await fs.rm(claudeHook.directory, { recursive: true, force: true });
+    throw error;
+  }
   controls.set(session.id, {
     autoSuccess: opts.autoSuccess !== false,
     alwaysEnter: opts.alwaysEnter === true,
@@ -163,6 +174,7 @@ export async function runAgentTerminal(opts: AgentTerminalOptions): Promise<Agen
       opts.resumeConversation ? resumeOffset : 0,
       opts.onFrame,
       opts.signal,
+      claudeHook?.eventsPath,
     );
     const completion = await waitForManualSuccessIfNeeded(
       session.id,
@@ -215,6 +227,7 @@ export async function runAgentTerminal(opts: AgentTerminalOptions): Promise<Agen
   } finally {
     opts.signal?.removeEventListener("abort", onAbort);
     controls.delete(session.id);
+    if (claudeHook) await fs.rm(claudeHook.directory, { recursive: true, force: true });
   }
 }
 
@@ -263,6 +276,7 @@ async function waitForAgentSessionCompletion(
   startOffset: number,
   onFrame?: (frame: AgentTerminalFrame) => void,
   signal?: AbortSignal,
+  claudePermissionFilePath?: string,
 ): Promise<{ event: AgentSessionEvent; manual: boolean }> {
   const localAbort = new AbortController();
   const onAbort = () => localAbort.abort();
@@ -275,6 +289,7 @@ async function waitForAgentSessionCompletion(
         app,
         sessionId: conversationSessionId,
         startOffset,
+        claudePermissionFilePath,
         signal: localAbort.signal,
         onEvent: (event) => handleAgentSessionEvent(session, event, onFrame),
         acceptCompletion: () => {
@@ -520,25 +535,29 @@ export function buildAgentTerminalCommand(
     conversationSessionId?: string;
     resumeConversation?: boolean;
     prompt?: string;
+    settingsPath?: string;
   } = {},
 ): { command: string } {
   const base = kind === "codex-cli" ? "codex" : "claude";
   const args: string[] = [];
   let codexResumeSessionId = "";
   if (kind === "claude-cli") {
+    args.push(
+      "--permission-mode",
+      options.mode === "plan"
+        ? "plan"
+        : normalizeClaudePermissionMode(options.claudePermissionMode),
+    );
     if (options.resumeConversation && options.conversationSessionId) {
       args.push("--resume", quoteShell(options.conversationSessionId));
     } else {
-      args.push(
-        "--permission-mode",
-        options.mode === "plan" ? "plan" : (options.claudePermissionMode ?? "acceptEdits"),
-      );
       if (options.conversationSessionId) {
         args.push("--session-id", quoteShell(options.conversationSessionId));
       }
     }
     const effort = agentEffortCliValue(kind, options.effort);
     if (effort) args.push("--effort", effort);
+    if (options.settingsPath) args.push("--settings", quoteShell(options.settingsPath));
   } else {
     if (options.resumeConversation && options.conversationSessionId) {
       args.push("resume");
@@ -552,6 +571,71 @@ export function buildAgentTerminalCommand(
   if (codexResumeSessionId) args.push(quoteShell(codexResumeSessionId));
   if (options.prompt) args.push(quoteShell(options.prompt));
   return { command: [base, ...args].join(" ") };
+}
+
+function normalizeClaudePermissionMode(mode: ClaudePermissionMode | undefined): string {
+  return mode === "default" ? "manual" : (mode ?? "acceptEdits");
+}
+
+interface ClaudePermissionHookRuntime {
+  directory: string;
+  settingsPath: string;
+  eventsPath: string;
+}
+
+const CLAUDE_PERMISSION_HOOK_SOURCE = `import { appendFile } from "node:fs/promises";
+
+let input = "";
+for await (const chunk of process.stdin) input += chunk;
+try {
+  const payload = JSON.parse(input);
+  await appendFile(process.argv[2], JSON.stringify({
+    osheep_event: "claude-permission-request",
+    payload: {
+      session_id: payload.session_id,
+      hook_event_name: payload.hook_event_name,
+      notification_type: payload.notification_type,
+      tool_use_id: payload.tool_use_id ?? payload.toolUseId,
+      tool_name: payload.tool_name ?? payload.toolName,
+    },
+  }) + "\\n", "utf8");
+} catch {
+  // A notification hook must never interfere with Claude Code.
+}
+`;
+
+async function createClaudePermissionHookRuntime(): Promise<ClaudePermissionHookRuntime> {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-claude-hook-"));
+  const hookPath = path.join(directory, "permission-hook.mjs");
+  const eventsPath = path.join(directory, "permission-events.jsonl");
+  const settingsPath = path.join(directory, "settings.json");
+  const command = [process.execPath, hookPath, eventsPath].map(quoteHookCommandArg).join(" ");
+  const settings = {
+    hooks: {
+      PermissionRequest: [
+        {
+          hooks: [{ type: "command", command }],
+        },
+      ],
+      Notification: [
+        {
+          matcher: "permission_prompt",
+          hooks: [{ type: "command", command }],
+        },
+      ],
+    },
+  };
+  await fs.writeFile(hookPath, CLAUDE_PERMISSION_HOOK_SOURCE, "utf8");
+  await fs.writeFile(settingsPath, `${JSON.stringify(settings)}\n`, "utf8");
+  return { directory, settingsPath, eventsPath };
+}
+
+export async function createClaudePermissionHookRuntimeForTest(): Promise<ClaudePermissionHookRuntime> {
+  return createClaudePermissionHookRuntime();
+}
+
+function quoteHookCommandArg(value: string): string {
+  return `"${value.replace(/"/g, '\\"')}"`;
 }
 
 function codexPermissionArgs(
