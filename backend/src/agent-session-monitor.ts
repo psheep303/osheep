@@ -123,6 +123,7 @@ export class AgentSessionEventReducer {
     if (root.isSidechain === true || root.isMeta === true) return [];
     const events: AgentSessionEvent[] = [];
     const message = objectValue(root.message);
+    const messageContent = message.content;
     const content = Array.isArray(message.content) ? message.content : [];
     const type = stringValue(root.type);
     if (type === "permission-mode") return [];
@@ -150,6 +151,22 @@ export class AgentSessionEventReducer {
     }
 
     if (stringValue(message.role) === "user") {
+      const replacementInput =
+        this.claudeTurnUserRejected &&
+        ((typeof messageContent === "string" && messageContent.trim().length > 0) ||
+          content.some((item) => {
+            const block = objectValue(item);
+            const text = stringValue(block.text);
+            return (
+              stringValue(block.type) === "text" &&
+              !!text &&
+              !/^\[Request interrupted by user(?: for tool use)?\]$/i.test(text)
+            );
+          }));
+      if (replacementInput) {
+        this.claudeTurnUserRejected = false;
+        events.push({ state: "running" });
+      }
       let resolved = false;
       let interrupted = false;
       const userRejected = claudeToolUseWasRejected(root);
@@ -212,11 +229,11 @@ export class AgentSessionEventReducer {
       this.pendingQuestions.size === 0 &&
       this.pendingClaudePermissionTools.size === 0
     ) {
-      events.push({
-        state: "completed",
-        outcome: this.claudeTurnUserRejected ? "user-rejected" : "success",
-      });
-      this.claudeTurnUserRejected = false;
+      events.push(
+        this.claudeTurnUserRejected
+          ? { state: "waiting-for-choice" }
+          : { state: "completed", outcome: "success" },
+      );
     }
     return events;
   }
@@ -325,14 +342,13 @@ export class AgentSessionEventReducer {
       const item = objectValue(payload.item);
       if (stringValue(item.status) !== "declined") return [];
       this.codexTurnUserRejected = true;
-      if (!this.pendingCodexAbort) return [];
       this.pendingCodexAbort = undefined;
-      return [{ state: "completed", outcome: "user-rejected" }];
+      return [{ state: "waiting-for-choice" }];
     }
 
     if (type === "turn_aborted" || type === "task_aborted") {
       if (this.codexTurnUserRejected) {
-        return [{ state: "completed", outcome: "user-rejected" }];
+        return [];
       }
       this.pendingCodexAbort = {
         turnId,
@@ -344,7 +360,7 @@ export class AgentSessionEventReducer {
     if (type === "task_complete" || type === "turn_complete" || type === "turn_completed") {
       if (this.codexTurnUserRejected) {
         this.pendingCodexAbort = undefined;
-        return [{ state: "completed", outcome: "user-rejected" }];
+        return [];
       }
       const error = errorMessage(payload.error ?? root.error);
       return [

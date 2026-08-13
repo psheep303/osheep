@@ -335,7 +335,7 @@ test("Claude interruption clears a pending question so the next turn can complet
   ]);
 });
 
-test("Claude user-rejected tools finish without becoming workflow errors", () => {
+test("Claude user-rejected tools wait for replacement input before the next turn completes", () => {
   for (const toolName of ["Skill", "Bash", "Write", "mcp__demo__mutate"]) {
     const reducer = new AgentSessionEventReducer("claude");
     const toolUseId = `${toolName}_1`;
@@ -390,7 +390,20 @@ test("Claude user-rejected tools finish without becoming workflow errors", () =>
     );
     assert.deepEqual(
       reducer.push({ type: "system", subtype: "turn_duration" }),
-      [{ state: "completed", outcome: "user-rejected" }],
+      [{ state: "waiting-for-choice" }],
+      toolName,
+    );
+    assert.deepEqual(
+      reducer.push({
+        type: "user",
+        message: { role: "user", content: "Please continue without that tool." },
+      }),
+      [{ state: "running" }],
+      toolName,
+    );
+    assert.deepEqual(
+      reducer.push({ type: "system", subtype: "turn_duration" }),
+      [{ state: "completed", outcome: "success" }],
       toolName,
     );
   }
@@ -459,7 +472,7 @@ test("Codex user input and approval events drive waiting state", () => {
   );
 });
 
-test("Codex declined approval completes as user-rejected instead of error", () => {
+test("Codex declined approval waits for replacement input before the next turn completes", () => {
   const reducer = new AgentSessionEventReducer("codex");
   reducer.push(
     { type: "event_msg", payload: { type: "task_started", turn_id: "turn_1" } },
@@ -492,12 +505,20 @@ test("Codex declined approval completes as user-rejected instead of error", () =
       },
       106,
     ),
-    [{ state: "completed", outcome: "user-rejected" }],
+    [{ state: "waiting-for-choice" }],
   );
   assert.deepEqual(reducer.poll(1_000), []);
+  assert.deepEqual(
+    reducer.push({ type: "event_msg", payload: { type: "task_started", turn_id: "turn_2" } }),
+    [{ state: "running" }],
+  );
+  assert.deepEqual(
+    reducer.push({ type: "event_msg", payload: { type: "task_complete", turn_id: "turn_2" } }),
+    [{ state: "completed", outcome: "success" }],
+  );
 });
 
-test("Codex declined approval overrides a later structured completion error", () => {
+test("Codex declined approval ignores the rejected turn's later completion error", () => {
   const reducer = new AgentSessionEventReducer("codex");
   reducer.push({ type: "event_msg", payload: { type: "task_started", turn_id: "turn_1" } });
   assert.deepEqual(
@@ -509,7 +530,7 @@ test("Codex declined approval overrides a later structured completion error", ()
         item: { type: "CommandExecution", status: "declined" },
       },
     }),
-    [],
+    [{ state: "waiting-for-choice" }],
   );
   assert.deepEqual(
     reducer.push({
@@ -520,7 +541,7 @@ test("Codex declined approval overrides a later structured completion error", ()
         error: { message: "approval request aborted" },
       },
     }),
-    [{ state: "completed", outcome: "user-rejected" }],
+    [],
   );
 });
 
@@ -812,7 +833,60 @@ test("JSONL watcher can reject a paused abort and accept a later turn completion
   }
 });
 
-test("JSONL watcher classifies a Codex declined approval as user-rejected", async () => {
+test("JSONL watcher waits after a Claude rejection and completes the replacement turn", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-claude-rejected-"));
+  const filePath = path.join(directory, "session.jsonl");
+  await fs.writeFile(filePath, "");
+  const events: string[] = [];
+  try {
+    const watched = watchAgentSession({
+      app: "claude",
+      sessionId: "session",
+      filePath,
+      onEvent: (event) => events.push(`${event.state}:${event.outcome ?? ""}`),
+    });
+    await appendJsonl(filePath, {
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "tool_1", name: "Bash" }],
+      },
+    });
+    await appendJsonl(filePath, {
+      type: "user",
+      subtype: "error",
+      is_error: true,
+      toolDenialKind: "user-rejected",
+      message: {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "tool_1", is_error: true }],
+      },
+    });
+    await appendJsonl(filePath, {
+      type: "user",
+      message: {
+        role: "user",
+        content: [{ type: "text", text: "[Request interrupted by user for tool use]" }],
+      },
+    });
+    await appendJsonl(filePath, { type: "system", subtype: "turn_duration" });
+    assert.deepEqual(events, ["waiting-for-choice:"]);
+
+    await appendJsonl(filePath, {
+      type: "user",
+      message: { role: "user", content: "Continue without running the command." },
+    });
+    assert.deepEqual(events, ["waiting-for-choice:", "running:"]);
+    await appendJsonl(filePath, { type: "system", subtype: "turn_duration" });
+
+    assert.deepEqual(await watched, { state: "completed", outcome: "success" });
+    assert.deepEqual(events, ["waiting-for-choice:", "running:", "completed:success"]);
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("JSONL watcher waits after a Codex decline and completes the replacement turn", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-codex-declined-"));
   const filePath = path.join(directory, "session.jsonl");
   await fs.writeFile(filePath, "");
@@ -852,8 +926,24 @@ test("JSONL watcher classifies a Codex declined approval as user-rejected", asyn
       ].join("\n"),
     );
 
-    assert.deepEqual(await watched, { state: "completed", outcome: "user-rejected" });
-    assert.deepEqual(events, ["running:", "completed:user-rejected"]);
+    await new Promise<void>((resolve) => setTimeout(resolve, 300));
+    assert.deepEqual(events, ["running:", "waiting-for-choice:"]);
+    await appendJsonl(filePath, {
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: "turn_2" },
+    });
+    await appendJsonl(filePath, {
+      type: "event_msg",
+      payload: { type: "task_complete", turn_id: "turn_2" },
+    });
+
+    assert.deepEqual(await watched, { state: "completed", outcome: "success" });
+    assert.deepEqual(events, [
+      "running:",
+      "waiting-for-choice:",
+      "running:",
+      "completed:success",
+    ]);
   } finally {
     await fs.rm(directory, { recursive: true, force: true });
   }
