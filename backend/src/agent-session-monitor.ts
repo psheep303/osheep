@@ -12,6 +12,7 @@ export interface AgentSessionEvent {
 
 const POLL_INTERVAL_MS = 120;
 const CODEX_SILENT_EXEC_WAIT_MS = 1_500;
+const CODEX_ABORT_SETTLE_MS = 250;
 
 export class AgentSessionEventReducer {
   private readonly app: AgentSessionApp;
@@ -25,10 +26,12 @@ export class AgentSessionEventReducer {
   private readonly unresolvedCodexCalls = new Map<string, string>();
   private readonly codexSilentExecDeadlines = new Map<string, number>();
   private readonly unboundCodexPermissions: string[] = [];
+  private pendingCodexAbort?: { turnId: string; error: string; deadline: number };
   private nextCodexPermissionKey = 1;
   private nextClaudePermissionKey = 1;
   private activeCodexTurnId = "";
   private claudeTurnUserRejected = false;
+  private codexTurnUserRejected = false;
 
   constructor(app: AgentSessionApp) {
     this.app = app;
@@ -95,6 +98,7 @@ export class AgentSessionEventReducer {
 
   poll(now = Date.now()): AgentSessionEvent[] {
     if (this.app !== "codex") return [];
+    const events: AgentSessionEvent[] = [];
     let waiting = false;
     for (const [callId, deadline] of this.codexSilentExecDeadlines) {
       if (now < deadline) continue;
@@ -103,7 +107,16 @@ export class AgentSessionEventReducer {
       this.pendingCodexSilentExecs.add(callId);
       waiting = true;
     }
-    return waiting ? [{ state: "waiting-for-choice" }] : [];
+    if (waiting) events.push({ state: "waiting-for-choice" });
+    if (this.pendingCodexAbort && now >= this.pendingCodexAbort.deadline) {
+      events.push({
+        state: "completed",
+        outcome: this.codexTurnUserRejected ? "user-rejected" : "cancelled",
+        error: this.codexTurnUserRejected ? undefined : this.pendingCodexAbort.error,
+      });
+      this.pendingCodexAbort = undefined;
+    }
+    return events;
   }
 
   private pushClaude(root: Record<string, unknown>): AgentSessionEvent[] {
@@ -240,6 +253,7 @@ export class AgentSessionEventReducer {
     if (type === "task_started" || type === "turn_started") {
       const startsDifferentTurn =
         !!this.activeCodexTurnId && !!turnId && turnId !== this.activeCodexTurnId;
+      const previousAbort = startsDifferentTurn ? this.takePendingCodexAbort() : undefined;
       this.activeCodexTurnId = turnId;
       if (startsDifferentTurn) {
         this.pendingCodexQuestions.clear();
@@ -248,12 +262,17 @@ export class AgentSessionEventReducer {
         this.unresolvedCodexCalls.clear();
         this.codexSilentExecDeadlines.clear();
         this.unboundCodexPermissions.length = 0;
+        this.pendingCodexAbort = undefined;
+        this.codexTurnUserRejected = false;
       }
-      return this.pendingCodexQuestions.size > 0 ||
+      const startEvents: AgentSessionEvent[] = previousAbort ? [previousAbort] : [];
+      if (this.pendingCodexQuestions.size > 0 ||
         this.pendingCodexPermissions.size > 0 ||
-        this.pendingCodexSilentExecs.size > 0
-        ? []
-        : [{ state: "running" }];
+        this.pendingCodexSilentExecs.size > 0) {
+        return startEvents;
+      }
+      startEvents.push({ state: "running" });
+      return startEvents;
     }
     if (this.activeCodexTurnId && turnId && turnId !== this.activeCodexTurnId) return [];
 
@@ -302,16 +321,31 @@ export class AgentSessionEventReducer {
     if (isCodexWaitingEvent(type, payload)) return [{ state: "waiting-for-choice" }];
     if (isCodexChoiceResolvedEvent(type, payload)) return [{ state: "running" }];
 
+    if (type === "item_completed") {
+      const item = objectValue(payload.item);
+      if (stringValue(item.status) !== "declined") return [];
+      this.codexTurnUserRejected = true;
+      if (!this.pendingCodexAbort) return [];
+      this.pendingCodexAbort = undefined;
+      return [{ state: "completed", outcome: "user-rejected" }];
+    }
+
     if (type === "turn_aborted" || type === "task_aborted") {
-      return [
-        {
-          state: "completed",
-          outcome: "cancelled",
-          error: stringValue(payload.reason ?? root.reason) || "Codex turn was cancelled.",
-        },
-      ];
+      if (this.codexTurnUserRejected) {
+        return [{ state: "completed", outcome: "user-rejected" }];
+      }
+      this.pendingCodexAbort = {
+        turnId,
+        error: stringValue(payload.reason ?? root.reason) || "Codex turn was cancelled.",
+        deadline: now + CODEX_ABORT_SETTLE_MS,
+      };
+      return [];
     }
     if (type === "task_complete" || type === "turn_complete" || type === "turn_completed") {
+      if (this.codexTurnUserRejected) {
+        this.pendingCodexAbort = undefined;
+        return [{ state: "completed", outcome: "user-rejected" }];
+      }
       const error = errorMessage(payload.error ?? root.error);
       return [
         error
@@ -335,6 +369,19 @@ export class AgentSessionEventReducer {
   private latestUnresolvedCodexCall(): string {
     const calls = [...this.unresolvedCodexCalls.keys()];
     return calls.at(-1) ?? "";
+  }
+
+  private takePendingCodexAbort(): AgentSessionEvent | undefined {
+    if (!this.pendingCodexAbort) return undefined;
+    const event: AgentSessionEvent = this.codexTurnUserRejected
+      ? { state: "completed", outcome: "user-rejected" }
+      : {
+          state: "completed",
+          outcome: "cancelled",
+          error: this.pendingCodexAbort.error,
+        };
+    this.pendingCodexAbort = undefined;
+    return event;
   }
 }
 
@@ -440,7 +487,12 @@ export async function watchAgentSession(input: {
         for (const event of events) input.onEvent(event);
       }
     }
-    for (const event of reducer.poll()) input.onEvent(event);
+    for (const event of reducer.poll()) {
+      input.onEvent(event);
+      if (event.state === "completed" && (input.acceptCompletion?.(event) ?? true)) {
+        return event;
+      }
+    }
     await delay(POLL_INTERVAL_MS, input.signal);
   }
   return { state: "completed", outcome: "cancelled", error: "Agent run was stopped." };

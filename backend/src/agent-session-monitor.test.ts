@@ -424,7 +424,10 @@ test("Codex task_complete distinguishes success and error for the active turn", 
 
 test("Codex user input and approval events drive waiting state", () => {
   const reducer = new AgentSessionEventReducer("codex");
-  reducer.push({ type: "event_msg", payload: { type: "task_started", turn_id: "turn_1" } });
+  reducer.push(
+    { type: "event_msg", payload: { type: "task_started", turn_id: "turn_1" } },
+    0,
+  );
   assert.deepEqual(
     reducer.push({
       type: "event_msg",
@@ -443,8 +446,81 @@ test("Codex user input and approval events drive waiting state", () => {
     reducer.push({
       type: "event_msg",
       payload: { type: "turn_aborted", turn_id: "turn_1", reason: "interrupted" },
-    }),
+    }, 100),
+    [],
+  );
+  assert.deepEqual(
+    reducer.poll(349),
+    [],
+  );
+  assert.deepEqual(
+    reducer.poll(350),
     [{ state: "completed", outcome: "cancelled", error: "interrupted" }],
+  );
+});
+
+test("Codex declined approval completes as user-rejected instead of error", () => {
+  const reducer = new AgentSessionEventReducer("codex");
+  reducer.push(
+    { type: "event_msg", payload: { type: "task_started", turn_id: "turn_1" } },
+    0,
+  );
+  assert.deepEqual(
+    reducer.push(
+      {
+        type: "event_msg",
+        payload: { type: "turn_aborted", turn_id: "turn_1" },
+      },
+      100,
+    ),
+    [],
+  );
+  assert.deepEqual(
+    reducer.push(
+      {
+        type: "event_msg",
+        payload: {
+          type: "item_completed",
+          turn_id: "turn_1",
+          item: {
+            type: "CommandExecution",
+            status: "declined",
+            stderr: "approval request aborted",
+            exit_code: -1,
+          },
+        },
+      },
+      106,
+    ),
+    [{ state: "completed", outcome: "user-rejected" }],
+  );
+  assert.deepEqual(reducer.poll(1_000), []);
+});
+
+test("Codex declined approval overrides a later structured completion error", () => {
+  const reducer = new AgentSessionEventReducer("codex");
+  reducer.push({ type: "event_msg", payload: { type: "task_started", turn_id: "turn_1" } });
+  assert.deepEqual(
+    reducer.push({
+      type: "event_msg",
+      payload: {
+        type: "item_completed",
+        turn_id: "turn_1",
+        item: { type: "CommandExecution", status: "declined" },
+      },
+    }),
+    [],
+  );
+  assert.deepEqual(
+    reducer.push({
+      type: "event_msg",
+      payload: {
+        type: "task_complete",
+        turn_id: "turn_1",
+        error: { message: "approval request aborted" },
+      },
+    }),
+    [{ state: "completed", outcome: "user-rejected" }],
   );
 });
 
@@ -667,12 +743,22 @@ test("Codex initial task_started does not overwrite an earlier sidecar wait", ()
 
 test("Codex reducer continues with a new turn after an aborted turn", () => {
   const reducer = new AgentSessionEventReducer("codex");
-  reducer.push({ type: "event_msg", payload: { type: "task_started", turn_id: "turn_1" } });
+  reducer.push(
+    { type: "event_msg", payload: { type: "task_started", turn_id: "turn_1" } },
+    0,
+  );
   assert.deepEqual(
-    reducer.push({
-      type: "event_msg",
-      payload: { type: "turn_aborted", turn_id: "turn_1", reason: "interrupted" },
-    }),
+    reducer.push(
+      {
+        type: "event_msg",
+        payload: { type: "turn_aborted", turn_id: "turn_1", reason: "interrupted" },
+      },
+      100,
+    ),
+    [],
+  );
+  assert.deepEqual(
+    reducer.poll(350),
     [{ state: "completed", outcome: "cancelled", error: "interrupted" }],
   );
   assert.deepEqual(
@@ -721,6 +807,80 @@ test("JSONL watcher can reject a paused abort and accept a later turn completion
 
     assert.deepEqual(await watched, { state: "completed", outcome: "success" });
     assert.deepEqual(events, ["running:", "completed:cancelled", "running:", "completed:success"]);
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("JSONL watcher classifies a Codex declined approval as user-rejected", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-codex-declined-"));
+  const filePath = path.join(directory, "session.jsonl");
+  await fs.writeFile(filePath, "");
+  const events: string[] = [];
+  try {
+    const watched = watchAgentSession({
+      app: "codex",
+      sessionId: "session",
+      filePath,
+      onEvent: (event) => events.push(`${event.state}:${event.outcome ?? ""}`),
+    });
+    await appendJsonl(filePath, {
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: "turn_1" },
+    });
+    await fs.appendFile(
+      filePath,
+      [
+        JSON.stringify({
+          type: "event_msg",
+          payload: { type: "turn_aborted", turn_id: "turn_1" },
+        }),
+        JSON.stringify({
+          type: "event_msg",
+          payload: {
+            type: "item_completed",
+            turn_id: "turn_1",
+            item: {
+              type: "CommandExecution",
+              status: "declined",
+              stderr: "approval request aborted",
+              exit_code: -1,
+            },
+          },
+        }),
+        "",
+      ].join("\n"),
+    );
+
+    assert.deepEqual(await watched, { state: "completed", outcome: "user-rejected" });
+    assert.deepEqual(events, ["running:", "completed:user-rejected"]);
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("JSONL watcher completes a Codex abort after its declined-event window", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-codex-aborted-"));
+  const filePath = path.join(directory, "session.jsonl");
+  await fs.writeFile(
+    filePath,
+    [
+      JSON.stringify({
+        type: "event_msg",
+        payload: { type: "task_started", turn_id: "turn_1" },
+      }),
+      JSON.stringify({
+        type: "event_msg",
+        payload: { type: "turn_aborted", turn_id: "turn_1", reason: "interrupted" },
+      }),
+      "",
+    ].join("\n"),
+  );
+  try {
+    assert.deepEqual(
+      await watchAgentSession({ app: "codex", sessionId: "session", filePath, onEvent: () => {} }),
+      { state: "completed", outcome: "cancelled", error: "interrupted" },
+    );
   } finally {
     await fs.rm(directory, { recursive: true, force: true });
   }
