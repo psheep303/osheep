@@ -526,6 +526,21 @@ test("agent result uses the structured cancelled outcome", () => {
   assert.match(cancelled.message, /interrupted/);
 });
 
+test("agent result treats a user-rejected tool as a non-failure", () => {
+  const rejected = classifyAgentTerminalResultFailure(
+    {
+      content: "",
+      transcript: "Tool error:\nThe user doesn't want to proceed with this tool use.",
+      exitCode: 0,
+      signal: "user-rejected",
+      outcome: "user-rejected",
+    },
+    "Run an optional tool",
+  );
+  assert.equal(rejected.failed, false);
+  assert.equal(rejected.retryable, false);
+});
+
 test("normal auto-finished agent result remains successful", () => {
   const failure = classifyAgentTerminalResultFailure(
     {

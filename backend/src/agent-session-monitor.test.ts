@@ -335,6 +335,67 @@ test("Claude interruption clears a pending question so the next turn can complet
   ]);
 });
 
+test("Claude user-rejected tools finish without becoming workflow errors", () => {
+  for (const toolName of ["Skill", "Bash", "Write", "mcp__demo__mutate"]) {
+    const reducer = new AgentSessionEventReducer("claude");
+    const toolUseId = `${toolName}_1`;
+    reducer.push({
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [{ type: "tool_use", id: toolUseId, name: toolName }],
+      },
+    });
+    reducer.pushClaudePermission({
+      osheep_event: "claude-permission-request",
+      payload: {
+        hook_event_name: "PermissionRequest",
+        tool_name: toolName,
+        tool_use_id: toolUseId,
+      },
+    });
+
+    assert.deepEqual(
+      reducer.push({
+        type: "user",
+        subtype: "error",
+        is_error: true,
+        toolDenialKind: "user-rejected",
+        toolUseResult: "User rejected tool use",
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: toolUseId,
+              is_error: true,
+              content: "The user doesn't want to proceed with this tool use.",
+            },
+          ],
+        },
+      }),
+      [],
+      toolName,
+    );
+    assert.deepEqual(
+      reducer.push({
+        type: "user",
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "[Request interrupted by user for tool use]" }],
+        },
+      }),
+      [],
+      toolName,
+    );
+    assert.deepEqual(
+      reducer.push({ type: "system", subtype: "turn_duration" }),
+      [{ state: "completed", outcome: "user-rejected" }],
+      toolName,
+    );
+  }
+});
+
 test("Codex task_complete distinguishes success and error for the active turn", () => {
   const success = new AgentSessionEventReducer("codex");
   assert.deepEqual(

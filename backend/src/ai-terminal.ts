@@ -92,7 +92,7 @@ export interface AgentTerminalResult {
   verification: string[];
   exitCode: number | null;
   signal: number | string | null;
-  outcome?: "success" | "error" | "cancelled";
+  outcome?: "success" | "error" | "cancelled" | "user-rejected";
   errorMessage?: string;
 }
 
@@ -195,11 +195,13 @@ export async function runAgentTerminal(opts: AgentTerminalOptions): Promise<Agen
     opts.onFrame?.({
       type: "status",
       status:
-        completion.manual && completion.event.outcome === "success"
-          ? "manual-success"
-          : completion.event.outcome === "success"
-            ? "auto-finished"
-            : "auto-error",
+        completion.event.outcome === "user-rejected"
+          ? "auto-finished"
+          : completion.manual && completion.event.outcome === "success"
+            ? "manual-success"
+            : completion.event.outcome === "success"
+              ? "auto-finished"
+              : "auto-error",
     });
     try {
       session.pty.kill();
@@ -214,13 +216,18 @@ export async function runAgentTerminal(opts: AgentTerminalOptions): Promise<Agen
       transcript,
       changedFiles: metadata.changedFiles,
       verification: metadata.verification,
-      exitCode: completion.event.outcome === "success" ? 0 : 1,
+      exitCode:
+        completion.event.outcome === "success" || completion.event.outcome === "user-rejected"
+          ? 0
+          : 1,
       signal:
-        completion.event.outcome === "success"
-          ? completion.manual
-            ? "manual-success"
-            : "auto-finished"
-          : (completion.event.outcome ?? null),
+        completion.event.outcome === "user-rejected"
+          ? "user-rejected"
+          : completion.event.outcome === "success"
+            ? completion.manual
+              ? "manual-success"
+              : "auto-finished"
+            : (completion.event.outcome ?? null),
       outcome: completion.event.outcome,
       errorMessage: completion.event.error,
     };

@@ -143,7 +143,7 @@ interface AgentTerminalProcessResult {
   transcript: string;
   exitCode: number | null;
   signal: number | string | null;
-  outcome?: "success" | "error" | "cancelled";
+  outcome?: "success" | "error" | "cancelled" | "user-rejected";
   errorMessage?: string;
 }
 

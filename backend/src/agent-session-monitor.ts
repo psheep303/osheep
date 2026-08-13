@@ -2,7 +2,7 @@ import * as fs from "node:fs/promises";
 import { type AgentSessionApp, findAgentSessionFilePath } from "./agent-sessions.js";
 
 export type AgentSessionState = "running" | "waiting-for-choice" | "completed";
-export type AgentSessionOutcome = "success" | "error" | "cancelled";
+export type AgentSessionOutcome = "success" | "error" | "cancelled" | "user-rejected";
 
 export interface AgentSessionEvent {
   state: AgentSessionState;
@@ -21,6 +21,7 @@ export class AgentSessionEventReducer {
   private readonly pendingCodexQuestions = new Set<string>();
   private nextClaudePermissionKey = 1;
   private activeCodexTurnId = "";
+  private claudeTurnUserRejected = false;
 
   constructor(app: AgentSessionApp) {
     this.app = app;
@@ -101,6 +102,8 @@ export class AgentSessionEventReducer {
     if (stringValue(message.role) === "user") {
       let resolved = false;
       let interrupted = false;
+      const userRejected = claudeToolUseWasRejected(root);
+      if (userRejected) this.claudeTurnUserRejected = true;
       for (const item of content) {
         const block = objectValue(item);
         if (
@@ -123,14 +126,17 @@ export class AgentSessionEventReducer {
         this.pendingClaudePermissionTools.clear();
         this.unresolvedClaudeTools.clear();
         this.unboundClaudePermissions.length = 0;
-        events.push({
-          state: "completed",
-          outcome: "cancelled",
-          error: "Claude Code turn was interrupted.",
-        });
+        if (!this.claudeTurnUserRejected) {
+          events.push({
+            state: "completed",
+            outcome: "cancelled",
+            error: "Claude Code turn was interrupted.",
+          });
+        }
       }
       if (
         resolved &&
+        !userRejected &&
         this.pendingQuestions.size === 0 &&
         this.pendingClaudePermissionTools.size === 0
       ) {
@@ -142,11 +148,12 @@ export class AgentSessionEventReducer {
     const error = claudeErrorMessage(root, message);
     if (events.some((event) => event.state === "completed")) return events;
     if (
-      root.is_error === true ||
-      root.isApiErrorMessage === true ||
-      subtype === "error" ||
-      subtype === "api_error" ||
-      (type === "result" && subtype !== "success" && !!error)
+      !this.claudeTurnUserRejected &&
+      (root.is_error === true ||
+        root.isApiErrorMessage === true ||
+        subtype === "error" ||
+        subtype === "api_error" ||
+        (type === "result" && subtype !== "success" && !!error))
     ) {
       events.push({ state: "completed", outcome: "error", error: error || "Claude Code failed." });
     } else if (
@@ -155,7 +162,11 @@ export class AgentSessionEventReducer {
       this.pendingQuestions.size === 0 &&
       this.pendingClaudePermissionTools.size === 0
     ) {
-      events.push({ state: "completed", outcome: "success" });
+      events.push({
+        state: "completed",
+        outcome: this.claudeTurnUserRejected ? "user-rejected" : "success",
+      });
+      this.claudeTurnUserRejected = false;
     }
     return events;
   }
@@ -234,6 +245,10 @@ export class AgentSessionEventReducer {
     }
     return [];
   }
+}
+
+function claudeToolUseWasRejected(root: Record<string, unknown>): boolean {
+  return stringValue(root.toolDenialKind ?? root.tool_denial_kind) === "user-rejected";
 }
 
 export async function watchAgentSession(input: {
