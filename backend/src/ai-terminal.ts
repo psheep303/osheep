@@ -118,8 +118,10 @@ export async function runAgentTerminal(opts: AgentTerminalOptions): Promise<Agen
   const workspaceBaseline = await captureWorkspaceChanges(opts.workspace.path).catch(
     () => null as WorkspaceChangeBaseline | null,
   );
-  const claudeHook =
-    opts.kind === "claude-cli" ? await createClaudePermissionHookRuntime() : undefined;
+  const permissionHook =
+    opts.kind === "claude-cli"
+      ? await createClaudePermissionHookRuntime()
+      : await createCodexPermissionHookRuntime();
   const command = buildAgentTerminalCommand(opts.kind, opts.model, {
     claudePermissionMode: opts.claudePermissionMode,
     mode: opts.mode,
@@ -129,7 +131,8 @@ export async function runAgentTerminal(opts: AgentTerminalOptions): Promise<Agen
     conversationSessionId: opts.conversationSessionId,
     resumeConversation: opts.resumeConversation,
     prompt: opts.prompt,
-    settingsPath: claudeHook?.settingsPath,
+    settingsPath: permissionHook?.settingsPath,
+    codexPermissionHookConfig: permissionHook?.codexConfig,
   }).command;
   let session: TerminalSession;
   try {
@@ -142,7 +145,7 @@ export async function runAgentTerminal(opts: AgentTerminalOptions): Promise<Agen
       initialCommand: command,
     });
   } catch (error) {
-    if (claudeHook) await fs.rm(claudeHook.directory, { recursive: true, force: true });
+    await fs.rm(permissionHook.directory, { recursive: true, force: true });
     throw error;
   }
   controls.set(session.id, {
@@ -174,7 +177,7 @@ export async function runAgentTerminal(opts: AgentTerminalOptions): Promise<Agen
       opts.resumeConversation ? resumeOffset : 0,
       opts.onFrame,
       opts.signal,
-      claudeHook?.eventsPath,
+      permissionHook.eventsPath,
     );
     const completion = await waitForManualSuccessIfNeeded(
       session.id,
@@ -234,7 +237,7 @@ export async function runAgentTerminal(opts: AgentTerminalOptions): Promise<Agen
   } finally {
     opts.signal?.removeEventListener("abort", onAbort);
     controls.delete(session.id);
-    if (claudeHook) await fs.rm(claudeHook.directory, { recursive: true, force: true });
+    await fs.rm(permissionHook.directory, { recursive: true, force: true });
   }
 }
 
@@ -283,7 +286,7 @@ async function waitForAgentSessionCompletion(
   startOffset: number,
   onFrame?: (frame: AgentTerminalFrame) => void,
   signal?: AbortSignal,
-  claudePermissionFilePath?: string,
+  permissionFilePath?: string,
 ): Promise<{ event: AgentSessionEvent; manual: boolean }> {
   const localAbort = new AbortController();
   const onAbort = () => localAbort.abort();
@@ -296,7 +299,7 @@ async function waitForAgentSessionCompletion(
         app,
         sessionId: conversationSessionId,
         startOffset,
-        claudePermissionFilePath,
+        permissionFilePath,
         signal: localAbort.signal,
         onEvent: (event) => handleAgentSessionEvent(session, event, onFrame),
         acceptCompletion: () => {
@@ -543,6 +546,7 @@ export function buildAgentTerminalCommand(
     resumeConversation?: boolean;
     prompt?: string;
     settingsPath?: string;
+    codexPermissionHookConfig?: string;
   } = {},
 ): { command: string } {
   const base = kind === "codex-cli" ? "codex" : "claude";
@@ -571,6 +575,10 @@ export function buildAgentTerminalCommand(
       codexResumeSessionId = options.conversationSessionId;
     }
     args.push(...codexPermissionArgs(options.codexApproval, options.codexSandbox));
+    if (options.codexPermissionHookConfig) {
+      args.push("--dangerously-bypass-hook-trust");
+      args.push("-c", quoteCodexHookConfig(options.codexPermissionHookConfig));
+    }
     const effort = agentEffortCliValue(kind, options.effort);
     if (effort) args.push("-c", quoteCodexConfig(`model_reasoning_effort="${effort}"`));
   }
@@ -588,6 +596,15 @@ interface ClaudePermissionHookRuntime {
   directory: string;
   settingsPath: string;
   eventsPath: string;
+  codexConfig?: undefined;
+}
+
+interface CodexPermissionHookRuntime {
+  directory: string;
+  eventsPath: string;
+  codexConfig: string;
+  windowsCommandPath?: string;
+  settingsPath?: undefined;
 }
 
 const CLAUDE_PERMISSION_HOOK_SOURCE = `import { appendFile } from "node:fs/promises";
@@ -641,6 +658,51 @@ export async function createClaudePermissionHookRuntimeForTest(): Promise<Claude
   return createClaudePermissionHookRuntime();
 }
 
+const CODEX_PERMISSION_HOOK_SOURCE = `import { appendFile } from "node:fs/promises";
+
+try {
+  let input = "";
+  for await (const chunk of process.stdin) input += chunk;
+  const payload = JSON.parse(input);
+  await appendFile(process.argv[2], JSON.stringify({
+    osheep_event: "codex-permission-request",
+    payload: {
+      session_id: payload.session_id,
+      turn_id: payload.turn_id,
+      hook_event_name: payload.hook_event_name,
+      tool_use_id: payload.tool_use_id ?? payload.toolUseId,
+      tool_name: payload.tool_name ?? payload.toolName,
+    },
+  }) + "\\n", "utf8");
+} catch {
+  // A notification hook must never interfere with Codex.
+}
+`;
+
+async function createCodexPermissionHookRuntime(): Promise<CodexPermissionHookRuntime> {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-codex-hook-"));
+  const hookPath = path.join(directory, "permission-hook.mjs");
+  const eventsPath = path.join(directory, "permission-events.jsonl");
+  const command = [process.execPath, hookPath, eventsPath].map(quoteHookCommandArg).join(" ");
+  const tomlCommand = `'${command.replace(/'/g, "''")}'`;
+  let windowsCommandPath: string | undefined;
+  let windowsField = "";
+  if (platform === "windows") {
+    windowsCommandPath = path.join(directory, "permission-hook.cmd");
+    const batch = `@echo off\r\n>>"%~dp0permission-events.jsonl" echo {"osheep_event":"codex-permission-request","payload":{"hook_event_name":"PermissionRequest"}}\r\nexit /b 0\r\n`;
+    await fs.writeFile(windowsCommandPath, batch, "utf8");
+    const commandWindows = `"${windowsCommandPath}"`;
+    windowsField = `, commandWindows='${commandWindows.replace(/'/g, "''")}'`;
+  }
+  const codexConfig = `hooks.PermissionRequest=[{ hooks=[{ type="command", command=${tomlCommand}${windowsField} }] }]`;
+  await fs.writeFile(hookPath, CODEX_PERMISSION_HOOK_SOURCE, "utf8");
+  return { directory, eventsPath, codexConfig, windowsCommandPath };
+}
+
+export async function createCodexPermissionHookRuntimeForTest(): Promise<CodexPermissionHookRuntime> {
+  return createCodexPermissionHookRuntime();
+}
+
 function quoteHookCommandArg(value: string): string {
   return `"${value.replace(/"/g, '\\"')}"`;
 }
@@ -677,6 +739,13 @@ function agentEffortCliValue(
 
 function quoteCodexConfig(value: string): string {
   return `'${value.replace(/'/g, platform === "windows" ? "''" : "'\\''")}'`;
+}
+
+function quoteCodexHookConfig(value: string): string {
+  if (platform !== "windows") return quoteCodexConfig(value);
+  const nativeArgument = value.replace(/"/g, '\\"');
+  const encoded = Buffer.from(nativeArgument, "utf8").toString("base64");
+  return `$([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}')))`;
 }
 
 function quoteShell(value: string): string {

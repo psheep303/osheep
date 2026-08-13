@@ -166,13 +166,15 @@ test("live agent run details capture terminal and JSONL status metadata", async 
   await details.handleFrame({ type: "session", sessionId: "t_live" });
   await details.handleFrame({ type: "conversation", sessionId: "conv_live" });
   await details.handleFrame({ type: "status", status: "prompt-sent" });
+  await details.handleFrame({ type: "status", status: "waiting-for-choice" });
 
-  assert.equal(writes.length, 4);
+  assert.equal(writes.length, 5);
   assert.equal(writes[1]?.terminalSessionId, "t_live");
   assert.equal(writes[2]?.conversationSessionId, "conv_live");
   assert.equal(writes[3]?.terminalStatus, "prompt-sent");
   assert.equal(writes[3]?.status, "running");
   assert.equal(writes[3]?.stdout, "");
+  assert.equal(writes[4]?.terminalStatus, "waiting-for-choice");
   assert.equal(details.snapshot("running").stdout, "");
 });
 

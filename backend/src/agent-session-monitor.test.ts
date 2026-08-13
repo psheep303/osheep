@@ -448,7 +448,7 @@ test("Codex user input and approval events drive waiting state", () => {
   );
 });
 
-test("Codex request_user_input function calls wait for their matching output", () => {
+test("Codex function calls are not filtered by model-internal turn metadata", () => {
   const reducer = new AgentSessionEventReducer("codex");
   reducer.push({ type: "event_msg", payload: { type: "task_started", turn_id: "turn_1" } });
   assert.deepEqual(
@@ -458,19 +458,7 @@ test("Codex request_user_input function calls wait for their matching output", (
         type: "function_call",
         name: "request_user_input",
         call_id: "call_1",
-        internal_chat_message_metadata_passthrough: { turn_id: "turn_old" },
-      },
-    }),
-    [],
-  );
-  assert.deepEqual(
-    reducer.push({
-      type: "response_item",
-      payload: {
-        type: "function_call",
-        name: "request_user_input",
-        call_id: "call_1",
-        internal_chat_message_metadata_passthrough: { turn_id: "turn_1" },
+        internal_chat_message_metadata_passthrough: { turn_id: "model_turn_2" },
       },
     }),
     [{ state: "waiting-for-choice" }],
@@ -486,6 +474,192 @@ test("Codex request_user_input function calls wait for their matching output", (
     reducer.push({
       type: "response_item",
       payload: { type: "function_call_output", call_id: "call_1" },
+    }),
+    [{ state: "running" }],
+  );
+});
+
+test("Codex PermissionRequest sidecar waits until its matching tool output", () => {
+  const reducer = new AgentSessionEventReducer("codex");
+  reducer.push({ type: "event_msg", payload: { type: "task_started", turn_id: "turn_1" } });
+  assert.deepEqual(
+    reducer.pushCodexPermission({
+      osheep_event: "codex-permission-request",
+      payload: {
+        hook_event_name: "PermissionRequest",
+        tool_name: "exec",
+        tool_use_id: "call_1",
+      },
+    }),
+    [{ state: "waiting-for-choice" }],
+  );
+  assert.deepEqual(
+    reducer.push({
+      type: "response_item",
+      payload: { type: "custom_tool_call_output", call_id: "other" },
+    }),
+    [],
+  );
+  assert.deepEqual(
+    reducer.push({
+      type: "response_item",
+      payload: { type: "custom_tool_call_output", call_id: "call_1" },
+    }),
+    [{ state: "running" }],
+  );
+});
+
+test("Codex PermissionRequest without a tool id binds before or after the rollout call", () => {
+  for (const permissionFirst of [true, false]) {
+    const reducer = new AgentSessionEventReducer("codex");
+    reducer.push({ type: "event_msg", payload: { type: "task_started", turn_id: "turn_1" } });
+    const permission = () =>
+      reducer.pushCodexPermission({
+        osheep_event: "codex-permission-request",
+        payload: { hook_event_name: "PermissionRequest", tool_name: "exec" },
+      });
+    const toolCall = () =>
+      reducer.push({
+        type: "response_item",
+        payload: { type: "custom_tool_call", name: "exec", call_id: "call_1" },
+      });
+    if (permissionFirst) {
+      assert.deepEqual(permission(), [{ state: "waiting-for-choice" }]);
+      assert.deepEqual(toolCall(), []);
+    } else {
+      assert.deepEqual(toolCall(), []);
+      assert.deepEqual(permission(), [{ state: "waiting-for-choice" }]);
+    }
+    assert.deepEqual(
+      reducer.push({
+        type: "response_item",
+        payload: { type: "custom_tool_call_output", call_id: "call_1" },
+      }),
+      [{ state: "running" }],
+    );
+  }
+});
+
+test("Codex permission binds despite a different model-internal turn id", () => {
+  const reducer = new AgentSessionEventReducer("codex");
+  reducer.push({ type: "event_msg", payload: { type: "task_started", turn_id: "task_turn" } });
+  assert.deepEqual(
+    reducer.push({
+      type: "response_item",
+      payload: {
+        type: "custom_tool_call",
+        name: "exec",
+        call_id: "call_1",
+        internal_chat_message_metadata_passthrough: { turn_id: "model_turn" },
+      },
+    }),
+    [],
+  );
+  assert.deepEqual(
+    reducer.pushCodexPermission({
+      osheep_event: "codex-permission-request",
+      payload: { hook_event_name: "PermissionRequest" },
+    }),
+    [{ state: "waiting-for-choice" }],
+  );
+  assert.deepEqual(
+    reducer.push({
+      type: "response_item",
+      payload: { type: "custom_tool_call_output", call_id: "call_1" },
+    }),
+    [{ state: "running" }],
+  );
+});
+
+test("Codex silent exec falls back to waiting and resumes on matching output", () => {
+  const reducer = new AgentSessionEventReducer("codex");
+  reducer.push({ type: "event_msg", payload: { type: "task_started", turn_id: "task_turn" } }, 0);
+  reducer.push(
+    {
+      type: "response_item",
+      payload: { type: "custom_tool_call", name: "exec", call_id: "call_1" },
+    },
+    100,
+  );
+  assert.deepEqual(reducer.poll(1_599), []);
+  assert.deepEqual(reducer.poll(1_600), [{ state: "waiting-for-choice" }]);
+  assert.deepEqual(reducer.poll(5_000), []);
+  assert.deepEqual(
+    reducer.push({
+      type: "response_item",
+      payload: { type: "custom_tool_call_output", call_id: "call_1" },
+    }),
+    [{ state: "running" }],
+  );
+});
+
+test("Codex fast exec output cancels the silent waiting fallback", () => {
+  const reducer = new AgentSessionEventReducer("codex");
+  reducer.push({ type: "event_msg", payload: { type: "task_started", turn_id: "task_turn" } }, 0);
+  reducer.push(
+    {
+      type: "response_item",
+      payload: { type: "custom_tool_call", name: "exec", call_id: "call_1" },
+    },
+    100,
+  );
+  assert.deepEqual(
+    reducer.push(
+      {
+        type: "response_item",
+        payload: { type: "custom_tool_call_output", call_id: "call_1" },
+      },
+      500,
+    ),
+    [],
+  );
+  assert.deepEqual(reducer.poll(5_000), []);
+});
+
+test("Codex explicit permission sidecar supersedes the silent exec fallback", () => {
+  const reducer = new AgentSessionEventReducer("codex");
+  reducer.push({ type: "event_msg", payload: { type: "task_started", turn_id: "task_turn" } }, 0);
+  reducer.push(
+    {
+      type: "response_item",
+      payload: { type: "custom_tool_call", name: "exec", call_id: "call_1" },
+    },
+    100,
+  );
+  assert.deepEqual(
+    reducer.pushCodexPermission({
+      osheep_event: "codex-permission-request",
+      payload: { hook_event_name: "PermissionRequest" },
+    }),
+    [{ state: "waiting-for-choice" }],
+  );
+  assert.deepEqual(reducer.poll(5_000), []);
+});
+
+test("Codex initial task_started does not overwrite an earlier sidecar wait", () => {
+  const reducer = new AgentSessionEventReducer("codex");
+  assert.deepEqual(
+    reducer.pushCodexPermission({
+      osheep_event: "codex-permission-request",
+      payload: { hook_event_name: "PermissionRequest" },
+    }),
+    [{ state: "waiting-for-choice" }],
+  );
+  assert.deepEqual(
+    reducer.push({ type: "event_msg", payload: { type: "task_started", turn_id: "turn_1" } }),
+    [],
+  );
+  assert.deepEqual(
+    reducer.push({
+      type: "response_item",
+      payload: { type: "custom_tool_call", name: "exec", call_id: "call_1" },
+    }),
+    [],
+  );
+  assert.deepEqual(
+    reducer.push({
+      type: "response_item",
+      payload: { type: "custom_tool_call_output", call_id: "call_1" },
     }),
     [{ state: "running" }],
   );
@@ -563,7 +737,7 @@ test("JSONL watcher combines Claude permission sidecar and session results", asy
       app: "claude",
       sessionId: "session",
       filePath,
-      claudePermissionFilePath: permissionFilePath,
+      permissionFilePath,
       onEvent: (event) => events.push(`${event.state}:${event.outcome ?? ""}`),
     });
     await appendJsonl(filePath, {
@@ -585,6 +759,138 @@ test("JSONL watcher combines Claude permission sidecar and session results", asy
 
     assert.deepEqual(await watched, { state: "completed", outcome: "success" });
     assert.deepEqual(events, ["waiting-for-choice:", "running:", "completed:success"]);
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("JSONL watcher combines Codex permission sidecar and tool output", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-codex-monitor-"));
+  const filePath = path.join(directory, "session.jsonl");
+  const permissionFilePath = path.join(directory, "permission.jsonl");
+  await fs.writeFile(filePath, "");
+  const events: string[] = [];
+  const controller = new AbortController();
+  try {
+    const watched = watchAgentSession({
+      app: "codex",
+      sessionId: "session",
+      filePath,
+      permissionFilePath,
+      signal: controller.signal,
+      onEvent: (event) => events.push(`${event.state}:${event.outcome ?? ""}`),
+    });
+    await appendJsonl(filePath, {
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: "turn_1" },
+    });
+    await appendJsonl(permissionFilePath, {
+      osheep_event: "codex-permission-request",
+      payload: { hook_event_name: "PermissionRequest", tool_name: "exec", tool_use_id: "call_1" },
+    });
+    await appendJsonl(filePath, {
+      type: "response_item",
+      payload: {
+        type: "custom_tool_call_output",
+        call_id: "call_1",
+        output: "ok",
+        internal_chat_message_metadata_passthrough: { turn_id: "model_turn_2" },
+      },
+    });
+    controller.abort();
+    await watched;
+    assert.deepEqual(events, ["running:", "waiting-for-choice:", "running:"]);
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("JSONL watcher replays Codex session state before an existing permission sidecar", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-codex-order-"));
+  const filePath = path.join(directory, "session.jsonl");
+  const permissionFilePath = path.join(directory, "permission.jsonl");
+  await fs.writeFile(
+    filePath,
+    [
+      JSON.stringify({
+        type: "event_msg",
+        payload: { type: "task_started", turn_id: "turn_1" },
+      }),
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "custom_tool_call",
+          name: "exec",
+          call_id: "call_1",
+          internal_chat_message_metadata_passthrough: { turn_id: "model_turn_2" },
+        },
+      }),
+      "",
+    ].join("\n"),
+  );
+  await fs.writeFile(
+    permissionFilePath,
+    `${JSON.stringify({
+      osheep_event: "codex-permission-request",
+      payload: { hook_event_name: "PermissionRequest" },
+    })}\n`,
+  );
+  const events: string[] = [];
+  const controller = new AbortController();
+  try {
+    const watched = watchAgentSession({
+      app: "codex",
+      sessionId: "session",
+      filePath,
+      permissionFilePath,
+      signal: controller.signal,
+      onEvent: (event) => events.push(event.state),
+    });
+    await new Promise<void>((resolve) => setTimeout(resolve, 180));
+    controller.abort();
+    await watched;
+    assert.deepEqual(events, ["running", "waiting-for-choice"]);
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("JSONL watcher falls back to waiting for a silent Codex exec", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-codex-silent-"));
+  const filePath = path.join(directory, "session.jsonl");
+  await fs.writeFile(filePath, "");
+  const events: string[] = [];
+  const controller = new AbortController();
+  try {
+    const watched = watchAgentSession({
+      app: "codex",
+      sessionId: "session",
+      filePath,
+      signal: controller.signal,
+      onEvent: (event) => events.push(event.state),
+    });
+    await appendJsonl(filePath, {
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: "task_turn" },
+    });
+    await appendJsonl(filePath, {
+      type: "response_item",
+      payload: {
+        type: "custom_tool_call",
+        name: "exec",
+        call_id: "call_1",
+        internal_chat_message_metadata_passthrough: { turn_id: "model_turn" },
+      },
+    });
+    await new Promise<void>((resolve) => setTimeout(resolve, 1_650));
+    assert.deepEqual(events, ["running", "waiting-for-choice"]);
+    await appendJsonl(filePath, {
+      type: "response_item",
+      payload: { type: "custom_tool_call_output", call_id: "call_1" },
+    });
+    controller.abort();
+    await watched;
+    assert.deepEqual(events, ["running", "waiting-for-choice", "running"]);
   } finally {
     await fs.rm(directory, { recursive: true, force: true });
   }
