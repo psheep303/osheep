@@ -40,10 +40,10 @@ import {
   execRun,
   execRunStream,
   finishAiTerminalSuccess,
-  getGitDiff,
-  getGitStatus,
   getClaudePlugins,
   getCodexPlugins,
+  getGitDiff,
+  getGitStatus,
   listAgentSessions,
   openTerminalSocket,
   openWorkflowRuntimeSocket,
@@ -66,9 +66,9 @@ import {
   writeFile,
 } from "./api";
 import { ClaudeLogo, OpenAILogo } from "./BrandIcons";
-import type { MultiDiffEntry } from "./MultiDiffPane";
-import { evaluateConditionExpression } from "./condition-expression";
 import { ContextMenu, type CtxMenuSection } from "./ContextMenu";
+import { evaluateConditionExpression } from "./condition-expression";
+import type { MultiDiffEntry } from "./MultiDiffPane";
 import { cleanAgentTerminalConversation } from "./terminal-conversation";
 import {
   compactSupersededClaudeStartup,
@@ -248,7 +248,9 @@ interface SetNodeConfig {
   data: string;
 }
 
-interface IfNodeConfig { expression: string }
+interface IfNodeConfig {
+  expression: string;
+}
 
 interface MergeNodeConfig {
   mode: string;
@@ -1107,9 +1109,7 @@ export function WorkflowTab({
   const waitingForInputNode =
     workflow?.nodes.find(
       (node) =>
-        node.kind === "input" &&
-        node.status === "running" &&
-        node.config?.waitingForInput === true,
+        node.kind === "input" && node.status === "running" && node.config?.waitingForInput === true,
     ) ?? null;
   const waitingAlertKey = waitingForChoiceNode
     ? `${waitingForChoiceNode.id}:${waitingForChoiceSnapshot?.terminalSessionId ?? ""}`
@@ -2547,12 +2547,7 @@ export function WorkflowTab({
           key={waitingForInputNode.id}
           title={workflowInputTitle(waitingForInputNode)}
           onSubmit={async (value) => {
-            await resolveWorkflowInput(
-              workspaceId,
-              workflow.id,
-              waitingForInputNode.id,
-              value,
-            );
+            await resolveWorkflowInput(workspaceId, workflow.id, waitingForInputNode.id, value);
           }}
           onError={(message) => setError(message)}
         />
@@ -4015,6 +4010,16 @@ function WorkflowAgentTerminalInner({
     let startupPreResizeOutput = "";
     let startupRedrawFallbackTimer: ReturnType<typeof setTimeout> | null = null;
     let resizeTimer: ReturnType<typeof setTimeout> | null = null;
+    let replayMetadata: {
+      cols?: number;
+      rows?: number;
+      initialCols?: number;
+      initialRows?: number;
+      resizes?: TerminalReplayResize[];
+      compactStartup?: boolean;
+      truncated?: boolean;
+    } | null = null;
+    let replayChunks: string[] = [];
     const outputWriter = createTerminalWriteBatcher((data) => term.write(data));
     const replayGuard = createTerminalReplayGuard((data, callback) => term.write(data, callback));
     const drainReplayOutput = (initial: string, onDrained: () => void) => {
@@ -4049,7 +4054,7 @@ function WorkflowAgentTerminalInner({
     };
     ws.onmessage = (ev) => {
       try {
-        const msg = JSON.parse(ev.data) as {
+        let msg = JSON.parse(ev.data) as {
           type?: string;
           data?: string;
           cols?: number;
@@ -4058,9 +4063,28 @@ function WorkflowAgentTerminalInner({
           initialRows?: number;
           resizes?: TerminalReplayResize[];
           compactStartup?: boolean;
+          truncated?: boolean;
           code?: number | null;
           signal?: number | string | null;
         };
+        if (msg.type === "replay-start") {
+          replayMetadata = msg;
+          replayChunks = [];
+          return;
+        }
+        if (msg.type === "replay-chunk" && typeof msg.data === "string") {
+          replayChunks.push(msg.data);
+          return;
+        }
+        if (msg.type === "replay-end") {
+          msg = {
+            ...replayMetadata,
+            type: "replay",
+            data: replayChunks.join(""),
+          };
+          replayMetadata = null;
+          replayChunks = [];
+        }
         if (msg.type === "replay" && typeof msg.data === "string") {
           outputWriter.flush();
           const replayResizes = [...(msg.resizes ?? [])];
@@ -4569,10 +4593,18 @@ function WorkflowNodeInspector({
           <div className="workflow-inspector__section-title">Diff waiting for approval</div>
           <DiffApprovalView workspaceId={workspaceId} onOpenDiff={onOpenDiff} />
           <div className="workflow-inspector__approval-actions">
-            <button type="button" className="is-primary" onClick={() => void onResolveApproval(true)}>
+            <button
+              type="button"
+              className="is-primary"
+              onClick={() => void onResolveApproval(true)}
+            >
               Approve
             </button>
-            <button type="button" className="is-danger" onClick={() => void onResolveApproval(false)}>
+            <button
+              type="button"
+              className="is-danger"
+              onClick={() => void onResolveApproval(false)}
+            >
               Reject
             </button>
           </div>
@@ -4967,7 +4999,9 @@ function WorkflowNodeInspector({
             <label className="workflow-inspector__field">
               <span>Remote</span>
               <TemplateInput
-                value={typeof node.config?.remoteName === "string" ? node.config.remoteName : "origin"}
+                value={
+                  typeof node.config?.remoteName === "string" ? node.config.remoteName : "origin"
+                }
                 onChange={(value) => updateConfig({ remoteName: value })}
                 disabled={running}
               />
@@ -7382,11 +7416,7 @@ function edgePath(from: WorkflowNode, to: WorkflowNode, sourceHandle?: string): 
   return bezierPath(outputPoint(from, sourceHandle), inputPoint(to));
 }
 
-function edgePathToPoint(
-  from: WorkflowNode,
-  point: CanvasPoint,
-  sourceHandle?: string,
-): string {
+function edgePathToPoint(from: WorkflowNode, point: CanvasPoint, sourceHandle?: string): string {
   return bezierPath(outputPoint(from, sourceHandle), worldPointToCanvas(point));
 }
 
@@ -7473,14 +7503,15 @@ function blockEyebrow(kind: WorkflowNodeKind): string {
   )
     return "Trigger";
   if (kind === "command") return "Command";
-  if (kind === "git-commit" || kind === "git-checkout" || kind === "git-delete-branch" || kind === "github-pr") return "Git";
-  if (kind === "web" || kind === "http-request") return "Network";
   if (
-    kind === "if" ||
-    kind === "diff-approval" ||
-    kind === "wait" ||
-    kind === "loop-items"
+    kind === "git-commit" ||
+    kind === "git-checkout" ||
+    kind === "git-delete-branch" ||
+    kind === "github-pr"
   )
+    return "Git";
+  if (kind === "web" || kind === "http-request") return "Network";
+  if (kind === "if" || kind === "diff-approval" || kind === "wait" || kind === "loop-items")
     return "Logic";
   if (kind === "code") return "Code";
   if (kind === "file-read" || kind === "file-write") return "File";
@@ -7596,7 +7627,14 @@ function nodeIconName(node: WorkflowNode): WorkflowIconName {
   if (kind === "http-request") return "http";
   if (kind === "set") return "set";
   if (kind === "if") return "if";
-  if (kind === "diff-approval" || kind === "git-commit" || kind === "git-checkout" || kind === "git-delete-branch" || kind === "github-pr") return "git";
+  if (
+    kind === "diff-approval" ||
+    kind === "git-commit" ||
+    kind === "git-checkout" ||
+    kind === "git-delete-branch" ||
+    kind === "github-pr"
+  )
+    return "git";
   if (kind === "merge") return "merge";
   if (kind === "code") return "code";
   if (kind === "loop-items") return "loop";

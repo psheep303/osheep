@@ -5,7 +5,11 @@ import { config, platform } from "./config.js";
 import { errors } from "./errors.js";
 import { buildBashGuard, buildCmdGuard, buildPowerShellGuard } from "./pty-guard.js";
 import { findExecutable } from "./runtime-tools.js";
-import { TerminalReplayBuffer } from "./terminal-replay-buffer.js";
+import {
+  AGENT_TERMINAL_REPLAY_BYTE_LIMIT,
+  prepareTerminalReplay,
+  TerminalReplayBuffer,
+} from "./terminal-replay-buffer.js";
 import type { WorkspaceInfo } from "./workspace.js";
 
 export interface ShellProfile {
@@ -212,9 +216,9 @@ export function createSession(input: CreateSessionInput): TerminalSession {
     createdAt: Date.now(),
     pty,
     lastActivity: Date.now(),
-    // Agent TUIs must replay from their initial terminal state. Cutting an ANSI
-    // stream at an arbitrary byte produces invalid cursor and screen state.
-    replayBuffer: new TerminalReplayBuffer(killOnDetach ? undefined : null),
+    replayBuffer: new TerminalReplayBuffer(
+      killOnDetach ? undefined : AGENT_TERMINAL_REPLAY_BYTE_LIMIT,
+    ),
     replayLength: 0,
     replayInitialCols: cols,
     replayInitialRows: rows,
@@ -312,20 +316,50 @@ export function attachSink(
 ): {
   detach: () => void;
   replayed: string;
+  replayTruncated: boolean;
   replayInitialCols: number;
   replayInitialRows: number;
   replayResizes: TerminalReplayResize[];
 } {
   s.sink = sink;
-  const replayed = s.replayBuffer.value();
+  const replay = prepareTerminalReplay(s.replayBuffer.snapshot());
+  if (!replay.truncated) {
+    return {
+      detach: () => {
+        if (s.sink === sink) s.sink = null;
+      },
+      replayed: replay.data,
+      replayTruncated: false,
+      replayInitialCols: s.replayInitialCols,
+      replayInitialRows: s.replayInitialRows,
+      replayResizes: s.killOnDetach ? [] : s.replayResizes.slice(),
+    };
+  }
+  const replayPrefixLength = replay.data.length - (s.replayLength - replay.startOffset);
+  let replayInitialCols = s.replayInitialCols;
+  let replayInitialRows = s.replayInitialRows;
+  for (const resize of s.replayResizes) {
+    if (resize.offset > replay.startOffset) break;
+    replayInitialCols = resize.cols;
+    replayInitialRows = resize.rows;
+  }
+  const replayResizes = s.killOnDetach
+    ? []
+    : s.replayResizes
+        .filter((resize) => resize.offset > replay.startOffset)
+        .map((resize) => ({
+          ...resize,
+          offset: resize.offset - replay.startOffset + replayPrefixLength,
+        }));
   return {
     detach: () => {
       if (s.sink === sink) s.sink = null;
     },
-    replayed,
-    replayInitialCols: s.replayInitialCols,
-    replayInitialRows: s.replayInitialRows,
-    replayResizes: s.killOnDetach ? [] : s.replayResizes.slice(),
+    replayed: replay.data,
+    replayTruncated: replay.truncated,
+    replayInitialCols,
+    replayInitialRows,
+    replayResizes,
   };
 }
 

@@ -67,3 +67,21 @@ test("replay layout coalesces resizes that have no output between them", () => {
   assert.deepEqual(replay.replayResizes, [{ offset: 0, cols: 84, rows: 28, compactStartup: true }]);
   replay.detach();
 });
+
+test("truncated replay rebases dimensions and resize offsets", () => {
+  const session = createReplaySession();
+  session.replayBuffer = new TerminalReplayBuffer(36);
+  publishPtyOutputForTest(session, "old output before resize\r\n");
+  resizeSession(session, 100, 30);
+  publishPtyOutputForTest(session, "partial discarded\r\n");
+  resizeSession(session, 84, 28);
+  publishPtyOutputForTest(session, "complete retained line\r\n");
+
+  const replay = attachSink(session, () => undefined);
+  assert.equal(replay.replayTruncated, true);
+  assert.equal(replay.replayInitialCols, 84);
+  assert.equal(replay.replayInitialRows, 28);
+  assert.equal(replay.replayed.endsWith("complete retained line\r\n"), true);
+  assert.deepEqual(replay.replayResizes, []);
+  replay.detach();
+});
