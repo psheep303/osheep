@@ -83,34 +83,23 @@ export function TerminalSession({
       }
 
       // Intercept Ctrl+Shift+C / Ctrl+Shift+V so the browser doesn't open
-      // devtools and we route them to clipboard ourselves. xterm's default
-      // for these chords is to ignore them, which lets the browser default
-      // (devtools toggle) fire — we want copy/paste instead.
+      // devtools. xterm handles the resulting paste event itself through
+      // ClipboardEvent.clipboardData, which avoids the browser clipboard-read
+      // permission prompt shown by WebView2 on Windows.
       term.attachCustomKeyEventHandler((ev) => {
-        if (ev.type !== "keydown") return true;
         const isCopy =
           ev.ctrlKey && ev.shiftKey && !ev.altKey && (ev.code === "KeyC" || ev.key === "C");
         const isPaste =
           ev.ctrlKey && ev.shiftKey && !ev.altKey && (ev.code === "KeyV" || ev.key === "V");
+        // Keep the browser's paste default for both keydown and keypress. This
+        // lets xterm's paste listener consume ClipboardEvent.clipboardData.
+        if (isPaste) return false;
+        if (ev.type !== "keydown") return true;
         if (isCopy) {
           const sel = term.getSelection();
           if (sel) {
             void navigator.clipboard.writeText(sel).catch(() => undefined);
           }
-          ev.preventDefault();
-          ev.stopPropagation();
-          return false;
-        }
-        if (isPaste) {
-          void navigator.clipboard
-            .readText()
-            .then((text) => {
-              const live = wsRef.current;
-              if (live && live.readyState === WebSocket.OPEN && text) {
-                live.send(JSON.stringify({ type: "input", data: text }));
-              }
-            })
-            .catch(() => undefined);
           ev.preventDefault();
           ev.stopPropagation();
           return false;
