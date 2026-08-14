@@ -18,6 +18,7 @@ export type CliToolAction = "install" | "update";
 
 export interface CliToolStatus {
   name: CliToolName;
+  activeAction: CliToolAction | null;
   installed: boolean;
   currentVersion: string | null;
   latestVersion: string | null;
@@ -125,7 +126,7 @@ async function getLatestNpmVersion(packageName: string): Promise<string> {
 }
 
 export function createCliToolManager(dependencies: CliToolManagerDependencies) {
-  const activeActions = new Set<CliToolName>();
+  const activeActions = new Map<CliToolName, CliToolAction>();
 
   const npmCommand = (): string => {
     const command = dependencies.findExecutable("npm");
@@ -159,6 +160,7 @@ export function createCliToolManager(dependencies: CliToolManagerDependencies) {
 
     return {
       name,
+      activeAction: activeActions.get(name) ?? null,
       installed: runtime.installed,
       currentVersion,
       latestVersion,
@@ -176,7 +178,7 @@ export function createCliToolManager(dependencies: CliToolManagerDependencies) {
         "Another CLI installation is already running",
       );
     }
-    activeActions.add(name);
+    activeActions.set(name, action);
     try {
       const runtime = dependencies.detect(name);
       if (action === "update" && name === "claude" && runtime.installed) {
@@ -196,7 +198,8 @@ export function createCliToolManager(dependencies: CliToolManagerDependencies) {
           ACTION_TIMEOUT_MS,
         );
       }
-      return await getStatus(name);
+      const status = await getStatus(name);
+      return { ...status, activeAction: null };
     } catch (error) {
       if (error instanceof ApiError) throw error;
       throw new ApiError(500, "CLI_ACTION_FAILED", errorMessage(error));

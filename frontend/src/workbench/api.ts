@@ -159,6 +159,7 @@ export type CliToolAction = "install" | "update";
 
 export interface CliToolStatus {
   name: CliToolName;
+  activeAction: CliToolAction | null;
   installed: boolean;
   currentVersion: string | null;
   latestVersion: string | null;

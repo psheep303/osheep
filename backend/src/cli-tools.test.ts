@@ -39,6 +39,7 @@ test("tool status combines the installed and npm registry versions", async () =>
 
   assert.deepEqual(await manager.getStatus("claude"), {
     name: "claude",
+    activeAction: null,
     installed: true,
     currentVersion: "2.1.226",
     latestVersion: "2.1.232",
@@ -76,6 +77,39 @@ test("Codex installation uses the fixed allowlisted npm package", async () => {
     args: ["install", "--global", "@openai/codex@latest"],
   });
   assert.equal(status.currentVersion, "0.148.0");
+  assert.equal(status.activeAction, null);
+});
+
+test("tool status exposes an update that is still running", async () => {
+  let releaseUpdate: (() => void) | undefined;
+  let updateStarted: (() => void) | undefined;
+  const started = new Promise<void>((resolve) => {
+    updateStarted = resolve;
+  });
+  const release = new Promise<void>((resolve) => {
+    releaseUpdate = resolve;
+  });
+  const manager = createCliToolManager({
+    platform: "linux",
+    detect: () => ({ command: "/bin/claude", path: "/bin/claude", installed: true }),
+    findExecutable: () => "/bin/npm",
+    getLatestVersion: async () => "2.1.232",
+    run: async (_command, args) => {
+      if (args[0] === "update") {
+        updateStarted?.();
+        await release;
+        return { stdout: "updated", stderr: "" };
+      }
+      return { stdout: "2.1.226 (Claude Code)", stderr: "" };
+    },
+  });
+
+  const action = manager.runAction("claude", "update");
+  await started;
+  const status = await manager.getStatus("claude");
+  assert.equal(status.activeAction, "update");
+  releaseUpdate?.();
+  assert.equal((await action).activeAction, null);
 });
 
 test("Claude update falls back to npm when its self-updater fails", async () => {

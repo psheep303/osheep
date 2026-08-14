@@ -5,6 +5,7 @@ import {
   type ThemePreference,
   useUiPreferences,
 } from "../i18n/UiPreferences";
+import { ClaudeLogo, OpenAILogo } from "./BrandIcons";
 import {
   type CliToolAction,
   type CliToolName,
@@ -574,6 +575,8 @@ function AboutPanel() {
   };
 
   const toolByName = new Map(tools.map((tool) => [tool.name, tool]));
+  const activeTool = tools.find((tool) => tool.activeAction)?.name ?? null;
+  const anyToolBusy = busyTool !== null || activeTool !== null;
   return (
     <>
       <section className="settings-view__group settings-about">
@@ -615,7 +618,7 @@ function AboutPanel() {
             type="button"
             className="settings-view__icon-button"
             onClick={() => void loadTools()}
-            disabled={loading || busyTool !== null}
+            disabled={loading || anyToolBusy}
             aria-label={t("settings.about.refresh")}
             title={t("settings.about.refresh")}
           >
@@ -630,8 +633,8 @@ function AboutPanel() {
               name={name}
               status={toolByName.get(name)}
               loading={loading && !toolByName.has(name)}
-              busy={busyTool === name}
-              disabled={busyTool !== null}
+              busy={busyTool === name || Boolean(toolByName.get(name)?.activeAction)}
+              disabled={anyToolBusy}
               onAction={runAction}
             />
           ))}
@@ -659,8 +662,9 @@ function CliToolCard({
   const { t } = useUiPreferences();
   const displayName = name === "claude" ? "Claude Code" : "Codex";
   const action: CliToolAction = status?.installed ? "update" : "install";
+  const displayedAction = status?.activeAction ?? action;
   const showAction = Boolean(
-    status && (!status.installed || status.updateAvailable || !status.currentVersion),
+    busy || (status && (!status.installed || status.updateAvailable || !status.currentVersion)),
   );
   const isKnownUpToDate = Boolean(
     status?.installed && status.currentVersion && status.latestVersion && !status.updateAvailable,
@@ -671,7 +675,7 @@ function CliToolCard({
     <article className="settings-cli-card">
       <div className="settings-cli-card__header">
         <div className={`settings-cli-card__icon is-${name}`} aria-hidden="true">
-          <span className={`codicon codicon-${name === "claude" ? "terminal" : "sparkle"}`} />
+          {name === "claude" ? <ClaudeLogo /> : <OpenAILogo />}
         </div>
         <div className="settings-cli-card__identity">
           <strong>{displayName}</strong>
@@ -715,9 +719,15 @@ function CliToolCard({
             disabled={disabled}
             onClick={() => void onAction(name, action)}
           >
-            <span className={`codicon codicon-${action === "install" ? "cloud-download" : "arrow-up"}`} />
+            <span
+              className={`codicon codicon-${displayedAction === "install" ? "cloud-download" : "arrow-up"}`}
+            />
             {busy
-              ? t(action === "install" ? "settings.about.installing" : "settings.about.updating")
+              ? t(
+                  displayedAction === "install"
+                    ? "settings.about.installing"
+                    : "settings.about.updating",
+                )
               : t(action === "install" ? "settings.about.install" : "settings.about.update")}
           </button>
         ) : (

@@ -100,12 +100,12 @@
 .settings-cli-tools__heading .settings-view__icon-button:disabled { opacity: .55; cursor: wait; }
 .settings-cli-tools__grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .settings-cli-tools__spin { display: inline-block; animation: settings-cli-spin .8s linear infinite; }
-.settings-cli-card { display: flex; min-height: 216px; flex-direction: column; padding: 18px; border: 1px solid var(--border-control); border-radius: var(--radius-sm); background: var(--ui-surface-card); }
+.settings-cli-card { display: flex; min-height: 216px; flex-direction: column; padding: 18px; border: 1px solid var(--border-control); border-radius: 6px; background: var(--ui-surface-card); }
 .settings-cli-card__header { display: flex; min-width: 0; align-items: center; gap: 11px; }
 .settings-cli-card__icon { display: grid; width: 36px; height: 36px; flex: 0 0 36px; place-items: center; border-radius: var(--radius-sm); background: var(--surface-control); color: var(--fg-strong); }
 .settings-cli-card__icon.is-claude { color: #d97745; }
 .settings-cli-card__icon.is-codex { color: #10a37f; }
-.settings-cli-card__icon .codicon { font-size: 19px; }
+.settings-cli-card__icon svg { display: block; width: 20px; height: 20px; }
 .settings-cli-card__identity { display: grid; min-width: 0; gap: 3px; }
 .settings-cli-card__identity strong { overflow: hidden; color: var(--fg-strong); font-size: 15px; text-overflow: ellipsis; white-space: nowrap; }
 .settings-cli-card__identity span { width: fit-content; padding: 1px 6px; border: 1px solid var(--border-control); border-radius: 999px; color: var(--fg-muted); font-size: 10px; }
