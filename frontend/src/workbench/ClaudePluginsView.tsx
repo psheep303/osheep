@@ -35,7 +35,8 @@ export function ClaudePluginsView() {
 
   async function refresh() {
     await run(async () => {
-      setSnapshot(await getClaudePlugins());
+      const next = await getClaudePlugins();
+      setSnapshot((current) => retainPluginPresentation(current, next));
     }, false);
   }
 
@@ -65,7 +66,8 @@ export function ClaudePluginsView() {
 
   function install(plugin: ClaudePluginRecord) {
     void run(async () => {
-      setSnapshot(await installClaudePluginApi(plugin.selector));
+      const next = await installClaudePluginApi(plugin.selector);
+      setSnapshot((current) => retainPluginPresentation(current, next));
     });
   }
 
@@ -79,24 +81,25 @@ export function ClaudePluginsView() {
     )
       return;
     void run(async () => {
-      setSnapshot(await uninstallClaudePluginApi(plugin.selector));
+      const next = await uninstallClaudePluginApi(plugin.selector);
+      setSnapshot((current) => retainPluginPresentation(current, next));
     });
   }
 
   function toggleEnabled(plugin: ClaudePluginRecord) {
     void run(async () => {
-      setSnapshot(
-        plugin.status.enabled
-          ? await disableClaudePluginApi(plugin.selector)
-          : await enableClaudePluginApi(plugin.selector),
-      );
+      const next = plugin.status.enabled
+        ? await disableClaudePluginApi(plugin.selector)
+        : await enableClaudePluginApi(plugin.selector);
+      setSnapshot((current) => retainPluginPresentation(current, next));
     });
   }
 
   function submitDialog() {
     if (dialog === "marketplace") {
       void run(async () => {
-        setSnapshot(await addClaudeMarketplaceApi(source));
+        const next = await addClaudeMarketplaceApi(source);
+        setSnapshot((current) => retainPluginPresentation(current, next));
         resetDialog(null);
       });
     }
@@ -192,6 +195,26 @@ export function ClaudePluginsView() {
       </div>
     </div>
   );
+}
+
+function retainPluginPresentation(
+  current: ClaudePluginSnapshot | null,
+  next: ClaudePluginSnapshot,
+): ClaudePluginSnapshot {
+  if (!current) return next;
+  const previousBySelector = new Map(current.plugins.map((plugin) => [plugin.selector, plugin]));
+  return {
+    ...next,
+    plugins: next.plugins.map((plugin) => {
+      const previous = previousBySelector.get(plugin.selector);
+      if (!previous?.icon) return plugin;
+      return {
+        ...plugin,
+        icon: previous.icon,
+        iconColor: previous.iconColor || plugin.iconColor,
+      };
+    }),
+  };
 }
 
 function groupPlugins(plugins: ClaudePluginRecord[]) {

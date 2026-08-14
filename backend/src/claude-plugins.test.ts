@@ -152,6 +152,68 @@ test("snapshot enriches installed Claude plugins with manifest icons", async () 
   assert.equal(installed?.iconColor, "#F59E0B");
 });
 
+test("snapshot restores an installed plugin icon from marketplace metadata", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-claude-plugins-"));
+  const marketplaceRoot = path.join(root, ".claude", "plugins", "marketplaces", "official");
+  const pluginRoot = path.join(marketplaceRoot, "plugins", "superpowers");
+  const missingInstallPath = path.join(root, "unreadable-installed-cache");
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+
+  await writeJson(path.join(marketplaceRoot, ".claude-plugin", "marketplace.json"), {
+    plugins: [{ name: "superpowers", source: "./plugins/superpowers" }],
+  });
+  await writeJson(path.join(pluginRoot, ".codex-plugin", "plugin.json"), {
+    name: "superpowers",
+    interface: {
+      displayName: "Superpowers",
+      composerIcon: "./assets/superpowers.svg",
+      brandColor: "#F59E0B",
+    },
+  });
+  await fs.mkdir(path.join(pluginRoot, "assets"), { recursive: true });
+  await fs.writeFile(
+    path.join(pluginRoot, "assets", "superpowers.svg"),
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"></svg>',
+    "utf8",
+  );
+
+  const snapshot = await getClaudePluginSnapshot({
+    runCli: async (args) => {
+      if (args.join(" ") === "plugin list --available --json") {
+        return JSON.stringify({
+          installed: [
+            {
+              id: "superpowers@claude-plugins-official",
+              version: "6.3.0",
+              enabled: true,
+              installPath: missingInstallPath,
+            },
+          ],
+          available: [],
+        });
+      }
+      if (args.join(" ") === "plugin marketplace list --json") {
+        return JSON.stringify([
+          {
+            name: "claude-plugins-official",
+            installLocation: marketplaceRoot,
+          },
+        ]);
+      }
+      throw new Error(`unexpected args: ${args.join(" ")}`);
+    },
+  });
+
+  const installed = snapshot.plugins.find(
+    (plugin) => plugin.selector === "superpowers@claude-plugins-official",
+  );
+  assert.equal(installed?.displayName, "Superpowers");
+  assert.match(installed?.icon ?? "", /^data:image\/svg\+xml;base64,/);
+  assert.equal(installed?.iconColor, "#F59E0B");
+  assert.equal(installed?.source.path, missingInstallPath);
+  assert.equal(installed?.status.available, false);
+});
+
 test("snapshot keeps installed manifest metadata when plugin is also available", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-claude-plugins-"));
   const pluginRoot = path.join(
