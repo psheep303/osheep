@@ -30,6 +30,12 @@ export const en = {
   "notification.moveFailed": "Move failed: {detail}",
   "notification.invalidMove": "A folder cannot be moved into itself or one of its subfolders.",
   "notification.confirmationsReset": "Confirmation reminders have been restored.",
+  "notification.claudeOnboardingLoadFailed":
+    "Failed to read the Claude Code first-run setting: {detail}",
+  "notification.claudeOnboardingUpdateFailed":
+    "Failed to update the Claude Code first-run setting: {detail}",
+  "notification.claudeOnboardingSkipped": "Claude Code first-run confirmation will be skipped.",
+  "notification.claudeOnboardingRestored": "Claude Code first-run confirmation was restored.",
   "confirm.deleteProvider": "Delete provider \"{name}\"? This action cannot be undone.",
   "confirm.deleteFile": "Delete \"{name}\"? This action cannot be undone.",
   "confirm.deleteAgent": "Delete agent \"{name}\"? This action cannot be undone.",
@@ -50,6 +56,9 @@ export const en = {
   "settings.confirmations.description":
     "Restore confirmation dialogs hidden with the Don't ask again option.",
   "settings.confirmations.reset": "Restore reminders",
+  "settings.claude.skipOnboarding": "Skip Claude Code first-run confirmation",
+  "settings.claude.skipOnboardingDescription":
+    "Skip Claude Code's onboarding confirmation on its first launch.",
   "settings.search": "Search settings",
   "settings.categories": "Categories",
   "settings.category.general": "General",
@@ -393,6 +402,10 @@ export const zhCN: Record<MessageKey, string> = {
   "notification.moveFailed": "移动失败：{detail}",
   "notification.invalidMove": "不能把文件夹移动到它自己或其子目录中。",
   "notification.confirmationsReset": "已恢复确认提醒。",
+  "notification.claudeOnboardingLoadFailed": "读取 Claude Code 首次安装确认设置失败：{detail}",
+  "notification.claudeOnboardingUpdateFailed": "更新 Claude Code 首次安装确认设置失败：{detail}",
+  "notification.claudeOnboardingSkipped": "已跳过 Claude Code 首次安装确认。",
+  "notification.claudeOnboardingRestored": "已恢复 Claude Code 首次安装确认。",
   "confirm.deleteProvider": "确定要删除 Provider“{name}”吗？此操作不可撤销。",
   "confirm.deleteFile": "确定要删除“{name}”吗？此操作不可撤销。",
   "confirm.deleteAgent": "确定要删除 Agent“{name}”吗？此操作不可撤销。",
@@ -412,6 +425,8 @@ export const zhCN: Record<MessageKey, string> = {
   "settings.confirmations": "确认提醒",
   "settings.confirmations.description": "恢复通过“以后不再提醒”隐藏的确认弹窗。",
   "settings.confirmations.reset": "恢复提醒",
+  "settings.claude.skipOnboarding": "跳过 Claude Code 首次安装确认",
+  "settings.claude.skipOnboardingDescription": "开启后跳过 Claude Code 首次安装确认。",
   "settings.search": "搜索设置",
   "settings.categories": "分类",
   "settings.category.general": "常规",

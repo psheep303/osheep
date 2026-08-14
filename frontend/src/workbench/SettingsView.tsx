@@ -5,15 +5,17 @@ import {
   type ThemePreference,
   useUiPreferences,
 } from "../i18n/UiPreferences";
-import { ClaudeLogo, OpenAILogo } from "./BrandIcons";
 import {
   type CliToolAction,
   type CliToolName,
   type CliToolStatus,
+  getClaudeOnboardingStatus,
   getCliToolStatuses,
+  putClaudeOnboardingSkip,
   runCliToolAction,
   syncModelPrices,
 } from "./api";
+import { ClaudeLogo, OpenAILogo } from "./BrandIcons";
 import { useOsheepOverlay } from "./OsheepOverlay";
 import type { ModelPrice, OsheepSettings, TabSize } from "./settings";
 
@@ -33,6 +35,55 @@ export function SettingsView({ settings, onChange }: SettingsViewProps) {
   const { notify, resetConfirmations } = useOsheepOverlay();
   const [section, setSection] = useState<SettingsSection>("general");
   const [search, setSearch] = useState("");
+  const [skipClaudeOnboarding, setSkipClaudeOnboarding] = useState(false);
+  const [claudeOnboardingLoading, setClaudeOnboardingLoading] = useState(true);
+  const [claudeOnboardingBusy, setClaudeOnboardingBusy] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getClaudeOnboardingStatus()
+      .then((status) => {
+        if (!cancelled) setSkipClaudeOnboarding(status.enabled);
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          notify.error(
+            t("notification.claudeOnboardingLoadFailed", {
+              detail: error instanceof Error ? error.message : String(error),
+            }),
+          );
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setClaudeOnboardingLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [notify, t]);
+
+  const updateClaudeOnboarding = async (enabled: boolean) => {
+    setClaudeOnboardingBusy(true);
+    try {
+      const status = await putClaudeOnboardingSkip(enabled);
+      setSkipClaudeOnboarding(status.enabled);
+      notify.success(
+        t(
+          status.enabled
+            ? "notification.claudeOnboardingSkipped"
+            : "notification.claudeOnboardingRestored",
+        ),
+      );
+    } catch (error) {
+      notify.error(
+        t("notification.claudeOnboardingUpdateFailed", {
+          detail: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    } finally {
+      setClaudeOnboardingBusy(false);
+    }
+  };
 
   const commitFontSize = (raw: string): number => {
     const value = Number.parseInt(raw, 10);
@@ -152,6 +203,32 @@ export function SettingsView({ settings, onChange }: SettingsViewProps) {
                 </SettingItem>
               </section>
               <section className="settings-view__group">
+                <div className="settings-view__option-row">
+                  <span
+                    className="settings-view__option-icon codicon codicon-cloud-upload"
+                    aria-hidden="true"
+                  />
+                  <div className="settings-view__option-copy">
+                    <div className="settings-view__option-title">
+                      {t("settings.claude.skipOnboarding")}
+                    </div>
+                    <div
+                      id="settings-claude-onboarding-description"
+                      className="settings-view__option-description"
+                    >
+                      {t("settings.claude.skipOnboardingDescription")}
+                    </div>
+                  </div>
+                  <Switch
+                    checked={skipClaudeOnboarding}
+                    disabled={claudeOnboardingLoading || claudeOnboardingBusy}
+                    label={t("settings.claude.skipOnboarding")}
+                    describedBy="settings-claude-onboarding-description"
+                    onChange={(enabled) => void updateClaudeOnboarding(enabled)}
+                  />
+                </div>
+              </section>
+              <section className="settings-view__group">
                 <h2 className="settings-view__group-title">{t("settings.confirmations")}</h2>
                 <SettingItem
                   label={t("settings.confirmations")}
@@ -165,7 +242,7 @@ export function SettingsView({ settings, onChange }: SettingsViewProps) {
                       notify.success(t("notification.confirmationsReset"));
                     }}
                   >
-                    <span className="codicon codicon-discard" aria-hidden="true" />
+                    <span className="codicon codicon-history" aria-hidden="true" />
                     {t("settings.confirmations.reset")}
                   </button>
                 </SettingItem>
@@ -803,10 +880,11 @@ interface SwitchProps {
   checked: boolean;
   disabled?: boolean;
   label: string;
+  describedBy?: string;
   onChange: (checked: boolean) => void;
 }
 
-function Switch({ checked, disabled = false, label, onChange }: SwitchProps) {
+function Switch({ checked, disabled = false, label, describedBy, onChange }: SwitchProps) {
   return (
     <button
       type="button"
@@ -814,6 +892,7 @@ function Switch({ checked, disabled = false, label, onChange }: SwitchProps) {
       role="switch"
       aria-checked={checked}
       aria-label={label}
+      aria-describedby={describedBy}
       disabled={disabled}
       onClick={() => onChange(!checked)}
     >

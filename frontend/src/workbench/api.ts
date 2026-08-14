@@ -323,6 +323,19 @@ export async function putUiPreferences(value: unknown): Promise<void> {
   await http.put("/api/ui-preferences", value);
 }
 
+export interface ClaudeOnboardingStatus {
+  enabled: boolean;
+  path: string;
+}
+
+export async function getClaudeOnboardingStatus(): Promise<ClaudeOnboardingStatus> {
+  return await http.get("/api/claude/onboarding-skip");
+}
+
+export async function putClaudeOnboardingSkip(enabled: boolean): Promise<ClaudeOnboardingStatus> {
+  return await http.put("/api/claude/onboarding-skip", { enabled });
+}
+
 // ─── Terminal ───
 
 // AI Settings

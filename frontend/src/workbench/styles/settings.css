@@ -56,7 +56,7 @@
   color: var(--fg-strong);
 }
 
-.settings-view__button { min-height: 30px; padding: 0 11px; border: 1px solid var(--border-control); border-radius: var(--radius-sm); background: var(--surface-control); color: var(--fg-default); font: inherit; font-size: 12px; cursor: pointer; }
+.settings-view__button { display: inline-flex; min-height: 30px; align-items: center; gap: 6px; padding: 0 11px; border: 1px solid var(--border-control); border-radius: var(--radius-sm); background: var(--surface-control); color: var(--fg-default); font: inherit; font-size: 12px; cursor: pointer; }
 .settings-view__button:hover:not(:disabled) { border-color: var(--accent); color: var(--fg-strong); }
 .settings-view__button.is-primary { border-color: var(--accent); background: var(--accent); color: var(--ui-text-on-accent); }
 .settings-view__button:disabled { opacity: .55; cursor: wait; }
@@ -281,6 +281,55 @@
   .settings-pricing__toolbar { display: grid; }
   .settings-about__facts div { grid-template-columns: 1fr; gap: 4px; }
   .settings-cli-tools__grid { grid-template-columns: 1fr; }
+}
+
+.settings-view__option-row {
+  display: flex;
+  min-height: 76px;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 18px;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-lg);
+  background: var(--ui-surface-card);
+}
+
+.settings-view__option-icon {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
+  place-items: center;
+  color: var(--color-info);
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-md);
+  background: var(--surface-control);
+  font-size: 17px;
+}
+
+.settings-view__option-copy {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.settings-view__option-title {
+  overflow-wrap: anywhere;
+  color: var(--fg-strong);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.settings-view__option-description {
+  margin-top: 3px;
+  overflow-wrap: anywhere;
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.settings-view__option-row .settings-view__switch {
+  flex: 0 0 auto;
 }
 
 .provider-card {
