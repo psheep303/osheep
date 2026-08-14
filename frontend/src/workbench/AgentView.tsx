@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { useUiPreferences } from "../i18n/UiPreferences";
 import {
   type AgentRecord,
   createAgent as apiCreateAgent,
@@ -6,6 +7,7 @@ import {
   listAgents as apiListAgents,
   updateAgent as apiUpdateAgent,
 } from "./api";
+import { useOsheepOverlay } from "./OsheepOverlay";
 import { DEFAULT_CLI_PROVIDER } from "./settings";
 
 interface AgentViewProps {
@@ -46,6 +48,8 @@ function newDraft(): AgentDraft {
 }
 
 export function AgentView({ workspaceId }: AgentViewProps) {
+  const { t } = useUiPreferences();
+  const { confirm } = useOsheepOverlay();
   const [drafts, setDrafts] = useState<AgentDraft[]>([]);
   const [loading, setLoading] = useState(false);
   const [topError, setTopError] = useState<string | null>(null);
@@ -131,7 +135,14 @@ export function AgentView({ workspaceId }: AgentViewProps) {
       return;
     }
     if (!workspaceId) return;
-    if (!window.confirm(`确定要删除 Agent「${draft.originalName}」吗？`)) return;
+    if (
+      !(await confirm({
+        message: t("confirm.deleteAgent", { name: draft.originalName }),
+        confirmLabel: t("confirm.delete"),
+        reminderKey: "delete-agent",
+      }))
+    )
+      return;
     try {
       await apiDeleteAgent(workspaceId, draft.originalName);
       setDrafts((prev) => prev.filter((_, i) => i !== idx));

@@ -14,6 +14,7 @@ import {
   runCliToolAction,
   syncModelPrices,
 } from "./api";
+import { useOsheepOverlay } from "./OsheepOverlay";
 import type { ModelPrice, OsheepSettings, TabSize } from "./settings";
 
 interface SettingsViewProps {
@@ -29,6 +30,7 @@ type SettingsSection = "general" | "editor" | "workflow" | "pricing" | "about";
 
 export function SettingsView({ settings, onChange }: SettingsViewProps) {
   const { language, setLanguage, theme, setTheme, t } = useUiPreferences();
+  const { notify, resetConfirmations } = useOsheepOverlay();
   const [section, setSection] = useState<SettingsSection>("general");
   const [search, setSearch] = useState("");
 
@@ -115,39 +117,60 @@ export function SettingsView({ settings, onChange }: SettingsViewProps) {
           </h1>
 
           {section === "general" && (
-            <section className="settings-view__group">
-              <h2 className="settings-view__group-title">{t("settings.appearance")}</h2>
+            <>
+              <section className="settings-view__group">
+                <h2 className="settings-view__group-title">{t("settings.appearance")}</h2>
 
-              <SettingItem
-                label={t("settings.language")}
-                description={t("settings.language.description")}
-              >
-                <Segmented<LanguagePreference>
-                  value={language}
-                  options={[
-                    { label: t("settings.language.system"), value: "system" },
-                    { label: t("settings.language.zhCN"), value: "zh-CN" },
-                    { label: t("settings.language.en"), value: "en" },
-                  ]}
-                  onChange={setLanguage}
-                />
-              </SettingItem>
+                <SettingItem
+                  label={t("settings.language")}
+                  description={t("settings.language.description")}
+                >
+                  <Segmented<LanguagePreference>
+                    value={language}
+                    options={[
+                      { label: t("settings.language.system"), value: "system" },
+                      { label: t("settings.language.zhCN"), value: "zh-CN" },
+                      { label: t("settings.language.en"), value: "en" },
+                    ]}
+                    onChange={setLanguage}
+                  />
+                </SettingItem>
 
-              <SettingItem
-                label={t("settings.theme")}
-                description={t("settings.theme.description")}
-              >
-                <Segmented<ThemePreference>
-                  value={theme}
-                  options={[
-                    { label: t("settings.theme.system"), value: "system" },
-                    { label: t("settings.theme.light"), value: "light" },
-                    { label: t("settings.theme.dark"), value: "dark" },
-                  ]}
-                  onChange={setTheme}
-                />
-              </SettingItem>
-            </section>
+                <SettingItem
+                  label={t("settings.theme")}
+                  description={t("settings.theme.description")}
+                >
+                  <Segmented<ThemePreference>
+                    value={theme}
+                    options={[
+                      { label: t("settings.theme.system"), value: "system" },
+                      { label: t("settings.theme.light"), value: "light" },
+                      { label: t("settings.theme.dark"), value: "dark" },
+                    ]}
+                    onChange={setTheme}
+                  />
+                </SettingItem>
+              </section>
+              <section className="settings-view__group">
+                <h2 className="settings-view__group-title">{t("settings.confirmations")}</h2>
+                <SettingItem
+                  label={t("settings.confirmations")}
+                  description={t("settings.confirmations.description")}
+                >
+                  <button
+                    type="button"
+                    className="settings-view__button"
+                    onClick={() => {
+                      resetConfirmations();
+                      notify.success(t("notification.confirmationsReset"));
+                    }}
+                  >
+                    <span className="codicon codicon-discard" aria-hidden="true" />
+                    {t("settings.confirmations.reset")}
+                  </button>
+                </SettingItem>
+              </section>
+            </>
           )}
 
           {section === "editor" && (
@@ -540,6 +563,7 @@ function emptyModelPrice(): ModelPrice {
 
 function AboutPanel() {
   const { t } = useUiPreferences();
+  const { notify } = useOsheepOverlay();
   const [tools, setTools] = useState<CliToolStatus[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyTool, setBusyTool] = useState<CliToolName | null>(null);
@@ -567,8 +591,22 @@ function AboutPanel() {
     try {
       const status = await runCliToolAction(name, action);
       setTools((current) => current.map((tool) => (tool.name === name ? status : tool)));
+      const displayName = name === "claude" ? "Claude Code" : "Codex";
+      notify.success(
+        t(action === "install" ? "notification.cliInstalled" : "notification.cliUpdated", {
+          name: displayName,
+        }),
+      );
     } catch (error) {
-      setLoadError(error instanceof Error ? error.message : String(error));
+      const detail = error instanceof Error ? error.message : String(error);
+      const displayName = name === "claude" ? "Claude Code" : "Codex";
+      setLoadError(detail);
+      notify.error(
+        t(action === "install" ? "notification.cliInstallFailed" : "notification.cliUpdateFailed", {
+          name: displayName,
+          detail,
+        }),
+      );
     } finally {
       setBusyTool(null);
     }

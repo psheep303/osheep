@@ -2,6 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { applyUiPreferences, readUiPreferences, UiPreferencesProvider } from "./i18n/UiPreferences";
 import { Workbench } from "./workbench/Workbench";
+import { OsheepOverlayProvider } from "./workbench/OsheepOverlay";
 import "@vscode/codicons/dist/codicon.css";
 import "@fontsource/geist-sans/latin-400.css";
 import "@fontsource/geist-sans/latin-500.css";
@@ -17,7 +18,9 @@ applyUiPreferences(readUiPreferences());
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <UiPreferencesProvider>
-      <Workbench />
+      <OsheepOverlayProvider>
+        <Workbench />
+      </OsheepOverlayProvider>
     </UiPreferencesProvider>
   </React.StrictMode>,
 );

@@ -1,4 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useUiPreferences } from "../i18n/UiPreferences";
 import {
   deleteWorkflowTemplate as apiDeleteWorkflowTemplate,
   createWorkflow,
@@ -12,6 +13,7 @@ import {
   type WorkflowTemplateSummary,
 } from "./api";
 import { ContextMenu } from "./ContextMenu";
+import { useOsheepOverlay } from "./OsheepOverlay";
 
 const MarkdownPreview = lazy(() =>
   import("./MarkdownPreview").then((module) => ({ default: module.MarkdownPreview })),
@@ -32,6 +34,8 @@ export function TemplateView({
   developerMode,
   refreshSignal,
 }: TemplateViewProps) {
+  const { t } = useUiPreferences();
+  const { confirm } = useOsheepOverlay();
   const [section, setSection] = useState<TemplateSource>("system");
   const [templates, setTemplates] = useState<{
     system: WorkflowTemplateSummary[];
@@ -74,7 +78,17 @@ export function TemplateView({
   }, [query, section, templates]);
 
   const deleteTemplate = async (source: TemplateSource, templateId: string, title: string) => {
-    if (!window.confirm(`Delete ${source} template "${title}"?`)) return;
+    if (
+      !(await confirm({
+        message: t("confirm.deleteTemplate", {
+          source: t(source === "system" ? "template.source.system" : "template.source.user"),
+          name: title,
+        }),
+        confirmLabel: t("confirm.delete"),
+        reminderKey: "delete-workflow-template",
+      }))
+    )
+      return;
     try {
       await apiDeleteWorkflowTemplate(source, templateId);
       onTemplateDeleted(source, templateId);

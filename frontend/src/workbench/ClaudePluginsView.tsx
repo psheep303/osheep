@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useUiPreferences } from "../i18n/UiPreferences";
 import {
   addClaudeMarketplaceApi,
   type ClaudePluginRecord,
@@ -9,10 +10,13 @@ import {
   installClaudePluginApi,
   uninstallClaudePluginApi,
 } from "./api";
+import { useOsheepOverlay } from "./OsheepOverlay";
 
 type DialogMode = "marketplace" | null;
 
 export function ClaudePluginsView() {
+  const { t } = useUiPreferences();
+  const { confirm } = useOsheepOverlay();
   const [snapshot, setSnapshot] = useState<ClaudePluginSnapshot | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -65,8 +69,15 @@ export function ClaudePluginsView() {
     });
   }
 
-  function uninstall(plugin: ClaudePluginRecord) {
-    if (!confirm(`Uninstall ${plugin.displayName}?`)) return;
+  async function uninstall(plugin: ClaudePluginRecord) {
+    if (
+      !(await confirm({
+        message: t("confirm.uninstallPlugin", { name: plugin.displayName }),
+        confirmLabel: t("confirm.uninstall"),
+        reminderKey: "uninstall-claude-plugin",
+      }))
+    )
+      return;
     void run(async () => {
       setSnapshot(await uninstallClaudePluginApi(plugin.selector));
     });
