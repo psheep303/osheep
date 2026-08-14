@@ -600,6 +600,7 @@ function marketplaceEntryMetadata(entry: unknown, marketplaceName: string): Merg
     homepage: stringValue(obj.homepage) || undefined,
     authorName: stringValue(author?.name) || stringValue(obj.author) || undefined,
     sourceUrl: source.sourceUrl,
+    available: true,
     sourceKind: "marketplace",
     sourcePath: source.sourcePath,
   };
@@ -760,6 +761,11 @@ export async function getClaudePluginSnapshot(
       availableMetadata.get(selectorFor(record.name, record.marketplace)),
     );
     mergePlugin(map, await enrichAvailableRecord(withMetadata, marketplaceRoots));
+  }
+  for (const metadata of availableMetadata.values()) {
+    const selector = selectorFor(metadata.name, metadata.marketplace);
+    if (map.has(selector)) continue;
+    mergePlugin(map, await enrichAvailableRecord(metadata, marketplaceRoots));
   }
 
   const plugins = [...map.values()]

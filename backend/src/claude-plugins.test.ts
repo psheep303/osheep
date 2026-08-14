@@ -214,6 +214,40 @@ test("snapshot restores an installed plugin icon from marketplace metadata", asy
   assert.equal(installed?.status.available, false);
 });
 
+test("snapshot exposes marketplace plugins missing from Claude available output", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-claude-plugins-"));
+  const marketplaceRoot = path.join(root, ".claude", "plugins", "marketplaces", "official");
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await writeJson(path.join(marketplaceRoot, ".claude-plugin", "marketplace.json"), {
+    plugins: [
+      {
+        name: "official-only",
+        source: "./plugins/official-only",
+        homepage: "https://github.com/anthropics/claude-plugins-public/tree/main/plugins/official-only",
+      },
+    ],
+  });
+
+  const snapshot = await getClaudePluginSnapshot({
+    runCli: async (args) => {
+      if (args.join(" ") === "plugin list --available --json") {
+        return JSON.stringify({ installed: [], available: [] });
+      }
+      if (args.join(" ") === "plugin marketplace list --json") {
+        return JSON.stringify([
+          { name: "claude-plugins-official", installLocation: marketplaceRoot },
+        ]);
+      }
+      throw new Error(`unexpected args: ${args.join(" ")}`);
+    },
+  });
+
+  const plugin = snapshot.plugins.find((item) => item.selector === "official-only@claude-plugins-official");
+  assert.equal(plugin?.status.available, true);
+  assert.equal(plugin?.status.installed, false);
+  assert.equal(plugin?.icon, "https://github.com/anthropics.png?size=64");
+});
+
 test("snapshot keeps installed manifest metadata when plugin is also available", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-claude-plugins-"));
   const pluginRoot = path.join(
