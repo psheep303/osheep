@@ -8,6 +8,7 @@ import { registerAgentRoutes } from "./routes/agents.js";
 import { registerAiRoutes } from "./routes/ai.js";
 import { registerAiSettingsRoutes } from "./routes/ai-settings.js";
 import { registerClaudePluginRoutes } from "./routes/claude-plugins.js";
+import { registerCliToolRoutes } from "./routes/cli-tools.js";
 import { registerCodexPluginRoutes } from "./routes/codex-plugins.js";
 import { registerGitRoutes } from "./routes/git.js";
 import { registerMcpRoutes } from "./routes/mcp.js";
@@ -80,6 +81,7 @@ export async function buildServer() {
   await registerWorkflowRoutes(app);
   await registerAiRoutes(app);
   await registerAiSettingsRoutes(app);
+  await registerCliToolRoutes(app);
   await registerMcpRoutes(app);
   await registerClaudePluginRoutes(app);
   await registerCodexPluginRoutes(app);

@@ -154,6 +154,35 @@ export interface TerminalCreateResp {
 
 export type AgentSessionApp = "claude" | "codex";
 
+export type CliToolName = "claude" | "codex";
+export type CliToolAction = "install" | "update";
+
+export interface CliToolStatus {
+  name: CliToolName;
+  installed: boolean;
+  currentVersion: string | null;
+  latestVersion: string | null;
+  updateAvailable: boolean;
+  platform: "windows" | "macos" | "linux";
+  error: string | null;
+}
+
+export async function getCliToolStatuses(): Promise<CliToolStatus[]> {
+  const result = await http.get<{ tools: CliToolStatus[] }>("/api/ai/cli-tools");
+  return result.tools;
+}
+
+export async function runCliToolAction(
+  name: CliToolName,
+  action: CliToolAction,
+): Promise<CliToolStatus> {
+  const result = await http.post<{ status: CliToolStatus }>(
+    `/api/ai/cli-tools/${encodeURIComponent(name)}/action`,
+    { action },
+  );
+  return result.status;
+}
+
 export interface AgentSessionSummary {
   app: AgentSessionApp;
   id: string;

@@ -5,7 +5,14 @@ import {
   type ThemePreference,
   useUiPreferences,
 } from "../i18n/UiPreferences";
-import { syncModelPrices } from "./api";
+import {
+  type CliToolAction,
+  type CliToolName,
+  type CliToolStatus,
+  getCliToolStatuses,
+  runCliToolAction,
+  syncModelPrices,
+} from "./api";
 import type { ModelPrice, OsheepSettings, TabSize } from "./settings";
 
 interface SettingsViewProps {
@@ -532,35 +539,196 @@ function emptyModelPrice(): ModelPrice {
 
 function AboutPanel() {
   const { t } = useUiPreferences();
+  const [tools, setTools] = useState<CliToolStatus[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busyTool, setBusyTool] = useState<CliToolName | null>(null);
+  const [loadError, setLoadError] = useState("");
+
+  const loadTools = async () => {
+    setLoading(true);
+    setLoadError("");
+    try {
+      setTools(await getCliToolStatuses());
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadTools();
+  }, []);
+
+  const runAction = async (name: CliToolName, action: CliToolAction) => {
+    setBusyTool(name);
+    setLoadError("");
+    try {
+      const status = await runCliToolAction(name, action);
+      setTools((current) => current.map((tool) => (tool.name === name ? status : tool)));
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusyTool(null);
+    }
+  };
+
+  const toolByName = new Map(tools.map((tool) => [tool.name, tool]));
   return (
-    <section className="settings-view__group settings-about">
-      <h2 className="settings-view__group-title">{t("settings.about.title")}</h2>
-      <div className="settings-about__brand">
-        <img className="settings-about__mark" src="/osheep-icon.png" alt="osheep" />
-        <div>
-          <strong>osheep</strong>
-          <span>{t("settings.about.tagline")}</span>
+    <>
+      <section className="settings-view__group settings-about">
+        <h2 className="settings-view__group-title">{t("settings.about.title")}</h2>
+        <div className="settings-about__brand">
+          <img className="settings-about__mark" src="/osheep-icon.png" alt="osheep" />
+          <div>
+            <strong>osheep</strong>
+            <span>{t("settings.about.tagline")}</span>
+          </div>
         </div>
+        <dl className="settings-about__facts">
+          <div>
+            <dt>{t("settings.about.version")}</dt>
+            <dd>{packageJson.version}</dd>
+          </div>
+          <div>
+            <dt>{t("settings.about.repository")}</dt>
+            <dd>
+              <a href={packageJson.repository} target="_blank" rel="noreferrer">
+                {packageJson.repository}
+              </a>
+            </dd>
+          </div>
+          <div>
+            <dt>{t("settings.about.license")}</dt>
+            <dd>MIT</dd>
+          </div>
+        </dl>
+      </section>
+
+      <section className="settings-view__group settings-cli-tools">
+        <div className="settings-cli-tools__heading">
+          <div>
+            <h2 className="settings-view__group-title">{t("settings.about.cliTools")}</h2>
+            <p>{t("settings.about.cliToolsDescription")}</p>
+          </div>
+          <button
+            type="button"
+            className="settings-view__icon-button"
+            onClick={() => void loadTools()}
+            disabled={loading || busyTool !== null}
+            aria-label={t("settings.about.refresh")}
+            title={t("settings.about.refresh")}
+          >
+            <span className={`codicon codicon-refresh${loading ? " settings-cli-tools__spin" : ""}`} />
+          </button>
+        </div>
+        {loadError && <div className="settings-view__error">{loadError}</div>}
+        <div className="settings-cli-tools__grid">
+          {(["claude", "codex"] as const).map((name) => (
+            <CliToolCard
+              key={name}
+              name={name}
+              status={toolByName.get(name)}
+              loading={loading && !toolByName.has(name)}
+              busy={busyTool === name}
+              disabled={busyTool !== null}
+              onAction={runAction}
+            />
+          ))}
+        </div>
+      </section>
+    </>
+  );
+}
+
+function CliToolCard({
+  name,
+  status,
+  loading,
+  busy,
+  disabled,
+  onAction,
+}: {
+  name: CliToolName;
+  status?: CliToolStatus;
+  loading: boolean;
+  busy: boolean;
+  disabled: boolean;
+  onAction: (name: CliToolName, action: CliToolAction) => Promise<void>;
+}) {
+  const { t } = useUiPreferences();
+  const displayName = name === "claude" ? "Claude Code" : "Codex";
+  const action: CliToolAction = status?.installed ? "update" : "install";
+  const showAction = Boolean(
+    status && (!status.installed || status.updateAvailable || !status.currentVersion),
+  );
+  const isKnownUpToDate = Boolean(
+    status?.installed && status.currentVersion && status.latestVersion && !status.updateAvailable,
+  );
+  const platform = status ? t(`settings.about.platform.${status.platform}`) : "";
+
+  return (
+    <article className="settings-cli-card">
+      <div className="settings-cli-card__header">
+        <div className={`settings-cli-card__icon is-${name}`} aria-hidden="true">
+          <span className={`codicon codicon-${name === "claude" ? "terminal" : "sparkle"}`} />
+        </div>
+        <div className="settings-cli-card__identity">
+          <strong>{displayName}</strong>
+          {platform && <span>{platform}</span>}
+        </div>
+        {!loading && status?.updateAvailable && (
+          <span className="settings-cli-card__badge">{t("settings.about.updateAvailable")}</span>
+        )}
+        {!loading && isKnownUpToDate && (
+          <span className="settings-cli-card__ready" title={t("settings.about.upToDate")}>
+            <span className="codicon codicon-pass-filled" aria-hidden="true" />
+          </span>
+        )}
       </div>
-      <dl className="settings-about__facts">
+      <dl className="settings-cli-card__versions">
         <div>
-          <dt>{t("settings.about.version")}</dt>
-          <dd>{packageJson.version}</dd>
-        </div>
-        <div>
-          <dt>{t("settings.about.repository")}</dt>
+          <dt>{t("settings.about.currentVersion")}</dt>
           <dd>
-            <a href={packageJson.repository} target="_blank" rel="noreferrer">
-              {packageJson.repository}
-            </a>
+            {loading
+              ? t("common.loading")
+              : status
+                ? (status.currentVersion ?? t("settings.about.notInstalled"))
+                : t("settings.about.unavailable")}
           </dd>
         </div>
         <div>
-          <dt>{t("settings.about.license")}</dt>
-          <dd>MIT</dd>
+          <dt>{t("settings.about.latestVersion")}</dt>
+          <dd>{loading ? t("common.loading") : (status?.latestVersion ?? t("settings.about.unavailable"))}</dd>
         </div>
       </dl>
-    </section>
+      {status?.error && (
+        <p className="settings-cli-card__error" title={status.error}>
+          {t("settings.about.checkFailed")}
+        </p>
+      )}
+      <div className="settings-cli-card__footer">
+        {!loading && showAction ? (
+          <button
+            type="button"
+            className="settings-view__button is-primary"
+            disabled={disabled}
+            onClick={() => void onAction(name, action)}
+          >
+            <span className={`codicon codicon-${action === "install" ? "cloud-download" : "arrow-up"}`} />
+            {busy
+              ? t(action === "install" ? "settings.about.installing" : "settings.about.updating")
+              : t(action === "install" ? "settings.about.install" : "settings.about.update")}
+          </button>
+        ) : (
+          !loading && (
+            <span className="settings-cli-card__status">
+              {t(isKnownUpToDate ? "settings.about.upToDate" : "settings.about.unavailable")}
+            </span>
+          )
+        )}
+      </div>
+    </article>
   );
 }
 
