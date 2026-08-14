@@ -577,6 +577,25 @@ function AboutPanel() {
   const toolByName = new Map(tools.map((tool) => [tool.name, tool]));
   const activeTool = tools.find((tool) => tool.activeAction)?.name ?? null;
   const anyToolBusy = busyTool !== null || activeTool !== null;
+
+  useEffect(() => {
+    if (!activeTool) return;
+    let disposed = false;
+    const refreshActiveTool = async () => {
+      try {
+        const statuses = await getCliToolStatuses();
+        if (!disposed) setTools(statuses);
+      } catch (error) {
+        if (!disposed) setLoadError(error instanceof Error ? error.message : String(error));
+      }
+    };
+    const timer = window.setInterval(() => void refreshActiveTool(), 1_000);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [activeTool]);
+
   return (
     <>
       <section className="settings-view__group settings-about">
