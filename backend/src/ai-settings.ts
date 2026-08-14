@@ -238,15 +238,27 @@ export async function importLiveProvider(
   id = "default",
   name = app === "claude" ? "Claude live" : "Codex live",
 ): Promise<AiSettingsSnapshot> {
+  const state = await readAiSettings();
   const settingsConfig = normalizeImportedLiveSettings(app, await readLiveSettings(app));
+  const providerId = nextAvailableProviderId(state.apps[app].providers, id);
   const provider: AiProvider = {
-    id: uniqueProviderId(id),
+    id: providerId,
     name,
     settingsConfig,
     category: detectImportedProviderCategory(app, settingsConfig),
     createdAt: Date.now(),
   };
-  return upsertAiProvider(app, provider, undefined, false);
+
+  // Import is intentionally separate from the normal save/apply flow. The live
+  // files are the source of truth here: they may have been edited outside
+  // Osheep, so importing must only persist/select the new provider and never
+  // serialize the stored current provider back over those source files.
+  validateProvider(app, provider);
+  const manager = state.apps[app];
+  manager.providers[provider.id] = provider;
+  manager.current = provider.id;
+  await writeAiSettings(state);
+  return snapshotAiSettings();
 }
 
 export async function readLiveSettings(app: AiSettingsApp): Promise<unknown> {
@@ -693,4 +705,14 @@ function uniqueProviderId(seed: string): string {
       .replace(/^-+|-+$/g, "")
       .toLowerCase() || "default"
   );
+}
+
+function nextAvailableProviderId(providers: Record<string, AiProvider>, seed: string): string {
+  const base = uniqueProviderId(seed);
+  if (!providers[base]) return base;
+
+  for (let index = 2; ; index += 1) {
+    const candidate = `${base}-${index}`;
+    if (!providers[candidate]) return candidate;
+  }
 }

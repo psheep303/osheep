@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   type AiProvider,
   type AiSettingsState,
+  importLiveProvider,
   readAiSettings,
   snapshotAiSettings,
   switchAiProvider,
@@ -162,5 +163,79 @@ test("switches Claude and Codex live configuration using cc-switch semantics", a
     const snapshot = await snapshotAiSettings();
     assert.equal(snapshot.paths.claude.dir, process.env.CLAUDE_CONFIG_DIR);
     assert.equal(snapshot.paths.codex.dir, process.env.CODEX_HOME);
+  });
+
+  await t.test(
+    "imports live into a new active provider without replacing the current one",
+    async () => {
+      const claudeDir = process.env.CLAUDE_CONFIG_DIR as string;
+      const settingsPath = path.join(claudeDir, "settings.json");
+      const liveSettings = {
+        env: {
+          ANTHROPIC_BASE_URL: "https://live.example.test",
+          ANTHROPIC_AUTH_TOKEN: "live-token",
+          ANTHROPIC_MODEL: "live-model",
+        },
+      };
+      const liveText = `${JSON.stringify(liveSettings)}\n`;
+      await fs.mkdir(claudeDir, { recursive: true });
+      await fs.writeFile(settingsPath, liveText, "utf8");
+
+      const existing = provider("default", {
+        env: { ANTHROPIC_BASE_URL: "https://old.example.test", ANTHROPIC_MODEL: "old-model" },
+      });
+      await writeAiSettings(stateWith("claude", [existing], "default"));
+
+      const snapshot = await importLiveProvider("claude");
+      const importedIds = Object.keys(snapshot.state.apps.claude.providers).filter(
+        (id) => id !== "default",
+      );
+      assert.equal(importedIds.length, 1);
+      assert.equal(snapshot.state.apps.claude.current, importedIds[0]);
+      assert.deepEqual(
+        snapshot.state.apps.claude.providers.default.settingsConfig,
+        existing.settingsConfig,
+      );
+      assert.deepEqual(snapshot.state.apps.claude.providers[importedIds[0]].settingsConfig, {
+        env: {
+          ...liveSettings.env,
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: "live-model",
+          ANTHROPIC_DEFAULT_OPUS_MODEL: "live-model",
+          ANTHROPIC_DEFAULT_SONNET_MODEL: "live-model",
+        },
+      });
+      assert.equal(await fs.readFile(settingsPath, "utf8"), liveText);
+    },
+  );
+
+  await t.test("imports Codex live without rewriting its source files", async () => {
+    const codexDir = process.env.CODEX_HOME as string;
+    const authPath = path.join(codexDir, "auth.json");
+    const configPath = path.join(codexDir, "config.toml");
+    const liveAuth = '{ "auth_mode": "apikey", "OPENAI_API_KEY": "live-key" }';
+    const liveConfig =
+      'model_provider = "custom"\nmodel = "live-model"\n\n[model_providers.custom]\nbase_url = "https://live.example.test/v1"\nwire_api = "responses"';
+    await fs.mkdir(codexDir, { recursive: true });
+    await fs.writeFile(authPath, liveAuth, "utf8");
+    await fs.writeFile(configPath, liveConfig, "utf8");
+
+    const existing = provider("default", {
+      auth: { OPENAI_API_KEY: "old-key" },
+      config: 'model = "old-model"\n',
+    });
+    await writeAiSettings(stateWith("codex", [existing], "default"));
+
+    const snapshot = await importLiveProvider("codex");
+    assert.equal(snapshot.state.apps.codex.current, "default-2");
+    assert.deepEqual(
+      snapshot.state.apps.codex.providers.default.settingsConfig,
+      existing.settingsConfig,
+    );
+    assert.deepEqual(snapshot.state.apps.codex.providers["default-2"].settingsConfig, {
+      auth: { auth_mode: "apikey", OPENAI_API_KEY: "live-key" },
+      config: liveConfig,
+    });
+    assert.equal(await fs.readFile(authPath, "utf8"), liveAuth);
+    assert.equal(await fs.readFile(configPath, "utf8"), liveConfig);
   });
 });
