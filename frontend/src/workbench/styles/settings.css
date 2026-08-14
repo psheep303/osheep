@@ -285,10 +285,10 @@
 
 .settings-view__option-row {
   display: flex;
-  min-height: 76px;
+  min-height: 82px;
   align-items: center;
-  gap: 14px;
-  padding: 14px 18px;
+  gap: 16px;
+  padding: 15px 18px;
   border: 1px solid var(--border-control);
   border-radius: var(--radius-lg);
   background: var(--ui-surface-card);
@@ -296,15 +296,23 @@
 
 .settings-view__option-icon {
   display: grid;
-  width: 38px;
-  height: 38px;
-  flex: 0 0 38px;
+  width: 46px;
+  height: 46px;
+  flex: 0 0 46px;
   place-items: center;
   color: var(--color-info);
   border: 1px solid var(--border-control);
   border-radius: var(--radius-md);
   background: var(--surface-control);
-  font-size: 17px;
+}
+
+.settings-view__option-icon svg {
+  display: block;
+  width: 24px;
+  height: 24px;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .settings-view__option-copy {

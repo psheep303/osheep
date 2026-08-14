@@ -204,10 +204,9 @@ export function SettingsView({ settings, onChange }: SettingsViewProps) {
               </section>
               <section className="settings-view__group">
                 <div className="settings-view__option-row">
-                  <span
-                    className="settings-view__option-icon codicon codicon-cloud-upload"
-                    aria-hidden="true"
-                  />
+                  <span className="settings-view__option-icon" aria-hidden="true">
+                    <MonitorUploadIcon />
+                  </span>
                   <div className="settings-view__option-copy">
                     <div className="settings-view__option-title">
                       {t("settings.claude.skipOnboarding")}
@@ -882,6 +881,18 @@ interface SwitchProps {
   label: string;
   describedBy?: string;
   onChange: (checked: boolean) => void;
+}
+
+function MonitorUploadIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+      <rect x="2" y="3" width="20" height="14" rx="2" />
+      <path d="m9 10 3-3 3 3" />
+      <path d="M12 13V7" />
+      <path d="M12 17v4" />
+      <path d="M8 21h8" />
+    </svg>
+  );
 }
 
 function Switch({ checked, disabled = false, label, describedBy, onChange }: SwitchProps) {
