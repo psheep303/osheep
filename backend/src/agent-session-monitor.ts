@@ -283,9 +283,11 @@ export class AgentSessionEventReducer {
         this.codexTurnUserRejected = false;
       }
       const startEvents: AgentSessionEvent[] = previousAbort ? [previousAbort] : [];
-      if (this.pendingCodexQuestions.size > 0 ||
+      if (
+        this.pendingCodexQuestions.size > 0 ||
         this.pendingCodexPermissions.size > 0 ||
-        this.pendingCodexSilentExecs.size > 0) {
+        this.pendingCodexSilentExecs.size > 0
+      ) {
         return startEvents;
       }
       startEvents.push({ state: "running" });

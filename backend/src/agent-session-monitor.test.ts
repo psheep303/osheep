@@ -437,10 +437,7 @@ test("Codex task_complete distinguishes success and error for the active turn", 
 
 test("Codex user input and approval events drive waiting state", () => {
   const reducer = new AgentSessionEventReducer("codex");
-  reducer.push(
-    { type: "event_msg", payload: { type: "task_started", turn_id: "turn_1" } },
-    0,
-  );
+  reducer.push({ type: "event_msg", payload: { type: "task_started", turn_id: "turn_1" } }, 0);
   assert.deepEqual(
     reducer.push({
       type: "event_msg",
@@ -456,28 +453,24 @@ test("Codex user input and approval events drive waiting state", () => {
     [{ state: "running" }],
   );
   assert.deepEqual(
-    reducer.push({
-      type: "event_msg",
-      payload: { type: "turn_aborted", turn_id: "turn_1", reason: "interrupted" },
-    }, 100),
+    reducer.push(
+      {
+        type: "event_msg",
+        payload: { type: "turn_aborted", turn_id: "turn_1", reason: "interrupted" },
+      },
+      100,
+    ),
     [],
   );
-  assert.deepEqual(
-    reducer.poll(349),
-    [],
-  );
-  assert.deepEqual(
-    reducer.poll(350),
-    [{ state: "completed", outcome: "cancelled", error: "interrupted" }],
-  );
+  assert.deepEqual(reducer.poll(349), []);
+  assert.deepEqual(reducer.poll(350), [
+    { state: "completed", outcome: "cancelled", error: "interrupted" },
+  ]);
 });
 
 test("Codex declined approval waits for replacement input before the next turn completes", () => {
   const reducer = new AgentSessionEventReducer("codex");
-  reducer.push(
-    { type: "event_msg", payload: { type: "task_started", turn_id: "turn_1" } },
-    0,
-  );
+  reducer.push({ type: "event_msg", payload: { type: "task_started", turn_id: "turn_1" } }, 0);
   assert.deepEqual(
     reducer.push(
       {
@@ -764,10 +757,7 @@ test("Codex initial task_started does not overwrite an earlier sidecar wait", ()
 
 test("Codex reducer continues with a new turn after an aborted turn", () => {
   const reducer = new AgentSessionEventReducer("codex");
-  reducer.push(
-    { type: "event_msg", payload: { type: "task_started", turn_id: "turn_1" } },
-    0,
-  );
+  reducer.push({ type: "event_msg", payload: { type: "task_started", turn_id: "turn_1" } }, 0);
   assert.deepEqual(
     reducer.push(
       {
@@ -778,10 +768,9 @@ test("Codex reducer continues with a new turn after an aborted turn", () => {
     ),
     [],
   );
-  assert.deepEqual(
-    reducer.poll(350),
-    [{ state: "completed", outcome: "cancelled", error: "interrupted" }],
-  );
+  assert.deepEqual(reducer.poll(350), [
+    { state: "completed", outcome: "cancelled", error: "interrupted" },
+  ]);
   assert.deepEqual(
     reducer.push({ type: "event_msg", payload: { type: "task_started", turn_id: "turn_2" } }),
     [{ state: "running" }],
@@ -938,12 +927,7 @@ test("JSONL watcher waits after a Codex decline and completes the replacement tu
     });
 
     assert.deepEqual(await watched, { state: "completed", outcome: "success" });
-    assert.deepEqual(events, [
-      "running:",
-      "waiting-for-choice:",
-      "running:",
-      "completed:success",
-    ]);
+    assert.deepEqual(events, ["running:", "waiting-for-choice:", "running:", "completed:success"]);
   } finally {
     await fs.rm(directory, { recursive: true, force: true });
   }

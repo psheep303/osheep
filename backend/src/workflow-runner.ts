@@ -504,14 +504,14 @@ export async function scheduleWorkflowNodes(
           !source.skipped &&
           (!edge.sourceHandle || !source.sourceHandle || edge.sourceHandle === source.sourceHandle);
         if (matches) activeIncoming.set(next, (activeIncoming.get(next) ?? 0) + 1);
-      pending?.delete(result.nodeId);
+        pending?.delete(result.nodeId);
         pending?.delete(source.nodeId);
-      if (
-        pending?.size === 0 &&
-        !completed.has(next) &&
-        !running.has(next) &&
-        !ready.includes(next)
-      ) {
+        if (
+          pending?.size === 0 &&
+          !completed.has(next) &&
+          !running.has(next) &&
+          !ready.includes(next)
+        ) {
           if ((incomingCount.get(next) ?? 0) > 0 && (activeIncoming.get(next) ?? 0) === 0) {
             completed.add(next);
             propagation.push({ nodeId: next, skipped: true });
@@ -681,14 +681,7 @@ async function executeWorkflowNode(
   try {
     result =
       kind === "agent"
-        ? await executeAgentNode(
-            workspace,
-            record,
-            currentNode,
-            startedAt,
-            abort,
-            retryLanguage,
-          )
+        ? await executeAgentNode(workspace, record, currentNode, startedAt, abort, retryLanguage)
         : kind === "command"
           ? await executeCommandNode(workspace.path, record, currentNode, startedAt, abort)
           : await executeLocalNode(workspace.path, record, currentNode, {
@@ -834,9 +827,7 @@ async function executeAgentNode(
     if (attempt > 0) {
       appendRunLog(logs, {
         stream: "stderr",
-        content: `\n[osheep] retry ${attempt}/${
-          retryForever ? "infinity" : retries
-        }: continue\n`,
+        content: `\n[osheep] retry ${attempt}/${retryForever ? "infinity" : retries}: continue\n`,
       });
       await details.update("running");
     }
@@ -1250,9 +1241,7 @@ async function executeLocalNode(
         config: { ...(node.config ?? {}), waitingForApproval: true },
       });
     } catch (error) {
-      pendingDiffApprovals
-        .get(interactionKey(workspaceRoot, record.id, node.id))
-        ?.dispose();
+      pendingDiffApprovals.get(interactionKey(workspaceRoot, record.id, node.id))?.dispose();
       throw error;
     }
     const approved = await approval;
@@ -1307,9 +1296,11 @@ async function executeLocalNode(
     if (!(await isRepo(workspaceRoot))) throw new Error(`${node.title} requires a Git repository.`);
     const branch = resolveBlockTemplate(configString(node, "branch"), record).trim();
     if (!branch) throw new Error(`${node.title} requires a branch name.`);
-    const remote = node.config?.remote === true
-      ? resolveBlockTemplate(configString(node, "remoteName", "origin"), record).trim() || "origin"
-      : null;
+    const remote =
+      node.config?.remote === true
+        ? resolveBlockTemplate(configString(node, "remoteName", "origin"), record).trim() ||
+          "origin"
+        : null;
     await deleteBranch(workspaceRoot, branch, {
       force: node.config?.force === true,
       remote,
@@ -2532,9 +2523,24 @@ function ifNodeConfig(node: WorkflowNode): { expression: string } {
   const right = typeof config.right === "string" ? config.right : "";
   const operator = typeof config.operator === "string" ? config.operator : "equals";
   const symbol =
-    operator === "equals" ? "==" : operator === "notEquals" ? "!=" : operator === "greaterThan" ? ">" : operator === "lessThan" ? "<" : operator === "contains" ? "==" : "==";
+    operator === "equals"
+      ? "=="
+      : operator === "notEquals"
+        ? "!="
+        : operator === "greaterThan"
+          ? ">"
+          : operator === "lessThan"
+            ? "<"
+            : operator === "contains"
+              ? "=="
+              : "==";
   return {
-    expression: operator === "exists" ? `${left} != null` : operator === "isEmpty" ? `${left} == ""` : `${left} ${symbol} ${right}`,
+    expression:
+      operator === "exists"
+        ? `${left} != null`
+        : operator === "isEmpty"
+          ? `${left} == ""`
+          : `${left} ${symbol} ${right}`,
   };
 }
 

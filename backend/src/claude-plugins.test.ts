@@ -223,7 +223,8 @@ test("snapshot exposes marketplace plugins missing from Claude available output"
       {
         name: "official-only",
         source: "./plugins/official-only",
-        homepage: "https://github.com/anthropics/claude-plugins-public/tree/main/plugins/official-only",
+        homepage:
+          "https://github.com/anthropics/claude-plugins-public/tree/main/plugins/official-only",
       },
     ],
   });
@@ -242,7 +243,9 @@ test("snapshot exposes marketplace plugins missing from Claude available output"
     },
   });
 
-  const plugin = snapshot.plugins.find((item) => item.selector === "official-only@claude-plugins-official");
+  const plugin = snapshot.plugins.find(
+    (item) => item.selector === "official-only@claude-plugins-official",
+  );
   assert.equal(plugin?.status.available, true);
   assert.equal(plugin?.status.installed, false);
   assert.equal(plugin?.icon, "https://github.com/anthropics.png?size=64");
