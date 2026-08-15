@@ -767,7 +767,7 @@ export function WorkflowTab({
   onTemplateBinding,
   onOpenDiff,
 }: WorkflowTabProps) {
-  const { t } = useUiPreferences();
+  const { resolvedLanguage, t } = useUiPreferences();
   const [workflow, setWorkflow] = useState<WorkflowRecord | null>(null);
   const [runtimeReadyWorkflowKey, setRuntimeReadyWorkflowKey] = useState("");
   const workflowRef = useRef<WorkflowRecord | null>(null);
@@ -1856,7 +1856,7 @@ export function WorkflowTab({
     setError(null);
     const runtimeEventSeq = workflowRuntimeEventSeqRef.current;
     try {
-      const result = await apiRunWorkflow(workspaceId, current.id, nodeIds);
+      const result = await apiRunWorkflow(workspaceId, current.id, resolvedLanguage, nodeIds);
       if (workflowRuntimeEventSeqRef.current === runtimeEventSeq) {
         const next = applyNodePositions(result.workflow, runtimeLayoutRef.current);
         workflowRef.current = next;
@@ -2111,6 +2111,7 @@ export function WorkflowTab({
             ac.signal,
             agentRetryCount(node),
             agentRetryForever(node),
+            resolvedLanguage,
             appendLog,
           );
         } catch (e) {
@@ -6519,6 +6520,7 @@ async function runAiTerminalWithRetries(
   signal: AbortSignal,
   retries: number,
   retryForever: boolean,
+  retryLanguage: "zh-CN" | "en",
   onLog: (entry: { stream: "stdout" | "stderr"; content: string }) => void,
 ): Promise<{ result: AiTerminalResult | null; aborted: boolean }> {
   let lastError: unknown = null;
@@ -6543,7 +6545,7 @@ async function runAiTerminalWithRetries(
       return await aiChatTerminalStream(
         workspaceId,
         {
-          ...(attempt > 1 ? continueOnlyTerminalInput(input) : input),
+          ...(attempt > 1 ? continueOnlyTerminalInput(input, retryLanguage) : input),
           conversationSessionId,
           resumeConversation: attempt > 1,
         },
@@ -6601,11 +6603,12 @@ function continueOnlyTerminalInput<
     messages: Array<{ role: "user"; content: string }>;
     terminalPrompt?: string;
   },
->(input: T): T {
+>(input: T, language: "zh-CN" | "en"): T {
+  const prompt = language === "zh-CN" ? "继续" : "continue";
   return {
     ...input,
-    messages: [{ role: "user", content: "继续" }],
-    terminalPrompt: "继续",
+    messages: [{ role: "user", content: prompt }],
+    terminalPrompt: prompt,
   };
 }
 

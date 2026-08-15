@@ -46,6 +46,7 @@ import { resolveWorkspace, type WorkspaceInfo } from "./workspace.js";
 
 type WorkflowBlockOutput = Record<string, unknown>;
 type RunLogEntry = { stream: "stdout" | "stderr"; content: string };
+type WorkflowRetryLanguage = "zh-CN" | "en";
 
 interface LocalNodeResult {
   output: WorkflowBlockOutput;
@@ -308,13 +309,8 @@ function isRetryableAgentTerminalMessage(message: string): boolean {
   );
 }
 
-export function nextAgentRetryPrompt(
-  originalPrompt: string,
-  failure: AgentTerminalFailure,
-): string {
-  void originalPrompt;
-  void failure;
-  return "继续";
+export function agentRetryPromptForLanguage(language: WorkflowRetryLanguage): string {
+  return language === "zh-CN" ? "继续" : "continue";
 }
 
 export function shouldRetryAgentTerminalFailure(
@@ -330,6 +326,7 @@ export async function startWorkflowRun(
   workspaceId: string,
   workflowId: string,
   requestedNodeIds?: string[],
+  retryLanguage: WorkflowRetryLanguage = "en",
 ): Promise<{ runId: string; workflow: WorkflowRecord }> {
   const key = runKey(workspaceId, workflowId);
   if (activeRuns.has(key)) throw new Error("Workflow is already running.");
@@ -388,9 +385,14 @@ export async function startWorkflowRun(
   }
 
   const abort = new AbortController();
-  const done = runWorkflowInBackground(workspace, workflowId, run, ordered, abort).catch(
-    () => undefined,
-  );
+  const done = runWorkflowInBackground(
+    workspace,
+    workflowId,
+    run,
+    ordered,
+    abort,
+    retryLanguage,
+  ).catch(() => undefined);
   activeRuns.set(key, { workspaceId, workflowId, runId: run.id, abort, done });
   void done.finally(() => {
     const state = activeRuns.get(key);
@@ -530,6 +532,7 @@ async function runWorkflowInBackground(
   run: WorkflowRun,
   nodeIds: string[],
   abort: AbortController,
+  retryLanguage: WorkflowRetryLanguage,
 ): Promise<void> {
   let fatalError: unknown;
   try {
@@ -545,7 +548,15 @@ async function runWorkflowInBackground(
     await scheduleWorkflowNodes(nodeIds, record.edges, maxParallel, async (nodeId) => {
       if (abort.signal.aborted) throw new Error("Stopped");
       try {
-        return await executeWorkflowNode(workspace, workflowId, run, nodeIds, nodeId, abort);
+        return await executeWorkflowNode(
+          workspace,
+          workflowId,
+          run,
+          nodeIds,
+          nodeId,
+          abort,
+          retryLanguage,
+        );
       } catch (error) {
         const message = (error as Error)?.message;
         if (!(abort.signal.aborted && message === "Stopped")) {
@@ -608,6 +619,7 @@ async function executeWorkflowNode(
   nodeIds: string[],
   nodeId: string,
   abort: AbortController,
+  retryLanguage: WorkflowRetryLanguage,
 ): Promise<string | undefined> {
   if (abort.signal.aborted) throw new Error("Stopped");
   let record = await getWorkflow(workspace.path, workflowId);
@@ -669,7 +681,14 @@ async function executeWorkflowNode(
   try {
     result =
       kind === "agent"
-        ? await executeAgentNode(workspace, record, currentNode, startedAt, abort)
+        ? await executeAgentNode(
+            workspace,
+            record,
+            currentNode,
+            startedAt,
+            abort,
+            retryLanguage,
+          )
         : kind === "command"
           ? await executeCommandNode(workspace.path, record, currentNode, startedAt, abort)
           : await executeLocalNode(workspace.path, record, currentNode, {
@@ -772,6 +791,7 @@ async function executeAgentNode(
   node: WorkflowNode,
   startedAt: number,
   abort: AbortController,
+  retryLanguage: WorkflowRetryLanguage,
 ): Promise<LocalNodeResult> {
   if (!node.prompt.trim()) throw new Error(`${node.title} has no prompt.`);
   const logs: RunLogEntry[] = [];
@@ -806,6 +826,7 @@ async function executeAgentNode(
   let terminalTranscript = "";
   const retries = agentRetryCount(node);
   const retryForever = agentRetryForever(node);
+  const retryPrompt = agentRetryPromptForLanguage(retryLanguage);
   let conversationSessionId: string | undefined =
     node.providerKind === "claude-cli" ? randomUUID() : undefined;
   let attempt = 0;
@@ -815,7 +836,7 @@ async function executeAgentNode(
         stream: "stderr",
         content: `\n[osheep] retry ${attempt}/${
           retryForever ? "infinity" : retries
-        }: ${currentPrompt === "继续" ? "continue" : "resubmit"}\n`,
+        }: continue\n`,
       });
       await details.update("running");
     }
@@ -867,7 +888,7 @@ async function executeAgentNode(
     if (!shouldRetryAgentTerminalFailure(terminalFailure, attempt, retries, retryForever)) break;
     retryReasons.push(terminalFailure.message);
     attempt += 1;
-    currentPrompt = nextAgentRetryPrompt(originalTerminalPrompt, terminalFailure);
+    currentPrompt = retryPrompt;
     await sleep(1_000, abort.signal);
   }
   if (!result) throw new Error(`${node.title} did not start.`);

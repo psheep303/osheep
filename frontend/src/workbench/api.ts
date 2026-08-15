@@ -1325,10 +1325,12 @@ export async function saveWorkflow(
 export async function runWorkflow(
   workspaceId: string,
   workflowId: string,
+  language: "zh-CN" | "en",
   nodeIds?: string[],
 ): Promise<{ runId: string; workflow: WorkflowRecord }> {
   return await http.post(workflowsUrl(workspaceId, `/${encodeURIComponent(workflowId)}/run`), {
     nodeIds,
+    language,
   });
 }
 

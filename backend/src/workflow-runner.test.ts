@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  agentRetryPromptForLanguage,
   appendAgentAttemptTranscriptForTest,
   classifyAgentTerminalResultFailure,
   createLiveAgentRunDetails,
@@ -12,6 +13,11 @@ import {
   type WorkflowRunDetailSnapshot,
 } from "./workflow-runner.js";
 import type { WorkflowNode, WorkflowRecord } from "./workflows.js";
+
+test("agent retry prompt follows the resolved Osheep language", () => {
+  assert.equal(agentRetryPromptForLanguage("zh-CN"), "继续");
+  assert.equal(agentRetryPromptForLanguage("en"), "continue");
+});
 
 test("workflow run planning excludes nodes that are not reachable from a trigger", () => {
   const record: WorkflowRecord = {
