@@ -140,6 +140,8 @@ export interface CreateSessionInput {
   guardRoot?: string;
   /** Internal command run by the shell only after its startup guard is installed. */
   initialCommand?: string;
+  /** Terminal identity advertised to interactive agent TUIs. */
+  terminalProgram?: string;
 }
 
 export function createSession(input: CreateSessionInput): TerminalSession {
@@ -196,7 +198,13 @@ export function createSession(input: CreateSessionInput): TerminalSession {
       cols,
       rows,
       cwd: input.workspace.path,
-      env: { ...process.env },
+      env: {
+        ...process.env,
+        // Make the embedded xterm look like a native CSI-u terminal. CLI
+        // programs launched manually from this shell can then announce their
+        // keyboard mode and receive a distinct Shift+Enter sequence.
+        TERM_PROGRAM: input.terminalProgram ?? "WezTerm",
+      },
       // The bundled ConPTY DLL avoids node-pty's helper process racing a
       // shell that has already exited (AttachConsole failed on Windows).
       useConptyDll: platform === "windows",

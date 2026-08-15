@@ -143,6 +143,9 @@ export async function runAgentTerminal(opts: AgentTerminalOptions): Promise<Agen
       rows: DEFAULT_ROWS,
       killOnDetach: false,
       initialCommand: command,
+      // Advertise a native CSI-u terminal so Codex and Claude Code enable
+      // their enhanced keyboard protocol.
+      terminalProgram: "WezTerm",
     });
   } catch (error) {
     await fs.rm(permissionHook.directory, { recursive: true, force: true });

@@ -80,6 +80,7 @@ import {
   terminalReplaySegments,
 } from "./terminal-write-batcher";
 import { normalizeLightTerminalAnsi, workflowXtermTheme, xtermAnsiTheme } from "./theme";
+import { createShiftEnterInput, isShiftEnterEvent } from "./terminal-keyboard";
 import {
   blockOutputText,
   canApplyWorkflowRefresh,
@@ -3997,6 +3998,12 @@ function WorkflowAgentTerminalInner({
     } catch {
       /* layout race */
     }
+    const shiftEnterInput = createShiftEnterInput(term);
+    term.attachCustomKeyEventHandler((event) => {
+      if (!isShiftEnterEvent(event)) return true;
+      if (event.type === "keydown") shiftEnterInput.send(event);
+      return false;
+    });
     const fittedCols = term.cols;
     const fittedRows = term.rows;
 
@@ -4244,6 +4251,7 @@ function WorkflowAgentTerminalInner({
 
     return () => {
       resizeObs.disconnect();
+      shiftEnterInput.dispose();
       if (resizeTimer) clearTimeout(resizeTimer);
       if (startupRedrawFallbackTimer) clearTimeout(startupRedrawFallbackTimer);
       inputSub.dispose();
