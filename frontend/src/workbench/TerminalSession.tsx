@@ -12,8 +12,8 @@ import {
   type ShellProfile,
   type TerminalCreateResp,
 } from "./api";
-import { normalizeLightTerminalAnsi, xtermAnsiTheme, xtermTheme } from "./theme";
 import { createShiftEnterInput, isShiftEnterEvent } from "./terminal-keyboard";
+import { normalizeLightTerminalAnsi, xtermAnsiTheme, xtermTheme } from "./theme";
 
 interface TerminalSessionProps {
   workspaceId: string | null;
@@ -87,7 +87,19 @@ export function TerminalSession({
       // devtools. xterm handles the resulting paste event itself through
       // ClipboardEvent.clipboardData, which avoids the browser clipboard-read
       // permission prompt shown by WebView2 on Windows.
-      const shiftEnterInput = createShiftEnterInput(term);
+      const shiftEnterInput = createShiftEnterInput(term, {
+        ...(agentSession?.app === "codex"
+          ? { mode: "codex" as const }
+          : agentSession?.app === "claude"
+            ? { mode: "kitty" as const }
+            : {}),
+        sendInput: (data) => {
+          const live = wsRef.current;
+          if (live?.readyState === WebSocket.OPEN) {
+            live.send(JSON.stringify({ type: "input", data }));
+          }
+        },
+      });
       term.attachCustomKeyEventHandler((ev) => {
         const isCopy =
           ev.ctrlKey && ev.shiftKey && !ev.altKey && (ev.code === "KeyC" || ev.key === "C");
@@ -173,6 +185,7 @@ export function TerminalSession({
               (msg.type === "output" || msg.type === "replay" || msg.type === "replay-chunk") &&
               typeof msg.data === "string"
             ) {
+              shiftEnterInput.observeOutput(msg.data);
               term.write(normalizeLightTerminalAnsi(msg.data, resolvedThemeRef.current));
             } else if (msg.type === "exit") {
               term.writeln(

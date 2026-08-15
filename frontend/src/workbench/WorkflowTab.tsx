@@ -70,6 +70,7 @@ import { ContextMenu, type CtxMenuSection } from "./ContextMenu";
 import { evaluateConditionExpression } from "./condition-expression";
 import type { MultiDiffEntry } from "./MultiDiffPane";
 import { cleanAgentTerminalConversation } from "./terminal-conversation";
+import { createShiftEnterInput, isShiftEnterEvent } from "./terminal-keyboard";
 import {
   compactSupersededClaudeStartup,
   createTerminalReplayGuard,
@@ -80,7 +81,6 @@ import {
   terminalReplaySegments,
 } from "./terminal-write-batcher";
 import { normalizeLightTerminalAnsi, workflowXtermTheme, xtermAnsiTheme } from "./theme";
-import { createShiftEnterInput, isShiftEnterEvent } from "./terminal-keyboard";
 import {
   blockOutputText,
   canApplyWorkflowRefresh,
@@ -3496,6 +3496,7 @@ function WorkflowDetailsPanel({
         snapshot.terminalSessionId &&
         snapshot.status === "running" ? (
           <WorkflowAgentTerminal
+            app={node.providerKind === "claude-cli" ? "claude" : "codex"}
             workspaceId={workspaceId}
             sessionId={snapshot.terminalSessionId}
             terminalStatus={snapshot.terminalStatus}
@@ -3944,11 +3945,13 @@ function readableAgentConversation(snapshot: WorkflowRunDetailSnapshot): string 
 }
 
 function WorkflowAgentTerminalInner({
+  app,
   workspaceId,
   sessionId,
   terminalStatus,
   initialAutoSuccess,
 }: {
+  app: AgentSessionApp;
   workspaceId: string;
   sessionId: string;
   terminalStatus?: string;
@@ -3959,6 +3962,7 @@ function WorkflowAgentTerminalInner({
   const termRef = useRef<XTerm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const shiftEnterSenderRef = useRef<((data: string) => void) | null>(null);
   const resolvedThemeRef = useRef(resolvedTheme);
   const [paused, setPaused] = useState(false);
   const [autoSuccess, setAutoSuccess] = useState(initialAutoSuccess);
@@ -3998,7 +4002,10 @@ function WorkflowAgentTerminalInner({
     } catch {
       /* layout race */
     }
-    const shiftEnterInput = createShiftEnterInput(term);
+    const shiftEnterInput = createShiftEnterInput(term, {
+      mode: app === "codex" ? "codex" : "kitty",
+      sendInput: (data) => shiftEnterSenderRef.current?.(data),
+    });
     term.attachCustomKeyEventHandler((event) => {
       if (!isShiftEnterEvent(event)) return true;
       if (event.type === "keydown") shiftEnterInput.send(event);
@@ -4029,6 +4036,14 @@ function WorkflowAgentTerminalInner({
     let replayChunks: string[] = [];
     const outputWriter = createTerminalWriteBatcher((data) => term.write(data));
     const replayGuard = createTerminalReplayGuard((data, callback) => term.write(data, callback));
+    shiftEnterSenderRef.current = (data) => {
+      // A deliberate user key must never be dropped by replay settling. The
+      // normal onData path remains guarded, but Shift+Enter can be sent as
+      // soon as the terminal socket is connected.
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "input", data }));
+      }
+    };
     const drainReplayOutput = (initial: string, onDrained: () => void) => {
       const pending = initial + replayOutput.join("");
       replayOutput = [];
@@ -4252,6 +4267,7 @@ function WorkflowAgentTerminalInner({
     return () => {
       resizeObs.disconnect();
       shiftEnterInput.dispose();
+      shiftEnterSenderRef.current = null;
       if (resizeTimer) clearTimeout(resizeTimer);
       if (startupRedrawFallbackTimer) clearTimeout(startupRedrawFallbackTimer);
       inputSub.dispose();
@@ -4262,7 +4278,7 @@ function WorkflowAgentTerminalInner({
       termRef.current = null;
       fitRef.current = null;
     };
-  }, [sessionId]);
+  }, [app, sessionId]);
 
   useEffect(() => {
     const term = termRef.current;

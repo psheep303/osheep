@@ -121,6 +121,28 @@ function clampSize(n: unknown, fallback: number): number {
   return Math.floor(v);
 }
 
+function buildPtyEnv(terminalProgram?: string): Record<string, string> {
+  const env = { ...process.env } as Record<string, string | undefined>;
+
+  // Osheep owns the embedded terminal. Do not let a parent VS Code/Codex
+  // extension make child TUIs believe they are running in VS Code's terminal;
+  // Codex disables its keyboard-enhancement protocol in that environment.
+  for (const key of Object.keys(env)) {
+    if (
+      key.startsWith("VSCODE_") ||
+      key === "CODEX_INTERNAL_ORIGINATOR_OVERRIDE" ||
+      key === "CODEX_TUI_DISABLE_KEYBOARD_ENHANCEMENT"
+    ) {
+      delete env[key];
+    }
+  }
+
+  env.TERM_PROGRAM = terminalProgram ?? "WezTerm";
+  return Object.fromEntries(
+    Object.entries(env).filter((entry): entry is [string, string] => entry[1] !== undefined),
+  );
+}
+
 function bumpActivity(s: TerminalSession) {
   s.lastActivity = Date.now();
   if (s.idleTimer) clearTimeout(s.idleTimer);
@@ -198,13 +220,7 @@ export function createSession(input: CreateSessionInput): TerminalSession {
       cols,
       rows,
       cwd: input.workspace.path,
-      env: {
-        ...process.env,
-        // Make the embedded xterm look like a native CSI-u terminal. CLI
-        // programs launched manually from this shell can then announce their
-        // keyboard mode and receive a distinct Shift+Enter sequence.
-        TERM_PROGRAM: input.terminalProgram ?? "WezTerm",
-      },
+      env: buildPtyEnv(input.terminalProgram),
       // The bundled ConPTY DLL avoids node-pty's helper process racing a
       // shell that has already exited (AttachConsole failed on Windows).
       useConptyDll: platform === "windows",
@@ -427,6 +443,15 @@ function sendWarningFrame(s: TerminalSession, text: string): void {
 }
 
 function handleInputData(s: TerminalSession, data: string): void {
+  // Keep Codex's synthetic Alt+Enter in one PTY write. Splitting ESC and CR
+  // lets ConPTY surface Escape as a standalone key before Enter arrives.
+  if (data === "\x1b\r") {
+    s.inputBuffer = "";
+    s.bufferDirty = true;
+    s.pty.write(data);
+    return;
+  }
+
   // Walk one char at a time. Printable chars and backspace are mirrored to
   // s.inputBuffer; on Enter we peek the buffer to decide whether to forward
   // the Enter or replace it with Ctrl-C + a warning.
