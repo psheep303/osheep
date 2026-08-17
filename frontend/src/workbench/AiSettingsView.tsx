@@ -785,12 +785,15 @@ export function AiSettingsView({ app }: AiSettingsViewProps) {
 
   const handleDetailSave = (provider: AiSettingsProvider) => {
     const isNew = selectedId === "__new__";
-    void run(async () => {
-      const originalId = isNew ? undefined : (selectedId ?? undefined);
-      const next = await saveAiProvider(app, provider, originalId, false);
-      setSnapshot(next);
-      setSelectedId(null);
-    }, t(isNew ? "notification.providerCreated" : "notification.providerSaved"));
+    void run(
+      async () => {
+        const originalId = isNew ? undefined : (selectedId ?? undefined);
+        const next = await saveAiProvider(app, provider, originalId, false);
+        setSnapshot(next);
+        setSelectedId(null);
+      },
+      t(isNew ? "notification.providerCreated" : "notification.providerSaved"),
+    );
   };
 
   const handleSwitch = (provider: AiSettingsProvider) => {

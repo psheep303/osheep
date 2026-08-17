@@ -755,7 +755,9 @@ function AboutPanel() {
             aria-label={t("settings.about.refresh")}
             title={t("settings.about.refresh")}
           >
-            <span className={`codicon codicon-refresh${loading ? " settings-cli-tools__spin" : ""}`} />
+            <span
+              className={`codicon codicon-refresh${loading ? " settings-cli-tools__spin" : ""}`}
+            />
           </button>
         </div>
         {loadError && <div className="settings-view__error">{loadError}</div>}
@@ -836,7 +838,11 @@ function CliToolCard({
         </div>
         <div>
           <dt>{t("settings.about.latestVersion")}</dt>
-          <dd>{loading ? t("common.loading") : (status?.latestVersion ?? t("settings.about.unavailable"))}</dd>
+          <dd>
+            {loading
+              ? t("common.loading")
+              : (status?.latestVersion ?? t("settings.about.unavailable"))}
+          </dd>
         </div>
       </dl>
       {status?.error && (

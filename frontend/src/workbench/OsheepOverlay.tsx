@@ -54,7 +54,9 @@ function readDismissedConfirmations(): Set<string> {
   try {
     const raw = localStorage.getItem(DISMISSED_CONFIRMATIONS_KEY);
     const values = raw ? (JSON.parse(raw) as unknown) : [];
-    return new Set(Array.isArray(values) ? values.filter((value) => typeof value === "string") : []);
+    return new Set(
+      Array.isArray(values) ? values.filter((value) => typeof value === "string") : [],
+    );
   } catch {
     return new Set();
   }
@@ -90,7 +92,10 @@ export function OsheepOverlayProvider({ children }: { children: ReactNode }) {
       const duration = options.duration ?? (type === "success" ? 4500 : 6500);
       setToasts((current) => [...current.slice(-3), { id, type, message, ...options }]);
       if (duration > 0) {
-        timers.current.set(id, window.setTimeout(() => dismissToast(id), duration));
+        timers.current.set(
+          id,
+          window.setTimeout(() => dismissToast(id), duration),
+        );
       }
     },
     [dismissToast],
@@ -120,11 +125,14 @@ export function OsheepOverlayProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  const finishConfirmation = useCallback((request: ConfirmRequest, confirmed: boolean, remember: boolean) => {
-    if (confirmed && remember && request.reminderKey) rememberConfirmation(request.reminderKey);
-    request.resolve(confirmed);
-    setConfirmations((current) => current.filter((item) => item.id !== request.id));
-  }, []);
+  const finishConfirmation = useCallback(
+    (request: ConfirmRequest, confirmed: boolean, remember: boolean) => {
+      if (confirmed && remember && request.reminderKey) rememberConfirmation(request.reminderKey);
+      request.resolve(confirmed);
+      setConfirmations((current) => current.filter((item) => item.id !== request.id));
+    },
+    [],
+  );
 
   const notify = useMemo<OsheepOverlayContextValue["notify"]>(
     () => ({
@@ -204,7 +212,7 @@ function ConfirmDialog({
         onFinish(request, false, false);
       } else if (event.key === "Tab") {
         const focusable = dialogRef.current?.querySelectorAll<HTMLElement>(
-          'button:not([disabled]), input:not([disabled])',
+          "button:not([disabled]), input:not([disabled])",
         );
         if (!focusable || focusable.length === 0) return;
         const first = focusable[0];
@@ -238,9 +246,7 @@ function ConfirmDialog({
       >
         <div className="osheep-dialog__header">
           <span className="osheep-dialog__mark codicon codicon-warning" aria-hidden="true" />
-          <h2 id={`osheep-dialog-title-${request.id}`}>
-            {request.title ?? t("confirm.title")}
-          </h2>
+          <h2 id={`osheep-dialog-title-${request.id}`}>{request.title ?? t("confirm.title")}</h2>
           <button
             type="button"
             className="osheep-dialog__close"
