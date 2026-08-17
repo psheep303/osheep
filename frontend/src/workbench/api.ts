@@ -1816,6 +1816,7 @@ export async function aiChatTerminalStream(
     effort?: AiTerminalEffort;
     alwaysEnter?: boolean;
     conversationSessionId?: string;
+    requestedConversationSessionId?: string;
     resumeConversation?: boolean;
   },
   onFrame: (frame: AiTerminalFrame) => void,

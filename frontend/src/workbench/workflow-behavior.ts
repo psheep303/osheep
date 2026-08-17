@@ -1,6 +1,49 @@
-import type { WorkflowNode, WorkflowNodeKind } from "./api";
+import type { WorkflowEdge, WorkflowNode, WorkflowNodeKind } from "./api";
 
 export type WorkflowBlockOutput = Record<string, unknown>;
+
+export const WORKFLOW_SESSION_ID_PATTERN =
+  "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}";
+
+const WORKFLOW_SESSION_ID_RE = new RegExp(`^${WORKFLOW_SESSION_ID_PATTERN}$`);
+
+export function workflowSessionId(node: WorkflowNode): string {
+  const value = node.config?.sessionId;
+  return typeof value === "string" ? value.trim() : "";
+}
+
+export function isWorkflowSessionId(value: string): boolean {
+  return WORKFLOW_SESSION_ID_RE.test(value.trim());
+}
+
+export function findWorkflowBackEdgeIds(edges: readonly WorkflowEdge[]): Set<string> {
+  const forward = new Map<string, string[]>();
+  const backEdgeIds = new Set<string>();
+
+  for (const edge of edges) {
+    if (edge.from === edge.to || canReach(edge.to, edge.from, forward)) {
+      backEdgeIds.add(edge.id);
+      continue;
+    }
+    const targets = forward.get(edge.from) ?? [];
+    targets.push(edge.to);
+    forward.set(edge.from, targets);
+  }
+  return backEdgeIds;
+}
+
+function canReach(from: string, target: string, adjacency: ReadonlyMap<string, string[]>): boolean {
+  const pending = [from];
+  const seen = new Set<string>();
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    if (current === target) return true;
+    if (seen.has(current)) continue;
+    seen.add(current);
+    pending.push(...(adjacency.get(current) ?? []));
+  }
+  return false;
+}
 
 export function formatWorkflowDuration(ms: number): string {
   const safeMs = Number.isFinite(ms) ? Math.max(0, ms) : 0;

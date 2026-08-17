@@ -50,6 +50,73 @@ export async function findAgentSessionFilePath(
   return (await findAgentSessionRecord(app, id, roots))?.filePath ?? null;
 }
 
+export async function reassignCodexSessionId(
+  currentId: string,
+  requestedId: string,
+  roots: AgentSessionRoots = getAgentSessionRoots(),
+): Promise<void> {
+  if (currentId === requestedId) return;
+  if (!SESSION_ID_RE.test(currentId) || !SESSION_ID_RE.test(requestedId)) {
+    throw new Error("Codex session ID is invalid.");
+  }
+  if (await findCodexSessionRecord(roots, requestedId)) {
+    throw new Error(`Codex session ${requestedId} already exists.`);
+  }
+  const record = await findCodexSessionRecord(roots, currentId);
+  if (!record) throw new Error(`Codex session ${currentId} was not found.`);
+
+  const text = await fs.readFile(record.filePath, "utf8");
+  const lines = text.split(/\r?\n/);
+  let changed = false;
+  const rewritten = lines.map((line) => {
+    if (changed || !line.trim()) return line;
+    try {
+      const value = JSON.parse(line) as Record<string, unknown>;
+      if (stringValue(value.type) !== "session_meta") return line;
+      const payload = objectValue(value.payload);
+      if (stringValue(payload.id) === currentId) payload.id = requestedId;
+      if (stringValue(payload.session_id) === currentId) payload.session_id = requestedId;
+      changed = true;
+      return JSON.stringify(value);
+    } catch {
+      return line;
+    }
+  });
+  if (!changed) throw new Error(`Codex session ${currentId} has no session metadata.`);
+
+  const currentName = path.basename(record.filePath);
+  const suffix = `-${currentId}.jsonl`;
+  const nextName = currentName.endsWith(suffix)
+    ? `${currentName.slice(0, -suffix.length)}-${requestedId}.jsonl`
+    : `rollout-${Date.now()}-${requestedId}.jsonl`;
+  const nextPath = path.join(path.dirname(record.filePath), nextName);
+  await fs.writeFile(nextPath, rewritten.join("\n"), { encoding: "utf8", flag: "wx" });
+  try {
+    await unlinkCodexSessionAfterExit(record.filePath);
+  } catch (error) {
+    await fs.rm(nextPath, { force: true }).catch(() => undefined);
+    throw error;
+  }
+  // The title index is a cache and can be held briefly by Codex on Windows.
+  await reassignCodexTitleIndexEntry(roots.codexHome, currentId, requestedId).catch(() => undefined);
+}
+
+async function unlinkCodexSessionAfterExit(filePath: string): Promise<void> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    try {
+      await fs.unlink(filePath);
+      return;
+    } catch (error) {
+      lastError = error;
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "EBUSY" && code !== "EACCES" && code !== "EPERM") throw error;
+      await new Promise((resolve) => setTimeout(resolve, 25 * (attempt + 1)));
+    }
+  }
+  throw lastError;
+}
+
 interface CodexTitle {
   title: string;
   updatedAt: number | null;
@@ -494,6 +561,38 @@ async function readCodexTitleIndex(codexHome: string): Promise<Map<string, Codex
     result.set(id, { title, updatedAt: parseTimestamp(value.updated_at) });
   }
   return result;
+}
+
+async function reassignCodexTitleIndexEntry(
+  codexHome: string,
+  currentId: string,
+  requestedId: string,
+): Promise<void> {
+  const indexPath = path.join(codexHome, "session_index.jsonl");
+  let text: string;
+  try {
+    text = await fs.readFile(indexPath, "utf8");
+  } catch (error) {
+    if (isMissing(error)) return;
+    throw error;
+  }
+  let changed = false;
+  const lines = text.split(/\r?\n/).map((line) => {
+    if (!line.trim()) return line;
+    try {
+      const value = JSON.parse(line) as Record<string, unknown>;
+      if (stringValue(value.id) !== currentId) return line;
+      value.id = requestedId;
+      changed = true;
+      return JSON.stringify(value);
+    } catch {
+      return line;
+    }
+  });
+  if (!changed) return;
+  const tempPath = `${indexPath}.${process.pid}.${Date.now()}.tmp`;
+  await fs.writeFile(tempPath, lines.join("\n"), "utf8");
+  await fs.rename(tempPath, indexPath);
 }
 
 async function removeCodexTitleIndexEntry(codexHome: string, id: string): Promise<void> {

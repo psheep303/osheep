@@ -359,6 +359,7 @@ export async function registerAiRoutes(app: FastifyInstance) {
       effort?: AgentEffort;
       alwaysEnter?: boolean;
       conversationSessionId?: string;
+      requestedConversationSessionId?: string;
       resumeConversation?: boolean;
     };
   }>("/api/workspaces/:id/ai/chat/terminal", async (req, reply) => {
@@ -416,6 +417,10 @@ export async function registerAiRoutes(app: FastifyInstance) {
         conversationSessionId:
           typeof req.body?.conversationSessionId === "string"
             ? req.body.conversationSessionId
+            : undefined,
+        requestedConversationSessionId:
+          typeof req.body?.requestedConversationSessionId === "string"
+            ? req.body.requestedConversationSessionId
             : undefined,
         resumeConversation: req.body?.resumeConversation === true,
         signal: abort.signal,

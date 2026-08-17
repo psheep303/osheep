@@ -8,6 +8,7 @@ import {
   findAgentSessionFilePath,
   isAgentSessionInProject,
   listAgentSessions,
+  reassignCodexSessionId,
 } from "./agent-sessions.js";
 import type { CliProviderKind } from "./ai-cli.js";
 import { platform } from "./config.js";
@@ -73,6 +74,7 @@ export interface AgentTerminalOptions {
   effort?: AgentEffort;
   alwaysEnter?: boolean;
   conversationSessionId?: string;
+  requestedConversationSessionId?: string;
   resumeConversation?: boolean;
   signal?: AbortSignal;
   onFrame?: (frame: AgentTerminalFrame) => void;
@@ -100,6 +102,7 @@ const DEFAULT_COLS = 120;
 const DEFAULT_ROWS = 34;
 const SESSION_DISCOVERY_TIMEOUT_MS = 30_000;
 const SESSION_DISCOVERY_POLL_MS = 120;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 interface AgentTerminalControl {
   autoSuccess: boolean;
@@ -113,6 +116,10 @@ interface AgentTerminalControl {
 const controls = new Map<string, AgentTerminalControl>();
 
 export async function runAgentTerminal(opts: AgentTerminalOptions): Promise<AgentTerminalResult> {
+  const requestedConversationSessionId = opts.requestedConversationSessionId?.trim() || "";
+  if (requestedConversationSessionId && !UUID_RE.test(requestedConversationSessionId)) {
+    throw new Error("Requested session ID must be a valid UUID.");
+  }
   const conversationBaseline = await captureConversationSessionBaseline(opts);
   const resumeOffset = await existingSessionSize(opts, conversationBaseline.app);
   const workspaceBaseline = await captureWorkspaceChanges(opts.workspace.path).catch(
@@ -215,9 +222,18 @@ export async function runAgentTerminal(opts: AgentTerminalOptions): Promise<Agen
       /* already closed */
     }
     opts.onFrame?.({ type: "status", status: "exited" });
+    let persistedConversationSessionId = conversationSessionId;
+    if (
+      opts.kind === "codex-cli" &&
+      requestedConversationSessionId &&
+      requestedConversationSessionId !== conversationSessionId
+    ) {
+      await reassignCodexSessionId(conversationSessionId, requestedConversationSessionId);
+      persistedConversationSessionId = requestedConversationSessionId;
+    }
     return {
       sessionId: session.id,
-      conversationSessionId,
+      conversationSessionId: persistedConversationSessionId,
       content: structuredAnswer.trim(),
       transcript,
       changedFiles: metadata.changedFiles,

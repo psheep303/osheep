@@ -206,3 +206,29 @@ test("completed markdown auto preview works for runtime events and opens once", 
     undefined,
   );
 });
+
+test("workflow session ids use the UUID format shared by Claude and Codex", async () => {
+  const behavior = await loadBehavior();
+  assert.ok(behavior, "workflow behavior module should exist");
+  assert.equal(behavior.isWorkflowSessionId("550e8400-e29b-41d4-a716-446655440000"), true);
+  assert.equal(behavior.isWorkflowSessionId("not-a-session"), false);
+  assert.equal(
+    behavior.workflowSessionId(
+      node("agent", "codex-cli", { sessionId: " 550e8400-e29b-41d4-a716-446655440000 " }) as never,
+    ),
+    "550e8400-e29b-41d4-a716-446655440000",
+  );
+});
+
+test("workflow back edges are the edges that close a directed cycle", async () => {
+  const behavior = await loadBehavior();
+  assert.ok(behavior, "workflow behavior module should exist");
+  const edges = [
+    { id: "ab", from: "a", to: "b", passSummary: true },
+    { id: "bc", from: "b", to: "c", passSummary: true },
+    { id: "ca", from: "c", to: "a", passSummary: true },
+    { id: "cd", from: "c", to: "d", passSummary: true },
+    { id: "self", from: "d", to: "d", passSummary: true },
+  ];
+  assert.deepEqual([...behavior.findWorkflowBackEdgeIds(edges as never)], ["ca", "self"]);
+});

@@ -10,7 +10,31 @@ import {
   isAgentSessionInProject,
   listAgentSessions,
   readAgentSessionUsage,
+  reassignCodexSessionId,
 } from "./agent-sessions.js";
+
+test("Codex sessions can be persisted under a requested UUID", async () => {
+  const fixture = await makeFixture();
+  const currentId = "10000000-2222-4333-8444-555555555555";
+  const requestedId = "20000000-2222-4333-8444-555555555555";
+  const currentFile = codexSessionPath(fixture.roots, currentId, "09-00-00");
+  try {
+    await writeLines(currentFile, [codexMetadata(currentId, fixture.projectPath)]);
+    await reassignCodexSessionId(currentId, requestedId, fixture.roots);
+
+    const sessions = await listAgentSessions("codex", fixture.roots);
+    assert.deepEqual(sessions.map((session) => session.id), [requestedId]);
+    await assert.rejects(fs.stat(currentFile));
+    const text = await fs.readFile(
+      codexSessionPath(fixture.roots, requestedId, "09-00-00"),
+      "utf8",
+    );
+    assert.match(text, new RegExp(requestedId));
+    assert.doesNotMatch(text, new RegExp(currentId));
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
 
 test("project scope filters sessions and batch delete rejects sibling projects", async () => {
   const fixture = await makeFixture();

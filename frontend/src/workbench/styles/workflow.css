@@ -1283,6 +1283,41 @@
   cursor: not-allowed;
 }
 
+.workflow-inspector__input-action {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 30px;
+  gap: 6px;
+}
+
+.workflow-inspector__input-action > input[aria-invalid="true"] {
+  border-color: var(--color-error);
+}
+
+.workflow-inspector__input-action > button {
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.workflow-inspector__input-action > button:hover:not(:disabled) {
+  border-color: var(--color-link);
+  color: var(--fg-strong);
+  background: var(--surface-3);
+}
+
+.workflow-inspector__input-action > button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .workflow-inspector__check {
   display: inline-flex;
   align-items: center;
@@ -2462,6 +2497,18 @@
   opacity: 0.54;
 }
 
+.workflow-edge.is-back {
+  stroke: rgba(245, 158, 11, 0.88);
+  stroke-dasharray: 8 4;
+  opacity: 0.9;
+}
+
+.workflow-edge.is-back.is-muted {
+  stroke: rgba(180, 151, 105, 0.58);
+  stroke-dasharray: 5 5;
+  opacity: 0.62;
+}
+
 .workflow-edge.is-draft {
   stroke: #bfdbfe;
   stroke-width: 1.55;
@@ -2471,6 +2518,10 @@
 
 #workflow-arrow path {
   fill: rgba(96, 165, 250, 0.9);
+}
+
+#workflow-back-arrow path {
+  fill: rgba(245, 158, 11, 0.94);
 }
 
 .workflow-node {

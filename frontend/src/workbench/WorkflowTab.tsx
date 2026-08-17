@@ -85,9 +85,13 @@ import {
   blockOutputText,
   canApplyWorkflowRefresh,
   findMarkdownAutoPreviewNode,
+  findWorkflowBackEdgeIds,
   formatCompactTokenCount,
   formatWorkflowDuration,
+  isWorkflowSessionId,
+  WORKFLOW_SESSION_ID_PATTERN,
   type WorkflowBlockOutput,
+  workflowSessionId,
 } from "./workflow-behavior";
 
 const MarkdownPreview = lazy(() =>
@@ -823,6 +827,10 @@ export function WorkflowTab({
   const undoStackRef = useRef<WorkflowRecord[]>([]);
   const redoStackRef = useRef<WorkflowRecord[]>([]);
   const [historyTick, setHistoryTick] = useState(0);
+  const backEdgeIndex = useMemo(() => {
+    const ids = findWorkflowBackEdgeIds(workflow?.edges ?? []);
+    return new Map([...ids].map((id, index) => [id, index]));
+  }, [workflow?.edges]);
   onWorkflowChangedRef.current = onWorkflowChanged;
 
   const showCompletedMarkdown = useCallback(
@@ -2039,9 +2047,20 @@ export function WorkflowTab({
         let terminalStatus = "";
         const agentSessionApp: AgentSessionApp =
           node.providerKind === "claude-cli" ? "claude" : "codex";
-        const requestedConversationSessionId =
-          node.providerKind === "claude-cli" ? crypto.randomUUID() : undefined;
+        const configuredSessionId = workflowSessionId(node);
+        if (configuredSessionId && !isWorkflowSessionId(configuredSessionId)) {
+          throw new Error(`${node.title} session ID must be a valid UUID.`);
+        }
         const existingAgentSessionIds = await loadAgentSessionIds(workspaceId, agentSessionApp);
+        const resumeConfiguredSession =
+          configuredSessionId !== "" && existingAgentSessionIds.has(configuredSessionId);
+        const requestedConversationSessionId =
+          configuredSessionId ||
+          (node.providerKind === "claude-cli" ? generateWorkflowSessionId() : undefined);
+        const commandConversationSessionId =
+          node.providerKind === "claude-cli" || resumeConfiguredSession
+            ? requestedConversationSessionId
+            : undefined;
         const autoSuccess = agentAutoSuccess(node);
         const updateAgentDetails = (
           status: WorkflowRunDetailSnapshot["status"],
@@ -2094,7 +2113,9 @@ export function WorkflowTab({
               codexSandbox: agentCodexSandbox(node),
               effort: agentEffort(node),
               alwaysEnter: agentAlwaysEnter(node),
-              conversationSessionId: requestedConversationSessionId,
+              conversationSessionId: commandConversationSessionId,
+              requestedConversationSessionId: configuredSessionId || undefined,
+              resumeConversation: resumeConfiguredSession,
             },
             (frame) => {
               if (frame.type === "session" && frame.sessionId) {
@@ -2604,14 +2625,32 @@ export function WorkflowTab({
                 >
                   <path d="M 0 0 L 10 5 L 0 10 z" />
                 </marker>
+                <marker
+                  id="workflow-back-arrow"
+                  viewBox="0 0 10 10"
+                  refX="9"
+                  refY="5"
+                  markerWidth="6"
+                  markerHeight="6"
+                  orient="auto-start-reverse"
+                >
+                  <path d="M 0 0 L 10 5 L 0 10 z" />
+                </marker>
               </defs>
               {workflow.edges.map((edge) => {
                 const from = workflow.nodes.find((node) => node.id === edge.from);
                 const to = workflow.nodes.find((node) => node.id === edge.to);
                 if (!from || !to) return null;
-                const path = edgePath(from, to, edge.sourceHandle);
+                const loopIndex = backEdgeIndex.get(edge.id);
+                const isBackEdge = loopIndex !== undefined;
+                const path = isBackEdge
+                  ? backEdgePath(from, to, workflow.nodes, loopIndex, edge.sourceHandle)
+                  : edgePath(from, to, edge.sourceHandle);
                 return (
-                  <g key={edge.id} className="workflow-edge-group">
+                  <g
+                    key={edge.id}
+                    className={`workflow-edge-group${isBackEdge ? " is-back" : ""}`}
+                  >
                     <path
                       className="workflow-edge-hit"
                       d={path}
@@ -2623,9 +2662,9 @@ export function WorkflowTab({
                       }}
                     />
                     <path
-                      className={`workflow-edge${edge.passSummary ? "" : " is-muted"}`}
+                      className={`workflow-edge${isBackEdge ? " is-back" : ""}${edge.passSummary ? "" : " is-muted"}`}
                       d={path}
-                      markerEnd="url(#workflow-arrow)"
+                      markerEnd={isBackEdge ? "url(#workflow-back-arrow)" : "url(#workflow-arrow)"}
                     />
                   </g>
                 );
@@ -3319,7 +3358,6 @@ function WorkflowNodeBlock({
     ` is-${nodeKind(node)}` +
     ` is-${node.status}`;
   const hasInputHandle = !isTriggerNodeKind(nodeKind(node));
-  const hasOutputHandle = nodeKind(node) !== "markdown";
   const outputHandles = workflowOutputHandles(nodeKind(node));
 
   return (
@@ -3360,7 +3398,7 @@ function WorkflowNodeBlock({
         <WorkflowIcon name={nodeIconName(node)} />
       </span>
       <span className="workflow-node__name">{node.title}</span>
-      {hasOutputHandle && outputHandles.length === 0 && (
+      {outputHandles.length === 0 && (
         <button
           type="button"
           className="workflow-node__handle workflow-node__handle--out"
@@ -4661,6 +4699,33 @@ function WorkflowNodeInspector({
 
       {isAgent && (
         <>
+          <div className="workflow-inspector__field">
+            <span id={`workflow-session-id-${node.id}`}>{t("workflow.agent.sessionId")}</span>
+            <div className="workflow-inspector__input-action">
+              <input
+                value={workflowSessionId(node)}
+                onChange={(event) => updateConfig({ sessionId: event.target.value })}
+                placeholder={t("workflow.agent.sessionIdPlaceholder")}
+                pattern={WORKFLOW_SESSION_ID_PATTERN}
+                aria-labelledby={`workflow-session-id-${node.id}`}
+                aria-invalid={
+                  workflowSessionId(node) !== "" && !isWorkflowSessionId(workflowSessionId(node))
+                }
+                disabled={running}
+                autoComplete="off"
+                spellCheck={false}
+              />
+              <button
+                type="button"
+                onClick={() => updateConfig({ sessionId: generateWorkflowSessionId() })}
+                disabled={running}
+                title={t("workflow.agent.randomSessionId")}
+                aria-label={t("workflow.agent.randomSessionId")}
+              >
+                <i className="codicon codicon-refresh" aria-hidden="true" />
+              </button>
+            </div>
+          </div>
           <label className="workflow-inspector__field">
             <span>Model</span>
             <TemplateInput
@@ -6514,6 +6579,7 @@ async function runAiTerminalWithRetries(
     effort?: AiTerminalEffort;
     alwaysEnter?: boolean;
     conversationSessionId?: string;
+    requestedConversationSessionId?: string;
     resumeConversation?: boolean;
   },
   onFrame: (frame: AiTerminalFrame) => void,
@@ -6526,7 +6592,8 @@ async function runAiTerminalWithRetries(
   let lastError: unknown = null;
   const attempts = Math.max(1, retries + 1);
   let conversationSessionId =
-    input.conversationSessionId || (input.kind === "claude-cli" ? crypto.randomUUID() : undefined);
+    input.conversationSessionId ||
+    (input.kind === "claude-cli" ? generateWorkflowSessionId() : undefined);
   const handleFrame = (frame: AiTerminalFrame) => {
     if (frame.type === "conversation" && frame.sessionId) {
       conversationSessionId = frame.sessionId;
@@ -6547,7 +6614,7 @@ async function runAiTerminalWithRetries(
         {
           ...(attempt > 1 ? continueOnlyTerminalInput(input, retryLanguage) : input),
           conversationSessionId,
-          resumeConversation: attempt > 1,
+          resumeConversation: input.resumeConversation === true || attempt > 1,
         },
         handleFrame,
         signal,
@@ -7441,6 +7508,26 @@ function parseFileWriteInput(raw: string): { path: string; content: string } {
 
 function edgePath(from: WorkflowNode, to: WorkflowNode, sourceHandle?: string): string {
   return bezierPath(outputPoint(from, sourceHandle), inputPoint(to));
+}
+
+function backEdgePath(
+  from: WorkflowNode,
+  to: WorkflowNode,
+  nodes: readonly WorkflowNode[],
+  laneIndex: number,
+  sourceHandle?: string,
+): string {
+  const start = outputPoint(from, sourceHandle);
+  const end = inputPoint(to);
+  const top = nodes.reduce((value, node) => Math.min(value, node.y), Math.min(from.y, to.y));
+  const laneY = worldToCanvasY(top - 48 - laneIndex * 24);
+  const startTurnX = start.x + 42;
+  const endTurnX = end.x - 42;
+  return `M ${start.x} ${start.y} C ${startTurnX} ${start.y}, ${startTurnX} ${laneY}, ${
+    startTurnX
+  } ${laneY} L ${endTurnX} ${laneY} C ${endTurnX} ${laneY}, ${endTurnX} ${end.y}, ${
+    end.x
+  } ${end.y}`;
 }
 
 function edgePathToPoint(from: WorkflowNode, point: CanvasPoint, sourceHandle?: string): string {
@@ -8402,4 +8489,16 @@ function clamp(value: number, min: number, max: number): number {
 
 function makeId(prefix: string): string {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function generateWorkflowSessionId(): string {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = [...bytes].map((value) => value.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(
+    16,
+    20,
+  )}-${hex.slice(20)}`;
 }

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { readAgentSessionUsage } from "./agent-sessions.js";
+import { findAgentSessionFilePath, readAgentSessionUsage } from "./agent-sessions.js";
 import { execRun } from "./ai-exec.js";
 import {
   type AgentEffort,
@@ -47,6 +47,8 @@ import { resolveWorkspace, type WorkspaceInfo } from "./workspace.js";
 type WorkflowBlockOutput = Record<string, unknown>;
 type RunLogEntry = { stream: "stdout" | "stderr"; content: string };
 type WorkflowRetryLanguage = "zh-CN" | "en";
+const WORKFLOW_SESSION_ID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 interface LocalNodeResult {
   output: WorkflowBlockOutput;
@@ -820,8 +822,17 @@ async function executeAgentNode(
   const retries = agentRetryCount(node);
   const retryForever = agentRetryForever(node);
   const retryPrompt = agentRetryPromptForLanguage(retryLanguage);
+  const configuredSessionId = agentConfiguredSessionId(node);
+  const sessionApp = node.providerKind === "claude-cli" ? "claude" : "codex";
+  const resumeConfiguredSession = configuredSessionId
+    ? Boolean(await findAgentSessionFilePath(sessionApp, configuredSessionId))
+    : false;
   let conversationSessionId: string | undefined =
-    node.providerKind === "claude-cli" ? randomUUID() : undefined;
+    node.providerKind === "claude-cli"
+      ? configuredSessionId || randomUUID()
+      : resumeConfiguredSession
+        ? configuredSessionId
+        : undefined;
   let attempt = 0;
   while (true) {
     if (attempt > 0) {
@@ -845,7 +856,8 @@ async function executeAgentNode(
         effort: agentEffort(node),
         alwaysEnter: agentAlwaysEnter(node),
         conversationSessionId,
-        resumeConversation: attempt > 0,
+        requestedConversationSessionId: configuredSessionId || undefined,
+        resumeConversation: resumeConfiguredSession || attempt > 0,
         signal: abort.signal,
         onFrame,
       });
@@ -2607,6 +2619,14 @@ function mcpNodeConfig(node: WorkflowNode): McpNodeConfig {
     arguments: typeof config.arguments === "string" ? config.arguments : "{}",
     tools,
   };
+}
+
+function agentConfiguredSessionId(node: WorkflowNode): string {
+  const value = typeof node.config?.sessionId === "string" ? node.config.sessionId.trim() : "";
+  if (value && !WORKFLOW_SESSION_ID_RE.test(value)) {
+    throw new Error(`${node.title} session ID must be a valid UUID.`);
+  }
+  return value;
 }
 
 function agentAutoSuccess(node: WorkflowNode): boolean {
