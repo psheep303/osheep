@@ -88,6 +88,23 @@
   font-family: inherit;
 }
 
+.git-view__operation-spin {
+  display: inline-block;
+  animation: git-view-operation-spin 0.8s linear infinite;
+}
+
+.git-view__push-button[aria-busy="true"] {
+  color: var(--accent);
+  cursor: wait;
+  opacity: 1;
+}
+
+@keyframes git-view-operation-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 /* ==== Commit split-button ==== */
 
 .git-view__commit-split {
@@ -868,8 +885,25 @@
 }
 
 .git-view__sync-primary {
-  min-height: 40px;
-  font-size: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  box-sizing: border-box;
+  height: 26px;
+  min-height: 26px;
+  padding-block: 5px;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.git-view__sync-primary .codicon {
+  flex: 0 0 auto;
+  line-height: 1;
+}
+
+.git-view__sync-primary[aria-busy="true"] {
+  cursor: wait;
 }
 
 .git-view__msg {

@@ -23,6 +23,7 @@ import {
   writeFileText,
 } from "./fs";
 import { buildDecorations } from "./git-decorations";
+import { useOsheepOverlay } from "./OsheepOverlay";
 import { Resizer } from "./Resizer";
 import { SettingsView } from "./SettingsView";
 import { StatusBar } from "./StatusBar";
@@ -138,6 +139,7 @@ const SIDE_MAX = 600;
 
 export function Workbench() {
   const { t } = useUiPreferences();
+  const { notify } = useOsheepOverlay();
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
   const [workspaceName, setWorkspaceName] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);
@@ -169,6 +171,7 @@ export function Workbench() {
   const [gitStatus, setGitStatus] = useState<GitStatus | null>(null);
   const decorations = useMemo(() => buildDecorations(gitStatus), [gitStatus]);
   const [statusVersion, setStatusVersion] = useState(0);
+  const lastGitStatusErrorRef = useRef<string | null>(null);
   const refreshGitStatus = useCallback(() => {
     setStatusVersion((v) => v + 1);
   }, []);
@@ -190,15 +193,25 @@ export function Workbench() {
     let cancelled = false;
     void getGitStatus(workspaceId)
       .then((s) => {
-        if (!cancelled) setGitStatus(s);
+        if (!cancelled) {
+          lastGitStatusErrorRef.current = null;
+          setGitStatus(s);
+        }
       })
-      .catch(() => {
-        if (!cancelled) setGitStatus(null);
+      .catch((reason) => {
+        if (!cancelled) {
+          setGitStatus(null);
+          const message = (reason as Error).message;
+          if (activeView === "git" && lastGitStatusErrorRef.current !== message) {
+            lastGitStatusErrorRef.current = message;
+            notify.error(message);
+          }
+        }
       });
     return () => {
       cancelled = true;
     };
-  }, [workspaceId, statusVersion]);
+  }, [activeView, notify, workspaceId, statusVersion]);
 
   const [leftWidth, setLeftWidth] = useState(DEFAULT_LEFT_WIDTH);
   const [bottomHeight, setBottomHeight] = useState(0);

@@ -1,7 +1,8 @@
-import { Fragment, type ReactNode, useEffect, useMemo, useState } from "react";
+import { Fragment, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useUiPreferences } from "../i18n/UiPreferences";
 import { type GitCommit, type GitCommitDetails, getGitCommitDetails, getGitLog } from "./api";
 import { FileIcon } from "./FileIcon";
+import { useOsheepOverlay } from "./OsheepOverlay";
 import { gitGraphPalette, gitGraphRefColors } from "./theme";
 
 interface GitGraphProps {
@@ -45,6 +46,7 @@ const GRAPH_COLORS = gitGraphPalette();
 
 export function GitGraph({ workspaceId, refreshKey, scope, onOpenCommitDiff }: GitGraphProps) {
   const { resolvedLanguage, t } = useUiPreferences();
+  const { notify } = useOsheepOverlay();
   const [commits, setCommits] = useState<GitCommit[]>([]);
   const [head, setHead] = useState<string | null>(null);
   const [currentRef, setCurrentRef] = useState<string | null>(null);
@@ -55,6 +57,16 @@ export function GitGraph({ workspaceId, refreshKey, scope, onOpenCommitDiff }: G
   const [details, setDetails] = useState<GitCommitDetails | null>(null);
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [detailsError, setDetailsError] = useState<string | null>(null);
+  const lastNotifiedErrorRef = useRef<string | null>(null);
+  const reportError = useCallback(
+    (message: string) => {
+      if (lastNotifiedErrorRef.current !== message) {
+        lastNotifiedErrorRef.current = message;
+        notify.error(message);
+      }
+    },
+    [notify],
+  );
 
   useEffect(() => {
     if (!workspaceId) return;
@@ -64,6 +76,7 @@ export function GitGraph({ workspaceId, refreshKey, scope, onOpenCommitDiff }: G
     void getGitLog(workspaceId, 200, 0, scope === "all" ? "--all" : "HEAD")
       .then((result) => {
         if (cancelled) return;
+        lastNotifiedErrorRef.current = null;
         setCommits(result.commits);
         setHead(result.head);
         setCurrentRef(result.currentRef);
@@ -71,7 +84,9 @@ export function GitGraph({ workspaceId, refreshKey, scope, onOpenCommitDiff }: G
       })
       .catch((reason) => {
         if (cancelled) return;
-        setError(t("error.gitHistory", { detail: (reason as Error).message }));
+        const message = t("error.gitHistory", { detail: (reason as Error).message });
+        setError(message);
+        reportError(message);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -79,12 +94,12 @@ export function GitGraph({ workspaceId, refreshKey, scope, onOpenCommitDiff }: G
     return () => {
       cancelled = true;
     };
-  }, [workspaceId, refreshKey, scope, t]);
+  }, [workspaceId, refreshKey, scope, reportError, t]);
 
   useEffect(() => {
     setSelected(null);
     setDetails(null);
-  }, [refreshKey, scope, workspaceId]);
+  }, [scope, workspaceId]);
 
   useEffect(() => {
     if (!selected) return;
@@ -97,7 +112,11 @@ export function GitGraph({ workspaceId, refreshKey, scope, onOpenCommitDiff }: G
         if (!cancelled) setDetails(value);
       })
       .catch((reason) => {
-        if (!cancelled) setDetailsError((reason as Error).message);
+        if (!cancelled) {
+          const message = (reason as Error).message;
+          setDetailsError(message);
+          reportError(message);
+        }
       })
       .finally(() => {
         if (!cancelled) setDetailsLoading(false);
@@ -105,7 +124,7 @@ export function GitGraph({ workspaceId, refreshKey, scope, onOpenCommitDiff }: G
     return () => {
       cancelled = true;
     };
-  }, [selected, workspaceId]);
+  }, [reportError, selected, workspaceId]);
 
   const rows = useMemo(
     () => toHistoryRows(commits, head, currentRef, currentRemoteRef),
@@ -124,7 +143,9 @@ export function GitGraph({ workspaceId, refreshKey, scope, onOpenCommitDiff }: G
         value.files.map((file) => file.path),
       );
     } catch (reason) {
-      setError(t("error.gitHistory", { detail: (reason as Error).message }));
+      const message = t("error.gitHistory", { detail: (reason as Error).message });
+      setError(message);
+      reportError(message);
     }
   };
 

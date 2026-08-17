@@ -6,6 +6,7 @@ import {
   type GitChange,
   type GitRemote,
   type GitStatus,
+  getGitStatus,
   gitCheckout,
   gitCommit,
   gitDiscard,
@@ -43,6 +44,10 @@ const MIN_SPLIT = 0;
 const MAX_SPLIT = 1;
 
 type CommitMode = "commit" | "commit-push" | "commit-sync";
+type GitOperation = "default" | "push" | "sync";
+
+const AUTO_REFRESH_INTERVAL_MS = 5_000;
+const MIN_VISIBLE_OPERATION_MS = 300;
 
 export function GitView({
   workspaceId,
@@ -54,7 +59,7 @@ export function GitView({
   onOpenCommitDiff,
 }: GitViewProps) {
   const { resolvedLanguage, t } = useUiPreferences();
-  const { confirm } = useOsheepOverlay();
+  const { confirm, notify } = useOsheepOverlay();
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [busyLabel, setBusyLabel] = useState<string | null>(null);
@@ -66,6 +71,10 @@ export function GitView({
   const [branchOpen, setBranchOpen] = useState(false);
   const [commitMode, setCommitMode] = useState<CommitMode>("commit");
   const [repositoryOpen, setRepositoryOpen] = useState(true);
+  const [operation, setOperation] = useState<GitOperation | null>(null);
+  const busyRef = useRef(false);
+  const lastRemoteErrorRef = useRef<string | null>(null);
+  const autoRefreshSignatureRef = useRef<string | null>(null);
 
   const isRepo = !!status?.isRepo;
 
@@ -76,15 +85,25 @@ export function GitView({
     }
     try {
       const r = await listGitRemotes(workspaceId);
+      lastRemoteErrorRef.current = null;
       setRemotes(r);
-    } catch {
+    } catch (e) {
       setRemotes([]);
+      const message = (e as Error).message;
+      if (lastRemoteErrorRef.current !== message) {
+        lastRemoteErrorRef.current = message;
+        notify.error(message);
+      }
     }
-  }, [workspaceId, isRepo]);
+  }, [workspaceId, isRepo, notify]);
 
   useEffect(() => {
     void refreshRemotes();
   }, [refreshRemotes]);
+
+  useEffect(() => {
+    autoRefreshSignatureRef.current = status ? gitStatusSignature(status) : null;
+  }, [status]);
 
   const refreshAll = useCallback(() => {
     onRefreshStatus();
@@ -92,18 +111,68 @@ export function GitView({
     setGraphVersion((v) => v + 1);
   }, [onRefreshStatus, refreshRemotes]);
 
-  const run = async (label: string, fn: () => Promise<void>) => {
+  const pollForChanges = useCallback(async () => {
+    if (!workspaceId || busyRef.current) return;
+    try {
+      const next = await getGitStatus(workspaceId);
+      const nextSignature = gitStatusSignature(next);
+      if (autoRefreshSignatureRef.current === null) {
+        autoRefreshSignatureRef.current = nextSignature;
+        return;
+      }
+      if (autoRefreshSignatureRef.current !== nextSignature) {
+        autoRefreshSignatureRef.current = nextSignature;
+        onRefreshStatus();
+        void refreshRemotes();
+        setGraphVersion((v) => v + 1);
+      }
+    } catch {
+      // The foreground status request reports errors through the workbench.
+    }
+  }, [onRefreshStatus, refreshRemotes, workspaceId]);
+
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") void pollForChanges();
+    };
+    const timer = window.setInterval(() => void pollForChanges(), AUTO_REFRESH_INTERVAL_MS);
+    window.addEventListener("focus", onVisibilityChange);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", onVisibilityChange);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [pollForChanges]);
+
+  const run = async (
+    label: string,
+    fn: () => Promise<void>,
+    nextOperation: GitOperation = "default",
+  ) => {
+    if (busyRef.current) return;
+    const startedAt = Date.now();
+    busyRef.current = true;
     setBusy(true);
     setBusyLabel(label);
+    setOperation(nextOperation);
     setError(null);
     try {
       await fn();
       refreshAll();
     } catch (e) {
-      setError((e as Error).message);
+      const message = (e as Error).message;
+      setError(message);
+      notify.error(message);
     } finally {
+      const remaining = MIN_VISIBLE_OPERATION_MS - (Date.now() - startedAt);
+      if (remaining > 0) {
+        await new Promise<void>((resolve) => window.setTimeout(resolve, remaining));
+      }
+      busyRef.current = false;
       setBusy(false);
       setBusyLabel(null);
+      setOperation(null);
     }
   };
 
@@ -142,7 +211,9 @@ export function GitView({
                 await gitInit(workspaceId);
                 refreshAll();
               } catch (e) {
-                setError((e as Error).message);
+                const message = (e as Error).message;
+                setError(message);
+                notify.error(message);
               } finally {
                 setInitializing(false);
               }
@@ -193,14 +264,18 @@ export function GitView({
     });
 
   const doSync = () =>
-    void run(t("git.syncing"), async () => {
-      if (!hasUpstream) {
-        await gitPush(workspaceId, autoPushOpts(remotes, status));
-        return;
-      }
-      if (behind > 0) await gitPull(workspaceId, {});
-      if (ahead > 0 || behind === 0) await gitPush(workspaceId, {});
-    });
+    void run(
+      t("git.syncing"),
+      async () => {
+        if (!hasUpstream) {
+          await gitPush(workspaceId, autoPushOpts(remotes, status));
+          return;
+        }
+        if (behind > 0) await gitPull(workspaceId, {});
+        if (ahead > 0 || behind === 0) await gitPush(workspaceId, {});
+      },
+      "sync",
+    );
 
   const doFetch = () =>
     void run(t("git.pulling"), async () => {
@@ -212,10 +287,20 @@ export function GitView({
       await gitPull(workspaceId, {});
     });
 
-  const doPush = () =>
-    void run(t("git.pushing"), async () => {
-      await gitPush(workspaceId, hasUpstream ? {} : autoPushOpts(remotes, status));
-    });
+  const doPush = () => {
+    void run(
+      t("git.pushing"),
+      async () => {
+        const currentRemotes = hasUpstream ? remotes : await listGitRemotes(workspaceId);
+        const pushOpts = hasUpstream ? {} : autoPushOpts(currentRemotes, status);
+        if (!hasUpstream && Object.keys(pushOpts).length === 0) {
+          throw new Error(t("git.addRemoteTitle"));
+        }
+        await gitPush(workspaceId, pushOpts);
+      },
+      "push",
+    );
+  };
 
   const showSyncAction = staged.length === 0 && unstaged.length === 0 && (ahead > 0 || behind > 0);
   const commitPlaceholder = status?.branch
@@ -313,11 +398,22 @@ export function GitView({
             spellCheck={false}
           />
           {showSyncAction ? (
-            <button className="primary-btn git-view__sync-primary" disabled={busy} onClick={doSync}>
-              <SyncIcon />
-              {resolvedLanguage === "zh-CN" ? "同步更改" : "Sync Changes"}
-              {behind > 0 ? ` ${behind}↓` : ""}
-              {ahead > 0 ? ` ${ahead}↑` : ""}
+            <button
+              className="primary-btn git-view__sync-primary"
+              disabled={busy}
+              aria-busy={operation === "sync"}
+              onClick={doSync}
+            >
+              {operation === "sync" && <SyncIcon spinning />}
+              <span>
+                {operation === "sync"
+                  ? t("git.syncing")
+                  : resolvedLanguage === "zh-CN"
+                    ? "同步更改"
+                    : "Sync Changes"}
+                {operation !== "sync" && behind > 0 ? ` ${behind}↓` : ""}
+                {operation !== "sync" && ahead > 0 ? ` ${ahead}↑` : ""}
+              </span>
             </button>
           ) : (
             <CommitSplitButton
@@ -431,6 +527,7 @@ export function GitView({
             refreshKey={graphVersion}
             status={status}
             busy={busy}
+            pushing={operation === "push"}
             onFetch={doFetch}
             onPull={doPull}
             onPush={doPush}
@@ -451,6 +548,24 @@ function autoPushOpts(
   if (!status?.branch || remotes.length === 0) return {};
   const remote = remotes.find((r) => r.name === "origin")?.name ?? remotes[0].name;
   return { remote, branch: status.branch, setUpstream: true };
+}
+
+function gitStatusSignature(status: GitStatus): string {
+  return JSON.stringify({
+    isRepo: status.isRepo,
+    branch: status.branch ?? null,
+    head: status.head ?? null,
+    ahead: status.ahead ?? 0,
+    behind: status.behind ?? 0,
+    upstream: status.upstream ?? null,
+    detached: status.detached ?? false,
+    changes: status.changes.map((change) => [
+      change.path,
+      change.indexStatus,
+      change.worktreeStatus,
+      change.renamedFrom,
+    ]),
+  });
 }
 
 function CommitSplitButton({
@@ -565,6 +680,7 @@ function BranchPopover({
   onClose: () => void;
   onChanged: () => void;
 }) {
+  const { notify } = useOsheepOverlay();
   const [filter, setFilter] = useState("");
   const [branches, setBranches] = useState<GitBranch[]>([]);
   const [loading, setLoading] = useState(false);
@@ -580,7 +696,11 @@ function BranchPopover({
         if (!cancelled) setBranches(r.branches);
       })
       .catch((e) => {
-        if (!cancelled) setErr((e as Error).message);
+        if (!cancelled) {
+          const message = (e as Error).message;
+          setErr(message);
+          notify.error(message);
+        }
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -588,7 +708,7 @@ function BranchPopover({
     return () => {
       cancelled = true;
     };
-  }, [workspaceId]);
+  }, [notify, workspaceId]);
 
   useEffect(() => {
     const onDoc = (e: MouseEvent) => {
@@ -619,7 +739,9 @@ function BranchPopover({
       onChanged();
       onClose();
     } catch (e) {
-      setErr((e as Error).message);
+      const message = (e as Error).message;
+      setErr(message);
+      notify.error(message);
     } finally {
       setLocalBusy(false);
     }
@@ -786,7 +908,7 @@ function RemotesPopover({
   onClose: () => void;
 }) {
   const { t } = useUiPreferences();
-  const { confirm } = useOsheepOverlay();
+  const { confirm, notify } = useOsheepOverlay();
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
@@ -819,7 +941,9 @@ function RemotesPopover({
       setAdding(false);
       onChanged();
     } catch (e) {
-      setErr((e as Error).message);
+      const message = (e as Error).message;
+      setErr(message);
+      notify.error(message);
     } finally {
       setLocalBusy(false);
     }
@@ -840,7 +964,9 @@ function RemotesPopover({
       await removeGitRemote(workspaceId, n);
       onChanged();
     } catch (e) {
-      setErr((e as Error).message);
+      const message = (e as Error).message;
+      setErr(message);
+      notify.error(message);
     } finally {
       setLocalBusy(false);
     }
@@ -938,6 +1064,7 @@ function GraphSection({
   refreshKey,
   status,
   busy,
+  pushing,
   onFetch,
   onPull,
   onPush,
@@ -949,6 +1076,7 @@ function GraphSection({
   refreshKey: number;
   status: GitStatus | null;
   busy: boolean;
+  pushing: boolean;
   onFetch: () => void;
   onPull: () => void;
   onPush: () => void;
@@ -998,8 +1126,18 @@ function GraphSection({
           >
             <i className="codicon codicon-cloud-download" aria-hidden="true" />
           </button>
-          <button type="button" className="icon-btn" title="推送" disabled={busy} onClick={onPush}>
-            <i className="codicon codicon-cloud-upload" aria-hidden="true" />
+          <button
+            type="button"
+            className="icon-btn git-view__push-button"
+            title={pushing ? "推送中..." : "推送"}
+            disabled={busy}
+            aria-busy={pushing}
+            onClick={onPush}
+          >
+            <i
+              className={`codicon ${pushing ? "codicon-sync git-view__operation-spin" : "codicon-cloud-upload"}`}
+              aria-hidden="true"
+            />
           </button>
           <button type="button" className="icon-btn" title="提取" disabled={busy} onClick={onFetch}>
             <i className="codicon codicon-repo-fetch" aria-hidden="true" />
@@ -1208,8 +1346,13 @@ function RefreshIcon() {
   return <i className="codicon codicon-refresh" aria-hidden="true" />;
 }
 
-function SyncIcon() {
-  return <i className="codicon codicon-sync" aria-hidden="true" />;
+function SyncIcon({ spinning = false }: { spinning?: boolean }) {
+  return (
+    <i
+      className={`codicon codicon-sync${spinning ? " git-view__operation-spin" : ""}`}
+      aria-hidden="true"
+    />
+  );
 }
 
 function RemoteIcon() {
