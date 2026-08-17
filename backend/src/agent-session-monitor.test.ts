@@ -17,11 +17,13 @@ test("interactive CLI commands receive the initial prompt without terminal readi
   );
 });
 
-test("interactive CLI prompt quoting prevents PowerShell expansion", () => {
+test("interactive CLI prompt quoting prevents shell expansion", () => {
   assert.equal(
     buildAgentTerminalCommand("claude-cli", "default", { prompt: "check $(whoami) and it's safe" })
       .command,
-    "claude --permission-mode acceptEdits 'check $(whoami) and it''s safe'",
+    process.platform === "win32"
+      ? "claude --permission-mode acceptEdits 'check $(whoami) and it''s safe'"
+      : "claude --permission-mode acceptEdits 'check $(whoami) and it'\\''s safe'",
   );
 });
 
