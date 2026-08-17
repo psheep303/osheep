@@ -2499,7 +2499,9 @@
 
 .workflow-edge.is-back {
   stroke: rgba(245, 158, 11, 0.88);
-  stroke-dasharray: 8 4;
+  stroke-dasharray: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
   opacity: 0.9;
 }
 

@@ -7521,13 +7521,22 @@ function backEdgePath(
   const end = inputPoint(to);
   const top = nodes.reduce((value, node) => Math.min(value, node.y), Math.min(from.y, to.y));
   const laneY = worldToCanvasY(top - 48 - laneIndex * 24);
-  const startTurnX = start.x + 42;
-  const endTurnX = end.x - 42;
-  return `M ${start.x} ${start.y} C ${startTurnX} ${start.y}, ${startTurnX} ${laneY}, ${
-    startTurnX
-  } ${laneY} L ${endTurnX} ${laneY} C ${endTurnX} ${laneY}, ${endTurnX} ${end.y}, ${
-    end.x
-  } ${end.y}`;
+  const startTurnX = start.x + 28;
+  const endTurnX = end.x - 28;
+  const radius = 12;
+  const topDirection = endTurnX >= startTurnX ? 1 : -1;
+  return [
+    `M ${start.x} ${start.y}`,
+    `L ${startTurnX - radius} ${start.y}`,
+    `Q ${startTurnX} ${start.y} ${startTurnX} ${start.y - radius}`,
+    `L ${startTurnX} ${laneY + radius}`,
+    `Q ${startTurnX} ${laneY} ${startTurnX + topDirection * radius} ${laneY}`,
+    `L ${endTurnX - topDirection * radius} ${laneY}`,
+    `Q ${endTurnX} ${laneY} ${endTurnX} ${laneY + radius}`,
+    `L ${endTurnX} ${end.y - radius}`,
+    `Q ${endTurnX} ${end.y} ${endTurnX + radius} ${end.y}`,
+    `L ${end.x} ${end.y}`,
+  ].join(" ");
 }
 
 function edgePathToPoint(from: WorkflowNode, point: CanvasPoint, sourceHandle?: string): string {
