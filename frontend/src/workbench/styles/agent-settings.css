@@ -1006,10 +1006,15 @@
 }
 
 .codex-plugins__path {
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  min-height: 30px;
   padding: 6px 10px;
   color: var(--fg-faint);
   font-family: "Cascadia Mono", Consolas, monospace;
   font-size: 10.5px;
+  line-height: 1.4;
   border-bottom: 1px solid var(--border-faint);
 }
 
@@ -1171,6 +1176,7 @@
   margin-top: 3px;
   color: var(--fg-muted);
   font-size: 11px;
+  line-height: 1.35;
 }
 
 .codex-plugins__source {

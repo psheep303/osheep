@@ -5,7 +5,11 @@ import { config, platform } from "./config.js";
 import { errors } from "./errors.js";
 import { buildBashGuard, buildCmdGuard, buildPowerShellGuard } from "./pty-guard.js";
 import { findExecutable } from "./runtime-tools.js";
-import { TerminalReplayBuffer } from "./terminal-replay-buffer.js";
+import {
+  AGENT_TERMINAL_REPLAY_BYTE_LIMIT,
+  prepareTerminalReplay,
+  TerminalReplayBuffer,
+} from "./terminal-replay-buffer.js";
 import type { WorkspaceInfo } from "./workspace.js";
 
 export interface ShellProfile {
@@ -32,7 +36,6 @@ export interface TerminalSession {
   replayResizes: TerminalReplayResize[];
   // Currently attached WS sink (single attach per session for MVP).
   sink: ((frame: string) => void) | null;
-  taps: Set<(frame: string) => void>;
   idleTimer: NodeJS.Timeout | null;
   // Logical cwd inside the workspaces root, updated when we recognize a `cd`.
   // Best-effort: covers plain `cd <path>` / `chdir` / `Set-Location` / `pushd`.
@@ -118,6 +121,28 @@ function clampSize(n: unknown, fallback: number): number {
   return Math.floor(v);
 }
 
+function buildPtyEnv(terminalProgram?: string): Record<string, string> {
+  const env = { ...process.env } as Record<string, string | undefined>;
+
+  // Osheep owns the embedded terminal. Do not let a parent VS Code/Codex
+  // extension make child TUIs believe they are running in VS Code's terminal;
+  // Codex disables its keyboard-enhancement protocol in that environment.
+  for (const key of Object.keys(env)) {
+    if (
+      key.startsWith("VSCODE_") ||
+      key === "CODEX_INTERNAL_ORIGINATOR_OVERRIDE" ||
+      key === "CODEX_TUI_DISABLE_KEYBOARD_ENHANCEMENT"
+    ) {
+      delete env[key];
+    }
+  }
+
+  env.TERM_PROGRAM = terminalProgram ?? "WezTerm";
+  return Object.fromEntries(
+    Object.entries(env).filter((entry): entry is [string, string] => entry[1] !== undefined),
+  );
+}
+
 function bumpActivity(s: TerminalSession) {
   s.lastActivity = Date.now();
   if (s.idleTimer) clearTimeout(s.idleTimer);
@@ -135,6 +160,10 @@ export interface CreateSessionInput {
   rows: number;
   killOnDetach?: boolean;
   guardRoot?: string;
+  /** Internal command run by the shell only after its startup guard is installed. */
+  initialCommand?: string;
+  /** Terminal identity advertised to interactive agent TUIs. */
+  terminalProgram?: string;
 }
 
 export function createSession(input: CreateSessionInput): TerminalSession {
@@ -155,15 +184,20 @@ export function createSession(input: CreateSessionInput): TerminalSession {
   let guardCleanup: (() => void) | null = null;
   try {
     if (profile.id === "powershell") {
-      const g = buildPowerShellGuard(profile.args, workspacesRootAbs, initialCwd);
+      const g = buildPowerShellGuard(
+        profile.args,
+        workspacesRootAbs,
+        initialCwd,
+        input.initialCommand,
+      );
       spawnArgs = g.args;
       guardCleanup = g.cleanup;
     } else if (profile.id === "cmd") {
-      const g = buildCmdGuard(profile.args, workspacesRootAbs, initialCwd);
+      const g = buildCmdGuard(profile.args, workspacesRootAbs, initialCwd, input.initialCommand);
       spawnArgs = g.args;
       guardCleanup = g.cleanup;
     } else if (profile.id === "bash" || profile.id === "zsh") {
-      const g = buildBashGuard(profile.args, workspacesRootAbs, initialCwd);
+      const g = buildBashGuard(profile.args, workspacesRootAbs, initialCwd, input.initialCommand);
       spawnArgs = g.args;
       guardCleanup = g.cleanup;
     }
@@ -175,6 +209,10 @@ export function createSession(input: CreateSessionInput): TerminalSession {
     guardCleanup = null;
   }
 
+  if (input.initialCommand && !guardCleanup) {
+    throw errors.ptySpawnFailed("Unable to prepare the terminal startup command.");
+  }
+
   let pty: nodePty.IPty;
   try {
     pty = nodePty.spawn(profile.executable, spawnArgs, {
@@ -182,7 +220,7 @@ export function createSession(input: CreateSessionInput): TerminalSession {
       cols,
       rows,
       cwd: input.workspace.path,
-      env: { ...process.env },
+      env: buildPtyEnv(input.terminalProgram),
       // The bundled ConPTY DLL avoids node-pty's helper process racing a
       // shell that has already exited (AttachConsole failed on Windows).
       useConptyDll: platform === "windows",
@@ -202,15 +240,14 @@ export function createSession(input: CreateSessionInput): TerminalSession {
     createdAt: Date.now(),
     pty,
     lastActivity: Date.now(),
-    // Agent TUIs must replay from their initial terminal state. Cutting an ANSI
-    // stream at an arbitrary byte produces invalid cursor and screen state.
-    replayBuffer: new TerminalReplayBuffer(killOnDetach ? undefined : null),
+    replayBuffer: new TerminalReplayBuffer(
+      killOnDetach ? undefined : AGENT_TERMINAL_REPLAY_BYTE_LIMIT,
+    ),
     replayLength: 0,
     replayInitialCols: cols,
     replayInitialRows: rows,
     replayResizes: [],
     sink: null,
-    taps: new Set(),
     idleTimer: null,
     logicalCwd: initialCwd,
     workspacesRoot: workspacesRootAbs,
@@ -228,7 +265,6 @@ export function createSession(input: CreateSessionInput): TerminalSession {
   });
   pty.onExit(({ exitCode, signal }) => {
     const frame = JSON.stringify({ type: "exit", code: exitCode, signal: signal ?? null });
-    for (const tap of session.taps) tap(frame);
     if (session.sink) session.sink(frame);
     cleanupSession(session, "pty-exit");
   });
@@ -239,7 +275,6 @@ function publishPtyOutput(session: TerminalSession, data: string): void {
   session.replayBuffer.append(data);
   session.replayLength += data.length;
   const frame = JSON.stringify({ type: "output", data });
-  for (const tap of session.taps) tap(frame);
   if (session.sink) session.sink(frame);
 }
 
@@ -305,34 +340,50 @@ export function attachSink(
 ): {
   detach: () => void;
   replayed: string;
+  replayTruncated: boolean;
   replayInitialCols: number;
   replayInitialRows: number;
   replayResizes: TerminalReplayResize[];
 } {
   s.sink = sink;
-  const replayed = s.replayBuffer.value();
+  const replay = prepareTerminalReplay(s.replayBuffer.snapshot());
+  if (!replay.truncated) {
+    return {
+      detach: () => {
+        if (s.sink === sink) s.sink = null;
+      },
+      replayed: replay.data,
+      replayTruncated: false,
+      replayInitialCols: s.replayInitialCols,
+      replayInitialRows: s.replayInitialRows,
+      replayResizes: s.killOnDetach ? [] : s.replayResizes.slice(),
+    };
+  }
+  const replayPrefixLength = replay.data.length - (s.replayLength - replay.startOffset);
+  let replayInitialCols = s.replayInitialCols;
+  let replayInitialRows = s.replayInitialRows;
+  for (const resize of s.replayResizes) {
+    if (resize.offset > replay.startOffset) break;
+    replayInitialCols = resize.cols;
+    replayInitialRows = resize.rows;
+  }
+  const replayResizes = s.killOnDetach
+    ? []
+    : s.replayResizes
+        .filter((resize) => resize.offset > replay.startOffset)
+        .map((resize) => ({
+          ...resize,
+          offset: resize.offset - replay.startOffset + replayPrefixLength,
+        }));
   return {
     detach: () => {
       if (s.sink === sink) s.sink = null;
     },
-    replayed,
-    replayInitialCols: s.replayInitialCols,
-    replayInitialRows: s.replayInitialRows,
-    replayResizes: s.killOnDetach ? [] : s.replayResizes.slice(),
-  };
-}
-
-export function addTap(
-  s: TerminalSession,
-  tap: (frame: string) => void,
-): { detach: () => void; replayed: string } {
-  s.taps.add(tap);
-  const replayed = s.replayBuffer.value();
-  return {
-    detach: () => {
-      s.taps.delete(tap);
-    },
-    replayed,
+    replayed: replay.data,
+    replayTruncated: replay.truncated,
+    replayInitialCols,
+    replayInitialRows,
+    replayResizes,
   };
 }
 
@@ -392,6 +443,15 @@ function sendWarningFrame(s: TerminalSession, text: string): void {
 }
 
 function handleInputData(s: TerminalSession, data: string): void {
+  // Keep Codex's synthetic Alt+Enter in one PTY write. Splitting ESC and CR
+  // lets ConPTY surface Escape as a standalone key before Enter arrives.
+  if (data === "\x1b\r") {
+    s.inputBuffer = "";
+    s.bufferDirty = true;
+    s.pty.write(data);
+    return;
+  }
+
   // Walk one char at a time. Printable chars and backspace are mirrored to
   // s.inputBuffer; on Enter we peek the buffer to decide whether to forward
   // the Enter or replace it with Ctrl-C + a warning.

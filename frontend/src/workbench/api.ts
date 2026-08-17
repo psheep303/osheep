@@ -154,6 +154,36 @@ export interface TerminalCreateResp {
 
 export type AgentSessionApp = "claude" | "codex";
 
+export type CliToolName = "claude" | "codex";
+export type CliToolAction = "install" | "update";
+
+export interface CliToolStatus {
+  name: CliToolName;
+  activeAction: CliToolAction | null;
+  installed: boolean;
+  currentVersion: string | null;
+  latestVersion: string | null;
+  updateAvailable: boolean;
+  platform: "windows" | "macos" | "linux";
+  error: string | null;
+}
+
+export async function getCliToolStatuses(): Promise<CliToolStatus[]> {
+  const result = await http.get<{ tools: CliToolStatus[] }>("/api/ai/cli-tools");
+  return result.tools;
+}
+
+export async function runCliToolAction(
+  name: CliToolName,
+  action: CliToolAction,
+): Promise<CliToolStatus> {
+  const result = await http.post<{ status: CliToolStatus }>(
+    `/api/ai/cli-tools/${encodeURIComponent(name)}/action`,
+    { action },
+  );
+  return result.status;
+}
+
 export interface AgentSessionSummary {
   app: AgentSessionApp;
   id: string;
@@ -291,6 +321,19 @@ export async function getUiPreferences<T = unknown>(): Promise<T> {
 
 export async function putUiPreferences(value: unknown): Promise<void> {
   await http.put("/api/ui-preferences", value);
+}
+
+export interface ClaudeOnboardingStatus {
+  enabled: boolean;
+  path: string;
+}
+
+export async function getClaudeOnboardingStatus(): Promise<ClaudeOnboardingStatus> {
+  return await http.get("/api/claude/onboarding-skip");
+}
+
+export async function putClaudeOnboardingSkip(enabled: boolean): Promise<ClaudeOnboardingStatus> {
+  return await http.put("/api/claude/onboarding-skip", { enabled });
 }
 
 // ─── Terminal ───
@@ -1282,10 +1325,12 @@ export async function saveWorkflow(
 export async function runWorkflow(
   workspaceId: string,
   workflowId: string,
+  language: "zh-CN" | "en",
   nodeIds?: string[],
 ): Promise<{ runId: string; workflow: WorkflowRecord }> {
   return await http.post(workflowsUrl(workspaceId, `/${encodeURIComponent(workflowId)}/run`), {
     nodeIds,
+    language,
   });
 }
 
@@ -1710,24 +1755,18 @@ export async function aiChatStream(
 }
 
 export interface AiTerminalFrame {
-  type: "session" | "conversation" | "output" | "status" | "exit";
+  type: "session" | "conversation" | "status";
   sessionId?: string;
   data?: string;
   status?:
     | "starting"
-    | "waiting-for-input"
-    | "ready"
-    | "prompt-injected"
     | "prompt-sent"
-    | "prompt-timeout"
     | "waiting-for-choice"
     | "ready-for-success"
     | "auto-error"
     | "auto-finished"
     | "manual-success"
     | "exited";
-  code?: number | null;
-  signal?: number | string | null;
 }
 
 export interface AiTerminalResult {
@@ -1739,6 +1778,8 @@ export interface AiTerminalResult {
   verification: string[];
   exitCode: number | null;
   signal: number | string | null;
+  outcome?: "success" | "error" | "cancelled" | "user-rejected";
+  errorMessage?: string;
 }
 
 export type AiTerminalMode = "default" | "goal" | "plan";
@@ -1773,7 +1814,6 @@ export async function aiChatTerminalStream(
     codexApproval?: AiTerminalCodexApproval;
     codexSandbox?: AiTerminalCodexSandbox;
     effort?: AiTerminalEffort;
-    failOnTerminalError?: boolean;
     alwaysEnter?: boolean;
     conversationSessionId?: string;
     resumeConversation?: boolean;
@@ -1891,32 +1931,6 @@ export async function aiChatTerminalStream(
   return { result, aborted };
 }
 
-export async function injectAiTerminalPrompt(
-  workspaceId: string,
-  sessionId: string,
-  options?: { submit?: boolean },
-): Promise<void> {
-  await http.post(
-    `/api/workspaces/${encodeURIComponent(workspaceId)}/ai/chat/terminal/${encodeURIComponent(
-      sessionId,
-    )}/inject`,
-    options ?? {},
-  );
-}
-
-export async function setAiTerminalAutoContinue(
-  workspaceId: string,
-  sessionId: string,
-  autoContinue: boolean,
-): Promise<void> {
-  await http.post(
-    `/api/workspaces/${encodeURIComponent(workspaceId)}/ai/chat/terminal/${encodeURIComponent(
-      sessionId,
-    )}/auto-continue`,
-    { autoContinue },
-  );
-}
-
 export async function setAiTerminalAutoSuccess(
   workspaceId: string,
   sessionId: string,
@@ -1946,14 +1960,6 @@ export async function finishAiTerminalSuccess(
     `/api/workspaces/${encodeURIComponent(workspaceId)}/ai/chat/terminal/${encodeURIComponent(
       sessionId,
     )}/success`,
-  );
-}
-
-export async function continueAiTerminal(workspaceId: string, sessionId: string): Promise<void> {
-  await http.post(
-    `/api/workspaces/${encodeURIComponent(workspaceId)}/ai/chat/terminal/${encodeURIComponent(
-      sessionId,
-    )}/continue`,
   );
 }
 

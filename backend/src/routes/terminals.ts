@@ -1,5 +1,4 @@
 import type { FastifyInstance } from "fastify";
-import { recordAgentTerminalUserInput, shouldCompactAgentStartupOnResize } from "../ai-terminal.js";
 import { platform } from "../config.js";
 import { errors } from "../errors.js";
 import {
@@ -13,6 +12,20 @@ import {
   writeInput,
 } from "../pty.js";
 import { resolveWorkspace } from "../workspace.js";
+
+const TERMINAL_REPLAY_CHUNK_CHARS = 64 * 1024;
+
+export function terminalReplayChunks(data: string): string[] {
+  const chunks: string[] = [];
+  let offset = 0;
+  while (offset < data.length) {
+    let end = Math.min(data.length, offset + TERMINAL_REPLAY_CHUNK_CHARS);
+    if (end < data.length && isHighSurrogate(data.charCodeAt(end - 1))) end -= 1;
+    chunks.push(data.slice(offset, end));
+    offset = end;
+  }
+  return chunks;
+}
 
 export async function registerTerminalRoutes(app: FastifyInstance) {
   app.get("/api/terminals/profiles", async () => {
@@ -87,25 +100,33 @@ export async function registerTerminalRoutes(app: FastifyInstance) {
         return;
       }
 
-      const { detach, replayed, replayInitialCols, replayInitialRows, replayResizes } = attachSink(
-        session,
-        (frame) => {
-          if (socket.readyState === socket.OPEN) socket.send(frame);
-        },
-      );
+      const {
+        detach,
+        replayed,
+        replayTruncated,
+        replayInitialCols,
+        replayInitialRows,
+        replayResizes,
+      } = attachSink(session, (frame) => {
+        if (socket.readyState === socket.OPEN) socket.send(frame);
+      });
 
       socket.send(
         JSON.stringify({
-          type: "replay",
-          data: replayed,
+          type: "replay-start",
           cols: session.cols,
           rows: session.rows,
           initialCols: replayInitialCols,
           initialRows: replayInitialRows,
           resizes: replayResizes,
-          compactStartup: shouldCompactAgentStartupOnResize(session.id),
+          compactStartup: false,
+          truncated: replayTruncated,
         }),
       );
+      for (const data of terminalReplayChunks(replayed)) {
+        socket.send(JSON.stringify({ type: "replay-chunk", data }));
+      }
+      socket.send(JSON.stringify({ type: "replay-end" }));
 
       const heartbeat = setInterval(() => {
         if (socket.readyState === socket.OPEN) {
@@ -137,16 +158,13 @@ export async function registerTerminalRoutes(app: FastifyInstance) {
           switch (m.type) {
             case "input":
               if (typeof m.data === "string") {
-                recordAgentTerminalUserInput(session.id, m.data);
                 writeInput(session, m.data);
               }
               break;
             case "resize":
               if (typeof m.cols === "number" && typeof m.rows === "number") {
                 resizeSession(session, m.cols, m.rows, {
-                  compactStartup:
-                    (!session.killOnDetach && m.compactStartup === true) ||
-                    shouldCompactAgentStartupOnResize(session.id),
+                  compactStartup: !session.killOnDetach && m.compactStartup === true,
                 });
               }
               break;
@@ -175,4 +193,8 @@ export async function registerTerminalRoutes(app: FastifyInstance) {
       });
     },
   );
+}
+
+function isHighSurrogate(code: number): boolean {
+  return code >= 0xd800 && code <= 0xdbff;
 }

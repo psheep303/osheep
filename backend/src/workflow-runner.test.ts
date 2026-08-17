@@ -1,11 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  agentRetryPromptForLanguage,
   appendAgentAttemptTranscriptForTest,
-  classifyAgentTerminalFailure,
   classifyAgentTerminalResultFailure,
   createLiveAgentRunDetails,
-  nextAgentRetryPrompt,
   parseWorkflowUsage,
   planWorkflowRunNodeIds,
   resolveWorkflowTemplate,
@@ -14,6 +13,11 @@ import {
   type WorkflowRunDetailSnapshot,
 } from "./workflow-runner.js";
 import type { WorkflowNode, WorkflowRecord } from "./workflows.js";
+
+test("agent retry prompt follows the resolved Osheep language", () => {
+  assert.equal(agentRetryPromptForLanguage("zh-CN"), "继续");
+  assert.equal(agentRetryPromptForLanguage("en"), "continue");
+});
 
 test("workflow run planning excludes nodes that are not reachable from a trigger", () => {
   const record: WorkflowRecord = {
@@ -142,7 +146,7 @@ function workflowNode(
   };
 }
 
-test("live agent run details capture terminal session and output frames", async () => {
+test("live agent run details capture terminal and JSONL status metadata", async () => {
   const node: WorkflowNode = {
     id: "node_livedetail",
     kind: "agent",
@@ -167,16 +171,17 @@ test("live agent run details capture terminal session and output frames", async 
   await details.update("running");
   await details.handleFrame({ type: "session", sessionId: "t_live" });
   await details.handleFrame({ type: "conversation", sessionId: "conv_live" });
-  await details.handleFrame({ type: "output", data: "first chunk\n" });
-  await details.handleFrame({ type: "status", status: "ready" });
+  await details.handleFrame({ type: "status", status: "prompt-sent" });
+  await details.handleFrame({ type: "status", status: "waiting-for-choice" });
 
-  assert.equal(writes.length, 4);
+  assert.equal(writes.length, 5);
   assert.equal(writes[1]?.terminalSessionId, "t_live");
   assert.equal(writes[2]?.conversationSessionId, "conv_live");
-  assert.equal(writes[3]?.terminalStatus, "ready");
+  assert.equal(writes[3]?.terminalStatus, "prompt-sent");
   assert.equal(writes[3]?.status, "running");
   assert.equal(writes[3]?.stdout, "");
-  assert.equal(details.snapshot("running").stdout, "first chunk\n");
+  assert.equal(writes[4]?.terminalStatus, "waiting-for-choice");
+  assert.equal(details.snapshot("running").stdout, "");
 });
 
 test("workflow scheduler runs sibling branches in parallel and waits before a join", async () => {
@@ -383,7 +388,7 @@ test("Codex workflow blocks without an effort setting use medium reasoning", () 
   assert.match(details.snapshot("running").commandLine, /model_reasoning_effort="medium"/);
 });
 
-test("live agent run details bound stored terminal output", async () => {
+test("live agent run details do not receive PTY output frames", async () => {
   const node: WorkflowNode = {
     id: "node_livelimit",
     kind: "agent",
@@ -404,40 +409,23 @@ test("live agent run details bound stored terminal output", async () => {
       writes.push(snapshot);
     },
   });
-  const chunk = "x".repeat(80_000);
-
-  for (let i = 0; i < 8; i += 1) {
-    await details.handleFrame({ type: "output", data: chunk });
-  }
-
   assert.equal(writes.length, 0);
   const last = details.snapshot("running");
-  assert.ok(last.stdout.length < 300_000);
-  assert.match(last.stderr, /run detail output exceeded 256 KiB/);
-  assert.match(last.transcript, /run detail output exceeded 256 KiB/);
+  assert.equal(last.stdout, "");
+  assert.equal(last.stderr, "");
+  assert.equal(last.transcript, "");
 });
 
-test("Claude API 403 output is a non-retryable terminal failure", () => {
-  const prompt = "Build a weather crawler";
-  const failure = classifyAgentTerminalFailure(
-    [
-      `\u276f ${prompt}`,
-      "\u25cf Please run /login \u00b7 API Error: 403 Image generation is not enabled for this",
-      "  group",
-      "\u273b Saut\u00e9ed for 5s",
-    ].join("\n"),
-    prompt,
-  );
-
-  assert.equal(failure.failed, true);
-  assert.equal(failure.retryable, false);
-  assert.equal(failure.hasModelOutput, false);
-  assert.match(failure.message, /Please run \/login.*API Error: 403/i);
-});
-
-test("configured retries are honored for permanent terminal failures", () => {
-  const failure = classifyAgentTerminalFailure(
-    "\u25cf Please run /login \u00b7 API Error: 403 Image generation is not enabled for this group",
+test("configured retries are honored for structured permanent failures", () => {
+  const failure = classifyAgentTerminalResultFailure(
+    {
+      content: "",
+      transcript: "",
+      exitCode: 1,
+      signal: "error",
+      outcome: "error",
+      errorMessage: "API Error: 403 Image generation is not enabled for this group",
+    },
     "Build a weather crawler",
   );
 
@@ -466,72 +454,15 @@ test("run details retain every terminal retry attempt", () => {
   assert.match(second, /API Error: 403[\s\S]*\[osheep\] retry 1\/2[\s\S]*API Error: 403/);
 });
 
-test("Claude API errors without an HTTP status are terminal failures", () => {
-  const failure = classifyAgentTerminalFailure(
-    [
-      "Thought for 7s (ctrl+o to expand)",
-      "\u25cf API Error: Content block not found",
-      "\u273b Churned for 3m 14s",
-    ].join("\n"),
-    "Build a weather crawler",
-  );
-
-  assert.equal(failure.failed, true);
-  assert.equal(failure.retryable, false);
-  assert.match(failure.message, /API Error: Content block not found/i);
-});
-
-test("Claude API error followed by a new activity cycle is superseded", () => {
-  const failure = classifyAgentTerminalFailure(
-    [
-      "Thought for 9s (ctrl+o to expand)",
-      "\u25cf API Error: Content block not found",
-      "Thought for 4s (ctrl+o to expand)",
-      "继续完成必要修改并运行验证。",
-      "验证结果：4 个测试全部成功。",
-      "* Cogitated for 12m 40s",
-      "\u276f",
-      "auto mode on (shift+tab to cycle) \u00b7 \u2190 for agents",
-    ].join("\n"),
-    "Build a weather crawler",
-  );
-
-  assert.equal(failure.failed, false);
-});
-
-test("Claude duration footer alone does not supersede a later API error", () => {
-  const failure = classifyAgentTerminalFailure(
-    ["* Cogitated for 12m 40s", "\u25cf API Error: Content block not found"].join("\n"),
-    "Build a weather crawler",
-  );
-
-  assert.equal(failure.failed, true);
-  assert.equal(failure.retryable, false);
-});
-
-test("Claude API errors use status and transient text only for retry policy", () => {
-  const overloaded = classifyAgentTerminalFailure(
-    "\u25cf API Error: 529 Overloaded",
-    "Build a weather crawler",
-  );
-  const rateLimited = classifyAgentTerminalFailure(
-    "\u25cf API Error: Rate limit exceeded",
-    "Build a weather crawler",
-  );
-
-  assert.equal(overloaded.failed, true);
-  assert.equal(overloaded.retryable, true);
-  assert.equal(rateLimited.failed, true);
-  assert.equal(rateLimited.retryable, true);
-});
-
-test("agent result scans the terminal transcript when extracted content misses the error", () => {
+test("agent result uses the structured JSONL error outcome", () => {
   const failure = classifyAgentTerminalResultFailure(
     {
       content: "",
-      transcript: "Thought for 7s\n\u25cf API Error: Content block not found\nplan mode on",
-      exitCode: 0,
-      signal: "auto-finished",
+      transcript: "",
+      exitCode: 1,
+      signal: "error",
+      outcome: "error",
+      errorMessage: "API Error: Content block not found",
     },
     "Build a weather crawler",
   );
@@ -540,19 +471,21 @@ test("agent result scans the terminal transcript when extracted content misses t
   assert.equal(failure.retryable, false);
 });
 
-test("agent result scans the raw terminal stream for Codex 503 errors", () => {
+test("agent result derives retryability from the JSONL error message", () => {
   const failure = classifyAgentTerminalResultFailure(
     {
       content: "",
-      transcript: "Use /skills to list available skills",
-      rawTranscript: [
+      transcript: "",
+      /* legacy terminal sample retained only as the structured error text */
+      errorMessage: [
         "Reconnecting... 1/5 (6s • esc to interrupt)",
         "└ Unexpected status 503 Service Unavailable: No available channel for model",
         "gpt-5.6-luna under group default",
         "› Use /skills to list available skills",
       ].join("\n"),
-      exitCode: 0,
-      signal: "auto-finished",
+      exitCode: 1,
+      signal: "error",
+      outcome: "error",
     },
     "Build a weather crawler",
   );
@@ -562,64 +495,58 @@ test("agent result scans the raw terminal stream for Codex 503 errors", () => {
   assert.match(failure.message, /unexpected status 503/i);
 });
 
-test("agent result treats generic raw terminal errors as failures", () => {
+test("agent result treats a generic JSONL error as non-retryable", () => {
   const failure = classifyAgentTerminalResultFailure(
     {
       content: "",
       transcript: "",
-      rawTranscript: [
+      errorMessage: [
         "Fatal exception while calling provider",
         "› Summarize recent commits",
         "gpt-5.6-luna medium · D:\\demo",
       ].join("\n"),
-      exitCode: 0,
-      signal: "auto-finished",
+      exitCode: 1,
+      signal: "error",
+      outcome: "error",
     },
     "Build a weather crawler",
   );
 
   assert.equal(failure.failed, true);
-  assert.match(failure.message, /reported an error/i);
+  assert.equal(failure.retryable, false);
+  assert.match(failure.message, /Fatal exception/i);
 });
 
-test("Codex reconnect activity does not supersede a preceding 503 error", () => {
-  const failure = classifyAgentTerminalFailure(
-    [
-      "unexpected status 503 Service Unavailable: No available channel for model",
-      "Reconnecting... 2/5 (6s • esc to interrupt)",
-    ].join("\n"),
-    "Build a weather crawler",
-  );
-
-  assert.equal(failure.failed, true);
-  assert.equal(failure.retryable, true);
-});
-
-test("agent result never treats abnormal process completion as success", () => {
-  const nonzero = classifyAgentTerminalResultFailure(
-    { content: "", transcript: "", exitCode: 1, signal: null },
-    "Build a weather crawler",
-  );
-  const missingExit = classifyAgentTerminalResultFailure(
-    { content: "", transcript: "", exitCode: null, signal: "SIGTERM" },
-    "Build a weather crawler",
-  );
-  const stalled = classifyAgentTerminalResultFailure(
+test("agent result uses the structured cancelled outcome", () => {
+  const cancelled = classifyAgentTerminalResultFailure(
     {
-      content: "Partial work",
-      transcript: "Partial work",
-      exitCode: 0,
-      signal: "agent-stalled",
+      content: "",
+      transcript: "",
+      exitCode: 1,
+      signal: "cancelled",
+      outcome: "cancelled",
+      errorMessage: "interrupted",
     },
     "Build a weather crawler",
   );
-  assert.equal(nonzero.failed, true);
-  assert.match(nonzero.message, /code 1/);
-  assert.equal(missingExit.failed, true);
-  assert.match(missingExit.message, /SIGTERM/);
-  assert.equal(stalled.failed, true);
-  assert.equal(stalled.retryable, true);
-  assert.match(stalled.message, /stalled without output activity/);
+  assert.equal(cancelled.failed, true);
+  assert.equal(cancelled.retryable, false);
+  assert.match(cancelled.message, /interrupted/);
+});
+
+test("agent result treats a user-rejected tool as a non-failure", () => {
+  const rejected = classifyAgentTerminalResultFailure(
+    {
+      content: "",
+      transcript: "Tool error:\nThe user doesn't want to proceed with this tool use.",
+      exitCode: 0,
+      signal: "user-rejected",
+      outcome: "user-rejected",
+    },
+    "Run an optional tool",
+  );
+  assert.equal(rejected.failed, false);
+  assert.equal(rejected.retryable, false);
 });
 
 test("normal auto-finished agent result remains successful", () => {
@@ -629,55 +556,10 @@ test("normal auto-finished agent result remains successful", () => {
       transcript: "The weather crawler is complete.",
       exitCode: 0,
       signal: "auto-finished",
+      outcome: "success",
     },
     "Build a weather crawler",
   );
 
   assert.equal(failure.failed, false);
-});
-
-test("ordinary Claude output is not classified as a terminal failure", () => {
-  const failure = classifyAgentTerminalFailure(
-    "The weather crawler is complete.",
-    "Build a weather crawler",
-  );
-
-  assert.equal(failure.failed, false);
-  assert.equal(failure.retryable, false);
-  assert.equal(failure.message, "");
-});
-
-test("codex transient service errors without model output retry with continue prompt", () => {
-  const prompt = "Implement {feature}";
-  const failure = classifyAgentTerminalFailure(
-    [
-      "OpenAI Codex (v0.142.5)",
-      "model: gpt-5.3-codex medium",
-      "directory: D:\\project\\osheep\\backend\\workspaces\\demo",
-      "unexpected status 503 Service Unavailable: auth_unavailable: no auth available",
-      "(providers=codex, model=gpt-5.3-codex)",
-      prompt,
-    ].join("\n"),
-    prompt,
-  );
-
-  assert.equal(failure.retryable, true);
-  assert.equal(failure.hasModelOutput, false);
-  assert.equal(nextAgentRetryPrompt(prompt, failure), "继续");
-});
-
-test("codex transient service errors after model output retry with continue prompt", () => {
-  const prompt = "Write a migration plan";
-  const failure = classifyAgentTerminalFailure(
-    [
-      "Here is the first half of the migration plan:",
-      "1. Inventory the current API consumers.",
-      "unexpected status 503 Service Unavailable: auth_unavailable: no auth available",
-    ].join("\n"),
-    prompt,
-  );
-
-  assert.equal(failure.retryable, true);
-  assert.equal(failure.hasModelOutput, true);
-  assert.equal(nextAgentRetryPrompt(prompt, failure), "继续");
 });

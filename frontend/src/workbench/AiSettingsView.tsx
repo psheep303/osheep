@@ -1,4 +1,5 @@
 import { type CSSProperties, useEffect, useMemo, useState } from "react";
+import { useUiPreferences } from "../i18n/UiPreferences";
 import {
   type AiSettingsApp,
   type AiSettingsProvider,
@@ -9,6 +10,7 @@ import {
   saveAiProvider,
   switchAiSettingsProvider,
 } from "./api";
+import { useOsheepOverlay } from "./OsheepOverlay";
 
 interface ProviderCardProps {
   provider: AiSettingsProvider;
@@ -726,11 +728,12 @@ interface AiSettingsViewProps {
 }
 
 export function AiSettingsView({ app }: AiSettingsViewProps) {
+  const { t } = useUiPreferences();
+  const { confirm, notify } = useOsheepOverlay();
   const [snapshot, setSnapshot] = useState<AiSettingsSnapshot | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
 
   const providers = useMemo(() => {
     const manager = snapshot?.state.apps[app];
@@ -752,22 +755,19 @@ export function AiSettingsView({ app }: AiSettingsViewProps) {
   async function refresh() {
     await run(async () => {
       setSnapshot(await getAiSettings());
-    }, false);
+    });
   }
 
-  async function run(task: () => Promise<void>, showDone = true) {
+  async function run(task: () => Promise<void>, successMessage?: string) {
     setBusy(true);
     setError(null);
-    setMessage(null);
     try {
       await task();
-      if (showDone) {
-        setMessage("已完成");
-        setTimeout(() => setMessage(null), 2000);
-      }
+      if (successMessage) notify.success(successMessage);
     } catch (e) {
-      setError((e as Error).message);
-      setTimeout(() => setError(null), 4000);
+      const detail = (e as Error).message;
+      setError(detail);
+      notify.error(detail);
     } finally {
       setBusy(false);
     }
@@ -776,22 +776,24 @@ export function AiSettingsView({ app }: AiSettingsViewProps) {
   const openDetail = (providerId: string) => {
     setSelectedId(providerId);
     setError(null);
-    setMessage(null);
   };
 
   const createProvider = () => {
     setSelectedId("__new__");
     setError(null);
-    setMessage(null);
   };
 
   const handleDetailSave = (provider: AiSettingsProvider) => {
-    void run(async () => {
-      const originalId = selectedId === "__new__" ? undefined : (selectedId ?? undefined);
-      const next = await saveAiProvider(app, provider, originalId, false);
-      setSnapshot(next);
-      setSelectedId(null);
-    }, true);
+    const isNew = selectedId === "__new__";
+    void run(
+      async () => {
+        const originalId = isNew ? undefined : (selectedId ?? undefined);
+        const next = await saveAiProvider(app, provider, originalId, false);
+        setSnapshot(next);
+        setSelectedId(null);
+      },
+      t(isNew ? "notification.providerCreated" : "notification.providerSaved"),
+    );
   };
 
   const handleSwitch = (provider: AiSettingsProvider) => {
@@ -799,19 +801,26 @@ export function AiSettingsView({ app }: AiSettingsViewProps) {
     void run(async () => {
       const next = await switchAiSettingsProvider(app, provider.id);
       setSnapshot(next);
-    }, true);
+    }, t("notification.providerSwitched"));
   };
 
-  const handleDelete = (provider: AiSettingsProvider) => {
+  const handleDelete = async (provider: AiSettingsProvider) => {
     if (provider.id === currentId) {
-      alert("无法删除当前使用的 provider");
+      notify.error(t("notification.currentProviderDeleteError"));
       return;
     }
-    if (!confirm(`确定要删除 "${provider.name}"？`)) return;
+    if (
+      !(await confirm({
+        message: t("confirm.deleteProvider", { name: provider.name }),
+        confirmLabel: t("confirm.delete"),
+        reminderKey: `delete-${app}-provider`,
+      }))
+    )
+      return;
     void run(async () => {
       const next = await deleteAiSettingsProvider(app, provider.id);
       setSnapshot(next);
-    }, true);
+    }, t("notification.providerDeleted"));
   };
 
   const handleDuplicate = (provider: AiSettingsProvider) => {
@@ -824,14 +833,14 @@ export function AiSettingsView({ app }: AiSettingsViewProps) {
     void run(async () => {
       const next = await saveAiProvider(app, newProvider, undefined, false);
       setSnapshot(next);
-    }, true);
+    }, t("notification.providerDuplicated"));
   };
 
   const importLive = () =>
     run(async () => {
       const next = await importAiLiveProvider(app);
       setSnapshot(next);
-    }, true);
+    }, t("notification.providerImported"));
 
   const paths = snapshot?.paths;
   const showDetail = selectedId !== null;
@@ -871,9 +880,6 @@ export function AiSettingsView({ app }: AiSettingsViewProps) {
           导入 live
         </button>
       </div>
-
-      {error && <div className="ai-settings__banner ai-settings__banner--error">{error}</div>}
-      {message && <div className="ai-settings__banner ai-settings__banner--success">{message}</div>}
 
       <div className="ai-settings__card-list">
         {providers.length === 0 ? (

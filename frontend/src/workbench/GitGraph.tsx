@@ -43,12 +43,7 @@ const { ref: HISTORY_ITEM_REF_COLOR, remoteRef: HISTORY_ITEM_REMOTE_REF_COLOR } 
   gitGraphRefColors();
 const GRAPH_COLORS = gitGraphPalette();
 
-export function GitGraph({
-  workspaceId,
-  refreshKey,
-  scope,
-  onOpenCommitDiff,
-}: GitGraphProps) {
+export function GitGraph({ workspaceId, refreshKey, scope, onOpenCommitDiff }: GitGraphProps) {
   const { resolvedLanguage, t } = useUiPreferences();
   const [commits, setCommits] = useState<GitCommit[]>([]);
   const [head, setHead] = useState<string | null>(null);
@@ -293,30 +288,32 @@ function CommitDetailsCard({
           {error}
         </div>
       )}
-      {!loading && details && details.files.map((file) => (
-        <button
-          key={file.path}
-          type="button"
-          className="git-graph__history-item-change"
-          title={file.path}
-          onClick={() => onOpenChanges([file.path])}
-        >
-          <span className="git-graph__graph-placeholder">
-            <HistoryGraphPlaceholder columns={graphColumns} highlightIndex={highlightIndex} />
-          </span>
-          <span className="git-graph__change-icon" aria-hidden="true">
-            <FileIcon name={file.path} />
-          </span>
-          <span className="git-graph__change-path">{file.path}</span>
-          <span className={`git-graph__change-status is-${file.status.toLowerCase()}`}>
-            {file.status}
-          </span>
-          <span className="git-graph__change-stat">
-            {file.insertions !== null ? `+${file.insertions}` : ""}
-            {file.deletions !== null ? ` -${file.deletions}` : ""}
-          </span>
-        </button>
-      ))}
+      {!loading &&
+        details &&
+        details.files.map((file) => (
+          <button
+            key={file.path}
+            type="button"
+            className="git-graph__history-item-change"
+            title={file.path}
+            onClick={() => onOpenChanges([file.path])}
+          >
+            <span className="git-graph__graph-placeholder">
+              <HistoryGraphPlaceholder columns={graphColumns} highlightIndex={highlightIndex} />
+            </span>
+            <span className="git-graph__change-icon" aria-hidden="true">
+              <FileIcon name={file.path} />
+            </span>
+            <span className="git-graph__change-path">{file.path}</span>
+            <span className={`git-graph__change-status is-${file.status.toLowerCase()}`}>
+              {file.status}
+            </span>
+            <span className="git-graph__change-stat">
+              {file.insertions !== null ? `+${file.insertions}` : ""}
+              {file.deletions !== null ? ` -${file.deletions}` : ""}
+            </span>
+          </button>
+        ))}
     </div>
   );
 }

@@ -5,7 +5,18 @@ import {
   type ThemePreference,
   useUiPreferences,
 } from "../i18n/UiPreferences";
-import { syncModelPrices } from "./api";
+import {
+  type CliToolAction,
+  type CliToolName,
+  type CliToolStatus,
+  getClaudeOnboardingStatus,
+  getCliToolStatuses,
+  putClaudeOnboardingSkip,
+  runCliToolAction,
+  syncModelPrices,
+} from "./api";
+import { ClaudeLogo, OpenAILogo } from "./BrandIcons";
+import { useOsheepOverlay } from "./OsheepOverlay";
 import type { ModelPrice, OsheepSettings, TabSize } from "./settings";
 
 interface SettingsViewProps {
@@ -21,8 +32,58 @@ type SettingsSection = "general" | "editor" | "workflow" | "pricing" | "about";
 
 export function SettingsView({ settings, onChange }: SettingsViewProps) {
   const { language, setLanguage, theme, setTheme, t } = useUiPreferences();
+  const { notify, resetConfirmations } = useOsheepOverlay();
   const [section, setSection] = useState<SettingsSection>("general");
   const [search, setSearch] = useState("");
+  const [skipClaudeOnboarding, setSkipClaudeOnboarding] = useState(false);
+  const [claudeOnboardingLoading, setClaudeOnboardingLoading] = useState(true);
+  const [claudeOnboardingBusy, setClaudeOnboardingBusy] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getClaudeOnboardingStatus()
+      .then((status) => {
+        if (!cancelled) setSkipClaudeOnboarding(status.enabled);
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          notify.error(
+            t("notification.claudeOnboardingLoadFailed", {
+              detail: error instanceof Error ? error.message : String(error),
+            }),
+          );
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setClaudeOnboardingLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [notify, t]);
+
+  const updateClaudeOnboarding = async (enabled: boolean) => {
+    setClaudeOnboardingBusy(true);
+    try {
+      const status = await putClaudeOnboardingSkip(enabled);
+      setSkipClaudeOnboarding(status.enabled);
+      notify.success(
+        t(
+          status.enabled
+            ? "notification.claudeOnboardingSkipped"
+            : "notification.claudeOnboardingRestored",
+        ),
+      );
+    } catch (error) {
+      notify.error(
+        t("notification.claudeOnboardingUpdateFailed", {
+          detail: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    } finally {
+      setClaudeOnboardingBusy(false);
+    }
+  };
 
   const commitFontSize = (raw: string): number => {
     const value = Number.parseInt(raw, 10);
@@ -107,39 +168,85 @@ export function SettingsView({ settings, onChange }: SettingsViewProps) {
           </h1>
 
           {section === "general" && (
-            <section className="settings-view__group">
-              <h2 className="settings-view__group-title">{t("settings.appearance")}</h2>
+            <>
+              <section className="settings-view__group">
+                <h2 className="settings-view__group-title">{t("settings.appearance")}</h2>
 
-              <SettingItem
-                label={t("settings.language")}
-                description={t("settings.language.description")}
-              >
-                <Segmented<LanguagePreference>
-                  value={language}
-                  options={[
-                    { label: t("settings.language.system"), value: "system" },
-                    { label: t("settings.language.zhCN"), value: "zh-CN" },
-                    { label: t("settings.language.en"), value: "en" },
-                  ]}
-                  onChange={setLanguage}
-                />
-              </SettingItem>
+                <SettingItem
+                  label={t("settings.language")}
+                  description={t("settings.language.description")}
+                >
+                  <Segmented<LanguagePreference>
+                    value={language}
+                    options={[
+                      { label: t("settings.language.system"), value: "system" },
+                      { label: t("settings.language.zhCN"), value: "zh-CN" },
+                      { label: t("settings.language.en"), value: "en" },
+                    ]}
+                    onChange={setLanguage}
+                  />
+                </SettingItem>
 
-              <SettingItem
-                label={t("settings.theme")}
-                description={t("settings.theme.description")}
-              >
-                <Segmented<ThemePreference>
-                  value={theme}
-                  options={[
-                    { label: t("settings.theme.system"), value: "system" },
-                    { label: t("settings.theme.light"), value: "light" },
-                    { label: t("settings.theme.dark"), value: "dark" },
-                  ]}
-                  onChange={setTheme}
-                />
-              </SettingItem>
-            </section>
+                <SettingItem
+                  label={t("settings.theme")}
+                  description={t("settings.theme.description")}
+                >
+                  <Segmented<ThemePreference>
+                    value={theme}
+                    options={[
+                      { label: t("settings.theme.system"), value: "system" },
+                      { label: t("settings.theme.light"), value: "light" },
+                      { label: t("settings.theme.dark"), value: "dark" },
+                    ]}
+                    onChange={setTheme}
+                  />
+                </SettingItem>
+              </section>
+              <section className="settings-view__group">
+                <div className="settings-view__option-row">
+                  <span className="settings-view__option-icon" aria-hidden="true">
+                    <MonitorUploadIcon />
+                  </span>
+                  <div className="settings-view__option-copy">
+                    <div className="settings-view__option-title">
+                      {t("settings.claude.skipOnboarding")}
+                    </div>
+                    <div
+                      id="settings-claude-onboarding-description"
+                      className="settings-view__option-description"
+                    >
+                      {t("settings.claude.skipOnboardingDescription")}
+                    </div>
+                  </div>
+                  <Switch
+                    checked={skipClaudeOnboarding}
+                    disabled={claudeOnboardingLoading || claudeOnboardingBusy}
+                    label={t("settings.claude.skipOnboarding")}
+                    describedBy="settings-claude-onboarding-description"
+                    onChange={(enabled) => void updateClaudeOnboarding(enabled)}
+                  />
+                </div>
+              </section>
+              <section className="settings-view__group">
+                <h2 className="settings-view__group-title">{t("settings.confirmations")}</h2>
+                <SettingItem
+                  label={t("settings.confirmations")}
+                  description={t("settings.confirmations.description")}
+                >
+                  <button
+                    type="button"
+                    className="settings-view__button"
+                    onClick={() => {
+                      resetConfirmations();
+                      notify.success(t("notification.confirmationsReset"));
+                    }}
+                  >
+                    <span className="codicon codicon-history" aria-hidden="true" />
+                    {t("settings.confirmations.reset")}
+                  </button>
+                </SettingItem>
+              </section>
+            </>
           )}
 
           {section === "editor" && (
@@ -532,35 +639,245 @@ function emptyModelPrice(): ModelPrice {
 
 function AboutPanel() {
   const { t } = useUiPreferences();
+  const { notify } = useOsheepOverlay();
+  const [tools, setTools] = useState<CliToolStatus[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busyTool, setBusyTool] = useState<CliToolName | null>(null);
+  const [loadError, setLoadError] = useState("");
+
+  const loadTools = async () => {
+    setLoading(true);
+    setLoadError("");
+    try {
+      setTools(await getCliToolStatuses());
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadTools();
+  }, []);
+
+  const runAction = async (name: CliToolName, action: CliToolAction) => {
+    setBusyTool(name);
+    setLoadError("");
+    try {
+      const status = await runCliToolAction(name, action);
+      setTools((current) => current.map((tool) => (tool.name === name ? status : tool)));
+      const displayName = name === "claude" ? "Claude Code" : "Codex";
+      notify.success(
+        t(action === "install" ? "notification.cliInstalled" : "notification.cliUpdated", {
+          name: displayName,
+        }),
+      );
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      const displayName = name === "claude" ? "Claude Code" : "Codex";
+      setLoadError(detail);
+      notify.error(
+        t(action === "install" ? "notification.cliInstallFailed" : "notification.cliUpdateFailed", {
+          name: displayName,
+          detail,
+        }),
+      );
+    } finally {
+      setBusyTool(null);
+    }
+  };
+
+  const toolByName = new Map(tools.map((tool) => [tool.name, tool]));
+  const activeTool = tools.find((tool) => tool.activeAction)?.name ?? null;
+  const anyToolBusy = busyTool !== null || activeTool !== null;
+
+  useEffect(() => {
+    if (!activeTool) return;
+    let disposed = false;
+    const refreshActiveTool = async () => {
+      try {
+        const statuses = await getCliToolStatuses();
+        if (!disposed) setTools(statuses);
+      } catch (error) {
+        if (!disposed) setLoadError(error instanceof Error ? error.message : String(error));
+      }
+    };
+    const timer = window.setInterval(() => void refreshActiveTool(), 1_000);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [activeTool]);
+
   return (
-    <section className="settings-view__group settings-about">
-      <h2 className="settings-view__group-title">{t("settings.about.title")}</h2>
-      <div className="settings-about__brand">
-        <img className="settings-about__mark" src="/osheep-icon.png" alt="osheep" />
-        <div>
-          <strong>osheep</strong>
-          <span>{t("settings.about.tagline")}</span>
+    <>
+      <section className="settings-view__group settings-about">
+        <h2 className="settings-view__group-title">{t("settings.about.title")}</h2>
+        <div className="settings-about__brand">
+          <img className="settings-about__mark" src="/osheep-icon.png" alt="osheep" />
+          <div>
+            <strong>osheep</strong>
+            <span>{t("settings.about.tagline")}</span>
+          </div>
         </div>
+        <dl className="settings-about__facts">
+          <div>
+            <dt>{t("settings.about.version")}</dt>
+            <dd>{packageJson.version}</dd>
+          </div>
+          <div>
+            <dt>{t("settings.about.repository")}</dt>
+            <dd>
+              <a href={packageJson.repository} target="_blank" rel="noreferrer">
+                {packageJson.repository}
+              </a>
+            </dd>
+          </div>
+          <div>
+            <dt>{t("settings.about.license")}</dt>
+            <dd>MIT</dd>
+          </div>
+        </dl>
+      </section>
+
+      <section className="settings-view__group settings-cli-tools">
+        <div className="settings-cli-tools__heading">
+          <div>
+            <h2 className="settings-view__group-title">{t("settings.about.cliTools")}</h2>
+            <p>{t("settings.about.cliToolsDescription")}</p>
+          </div>
+          <button
+            type="button"
+            className="settings-view__icon-button"
+            onClick={() => void loadTools()}
+            disabled={loading || anyToolBusy}
+            aria-label={t("settings.about.refresh")}
+            title={t("settings.about.refresh")}
+          >
+            <span
+              className={`codicon codicon-refresh${loading ? " settings-cli-tools__spin" : ""}`}
+            />
+          </button>
+        </div>
+        {loadError && <div className="settings-view__error">{loadError}</div>}
+        <div className="settings-cli-tools__grid">
+          {(["claude", "codex"] as const).map((name) => (
+            <CliToolCard
+              key={name}
+              name={name}
+              status={toolByName.get(name)}
+              loading={loading && !toolByName.has(name)}
+              busy={busyTool === name || Boolean(toolByName.get(name)?.activeAction)}
+              disabled={anyToolBusy}
+              onAction={runAction}
+            />
+          ))}
+        </div>
+      </section>
+    </>
+  );
+}
+
+function CliToolCard({
+  name,
+  status,
+  loading,
+  busy,
+  disabled,
+  onAction,
+}: {
+  name: CliToolName;
+  status?: CliToolStatus;
+  loading: boolean;
+  busy: boolean;
+  disabled: boolean;
+  onAction: (name: CliToolName, action: CliToolAction) => Promise<void>;
+}) {
+  const { t } = useUiPreferences();
+  const displayName = name === "claude" ? "Claude Code" : "Codex";
+  const action: CliToolAction = status?.installed ? "update" : "install";
+  const displayedAction = status?.activeAction ?? action;
+  const showAction = Boolean(
+    busy || (status && (!status.installed || status.updateAvailable || !status.currentVersion)),
+  );
+  const isKnownUpToDate = Boolean(
+    status?.installed && status.currentVersion && status.latestVersion && !status.updateAvailable,
+  );
+  const platform = status ? t(`settings.about.platform.${status.platform}`) : "";
+
+  return (
+    <article className="settings-cli-card">
+      <div className="settings-cli-card__header">
+        <div className={`settings-cli-card__icon is-${name}`} aria-hidden="true">
+          {name === "claude" ? <ClaudeLogo /> : <OpenAILogo />}
+        </div>
+        <div className="settings-cli-card__identity">
+          <strong>{displayName}</strong>
+          {platform && <span>{platform}</span>}
+        </div>
+        {!loading && status?.updateAvailable && (
+          <span className="settings-cli-card__badge">{t("settings.about.updateAvailable")}</span>
+        )}
+        {!loading && isKnownUpToDate && (
+          <span className="settings-cli-card__ready" title={t("settings.about.upToDate")}>
+            <span className="codicon codicon-pass-filled" aria-hidden="true" />
+          </span>
+        )}
       </div>
-      <dl className="settings-about__facts">
+      <dl className="settings-cli-card__versions">
         <div>
-          <dt>{t("settings.about.version")}</dt>
-          <dd>{packageJson.version}</dd>
-        </div>
-        <div>
-          <dt>{t("settings.about.repository")}</dt>
+          <dt>{t("settings.about.currentVersion")}</dt>
           <dd>
-            <a href={packageJson.repository} target="_blank" rel="noreferrer">
-              {packageJson.repository}
-            </a>
+            {loading
+              ? t("common.loading")
+              : status
+                ? (status.currentVersion ?? t("settings.about.notInstalled"))
+                : t("settings.about.unavailable")}
           </dd>
         </div>
         <div>
-          <dt>{t("settings.about.license")}</dt>
-          <dd>MIT</dd>
+          <dt>{t("settings.about.latestVersion")}</dt>
+          <dd>
+            {loading
+              ? t("common.loading")
+              : (status?.latestVersion ?? t("settings.about.unavailable"))}
+          </dd>
         </div>
       </dl>
-    </section>
+      {status?.error && (
+        <p className="settings-cli-card__error" title={status.error}>
+          {t("settings.about.checkFailed")}
+        </p>
+      )}
+      <div className="settings-cli-card__footer">
+        {!loading && showAction ? (
+          <button
+            type="button"
+            className="settings-view__button is-primary"
+            disabled={disabled}
+            onClick={() => void onAction(name, action)}
+          >
+            <span
+              className={`codicon codicon-${displayedAction === "install" ? "cloud-download" : "arrow-up"}`}
+            />
+            {busy
+              ? t(
+                  displayedAction === "install"
+                    ? "settings.about.installing"
+                    : "settings.about.updating",
+                )
+              : t(action === "install" ? "settings.about.install" : "settings.about.update")}
+          </button>
+        ) : (
+          !loading && (
+            <span className="settings-cli-card__status">
+              {t(isKnownUpToDate ? "settings.about.upToDate" : "settings.about.unavailable")}
+            </span>
+          )
+        )}
+      </div>
+    </article>
   );
 }
 
@@ -568,10 +885,23 @@ interface SwitchProps {
   checked: boolean;
   disabled?: boolean;
   label: string;
+  describedBy?: string;
   onChange: (checked: boolean) => void;
 }
 
-function Switch({ checked, disabled = false, label, onChange }: SwitchProps) {
+function MonitorUploadIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+      <rect x="2" y="3" width="20" height="14" rx="2" />
+      <path d="m9 10 3-3 3 3" />
+      <path d="M12 13V7" />
+      <path d="M12 17v4" />
+      <path d="M8 21h8" />
+    </svg>
+  );
+}
+
+function Switch({ checked, disabled = false, label, describedBy, onChange }: SwitchProps) {
   return (
     <button
       type="button"
@@ -579,6 +909,7 @@ function Switch({ checked, disabled = false, label, onChange }: SwitchProps) {
       role="switch"
       aria-checked={checked}
       aria-label={label}
+      aria-describedby={describedBy}
       disabled={disabled}
       onClick={() => onChange(!checked)}
     >

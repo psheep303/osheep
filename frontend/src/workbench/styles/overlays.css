@@ -1,0 +1,288 @@
+.osheep-dialog-layer {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.46);
+  animation: osheep-fade-in var(--duration-normal) ease-out;
+}
+
+.osheep-dialog {
+  width: min(440px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  color: var(--fg-default);
+  background: var(--ui-surface-menu);
+  border: 1px solid var(--ui-border-card-hover);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-2);
+  animation: osheep-dialog-in var(--duration-normal) ease-out;
+}
+
+.osheep-dialog__header {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) 28px;
+  align-items: center;
+  gap: 8px;
+  min-height: 48px;
+  padding: 8px 10px 8px 16px;
+  border-bottom: 1px solid var(--border-faint);
+}
+
+.osheep-dialog__mark {
+  color: var(--ui-warning);
+  font-size: 18px;
+}
+
+.osheep-dialog__header h2 {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--fg-strong);
+  font-size: var(--text-lg);
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1.35;
+}
+
+.osheep-dialog__close,
+.osheep-toast__close {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  place-items: center;
+  color: var(--fg-muted);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.osheep-dialog__close:hover,
+.osheep-toast__close:hover {
+  color: var(--fg-strong);
+  background: var(--bg-hover);
+}
+
+.osheep-dialog__message {
+  margin: 0;
+  padding: 20px 20px 16px;
+  overflow-wrap: anywhere;
+  color: var(--fg-default);
+  font-size: var(--text-md);
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.osheep-dialog__remember {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 20px 18px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.osheep-dialog__verification {
+  display: grid;
+  gap: 7px;
+  margin: 0 20px 18px;
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+}
+
+.osheep-dialog__verification input {
+  width: 100%;
+  height: 30px;
+  padding: 4px 8px;
+  color: var(--fg-default);
+  background: var(--ui-surface-control);
+  border: 1px solid var(--ui-border-control);
+  border-radius: var(--radius-sm);
+  outline: none;
+}
+
+.osheep-dialog__verification input:focus {
+  border-color: var(--accent);
+}
+
+.osheep-dialog__remember input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.osheep-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 16px;
+  background: var(--surface-3);
+  border-top: 1px solid var(--border-faint);
+}
+
+.osheep-dialog__button {
+  min-width: 76px;
+  min-height: 30px;
+  padding: 5px 14px;
+  color: var(--fg-default);
+  background: var(--surface-control);
+  border: 1px solid var(--ui-border-control);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.osheep-dialog__button:hover {
+  color: var(--fg-strong);
+  background: var(--bg-hover);
+}
+
+.osheep-dialog__button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  filter: none;
+}
+
+.osheep-dialog__button--primary {
+  color: var(--ui-text-on-accent);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.osheep-dialog__button--danger {
+  color: #ffffff;
+  background: var(--ui-danger);
+  border-color: var(--ui-danger);
+}
+
+.osheep-dialog__button--primary:hover,
+.osheep-dialog__button--danger:hover {
+  color: #ffffff;
+  filter: brightness(1.08);
+}
+
+.osheep-toasts {
+  position: fixed;
+  top: 44px;
+  right: 12px;
+  z-index: var(--z-toast);
+  display: flex;
+  width: min(380px, calc(100vw - 24px));
+  max-height: calc(100vh - 56px);
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.osheep-toast {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) 28px;
+  align-items: start;
+  gap: 10px;
+  min-height: 64px;
+  padding: 12px 10px 12px 14px;
+  color: var(--fg-default);
+  background: var(--ui-surface-menu);
+  border: 1px solid var(--ui-border-card-hover);
+  border-left: 3px solid;
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-2);
+  pointer-events: auto;
+  animation: osheep-toast-in 200ms ease-out;
+}
+
+.osheep-toast--success {
+  border-left-color: var(--ui-success);
+}
+
+.osheep-toast--error {
+  border-left-color: var(--ui-danger);
+}
+
+.osheep-toast__icon {
+  margin-top: 1px;
+  font-size: 18px;
+}
+
+.osheep-toast--success .osheep-toast__icon {
+  color: var(--ui-success);
+}
+
+.osheep-toast--error .osheep-toast__icon {
+  color: var(--ui-danger);
+}
+
+.osheep-toast__content {
+  min-width: 0;
+}
+
+.osheep-toast__content strong {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--fg-strong);
+  font-size: var(--text-md);
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.osheep-toast__content p {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+@keyframes osheep-fade-in {
+  from { opacity: 0; }
+}
+
+@keyframes osheep-dialog-in {
+  from { transform: translateY(8px) scale(0.985); opacity: 0; }
+}
+
+@keyframes osheep-toast-in {
+  from { transform: translateX(18px); opacity: 0; }
+}
+
+@media (max-width: 520px) {
+  .osheep-dialog-layer {
+    padding: 16px;
+  }
+
+  .osheep-dialog__actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .osheep-toasts {
+    top: 40px;
+    right: 8px;
+    width: calc(100vw - 16px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .osheep-dialog-layer,
+  .osheep-dialog,
+  .osheep-toast {
+    animation: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .osheep-dialog-layer {
+    background: transparent;
+  }
+
+  .osheep-dialog,
+  .osheep-toast {
+    border: 1px solid CanvasText;
+  }
+}

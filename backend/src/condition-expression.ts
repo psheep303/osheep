@@ -35,7 +35,8 @@ export function evaluateConditionExpression(
     throw new Error("Expected a value or opening parenthesis.");
   };
 
-  const parseUnary = (): unknown => (matchOperator("!") ? !toBoolean(parseUnary()) : parsePrimary());
+  const parseUnary = (): unknown =>
+    matchOperator("!") ? !toBoolean(parseUnary()) : parsePrimary();
 
   const parseComparison = (): unknown => {
     const left = parseUnary();
@@ -91,7 +92,10 @@ function tokenize(expression: string): Token[] {
       expression.startsWith(item, index),
     );
     if (operator) {
-      tokens.push({ kind: "operator", value: operator as Extract<Token, { kind: "operator" }>["value"] });
+      tokens.push({
+        kind: "operator",
+        value: operator as Extract<Token, { kind: "operator" }>["value"],
+      });
       index += operator.length;
       continue;
     }
@@ -113,7 +117,8 @@ function tokenize(expression: string): Token[] {
     }
     const start = index;
     while (index < expression.length && !/[\s()=!<>&|]/.test(expression[index])) index += 1;
-    if (start === index) throw new Error(`Unexpected character ${JSON.stringify(char)} in condition.`);
+    if (start === index)
+      throw new Error(`Unexpected character ${JSON.stringify(char)} in condition.`);
     const raw = expression.slice(start, index);
     tokens.push({ kind: "value", value: parseLiteral(raw) });
   }

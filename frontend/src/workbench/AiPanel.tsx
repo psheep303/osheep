@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useUiPreferences } from "../i18n/UiPreferences";
 import {
   createWorkflow as apiCreateWorkflow,
   deleteWorkflow as apiDeleteWorkflow,
@@ -11,6 +12,7 @@ import {
   type WorkflowSummary,
 } from "./api";
 import { ContextMenu, type CtxMenuSection } from "./ContextMenu";
+import { useOsheepOverlay } from "./OsheepOverlay";
 
 interface AiPanelProps {
   workspaceId: string | null;
@@ -31,6 +33,8 @@ export function AiPanel({
   developerMode,
   onTemplatesChanged,
 }: AiPanelProps) {
+  const { t } = useUiPreferences();
+  const { confirm } = useOsheepOverlay();
   const [workflows, setWorkflows] = useState<WorkflowSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -104,7 +108,14 @@ export function AiPanel({
 
   const handleDelete = async (id: string, title: string) => {
     if (!workspaceId) return;
-    if (!window.confirm(`Delete workflow "${title}"?`)) return;
+    if (
+      !(await confirm({
+        message: t("confirm.deleteWorkflow", { name: title }),
+        confirmLabel: t("confirm.delete"),
+        reminderKey: "delete-workflow",
+      }))
+    )
+      return;
     try {
       await apiDeleteWorkflow(workspaceId, id);
       onWorkflowDeleted(id);

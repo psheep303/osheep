@@ -14,6 +14,7 @@ import {
 import { ChatMarkdown } from "./ChatMarkdown";
 import { chatRuntime, useChatTurn } from "./chat-runtime";
 import { buildUnifiedDiff, type DiffRowType } from "./file-diff";
+import { useOsheepOverlay } from "./OsheepOverlay";
 import type { AiAutoAllow, OsheepSettings, ReasoningEffort } from "./settings";
 import { DEFAULT_AUTO_ALLOW, DEFAULT_CLI_PROVIDER } from "./settings";
 
@@ -58,6 +59,7 @@ export function ChatTab({
   onOpenAiDiff,
 }: ChatTabProps) {
   const { t } = useUiPreferences();
+  const { confirm } = useOsheepOverlay();
   const [session, setSession] = useState<SessionRecord | null>(null);
   const [input, setInput] = useState("");
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -211,7 +213,13 @@ export function ChatTab({
 
   const clearConversation = async () => {
     if (!session) return;
-    if (!window.confirm(t("chat.clearConfirm"))) return;
+    if (
+      !(await confirm({
+        message: t("confirm.clearConversation"),
+        reminderKey: "clear-chat-conversation",
+      }))
+    )
+      return;
     const next: SessionRecord = {
       ...session,
       messages: [],

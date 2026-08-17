@@ -41,6 +41,7 @@ export function buildPowerShellGuard(
   baseArgs: string[],
   workspacesRoot: string,
   initialCwd: string,
+  initialCommand?: string,
 ): ShellGuardResult {
   const rootEscaped = escapePwshSingle(workspacesRoot);
   const cwdEscaped = escapePwshSingle(initialCwd);
@@ -99,6 +100,12 @@ Set-Alias -Scope Global -Name chdir -Value Set-Location -Force -Option AllScope
 Set-Alias -Scope Global -Name sl -Value Set-Location -Force -Option AllScope
 
 Microsoft.PowerShell.Management\\Set-Location -LiteralPath '${cwdEscaped}'
+${
+  initialCommand
+    ? `
+${initialCommand}`
+    : ""
+}
 `;
 
   // PowerShell 5.1 reads BOM-less files using the system ANSI code page, which
@@ -108,7 +115,14 @@ Microsoft.PowerShell.Management\\Set-Location -LiteralPath '${cwdEscaped}'
   // -NoExit keeps the interactive shell up after the dot-sourced script runs.
   // Use `& '...'` to call the file; functions inside it run in this scope when
   // they declare `global:` explicitly, which we do.
-  const args = [...baseArgs, "-NoExit", "-Command", `& '${escapePwshSingle(tmpPath)}'`];
+  const args = [
+    ...baseArgs,
+    "-ExecutionPolicy",
+    "Bypass",
+    "-NoExit",
+    "-Command",
+    `& '${escapePwshSingle(tmpPath)}'`,
+  ];
   return {
     args,
     cleanup: () => {
@@ -133,6 +147,7 @@ export function buildBashGuard(
   baseArgs: string[],
   workspacesRoot: string,
   initialCwd: string,
+  initialCommand?: string,
 ): ShellGuardResult {
   // Normalize Windows-style backslashes to forward slashes so bash builtins
   // (realpath, cd) consume the path natively. Git Bash maps drive letters
@@ -173,6 +188,12 @@ cd () {
 }
 
 builtin cd -- '${cwdEsc}' 2>/dev/null || true
+${
+  initialCommand
+    ? `
+${initialCommand}`
+    : ""
+}
 `;
   fs.writeFileSync(tmpPath, script, "utf-8");
   // Drop any --login from baseArgs (would bypass --rcfile) and force -i.
@@ -205,6 +226,7 @@ export function buildCmdGuard(
   baseArgs: string[],
   workspacesRoot: string,
   initialCwd: string,
+  initialCommand?: string,
 ): ShellGuardResult {
   const token = randomToken();
   const initPath = path.join(tmpDir(), `osheep-cmd-init-${token}.cmd`);
@@ -217,6 +239,7 @@ export function buildCmdGuard(
     `doskey cd=call "${helperPath}" $*`,
     `doskey chdir=call "${helperPath}" $*`,
     `cd /d "${initialCwd}"`,
+    ...(initialCommand ? [initialCommand] : []),
     "",
   ].join("\r\n");
 

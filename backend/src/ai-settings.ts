@@ -1,4 +1,6 @@
+import { existsSync } from "node:fs";
 import * as fs from "node:fs/promises";
+import * as os from "node:os";
 import * as path from "node:path";
 import type { TomlTable } from "smol-toml";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
@@ -63,7 +65,11 @@ const INTERNAL_CLAUDE_KEYS = [
   "openrouterCompatMode",
 ];
 
-const STORE_PATH = path.join(APP_SETTINGS_DIR, "ai-settings.json");
+function getStorePath(): string {
+  return path.resolve(
+    process.env.OSHEEP_AI_SETTINGS_STORE_PATH || path.join(APP_SETTINGS_DIR, "ai-settings.json"),
+  );
+}
 
 function defaultState(): AiSettingsState {
   return {
@@ -117,7 +123,7 @@ function normalizeProvider(value: unknown, fallbackId?: string): AiProvider | nu
 
 export async function readAiSettings(): Promise<AiSettingsState> {
   try {
-    const text = await fs.readFile(STORE_PATH, "utf8");
+    const text = await fs.readFile(getStorePath(), "utf8");
     return normalizeState(JSON.parse(text));
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code;
@@ -131,7 +137,7 @@ export async function readAiSettings(): Promise<AiSettingsState> {
 
 export async function writeAiSettings(state: AiSettingsState): Promise<void> {
   const normalized = normalizeState(state);
-  await atomicWriteText(STORE_PATH, `${JSON.stringify(normalized, null, 2)}\n`);
+  await atomicWriteText(getStorePath(), `${JSON.stringify(normalized, null, 2)}\n`);
 }
 
 export async function snapshotAiSettings(): Promise<AiSettingsSnapshot> {
@@ -139,7 +145,7 @@ export async function snapshotAiSettings(): Promise<AiSettingsSnapshot> {
   return {
     state,
     paths: {
-      store: STORE_PATH,
+      store: getStorePath(),
       claude: {
         dir: getClaudeConfigDir(),
         settings: getClaudeSettingsPath(),
@@ -175,8 +181,15 @@ export async function upsertAiProvider(
     manager.current = normalized.id;
   }
 
-  await writeAiSettings(state);
-  if (apply || manager.current === normalized.id) await writeProviderToLive(app, normalized);
+  const shouldApply = apply || manager.current === normalized.id;
+  const liveSnapshot = shouldApply ? await captureLiveSnapshot(app) : null;
+  if (shouldApply) await writeProviderToLive(app, normalized);
+  try {
+    await writeAiSettings(state);
+  } catch (error) {
+    if (liveSnapshot) await restoreLiveSnapshot(app, liveSnapshot).catch(() => undefined);
+    throw error;
+  }
   return snapshotAiSettings();
 }
 
@@ -208,9 +221,15 @@ export async function switchAiProvider(
     await backfillCurrentProviderFromLive(state, app, manager.current);
   }
 
-  manager.current = id;
-  await writeAiSettings(state);
+  const liveSnapshot = await captureLiveSnapshot(app);
   await writeProviderToLive(app, provider);
+  manager.current = id;
+  try {
+    await writeAiSettings(state);
+  } catch (error) {
+    await restoreLiveSnapshot(app, liveSnapshot).catch(() => undefined);
+    throw error;
+  }
   return snapshotAiSettings();
 }
 
@@ -219,15 +238,27 @@ export async function importLiveProvider(
   id = "default",
   name = app === "claude" ? "Claude live" : "Codex live",
 ): Promise<AiSettingsSnapshot> {
+  const state = await readAiSettings();
   const settingsConfig = normalizeImportedLiveSettings(app, await readLiveSettings(app));
+  const providerId = nextAvailableProviderId(state.apps[app].providers, id);
   const provider: AiProvider = {
-    id: uniqueProviderId(id),
+    id: providerId,
     name,
     settingsConfig,
     category: detectImportedProviderCategory(app, settingsConfig),
     createdAt: Date.now(),
   };
-  return upsertAiProvider(app, provider, undefined, false);
+
+  // Import is intentionally separate from the normal save/apply flow. The live
+  // files are the source of truth here: they may have been edited outside
+  // Osheep, so importing must only persist/select the new provider and never
+  // serialize the stored current provider back over those source files.
+  validateProvider(app, provider);
+  const manager = state.apps[app];
+  manager.providers[provider.id] = provider;
+  manager.current = provider.id;
+  await writeAiSettings(state);
+  return snapshotAiSettings();
 }
 
 export async function readLiveSettings(app: AiSettingsApp): Promise<unknown> {
@@ -327,7 +358,6 @@ function validateProvider(app: AiSettingsApp, provider: AiProvider): void {
 async function writeClaudeLive(settingsConfig: unknown): Promise<void> {
   const settings = structuredClone(asObject(settingsConfig) ?? {});
   for (const key of INTERNAL_CLAUDE_KEYS) delete settings[key];
-  normalizeClaudeModelKeys(settings);
   await writeJson(getClaudeSettingsPath(), settings);
 }
 
@@ -340,14 +370,75 @@ async function writeCodexLive(provider: AiProvider): Promise<void> {
   const rawConfig = typeof settings.config === "string" ? settings.config : "";
   validateTomlText(rawConfig, "Codex config.toml");
 
-  if (provider.category === "official" && codexAuthHasLoginMaterial(auth)) {
-    await writeJson(getCodexAuthPath(), auth);
-    await atomicWriteText(getCodexConfigPath(), rawConfig);
+  if (provider.category !== "official" || codexAuthHasLoginMaterial(auth)) {
+    await writeCodexLiveAtomic(auth, rawConfig);
     return;
   }
 
   const liveConfig = prepareCodexProviderLiveConfig(auth, rawConfig);
   await atomicWriteText(getCodexConfigPath(), liveConfig);
+}
+
+interface FileSnapshot {
+  exists: boolean;
+  contents?: Buffer;
+}
+
+interface LiveSnapshot {
+  claude?: FileSnapshot;
+  codexAuth?: FileSnapshot;
+  codexConfig?: FileSnapshot;
+}
+
+async function captureFile(filePath: string): Promise<FileSnapshot> {
+  try {
+    return { exists: true, contents: await fs.readFile(filePath) };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { exists: false };
+    throw error;
+  }
+}
+
+async function restoreFile(filePath: string, snapshot: FileSnapshot): Promise<void> {
+  if (!snapshot.exists) {
+    await fs.rm(filePath, { force: true });
+    return;
+  }
+  await atomicWrite(filePath, snapshot.contents ?? Buffer.alloc(0));
+}
+
+async function captureLiveSnapshot(app: AiSettingsApp): Promise<LiveSnapshot> {
+  if (app === "claude") return { claude: await captureFile(getClaudeSettingsPath()) };
+  return {
+    codexAuth: await captureFile(getCodexAuthPath()),
+    codexConfig: await captureFile(getCodexConfigPath()),
+  };
+}
+
+async function restoreLiveSnapshot(app: AiSettingsApp, snapshot: LiveSnapshot): Promise<void> {
+  if (app === "claude" && snapshot.claude) {
+    await restoreFile(getClaudeSettingsPath(), snapshot.claude);
+    return;
+  }
+  if (app === "codex" && snapshot.codexAuth && snapshot.codexConfig) {
+    await restoreFile(getCodexAuthPath(), snapshot.codexAuth);
+    await restoreFile(getCodexConfigPath(), snapshot.codexConfig);
+  }
+}
+
+async function writeCodexLiveAtomic(
+  auth: Record<string, unknown>,
+  configText: string,
+): Promise<void> {
+  const authPath = getCodexAuthPath();
+  const authSnapshot = await captureFile(authPath);
+  await writeJson(authPath, auth);
+  try {
+    await atomicWriteText(getCodexConfigPath(), configText);
+  } catch (error) {
+    await restoreFile(authPath, authSnapshot).catch(() => undefined);
+    throw error;
+  }
 }
 
 function prepareCodexProviderLiveConfig(auth: Record<string, unknown>, configText: string): string {
@@ -523,18 +614,25 @@ function validateTomlText(text: string, label: string): void {
 
 function getClaudeConfigDir(): string {
   return path.resolve(
-    process.env.OSHEEP_CLAUDE_CONFIG_DIR || path.join(APP_SETTINGS_DIR, "claude"),
+    process.env.CLAUDE_CONFIG_DIR ||
+      process.env.OSHEEP_CLAUDE_CONFIG_DIR ||
+      path.join(os.homedir() || ".", ".claude"),
   );
 }
 
 function getClaudeSettingsPath(): string {
   const dir = getClaudeConfigDir();
   const settings = path.join(dir, "settings.json");
-  return settings;
+  const legacy = path.join(dir, "claude.json");
+  return existsSync(settings) || !existsSync(legacy) ? settings : legacy;
 }
 
 function getCodexConfigDir(): string {
-  return path.resolve(process.env.OSHEEP_CODEX_CONFIG_DIR || path.join(APP_SETTINGS_DIR, "codex"));
+  return path.resolve(
+    process.env.CODEX_HOME ||
+      process.env.OSHEEP_CODEX_CONFIG_DIR ||
+      path.join(os.homedir() || ".", ".codex"),
+  );
 }
 
 function getCodexAuthPath(): string {
@@ -568,11 +666,20 @@ async function writeJson(filePath: string, value: unknown): Promise<void> {
 }
 
 async function atomicWriteText(filePath: string, text: string): Promise<void> {
+  await atomicWrite(filePath, Buffer.from(text, "utf8"));
+}
+
+async function atomicWrite(filePath: string, contents: Uint8Array): Promise<void> {
   const dir = path.dirname(filePath);
   await fs.mkdir(dir, { recursive: true });
   const temp = path.join(dir, `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`);
-  await fs.writeFile(temp, text, "utf8");
-  await fs.rename(temp, filePath);
+  try {
+    await fs.writeFile(temp, contents);
+    await fs.rename(temp, filePath);
+  } catch (error) {
+    await fs.rm(temp, { force: true }).catch(() => undefined);
+    throw error;
+  }
 }
 
 function sortJson(value: unknown): unknown {
@@ -598,4 +705,14 @@ function uniqueProviderId(seed: string): string {
       .replace(/^-+|-+$/g, "")
       .toLowerCase() || "default"
   );
+}
+
+function nextAvailableProviderId(providers: Record<string, AiProvider>, seed: string): string {
+  const base = uniqueProviderId(seed);
+  if (!providers[base]) return base;
+
+  for (let index = 2; ; index += 1) {
+    const candidate = `${base}-${index}`;
+    if (!providers[candidate]) return candidate;
+  }
 }

@@ -1,4 +1,5 @@
 import { type CSSProperties, createContext, useContext, useEffect, useRef, useState } from "react";
+import { useUiPreferences } from "../i18n/UiPreferences";
 import { ContextMenu, type CtxMenuSection } from "./ContextMenu";
 import { FileIcon } from "./FileIcon";
 import type { FsNode } from "./fs";
@@ -13,6 +14,7 @@ import {
   renameEntry,
 } from "./fs";
 import { type FileDecoration, statusColor } from "./git-decorations";
+import { useOsheepOverlay } from "./OsheepOverlay";
 
 type DraftKind = "file" | "folder";
 
@@ -99,6 +101,8 @@ export function FileTree({
   onFsChange,
   refreshSignal,
 }: FileTreeProps) {
+  const { t } = useUiPreferences();
+  const { notify } = useOsheepOverlay();
   const [children, setChildren] = useState<FsNode[]>([]);
   const [draft, setDraft] = useState<DraftKind | null>(null);
   const [treeVersion, setTreeVersion] = useState(0);
@@ -141,7 +145,7 @@ export function FileTree({
       if (kind === "file") await createFile(workspaceId, target);
       else await createDirectory(workspaceId, target);
     } catch (err) {
-      window.alert((err as Error).message);
+      notify.error((err as Error).message);
     }
   };
 
@@ -175,14 +179,14 @@ export function FileTree({
       setClipboard(null);
       bumpTree();
     } catch (err) {
-      window.alert(`粘贴失败：${(err as Error).message}`);
+      notify.error(t("notification.pasteFailed", { detail: (err as Error).message }));
     }
   };
 
   const onDropMove = async (srcPath: string, destDir: string) => {
     if (isAncestorOrSelf(srcPath, joinPath(destDir, basename(srcPath)))) {
       // Don't move a folder into itself / its descendant
-      window.alert("不能把文件夹移动到它自己或其子目录里");
+      notify.error(t("notification.invalidMove"));
       return;
     }
     if (parentOf(srcPath) === destDir) return; // already there
@@ -193,7 +197,7 @@ export function FileTree({
       onPathRenamed(srcPath, dest);
       bumpTree();
     } catch (err) {
-      window.alert(`移动失败：${(err as Error).message}`);
+      notify.error(t("notification.moveFailed", { detail: (err as Error).message }));
     }
   };
 
@@ -392,6 +396,8 @@ interface TreeNodeProps {
 
 function TreeNode({ node, depth }: TreeNodeProps) {
   const ctx = useTreeCtx();
+  const { t } = useUiPreferences();
+  const { confirm, notify } = useOsheepOverlay();
   const [expanded, setExpanded] = useState(false);
   const [children, setChildren] = useState<FsNode[] | undefined>();
   const [draft, setDraft] = useState<DraftKind | null>(null);
@@ -444,7 +450,7 @@ function TreeNode({ node, depth }: TreeNodeProps) {
       if (draft === "file") await createFile(ctx.workspaceId, childPath);
       else await createDirectory(ctx.workspaceId, childPath);
     } catch (err) {
-      window.alert((err as Error).message);
+      notify.error((err as Error).message);
     } finally {
       setDraft(null);
       await reload();
@@ -452,14 +458,18 @@ function TreeNode({ node, depth }: TreeNodeProps) {
   };
 
   const doDelete = async () => {
-    const ok = window.confirm(`确定要删除 "${node.name}" 吗？此操作不可撤销。`);
+    const ok = await confirm({
+      message: t("confirm.deleteFile", { name: node.name }),
+      confirmLabel: t("confirm.delete"),
+      reminderKey: "delete-file-or-folder",
+    });
     if (!ok) return;
     try {
       await removeEntry(ctx.workspaceId, node.path);
       ctx.onPathDeleted(node.path);
       ctx.bumpTree();
     } catch (err) {
-      window.alert((err as Error).message);
+      notify.error((err as Error).message);
     }
   };
 
@@ -501,7 +511,7 @@ function TreeNode({ node, depth }: TreeNodeProps) {
       ctx.setClipboard(null);
       ctx.bumpTree();
     } catch (err) {
-      window.alert(`粘贴失败：${(err as Error).message}`);
+      notify.error(t("notification.pasteFailed", { detail: (err as Error).message }));
     }
   };
 
@@ -531,7 +541,7 @@ function TreeNode({ node, depth }: TreeNodeProps) {
       ctx.onPathRenamed(node.path, newPath);
       ctx.bumpTree();
     } catch (err) {
-      window.alert((err as Error).message);
+      notify.error((err as Error).message);
     } finally {
       setRenaming(false);
     }

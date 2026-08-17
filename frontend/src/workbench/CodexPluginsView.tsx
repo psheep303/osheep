@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useUiPreferences } from "../i18n/UiPreferences";
 import {
   addCodexMarketplaceApi,
   type CodexPluginRecord,
@@ -10,10 +11,13 @@ import {
   removeLocalCodexPluginApi,
   uninstallCodexPluginApi,
 } from "./api";
+import { useOsheepOverlay } from "./OsheepOverlay";
 
 type DialogMode = "new" | "import" | "marketplace" | null;
 
 export function CodexPluginsView() {
+  const { t } = useUiPreferences();
+  const { confirm } = useOsheepOverlay();
   const [snapshot, setSnapshot] = useState<CodexPluginSnapshot | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -78,21 +82,38 @@ export function CodexPluginsView() {
     });
   }
 
-  function uninstall(plugin: CodexPluginRecord) {
-    if (!confirm(`Uninstall ${plugin.displayName}?`)) return;
+  async function uninstall(plugin: CodexPluginRecord) {
+    if (
+      !(await confirm({
+        message: t("confirm.uninstallPlugin", { name: plugin.displayName }),
+        confirmLabel: t("confirm.uninstall"),
+        reminderKey: "uninstall-codex-plugin",
+      }))
+    )
+      return;
     void run(async () => {
       setSnapshot(await uninstallCodexPluginApi(plugin.selector));
     });
   }
 
-  function removeLocal(plugin: CodexPluginRecord, deleteSource: boolean) {
+  async function removeLocal(plugin: CodexPluginRecord, deleteSource: boolean) {
     if (deleteSource) {
       const sourcePath = plugin.source.path ?? "(unknown source path)";
-      const typed = prompt(
-        `Delete source directory for ${plugin.displayName}?\n\n${sourcePath}\n\nType ${plugin.name} to confirm.`,
-      );
-      if (typed !== plugin.name) return;
-    } else if (!confirm(`Remove ${plugin.displayName} from the personal marketplace?`)) {
+      if (
+        !(await confirm({
+          message: `${t("confirm.deleteFile", { name: plugin.displayName })}\n${sourcePath}`,
+          confirmLabel: t("confirm.delete"),
+          requiredText: plugin.name,
+        }))
+      )
+        return;
+    } else if (
+      !(await confirm({
+        message: t("confirm.removePlugin", { name: plugin.displayName }),
+        confirmLabel: t("confirm.remove"),
+        reminderKey: "remove-codex-personal-plugin",
+      }))
+    ) {
       return;
     }
     void run(async () => {

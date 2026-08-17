@@ -21,6 +21,8 @@ const checks = [
       /src="\/osheep-icon\.png"/.test(html) &&
       (html.match(/class="startup-splash__dot"/g)?.length ?? 0) === 3 &&
       /animation: startup-splash-dot/.test(html) &&
+      /--startup-accent: #8c8c8c/.test(html) &&
+      !/#75beff|#0078d4/.test(html) &&
       !/startup-splash__mark::before/.test(html),
   },
   {
@@ -32,7 +34,9 @@ const checks = [
     pass:
       /startupPreference === "system"/.test(desktopHtml) &&
       /startupPreference === "light" \? "light" : "dark"/.test(desktopHtml) &&
-      /body\s*\{[\s\S]*?background: #181818/.test(desktopHtml),
+      /body\s*\{[\s\S]*?background: #181818/.test(desktopHtml) &&
+      /\.dot\s*\{[\s\S]*?background: #8c8c8c/.test(desktopHtml) &&
+      !/#75beff|#0078d4/.test(desktopHtml),
   },
 ];
 

@@ -167,12 +167,13 @@ export async function registerWorkflowRoutes(app: FastifyInstance) {
 
   app.post<{
     Params: { id: string; wid: string };
-    Body: { nodeIds?: string[] };
+    Body: { nodeIds?: string[]; language?: "zh-CN" | "en" };
   }>("/api/workspaces/:id/workflows/:wid/run", async (req) => {
     const nodeIds = Array.isArray(req.body?.nodeIds)
       ? req.body.nodeIds.filter((id): id is string => typeof id === "string")
       : undefined;
-    return await startWorkflowRun(req.params.id, req.params.wid, nodeIds);
+    const retryLanguage = req.body?.language === "zh-CN" ? "zh-CN" : "en";
+    return await startWorkflowRun(req.params.id, req.params.wid, nodeIds, retryLanguage);
   });
 
   app.post<{ Params: { id: string; wid: string } }>(

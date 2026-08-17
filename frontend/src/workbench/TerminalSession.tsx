@@ -12,6 +12,7 @@ import {
   type ShellProfile,
   type TerminalCreateResp,
 } from "./api";
+import { createShiftEnterInput, isShiftEnterEvent } from "./terminal-keyboard";
 import { normalizeLightTerminalAnsi, xtermAnsiTheme, xtermTheme } from "./theme";
 
 interface TerminalSessionProps {
@@ -83,34 +84,40 @@ export function TerminalSession({
       }
 
       // Intercept Ctrl+Shift+C / Ctrl+Shift+V so the browser doesn't open
-      // devtools and we route them to clipboard ourselves. xterm's default
-      // for these chords is to ignore them, which lets the browser default
-      // (devtools toggle) fire — we want copy/paste instead.
+      // devtools. xterm handles the resulting paste event itself through
+      // ClipboardEvent.clipboardData, which avoids the browser clipboard-read
+      // permission prompt shown by WebView2 on Windows.
+      const shiftEnterInput = createShiftEnterInput(term, {
+        ...(agentSession?.app === "codex"
+          ? { mode: "codex" as const }
+          : agentSession?.app === "claude"
+            ? { mode: "kitty" as const }
+            : {}),
+        sendInput: (data) => {
+          const live = wsRef.current;
+          if (live?.readyState === WebSocket.OPEN) {
+            live.send(JSON.stringify({ type: "input", data }));
+          }
+        },
+      });
       term.attachCustomKeyEventHandler((ev) => {
-        if (ev.type !== "keydown") return true;
         const isCopy =
           ev.ctrlKey && ev.shiftKey && !ev.altKey && (ev.code === "KeyC" || ev.key === "C");
         const isPaste =
           ev.ctrlKey && ev.shiftKey && !ev.altKey && (ev.code === "KeyV" || ev.key === "V");
+        if (isShiftEnterEvent(ev)) {
+          if (ev.type === "keydown") shiftEnterInput.send(ev);
+          return false;
+        }
+        // Keep the browser's paste default for both keydown and keypress. This
+        // lets xterm's paste listener consume ClipboardEvent.clipboardData.
+        if (isPaste) return false;
+        if (ev.type !== "keydown") return true;
         if (isCopy) {
           const sel = term.getSelection();
           if (sel) {
             void navigator.clipboard.writeText(sel).catch(() => undefined);
           }
-          ev.preventDefault();
-          ev.stopPropagation();
-          return false;
-        }
-        if (isPaste) {
-          void navigator.clipboard
-            .readText()
-            .then((text) => {
-              const live = wsRef.current;
-              if (live && live.readyState === WebSocket.OPEN && text) {
-                live.send(JSON.stringify({ type: "input", data: text }));
-              }
-            })
-            .catch(() => undefined);
           ev.preventDefault();
           ev.stopPropagation();
           return false;
@@ -174,7 +181,11 @@ export function TerminalSession({
           if (cancelled) return;
           try {
             const msg = JSON.parse(ev.data);
-            if ((msg.type === "output" || msg.type === "replay") && typeof msg.data === "string") {
+            if (
+              (msg.type === "output" || msg.type === "replay" || msg.type === "replay-chunk") &&
+              typeof msg.data === "string"
+            ) {
+              shiftEnterInput.observeOutput(msg.data);
               term.write(normalizeLightTerminalAnsi(msg.data, resolvedThemeRef.current));
             } else if (msg.type === "exit") {
               term.writeln(
@@ -229,6 +240,7 @@ export function TerminalSession({
       disposeTerminal = () => {
         cancelled = true;
         resizeObs.disconnect();
+        shiftEnterInput.dispose();
         inputDisp.dispose();
         const live = wsRef.current;
         if (live) {

@@ -20,6 +20,7 @@ import {
   removeGitRemote,
 } from "./api";
 import { GitGraph } from "./GitGraph";
+import { useOsheepOverlay } from "./OsheepOverlay";
 import { Resizer } from "./Resizer";
 
 interface GitViewProps {
@@ -53,6 +54,7 @@ export function GitView({
   onOpenCommitDiff,
 }: GitViewProps) {
   const { resolvedLanguage, t } = useUiPreferences();
+  const { confirm } = useOsheepOverlay();
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [busyLabel, setBusyLabel] = useState<string | null>(null);
@@ -383,21 +385,28 @@ export function GitView({
                 onAction={(c) =>
                   void run(t("git.processing"), () => gitStage(workspaceId, [c.path]))
                 }
-                onDiscardAll={() =>
-                  window.confirm(
-                    resolvedLanguage === "zh-CN"
-                      ? `确定要撤销全部 ${unstaged.length} 项更改吗？此操作不可逆。`
-                      : `Discard all ${unstaged.length} changes? This cannot be undone.`,
-                  ) &&
-                  void run(t("git.discarding"), () =>
+                onDiscardAll={async () => {
+                  if (
+                    !(await confirm({
+                      message: t("confirm.discardAllChanges", { count: unstaged.length }),
+                      confirmLabel: t("confirm.discard"),
+                      reminderKey: "git-discard-all-changes",
+                    }))
+                  )
+                    return;
+                  await run(t("git.discarding"), () =>
                     gitDiscard(
                       workspaceId,
                       unstaged.map((c) => c.path),
                     ).then(() => undefined),
-                  )
-                }
+                  );
+                }}
                 onDiscard={async (c) => {
-                  const ok = window.confirm(`确定要撤销对 ${c.path} 的修改吗？此操作不可逆。`);
+                  const ok = await confirm({
+                    message: t("confirm.discardChanges", { path: c.path }),
+                    confirmLabel: t("confirm.discard"),
+                    reminderKey: "git-discard-file-changes",
+                  });
                   if (!ok) return;
                   await run(t("git.discarding"), () =>
                     gitDiscard(workspaceId, [c.path]).then(() => undefined),
@@ -776,6 +785,8 @@ function RemotesPopover({
   onChanged: () => void;
   onClose: () => void;
 }) {
+  const { t } = useUiPreferences();
+  const { confirm } = useOsheepOverlay();
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
@@ -815,7 +826,14 @@ function RemotesPopover({
   };
 
   const submitRemove = async (n: string) => {
-    if (!window.confirm(`删除远程 "${n}" 吗？`)) return;
+    if (
+      !(await confirm({
+        message: t("confirm.deleteRemote", { name: n }),
+        confirmLabel: t("confirm.delete"),
+        reminderKey: "delete-git-remote",
+      }))
+    )
+      return;
     setLocalBusy(true);
     setErr(null);
     try {

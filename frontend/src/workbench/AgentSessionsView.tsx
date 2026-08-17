@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { useUiPreferences } from "../i18n/UiPreferences";
 import {
   type AgentSessionApp,
   type AgentSessionSummary,
@@ -6,6 +7,7 @@ import {
   deleteAgentSession,
   listAgentSessions,
 } from "./api";
+import { useOsheepOverlay } from "./OsheepOverlay";
 
 interface AgentSessionsViewProps {
   app: AgentSessionApp;
@@ -14,6 +16,8 @@ interface AgentSessionsViewProps {
 }
 
 export function AgentSessionsView({ app, workspaceId, onResume }: AgentSessionsViewProps) {
+  const { t } = useUiPreferences();
+  const { confirm } = useOsheepOverlay();
   const [sessions, setSessions] = useState<AgentSessionSummary[]>([]);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [deletingIds, setDeletingIds] = useState<Set<string>>(() => new Set());
@@ -49,7 +53,14 @@ export function AgentSessionsView({ app, workspaceId, onResume }: AgentSessionsV
 
   const remove = async (session: AgentSessionSummary) => {
     if (!workspaceId) return;
-    if (!confirm(`Delete session "${session.title}"? This cannot be undone.`)) return;
+    if (
+      !(await confirm({
+        message: t("confirm.deleteSession", { name: session.title }),
+        confirmLabel: t("confirm.delete"),
+        reminderKey: "delete-agent-session",
+      }))
+    )
+      return;
     setDeletingIds(new Set([session.id]));
     setError(null);
     try {
@@ -69,7 +80,14 @@ export function AgentSessionsView({ app, workspaceId, onResume }: AgentSessionsV
       .filter((session) => selectedIds.has(session.id))
       .map((session) => session.id);
     if (ids.length === 0) return;
-    if (!confirm(`Delete ${ids.length} selected sessions? This cannot be undone.`)) return;
+    if (
+      !(await confirm({
+        message: t("confirm.deleteSessions", { count: ids.length }),
+        confirmLabel: t("confirm.delete"),
+        reminderKey: "delete-agent-sessions",
+      }))
+    )
+      return;
 
     setDeletingIds(new Set(ids));
     setError(null);

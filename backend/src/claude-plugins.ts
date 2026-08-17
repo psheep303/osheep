@@ -600,6 +600,7 @@ function marketplaceEntryMetadata(entry: unknown, marketplaceName: string): Merg
     homepage: stringValue(obj.homepage) || undefined,
     authorName: stringValue(author?.name) || stringValue(obj.author) || undefined,
     sourceUrl: source.sourceUrl,
+    available: true,
     sourceKind: "marketplace",
     sourcePath: source.sourcePath,
   };
@@ -685,6 +686,30 @@ async function enrichAvailableRecord(
   };
 }
 
+async function enrichInstalledPluginsFromMarketplace(
+  plugins: Map<string, ClaudePluginRecord>,
+  metadataBySelector: Map<string, MergeRecord>,
+  marketplaceRoots: Map<string, string>,
+): Promise<void> {
+  for (const [selector, plugin] of plugins) {
+    if (!plugin.status.installed || plugin.icon) continue;
+    const metadata = metadataBySelector.get(selector);
+    if (!metadata) continue;
+    const enriched = await enrichAvailableRecord(metadata, marketplaceRoots);
+    plugins.set(selector, {
+      ...plugin,
+      displayName:
+        plugin.displayName === plugin.name
+          ? enriched.displayName || plugin.displayName
+          : plugin.displayName,
+      description: plugin.description || enriched.description,
+      icon: enriched.icon,
+      iconColor: plugin.iconColor || enriched.iconColor,
+      installCount: plugin.installCount ?? enriched.installCount,
+    });
+  }
+}
+
 export async function getClaudePluginSnapshot(
   options: ClaudePluginServiceOptions = {},
 ): Promise<ClaudePluginSnapshot> {
@@ -729,12 +754,18 @@ export async function getClaudePluginSnapshot(
 
   const marketplaceRoots = marketplaceRootMap(marketplaces);
   const availableMetadata = await marketplacePluginMetadata(marketplaces);
+  await enrichInstalledPluginsFromMarketplace(map, availableMetadata, marketplaceRoots);
   for (const record of availableRecords) {
     const withMetadata = mergeAvailableMetadata(
       record,
       availableMetadata.get(selectorFor(record.name, record.marketplace)),
     );
     mergePlugin(map, await enrichAvailableRecord(withMetadata, marketplaceRoots));
+  }
+  for (const metadata of availableMetadata.values()) {
+    const selector = selectorFor(metadata.name, metadata.marketplace);
+    if (map.has(selector)) continue;
+    mergePlugin(map, await enrichAvailableRecord(metadata, marketplaceRoots));
   }
 
   const plugins = [...map.values()]

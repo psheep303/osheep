@@ -40,10 +40,10 @@ import {
   execRun,
   execRunStream,
   finishAiTerminalSuccess,
-  getGitDiff,
-  getGitStatus,
   getClaudePlugins,
   getCodexPlugins,
+  getGitDiff,
+  getGitStatus,
   listAgentSessions,
   openTerminalSocket,
   openWorkflowRuntimeSocket,
@@ -66,10 +66,11 @@ import {
   writeFile,
 } from "./api";
 import { ClaudeLogo, OpenAILogo } from "./BrandIcons";
-import type { MultiDiffEntry } from "./MultiDiffPane";
-import { evaluateConditionExpression } from "./condition-expression";
 import { ContextMenu, type CtxMenuSection } from "./ContextMenu";
+import { evaluateConditionExpression } from "./condition-expression";
+import type { MultiDiffEntry } from "./MultiDiffPane";
 import { cleanAgentTerminalConversation } from "./terminal-conversation";
+import { createShiftEnterInput, isShiftEnterEvent } from "./terminal-keyboard";
 import {
   compactSupersededClaudeStartup,
   createTerminalReplayGuard,
@@ -248,7 +249,9 @@ interface SetNodeConfig {
   data: string;
 }
 
-interface IfNodeConfig { expression: string }
+interface IfNodeConfig {
+  expression: string;
+}
 
 interface MergeNodeConfig {
   mode: string;
@@ -764,7 +767,7 @@ export function WorkflowTab({
   onTemplateBinding,
   onOpenDiff,
 }: WorkflowTabProps) {
-  const { t } = useUiPreferences();
+  const { resolvedLanguage, t } = useUiPreferences();
   const [workflow, setWorkflow] = useState<WorkflowRecord | null>(null);
   const [runtimeReadyWorkflowKey, setRuntimeReadyWorkflowKey] = useState("");
   const workflowRef = useRef<WorkflowRecord | null>(null);
@@ -1107,9 +1110,7 @@ export function WorkflowTab({
   const waitingForInputNode =
     workflow?.nodes.find(
       (node) =>
-        node.kind === "input" &&
-        node.status === "running" &&
-        node.config?.waitingForInput === true,
+        node.kind === "input" && node.status === "running" && node.config?.waitingForInput === true,
     ) ?? null;
   const waitingAlertKey = waitingForChoiceNode
     ? `${waitingForChoiceNode.id}:${waitingForChoiceSnapshot?.terminalSessionId ?? ""}`
@@ -1855,7 +1856,7 @@ export function WorkflowTab({
     setError(null);
     const runtimeEventSeq = workflowRuntimeEventSeqRef.current;
     try {
-      const result = await apiRunWorkflow(workspaceId, current.id, nodeIds);
+      const result = await apiRunWorkflow(workspaceId, current.id, resolvedLanguage, nodeIds);
       if (workflowRuntimeEventSeqRef.current === runtimeEventSeq) {
         const next = applyNodePositions(result.workflow, runtimeLayoutRef.current);
         workflowRef.current = next;
@@ -2092,7 +2093,6 @@ export function WorkflowTab({
               codexApproval: agentCodexApproval(node),
               codexSandbox: agentCodexSandbox(node),
               effort: agentEffort(node),
-              failOnTerminalError: true,
               alwaysEnter: agentAlwaysEnter(node),
               conversationSessionId: requestedConversationSessionId,
             },
@@ -2103,8 +2103,6 @@ export function WorkflowTab({
               } else if (frame.type === "conversation" && frame.sessionId) {
                 conversationSessionId = frame.sessionId;
                 updateAgentDetails("running");
-              } else if (frame.type === "output" && typeof frame.data === "string") {
-                appendLog({ stream: "stdout", content: frame.data });
               } else if (frame.type === "status" && frame.status) {
                 terminalStatus = frame.status;
                 updateAgentDetails("running");
@@ -2113,6 +2111,7 @@ export function WorkflowTab({
             ac.signal,
             agentRetryCount(node),
             agentRetryForever(node),
+            resolvedLanguage,
             appendLog,
           );
         } catch (e) {
@@ -2550,12 +2549,7 @@ export function WorkflowTab({
           key={waitingForInputNode.id}
           title={workflowInputTitle(waitingForInputNode)}
           onSubmit={async (value) => {
-            await resolveWorkflowInput(
-              workspaceId,
-              workflow.id,
-              waitingForInputNode.id,
-              value,
-            );
+            await resolveWorkflowInput(workspaceId, workflow.id, waitingForInputNode.id, value);
           }}
           onError={(message) => setError(message)}
         />
@@ -3422,6 +3416,11 @@ function WorkflowDetailsPanel({
 }) {
   const snapshot = runDetailsSnapshot(node);
   const title = snapshot?.title || node.title;
+  const status = snapshot?.status ?? node.status;
+  const displayedStatus =
+    status === "running" && snapshot?.terminalStatus === "waiting-for-choice"
+      ? "waiting for choice"
+      : status;
   const openAgentSession = async () => {
     if (snapshot?.kind !== "agent") return;
     const app: AgentSessionApp = node.providerKind === "claude-cli" ? "claude" : "codex";
@@ -3444,9 +3443,7 @@ function WorkflowDetailsPanel({
       <div className="workflow-inspector__head">
         <div>
           <div className="workflow-inspector__eyebrow">Run details</div>
-          <span className={`workflow-inspector__status is-${snapshot?.status ?? node.status}`}>
-            {snapshot?.status ?? node.status}
-          </span>
+          <span className={`workflow-inspector__status is-${status}`}>{displayedStatus}</span>
         </div>
         <button
           type="button"
@@ -3500,6 +3497,7 @@ function WorkflowDetailsPanel({
         snapshot.terminalSessionId &&
         snapshot.status === "running" ? (
           <WorkflowAgentTerminal
+            app={node.providerKind === "claude-cli" ? "claude" : "codex"}
             workspaceId={workspaceId}
             sessionId={snapshot.terminalSessionId}
             terminalStatus={snapshot.terminalStatus}
@@ -3948,11 +3946,13 @@ function readableAgentConversation(snapshot: WorkflowRunDetailSnapshot): string 
 }
 
 function WorkflowAgentTerminalInner({
+  app,
   workspaceId,
   sessionId,
   terminalStatus,
   initialAutoSuccess,
 }: {
+  app: AgentSessionApp;
   workspaceId: string;
   sessionId: string;
   terminalStatus?: string;
@@ -3963,6 +3963,7 @@ function WorkflowAgentTerminalInner({
   const termRef = useRef<XTerm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const shiftEnterSenderRef = useRef<((data: string) => void) | null>(null);
   const resolvedThemeRef = useRef(resolvedTheme);
   const [paused, setPaused] = useState(false);
   const [autoSuccess, setAutoSuccess] = useState(initialAutoSuccess);
@@ -4002,6 +4003,15 @@ function WorkflowAgentTerminalInner({
     } catch {
       /* layout race */
     }
+    const shiftEnterInput = createShiftEnterInput(term, {
+      mode: app === "codex" ? "codex" : "kitty",
+      sendInput: (data) => shiftEnterSenderRef.current?.(data),
+    });
+    term.attachCustomKeyEventHandler((event) => {
+      if (!isShiftEnterEvent(event)) return true;
+      if (event.type === "keydown") shiftEnterInput.send(event);
+      return false;
+    });
     const fittedCols = term.cols;
     const fittedRows = term.rows;
 
@@ -4015,8 +4025,26 @@ function WorkflowAgentTerminalInner({
     let startupPreResizeOutput = "";
     let startupRedrawFallbackTimer: ReturnType<typeof setTimeout> | null = null;
     let resizeTimer: ReturnType<typeof setTimeout> | null = null;
+    let replayMetadata: {
+      cols?: number;
+      rows?: number;
+      initialCols?: number;
+      initialRows?: number;
+      resizes?: TerminalReplayResize[];
+      compactStartup?: boolean;
+      truncated?: boolean;
+    } | null = null;
+    let replayChunks: string[] = [];
     const outputWriter = createTerminalWriteBatcher((data) => term.write(data));
     const replayGuard = createTerminalReplayGuard((data, callback) => term.write(data, callback));
+    shiftEnterSenderRef.current = (data) => {
+      // A deliberate user key must never be dropped by replay settling. The
+      // normal onData path remains guarded, but Shift+Enter can be sent as
+      // soon as the terminal socket is connected.
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "input", data }));
+      }
+    };
     const drainReplayOutput = (initial: string, onDrained: () => void) => {
       const pending = initial + replayOutput.join("");
       replayOutput = [];
@@ -4049,7 +4077,7 @@ function WorkflowAgentTerminalInner({
     };
     ws.onmessage = (ev) => {
       try {
-        const msg = JSON.parse(ev.data) as {
+        let msg = JSON.parse(ev.data) as {
           type?: string;
           data?: string;
           cols?: number;
@@ -4058,9 +4086,28 @@ function WorkflowAgentTerminalInner({
           initialRows?: number;
           resizes?: TerminalReplayResize[];
           compactStartup?: boolean;
+          truncated?: boolean;
           code?: number | null;
           signal?: number | string | null;
         };
+        if (msg.type === "replay-start") {
+          replayMetadata = msg;
+          replayChunks = [];
+          return;
+        }
+        if (msg.type === "replay-chunk" && typeof msg.data === "string") {
+          replayChunks.push(msg.data);
+          return;
+        }
+        if (msg.type === "replay-end") {
+          msg = {
+            ...replayMetadata,
+            type: "replay",
+            data: replayChunks.join(""),
+          };
+          replayMetadata = null;
+          replayChunks = [];
+        }
         if (msg.type === "replay" && typeof msg.data === "string") {
           outputWriter.flush();
           const replayResizes = [...(msg.resizes ?? [])];
@@ -4220,6 +4267,8 @@ function WorkflowAgentTerminalInner({
 
     return () => {
       resizeObs.disconnect();
+      shiftEnterInput.dispose();
+      shiftEnterSenderRef.current = null;
       if (resizeTimer) clearTimeout(resizeTimer);
       if (startupRedrawFallbackTimer) clearTimeout(startupRedrawFallbackTimer);
       inputSub.dispose();
@@ -4230,7 +4279,7 @@ function WorkflowAgentTerminalInner({
       termRef.current = null;
       fitRef.current = null;
     };
-  }, [sessionId]);
+  }, [app, sessionId]);
 
   useEffect(() => {
     const term = termRef.current;
@@ -4305,17 +4354,13 @@ function WorkflowAgentTerminalInner({
             ? "manual input enabled"
             : terminalStatus === "ready-for-success"
               ? "ready to mark success"
-              : terminalStatus === "waiting-for-input"
-                ? "waiting for CLI input"
-                : terminalStatus === "prompt-injected"
+              : terminalStatus === "waiting-for-choice"
+                ? "waiting for your choice"
+                : terminalStatus === "prompt-sent"
                   ? "prompt injected"
-                  : terminalStatus === "prompt-sent"
-                    ? "prompt injected"
-                    : terminalStatus === "prompt-timeout"
-                      ? "auto inject timed out"
-                      : terminalStatus === "auto-finished"
-                        ? "answer captured"
-                        : "live terminal"}
+                  : terminalStatus === "auto-finished"
+                    ? "answer captured"
+                    : "live terminal"}
         </span>
       </div>
       <div className="workflow-run-details__xterm-host" ref={hostRef} />
@@ -4573,10 +4618,18 @@ function WorkflowNodeInspector({
           <div className="workflow-inspector__section-title">Diff waiting for approval</div>
           <DiffApprovalView workspaceId={workspaceId} onOpenDiff={onOpenDiff} />
           <div className="workflow-inspector__approval-actions">
-            <button type="button" className="is-primary" onClick={() => void onResolveApproval(true)}>
+            <button
+              type="button"
+              className="is-primary"
+              onClick={() => void onResolveApproval(true)}
+            >
               Approve
             </button>
-            <button type="button" className="is-danger" onClick={() => void onResolveApproval(false)}>
+            <button
+              type="button"
+              className="is-danger"
+              onClick={() => void onResolveApproval(false)}
+            >
               Reject
             </button>
           </div>
@@ -4971,7 +5024,9 @@ function WorkflowNodeInspector({
             <label className="workflow-inspector__field">
               <span>Remote</span>
               <TemplateInput
-                value={typeof node.config?.remoteName === "string" ? node.config.remoteName : "origin"}
+                value={
+                  typeof node.config?.remoteName === "string" ? node.config.remoteName : "origin"
+                }
                 onChange={(value) => updateConfig({ remoteName: value })}
                 disabled={running}
               />
@@ -6457,7 +6512,6 @@ async function runAiTerminalWithRetries(
     codexApproval?: AiTerminalCodexApproval;
     codexSandbox?: AiTerminalCodexSandbox;
     effort?: AiTerminalEffort;
-    failOnTerminalError?: boolean;
     alwaysEnter?: boolean;
     conversationSessionId?: string;
     resumeConversation?: boolean;
@@ -6466,6 +6520,7 @@ async function runAiTerminalWithRetries(
   signal: AbortSignal,
   retries: number,
   retryForever: boolean,
+  retryLanguage: "zh-CN" | "en",
   onLog: (entry: { stream: "stdout" | "stderr"; content: string }) => void,
 ): Promise<{ result: AiTerminalResult | null; aborted: boolean }> {
   let lastError: unknown = null;
@@ -6490,7 +6545,7 @@ async function runAiTerminalWithRetries(
       return await aiChatTerminalStream(
         workspaceId,
         {
-          ...(attempt > 1 ? continueOnlyTerminalInput(input) : input),
+          ...(attempt > 1 ? continueOnlyTerminalInput(input, retryLanguage) : input),
           conversationSessionId,
           resumeConversation: attempt > 1,
         },
@@ -6548,11 +6603,12 @@ function continueOnlyTerminalInput<
     messages: Array<{ role: "user"; content: string }>;
     terminalPrompt?: string;
   },
->(input: T): T {
+>(input: T, language: "zh-CN" | "en"): T {
+  const prompt = language === "zh-CN" ? "继续" : "continue";
   return {
     ...input,
-    messages: [{ role: "user", content: "继续" }],
-    terminalPrompt: "继续",
+    messages: [{ role: "user", content: prompt }],
+    terminalPrompt: prompt,
   };
 }
 
@@ -7387,11 +7443,7 @@ function edgePath(from: WorkflowNode, to: WorkflowNode, sourceHandle?: string): 
   return bezierPath(outputPoint(from, sourceHandle), inputPoint(to));
 }
 
-function edgePathToPoint(
-  from: WorkflowNode,
-  point: CanvasPoint,
-  sourceHandle?: string,
-): string {
+function edgePathToPoint(from: WorkflowNode, point: CanvasPoint, sourceHandle?: string): string {
   return bezierPath(outputPoint(from, sourceHandle), worldPointToCanvas(point));
 }
 
@@ -7478,14 +7530,15 @@ function blockEyebrow(kind: WorkflowNodeKind): string {
   )
     return "Trigger";
   if (kind === "command") return "Command";
-  if (kind === "git-commit" || kind === "git-checkout" || kind === "git-delete-branch" || kind === "github-pr") return "Git";
-  if (kind === "web" || kind === "http-request") return "Network";
   if (
-    kind === "if" ||
-    kind === "diff-approval" ||
-    kind === "wait" ||
-    kind === "loop-items"
+    kind === "git-commit" ||
+    kind === "git-checkout" ||
+    kind === "git-delete-branch" ||
+    kind === "github-pr"
   )
+    return "Git";
+  if (kind === "web" || kind === "http-request") return "Network";
+  if (kind === "if" || kind === "diff-approval" || kind === "wait" || kind === "loop-items")
     return "Logic";
   if (kind === "code") return "Code";
   if (kind === "file-read" || kind === "file-write") return "File";
@@ -7601,7 +7654,14 @@ function nodeIconName(node: WorkflowNode): WorkflowIconName {
   if (kind === "http-request") return "http";
   if (kind === "set") return "set";
   if (kind === "if") return "if";
-  if (kind === "diff-approval" || kind === "git-commit" || kind === "git-checkout" || kind === "git-delete-branch" || kind === "github-pr") return "git";
+  if (
+    kind === "diff-approval" ||
+    kind === "git-commit" ||
+    kind === "git-checkout" ||
+    kind === "git-delete-branch" ||
+    kind === "github-pr"
+  )
+    return "git";
   if (kind === "merge") return "merge";
   if (kind === "code") return "code";
   if (kind === "loop-items") return "loop";

@@ -78,6 +78,10 @@ export async function registerAgentSessionRoutes(app: FastifyInstance) {
       cols: body.cols ?? 80,
       rows: body.rows ?? 24,
       guardRoot: agentSession.cwd,
+      // Advertise a native CSI-u terminal. Claude Code enables its Kitty
+      // keyboard protocol for WezTerm, while VS Code requires a separate
+      // keybinding installation step.
+      terminalProgram: "WezTerm",
     });
     writeInput(session, `${resumeCommand(sessionApp)} ${agentSession.id}\r`);
     return {

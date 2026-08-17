@@ -9,8 +9,6 @@ import {
   type ClaudePermissionMode,
   type CodexApproval,
   type CodexSandbox,
-  extractAgentTerminalContent,
-  hasAgentTerminalFailure,
   runAgentTerminal,
 } from "./ai-terminal.js";
 import { readAppSettings } from "./app-settings.js";
@@ -48,6 +46,7 @@ import { resolveWorkspace, type WorkspaceInfo } from "./workspace.js";
 
 type WorkflowBlockOutput = Record<string, unknown>;
 type RunLogEntry = { stream: "stdout" | "stderr"; content: string };
+type WorkflowRetryLanguage = "zh-CN" | "en";
 
 interface LocalNodeResult {
   output: WorkflowBlockOutput;
@@ -143,9 +142,10 @@ export interface AgentTerminalFailure {
 interface AgentTerminalProcessResult {
   content: string;
   transcript: string;
-  rawTranscript?: string;
   exitCode: number | null;
   signal: number | string | null;
+  outcome?: "success" | "error" | "cancelled" | "user-rejected";
+  errorMessage?: string;
 }
 
 const activeRuns = new Map<string, WorkflowRunState>();
@@ -223,8 +223,8 @@ export function createLiveAgentRunDetails(
   };
 
   const update = (status: WorkflowRunDetailSnapshot["status"], completedAt?: number) => {
-    // Live output is already available through the PTY stream. Persist only the
-    // metadata needed to reconnect; the complete transcript is saved at finish.
+    // Persist only the metadata needed to reconnect. The final transcript comes
+    // from the agent session JSONL, never from PTY output.
     return enqueue(buildSnapshot(status, completedAt, []));
   };
 
@@ -236,10 +236,6 @@ export function createLiveAgentRunDetails(
     if (frame.type === "conversation") {
       conversationSessionId = frame.sessionId;
       return update("running");
-    }
-    if (frame.type === "output") {
-      appendRunLog(logs, { stream: "stdout", content: frame.data });
-      return queue;
     }
     if (frame.type === "status") {
       terminalStatus = frame.status;
@@ -256,131 +252,26 @@ export function createLiveAgentRunDetails(
   };
 }
 
-export function classifyAgentTerminalFailure(raw: string, prompt: string): AgentTerminalFailure {
-  const text = stripAnsi(raw).replace(/\r/g, "\n");
-  const apiError = lastRegexMatch(
-    text,
-    /^[ \t]*(?:[●•*✖✗×!]\s*)?(?:Please run\s+\/login\s*(?:[·•-]\s*)?)?API Error\s*:\s*\S[^\n]*/im,
-  );
-  if (apiError?.index !== undefined) {
-    if (!isAgentErrorSuperseded(text, apiError.index)) {
-      return agentTerminalFailure(
-        text,
-        prompt,
-        apiError,
-        isRetryableAgentTerminalMessage(apiError[0]),
-      );
-    }
-  }
-
-  const transient = lastRegexMatch(
-    text,
-    /\b(?:unexpected status\s+(?:408|429|5\d\d)\b[^\n]*|(?:service unavailable|auth_unavailable|rate limit|temporarily unavailable|overloaded|econnreset|etimedout)[^\n]*)/i,
-  );
-  if (transient?.index !== undefined && !isAgentErrorSuperseded(text, transient.index)) {
-    return agentTerminalFailure(text, prompt, transient, true);
-  }
-
-  const permanent = lastRegexMatch(
-    text,
-    /^[ \t]*(?:[●•*✖✗×!]\s*)?(?:Please run\s+\/login\b[^\n]*|Image generation is not enabled for this (?:group|organization|account)\b[^\n]*|(?:authentication|authorization) (?:failed|required)\b[^\n]*)/im,
-  );
-  if (permanent?.index !== undefined && !isAgentErrorSuperseded(text, permanent.index)) {
-    return agentTerminalFailure(text, prompt, permanent, false);
-  }
-
-  const decoratedError = lastRegexMatch(
-    text,
-    /^[ \t]*[●•✖✗×!]\s*(?:(?:fatal|authentication|authorization|request)\s+)?error\s*:\s*\S[^\n]*/im,
-  );
-  if (decoratedError?.index !== undefined && !isAgentErrorSuperseded(text, decoratedError.index)) {
-    return agentTerminalFailure(
-      text,
-      prompt,
-      decoratedError,
-      isRetryableAgentTerminalMessage(decoratedError[0]),
-    );
-  }
-
-  return noAgentTerminalFailure();
-}
-
 export function classifyAgentTerminalResultFailure(
   result: AgentTerminalProcessResult,
-  prompt: string,
+  _prompt: string,
 ): AgentTerminalFailure {
-  const contentFailure = classifyAgentTerminalFailure(result.content, prompt);
-  if (contentFailure.failed) return contentFailure;
-
-  const transcriptFailure = classifyAgentTerminalFailure(
-    terminalTail(result.transcript, 80),
-    prompt,
-  );
-  if (transcriptFailure.failed) return transcriptFailure;
-
-  const modelOutput = terminalModelOutputBeforeError(result.content || result.transcript, prompt);
-
-  // The cleaned conversation intentionally removes terminal chrome. Keep the
-  // raw screen as a fallback so provider errors such as Codex 503 responses
-  // cannot disappear when the conversation has no assistant answer.
-  if (result.rawTranscript) {
-    const rawTranscriptFailure = classifyAgentTerminalFailure(
-      terminalTail(result.rawTranscript, 120),
-      prompt,
-    );
-    if (rawTranscriptFailure.failed) return rawTranscriptFailure;
-    if (hasAgentTerminalFailure(result.rawTranscript)) {
-      return agentTerminalLifecycleFailure("Agent terminal reported an error.", false, modelOutput);
-    }
-  }
-
-  if (result.signal === "agent-stalled") {
+  if (result.outcome === "error") {
+    const message = result.errorMessage || "Agent session reported an error.";
     return agentTerminalLifecycleFailure(
-      "Agent terminal stalled without output activity.",
-      true,
-      modelOutput,
+      message,
+      isRetryableAgentTerminalMessage(message),
+      result.content,
     );
   }
-  if (result.exitCode === null) {
-    const suffix = result.signal === null ? "without an exit code" : `with signal ${result.signal}`;
-    return agentTerminalLifecycleFailure(`Agent terminal exited ${suffix}.`, false, modelOutput);
-  }
-  if (result.exitCode !== 0) {
+  if (result.outcome === "cancelled") {
     return agentTerminalLifecycleFailure(
-      `Agent terminal exited with code ${result.exitCode}.`,
+      result.errorMessage || "Agent session was cancelled.",
       false,
-      modelOutput,
-    );
-  }
-  if (
-    result.signal !== null &&
-    result.signal !== "auto-finished" &&
-    result.signal !== "manual-success"
-  ) {
-    return agentTerminalLifecycleFailure(
-      `Agent terminal completed with unexpected signal ${result.signal}.`,
-      false,
-      modelOutput,
+      result.content,
     );
   }
   return noAgentTerminalFailure();
-}
-
-function agentTerminalFailure(
-  text: string,
-  prompt: string,
-  match: RegExpMatchArray,
-  retryable: boolean,
-): AgentTerminalFailure {
-  const matchIndex = match.index ?? 0;
-  const modelOutput = terminalModelOutputBeforeError(text.slice(0, matchIndex), prompt);
-  return {
-    failed: true,
-    retryable,
-    hasModelOutput: modelOutput.length > 0,
-    message: match[0].trim().replace(/^[●•*✖×!]\s*/, ""),
-    modelOutput,
-  };
 }
 
 function agentTerminalLifecycleFailure(
@@ -418,38 +309,8 @@ function isRetryableAgentTerminalMessage(message: string): boolean {
   );
 }
 
-function isAgentErrorSuperseded(text: string, errorAt: number): boolean {
-  const recovery = text
-    .slice(errorAt)
-    .replace(/(?:^|\n)\s*(?:Reconnecting|Retrying)\b[^\n]*/gi, "\n");
-  return /(?:^|\n)\s*(?:[\p{S}\p{P}]\s*)?(?:Thought\s+for\s+\d|\p{L}[\p{L}'’-]*(?:…|\.\.\.)?\s*\(\s*\d+(?:\.\d+)?(?:ms|s|m|h)\b)/imu.test(
-    recovery,
-  );
-}
-
-function lastRegexMatch(text: string, pattern: RegExp): RegExpMatchArray | null {
-  const flags = pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`;
-  const regex = new RegExp(pattern.source, flags);
-  let last: RegExpMatchArray | null = null;
-  let match: RegExpExecArray | null;
-  while ((match = regex.exec(text)) !== null) {
-    last = match;
-    if (!match[0]) regex.lastIndex += 1;
-  }
-  return last;
-}
-
-function terminalTail(text: string, lineCount: number): string {
-  return text.split("\n").slice(-lineCount).join("\n");
-}
-
-export function nextAgentRetryPrompt(
-  originalPrompt: string,
-  failure: AgentTerminalFailure,
-): string {
-  void originalPrompt;
-  void failure;
-  return "继续";
+export function agentRetryPromptForLanguage(language: WorkflowRetryLanguage): string {
+  return language === "zh-CN" ? "继续" : "continue";
 }
 
 export function shouldRetryAgentTerminalFailure(
@@ -465,6 +326,7 @@ export async function startWorkflowRun(
   workspaceId: string,
   workflowId: string,
   requestedNodeIds?: string[],
+  retryLanguage: WorkflowRetryLanguage = "en",
 ): Promise<{ runId: string; workflow: WorkflowRecord }> {
   const key = runKey(workspaceId, workflowId);
   if (activeRuns.has(key)) throw new Error("Workflow is already running.");
@@ -523,9 +385,14 @@ export async function startWorkflowRun(
   }
 
   const abort = new AbortController();
-  const done = runWorkflowInBackground(workspace, workflowId, run, ordered, abort).catch(
-    () => undefined,
-  );
+  const done = runWorkflowInBackground(
+    workspace,
+    workflowId,
+    run,
+    ordered,
+    abort,
+    retryLanguage,
+  ).catch(() => undefined);
   activeRuns.set(key, { workspaceId, workflowId, runId: run.id, abort, done });
   void done.finally(() => {
     const state = activeRuns.get(key);
@@ -637,14 +504,14 @@ export async function scheduleWorkflowNodes(
           !source.skipped &&
           (!edge.sourceHandle || !source.sourceHandle || edge.sourceHandle === source.sourceHandle);
         if (matches) activeIncoming.set(next, (activeIncoming.get(next) ?? 0) + 1);
-      pending?.delete(result.nodeId);
+        pending?.delete(result.nodeId);
         pending?.delete(source.nodeId);
-      if (
-        pending?.size === 0 &&
-        !completed.has(next) &&
-        !running.has(next) &&
-        !ready.includes(next)
-      ) {
+        if (
+          pending?.size === 0 &&
+          !completed.has(next) &&
+          !running.has(next) &&
+          !ready.includes(next)
+        ) {
           if ((incomingCount.get(next) ?? 0) > 0 && (activeIncoming.get(next) ?? 0) === 0) {
             completed.add(next);
             propagation.push({ nodeId: next, skipped: true });
@@ -665,6 +532,7 @@ async function runWorkflowInBackground(
   run: WorkflowRun,
   nodeIds: string[],
   abort: AbortController,
+  retryLanguage: WorkflowRetryLanguage,
 ): Promise<void> {
   let fatalError: unknown;
   try {
@@ -680,7 +548,15 @@ async function runWorkflowInBackground(
     await scheduleWorkflowNodes(nodeIds, record.edges, maxParallel, async (nodeId) => {
       if (abort.signal.aborted) throw new Error("Stopped");
       try {
-        return await executeWorkflowNode(workspace, workflowId, run, nodeIds, nodeId, abort);
+        return await executeWorkflowNode(
+          workspace,
+          workflowId,
+          run,
+          nodeIds,
+          nodeId,
+          abort,
+          retryLanguage,
+        );
       } catch (error) {
         const message = (error as Error)?.message;
         if (!(abort.signal.aborted && message === "Stopped")) {
@@ -743,6 +619,7 @@ async function executeWorkflowNode(
   nodeIds: string[],
   nodeId: string,
   abort: AbortController,
+  retryLanguage: WorkflowRetryLanguage,
 ): Promise<string | undefined> {
   if (abort.signal.aborted) throw new Error("Stopped");
   let record = await getWorkflow(workspace.path, workflowId);
@@ -804,7 +681,7 @@ async function executeWorkflowNode(
   try {
     result =
       kind === "agent"
-        ? await executeAgentNode(workspace, record, currentNode, startedAt, abort)
+        ? await executeAgentNode(workspace, record, currentNode, startedAt, abort, retryLanguage)
         : kind === "command"
           ? await executeCommandNode(workspace.path, record, currentNode, startedAt, abort)
           : await executeLocalNode(workspace.path, record, currentNode, {
@@ -907,6 +784,7 @@ async function executeAgentNode(
   node: WorkflowNode,
   startedAt: number,
   abort: AbortController,
+  retryLanguage: WorkflowRetryLanguage,
 ): Promise<LocalNodeResult> {
   if (!node.prompt.trim()) throw new Error(`${node.title} has no prompt.`);
   const logs: RunLogEntry[] = [];
@@ -941,6 +819,7 @@ async function executeAgentNode(
   let terminalTranscript = "";
   const retries = agentRetryCount(node);
   const retryForever = agentRetryForever(node);
+  const retryPrompt = agentRetryPromptForLanguage(retryLanguage);
   let conversationSessionId: string | undefined =
     node.providerKind === "claude-cli" ? randomUUID() : undefined;
   let attempt = 0;
@@ -948,9 +827,7 @@ async function executeAgentNode(
     if (attempt > 0) {
       appendRunLog(logs, {
         stream: "stderr",
-        content: `\n[osheep] retry ${attempt}/${
-          retryForever ? "infinity" : retries
-        }: ${currentPrompt === "继续" ? "continue" : "resubmit"}\n`,
+        content: `\n[osheep] retry ${attempt}/${retryForever ? "infinity" : retries}: continue\n`,
       });
       await details.update("running");
     }
@@ -966,7 +843,6 @@ async function executeAgentNode(
         codexApproval: agentCodexApproval(node),
         codexSandbox: agentCodexSandbox(node),
         effort: agentEffort(node),
-        retainRawTranscript: true,
         alwaysEnter: agentAlwaysEnter(node),
         conversationSessionId,
         resumeConversation: attempt > 0,
@@ -993,22 +869,17 @@ async function executeAgentNode(
       retries,
       retryForever,
     );
-    const terminalContent = extractAgentTerminalContent(
-      result.transcript || result.content,
-      currentPrompt,
-      node.providerKind,
-    );
     raw =
       result.content && !/completed without text output/i.test(result.content)
         ? result.content
-        : terminalContent ||
+        : result.transcript ||
           `${node.providerKind === "codex-cli" ? "Codex CLI" : "Claude Code CLI"} completed without text output.`;
     terminalFailure = classifyAgentTerminalResultFailure(result, currentPrompt);
     if (!terminalFailure.failed) break;
     if (!shouldRetryAgentTerminalFailure(terminalFailure, attempt, retries, retryForever)) break;
     retryReasons.push(terminalFailure.message);
     attempt += 1;
-    currentPrompt = nextAgentRetryPrompt(originalTerminalPrompt, terminalFailure);
+    currentPrompt = retryPrompt;
     await sleep(1_000, abort.signal);
   }
   if (!result) throw new Error(`${node.title} did not start.`);
@@ -1370,9 +1241,7 @@ async function executeLocalNode(
         config: { ...(node.config ?? {}), waitingForApproval: true },
       });
     } catch (error) {
-      pendingDiffApprovals
-        .get(interactionKey(workspaceRoot, record.id, node.id))
-        ?.dispose();
+      pendingDiffApprovals.get(interactionKey(workspaceRoot, record.id, node.id))?.dispose();
       throw error;
     }
     const approved = await approval;
@@ -1427,9 +1296,11 @@ async function executeLocalNode(
     if (!(await isRepo(workspaceRoot))) throw new Error(`${node.title} requires a Git repository.`);
     const branch = resolveBlockTemplate(configString(node, "branch"), record).trim();
     if (!branch) throw new Error(`${node.title} requires a branch name.`);
-    const remote = node.config?.remote === true
-      ? resolveBlockTemplate(configString(node, "remoteName", "origin"), record).trim() || "origin"
-      : null;
+    const remote =
+      node.config?.remote === true
+        ? resolveBlockTemplate(configString(node, "remoteName", "origin"), record).trim() ||
+          "origin"
+        : null;
     await deleteBranch(workspaceRoot, branch, {
       force: node.config?.force === true,
       remote,
@@ -2652,9 +2523,24 @@ function ifNodeConfig(node: WorkflowNode): { expression: string } {
   const right = typeof config.right === "string" ? config.right : "";
   const operator = typeof config.operator === "string" ? config.operator : "equals";
   const symbol =
-    operator === "equals" ? "==" : operator === "notEquals" ? "!=" : operator === "greaterThan" ? ">" : operator === "lessThan" ? "<" : operator === "contains" ? "==" : "==";
+    operator === "equals"
+      ? "=="
+      : operator === "notEquals"
+        ? "!="
+        : operator === "greaterThan"
+          ? ">"
+          : operator === "lessThan"
+            ? "<"
+            : operator === "contains"
+              ? "=="
+              : "==";
   return {
-    expression: operator === "exists" ? `${left} != null` : operator === "isEmpty" ? `${left} == ""` : `${left} ${symbol} ${right}`,
+    expression:
+      operator === "exists"
+        ? `${left} != null`
+        : operator === "isEmpty"
+          ? `${left} == ""`
+          : `${left} ${symbol} ${right}`,
   };
 }
 
@@ -2813,45 +2699,6 @@ function agentEffort(node: WorkflowNode): AgentEffort | undefined {
     return value;
   }
   return node.providerKind === "claude-cli" ? "high" : "medium";
-}
-
-function terminalModelOutputBeforeError(text: string, prompt: string): string {
-  const promptLines = new Set(
-    stripAnsi(prompt)
-      .replace(/\r/g, "\n")
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean),
-  );
-  return text
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => keepTerminalModelLine(line, promptLines))
-    .join("\n")
-    .trim();
-}
-
-function keepTerminalModelLine(line: string, promptLines: Set<string>): boolean {
-  if (!line) return false;
-  const unprompted = line.replace(/^[\u276f\u203a>]\s*/, "").trim();
-  if (!unprompted) return false;
-  if (promptLines.has(unprompted) || promptLines.has(line)) return false;
-  if (/^(?:OpenAI Codex|Claude Code)\b/i.test(unprompted)) return false;
-  if (/^(?:model|directory|cwd)\s*:/i.test(unprompted)) return false;
-  if (/^(?:Tip|Run npm|See full release notes|Update available)\b/i.test(unprompted)) {
-    return false;
-  }
-  if (/^\(?providers=/i.test(unprompted)) return false;
-  if (/^[\u2500-\u257f\s]+$/.test(unprompted)) return false;
-  return true;
-}
-
-function stripAnsi(text: string): string {
-  return text
-    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "")
-    .replace(/\x1b[P^_][\s\S]*?(?:\x1b\\|\x07)/g, "")
-    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
-    .replace(/\x1b[()][A-Za-z0-9]/g, "");
 }
 
 function appendRunLog(logs: RunLogEntry[], entry: RunLogEntry): void {
