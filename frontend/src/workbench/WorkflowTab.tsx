@@ -139,6 +139,11 @@ interface EdgeContextMenuState {
   edgeId: string;
 }
 
+interface CanvasContextMenuState {
+  x: number;
+  y: number;
+}
+
 interface CanvasPanState {
   pointerId: number;
   button: number;
@@ -825,6 +830,7 @@ export function WorkflowTab({
   const [panningCanvas, setPanningCanvas] = useState(false);
   const [nodeMenu, setNodeMenu] = useState<NodeContextMenuState | null>(null);
   const [edgeMenu, setEdgeMenu] = useState<EdgeContextMenuState | null>(null);
+  const [canvasMenu, setCanvasMenu] = useState<CanvasContextMenuState | null>(null);
   const [copiedGraph, setCopiedGraph] = useState<CopiedWorkflowGraph | null>(null);
   const [blockPickerOpen, setBlockPickerOpen] = useState(false);
   const [blockPickerCategory, setBlockPickerCategory] = useState<BlockCategoryId>("triggers");
@@ -1870,6 +1876,7 @@ export function WorkflowTab({
       if (!additive) setNodeSelection([]);
       setNodeMenu(null);
       setEdgeMenu(null);
+      setCanvasMenu(null);
       e.preventDefault();
       e.currentTarget.setPointerCapture(e.pointerId);
       return;
@@ -1880,6 +1887,7 @@ export function WorkflowTab({
     e.stopPropagation();
     setNodeMenu(null);
     setEdgeMenu(null);
+    setCanvasMenu(null);
     suppressContextMenuRef.current = false;
     canvasPanRef.current = {
       pointerId: e.pointerId,
@@ -1982,7 +1990,21 @@ export function WorkflowTab({
       e.preventDefault();
       e.stopPropagation();
       suppressContextMenuRef.current = false;
+      return;
     }
+    const target = e.target as HTMLElement;
+    if (
+      target.closest(".workflow-node") ||
+      target.closest(".workflow-edge-hit") ||
+      target.closest(".workflow-minimap")
+    ) {
+      return;
+    }
+    e.preventDefault();
+    e.stopPropagation();
+    setNodeMenu(null);
+    setEdgeMenu(null);
+    setCanvasMenu({ x: e.clientX, y: e.clientY });
   };
 
   const stopRun = () => {
@@ -2459,53 +2481,72 @@ export function WorkflowTab({
   const draftFrom = draftEdge ? workflow.nodes.find((node) => node.id === draftEdge.from) : null;
   const menuNode = nodeMenu ? workflow.nodes.find((node) => node.id === nodeMenu.nodeId) : null;
   const menuEdge = edgeMenu ? workflow.edges.find((edge) => edge.id === edgeMenu.edgeId) : null;
+  const multiNodeMenu = Boolean(
+    menuNode && selectedIds.length > 1 && selectedIds.includes(menuNode.id),
+  );
   const canUndo = historyTick >= 0 && undoStackRef.current.length > 0;
   const canRedo = historyTick >= 0 && redoStackRef.current.length > 0;
   const toolbarStatus = saving ? "saving" : running ? "running" : "saved";
-  const nodeMenuSections: CtxMenuSection[] = menuNode
+  const copyNodeMenuItem = menuNode
+    ? {
+        label: multiNodeMenu ? t("workflow.menu.copySelectedBlocks") : t("workflow.menu.copyBlock"),
+        shortcut: "Ctrl+C",
+        onSelect: () =>
+          copyNodes(multiNodeMenu ? selectedIds : [menuNode.id]),
+      }
+    : null;
+  const deleteNodeMenuItem = menuNode
+    ? {
+        label: multiNodeMenu ? t("workflow.menu.deleteSelectedBlocks") : t("workflow.menu.deleteBlock"),
+        shortcut: "Del",
+        danger: true,
+        disabled: running || workflow.nodes.length <= 1,
+        onSelect: () => deleteNodes(multiNodeMenu ? selectedIds : [menuNode.id]),
+      }
+    : null;
+  const nodeMenuSections: CtxMenuSection[] = menuNode && copyNodeMenuItem && deleteNodeMenuItem
+    ? multiNodeMenu
+      ? [{ items: [copyNodeMenuItem] }, { items: [deleteNodeMenuItem] }]
+      : [
+          {
+            items: [
+              {
+                label: t("workflow.menu.rename"),
+                onSelect: () => {
+                  setBlockPickerOpen(false);
+                  setNodeSelection([menuNode.id], menuNode.id);
+                  setRenameTarget(menuNode.id);
+                  setRenameSeq((seq) => seq + 1);
+                },
+              },
+              copyNodeMenuItem,
+              {
+                label: t("workflow.menu.pasteBlock"),
+                shortcut: "Ctrl+V",
+                disabled: running || !copiedGraph,
+                onSelect: () => pasteNodes(menuNode.id),
+              },
+            ],
+          },
+          { items: [deleteNodeMenuItem] },
+        ]
+    : [];
+  const canvasMenuSections: CtxMenuSection[] = canvasMenu
     ? [
         {
           items: [
             {
-              label: t("workflow.menu.rename"),
-              onSelect: () => {
-                setBlockPickerOpen(false);
-                setNodeSelection([menuNode.id], menuNode.id);
-                setRenameTarget(menuNode.id);
-                setRenameSeq((seq) => seq + 1);
-              },
-            },
-            {
-              label:
-                selectedIds.length > 1 && selectedIds.includes(menuNode.id)
-                  ? t("workflow.menu.copySelectedBlocks")
-                  : t("workflow.menu.copyBlock"),
-              shortcut: "Ctrl+C",
-              onSelect: () =>
-                copyNodes(selectedIds.includes(menuNode.id) ? selectedIds : [menuNode.id]),
-            },
-            {
               label: t("workflow.menu.pasteBlock"),
               shortcut: "Ctrl+V",
               disabled: running || !copiedGraph,
-              onSelect: () => pasteNodes(menuNode.id),
+              onSelect: () => pasteNodes(""),
             },
-          ],
-        },
-        {
-          items: [
             {
-              label:
-                selectedIds.length > 1 && selectedIds.includes(menuNode.id)
-                  ? t("workflow.menu.deleteSelectedBlocks")
-                  : t("workflow.menu.deleteBlock"),
-              shortcut: "Del",
-              danger: true,
-              disabled: running || workflow.nodes.length <= 1,
-              onSelect: () =>
-                deleteNodes(selectedIds.length > 1 && selectedIds.includes(menuNode.id)
-                  ? selectedIds
-                  : [menuNode.id]),
+              label: t("workflow.blocks.add"),
+              onSelect: () => {
+                setNodeSelection([]);
+                setBlockPickerOpen(true);
+              },
             },
           ],
         },
@@ -2827,6 +2868,7 @@ export function WorkflowTab({
                         e.preventDefault();
                         e.stopPropagation();
                         setNodeMenu(null);
+                        setCanvasMenu(null);
                         setEdgeMenu({ x: e.clientX, y: e.clientY, edgeId: edge.id });
                       }}
                     />
@@ -2867,6 +2909,7 @@ export function WorkflowTab({
                   e.stopPropagation();
                   setBlockPickerOpen(false);
                   setEdgeMenu(null);
+                  setCanvasMenu(null);
                   if (!selectedIds.includes(node.id)) setNodeSelection([node.id], node.id);
                   setNodeMenu({ x: e.clientX, y: e.clientY, nodeId: node.id });
                 }}
@@ -3008,6 +3051,14 @@ export function WorkflowTab({
             },
           ]}
           onClose={() => setTitleMenu(null)}
+        />
+      )}
+      {canvasMenu && (
+        <ContextMenu
+          x={canvasMenu.x}
+          y={canvasMenu.y}
+          sections={canvasMenuSections}
+          onClose={() => setCanvasMenu(null)}
         />
       )}
       {nodeMenu && menuNode && (
