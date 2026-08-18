@@ -1150,6 +1150,7 @@ export type WorkflowProviderKind = "codex-cli" | "claude-cli";
 export type WorkflowNodeKind =
   | "agent"
   | "input"
+  | "variable"
   | "trigger"
   | "manual-trigger"
   | "cron"

@@ -12,6 +12,7 @@ export type WorkflowProviderKind = "codex-cli" | "claude-cli";
 export type WorkflowNodeKind =
   | "agent"
   | "input"
+  | "variable"
   | "trigger"
   | "manual-trigger"
   | "cron"
@@ -192,6 +193,7 @@ function asProviderKind(value: unknown): WorkflowProviderKind {
 function asNodeKind(value: unknown): WorkflowNodeKind {
   if (
     value === "input" ||
+    value === "variable" ||
     value === "trigger" ||
     value === "manual-trigger" ||
     value === "cron" ||

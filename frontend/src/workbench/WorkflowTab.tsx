@@ -356,6 +356,7 @@ function playWorkflowWaitingSound(): void {
 }
 const CONFIGURED_LOCAL_KINDS = new Set<WorkflowNodeKind>([
   "input",
+  "variable",
   "http-request",
   "set",
   "if",
@@ -519,6 +520,13 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
     kind: "input",
     icon: "input",
     config: { inputTitle: "Input" },
+  },
+  {
+    category: "input",
+    nameKey: "workflow.blocks.environmentVariable",
+    kind: "variable",
+    icon: "set",
+    config: { name: "", value: "" },
   },
   {
     category: "triggers",
@@ -4540,6 +4548,7 @@ function WorkflowNodeInspector({
   const isWebhookTrigger = kind === "webhook-trigger";
   const isAgent = kind === "agent";
   const isInput = kind === "input";
+  const isVariable = kind === "variable";
   const isCodexPlugin = kind === "codex-plugin";
   const isClaudePlugin = kind === "claude-plugin";
   const isFileWrite = kind === "file-write";
@@ -4562,6 +4571,7 @@ function WorkflowNodeInspector({
   const mcpConfig = mcpNodeConfig(node);
   const httpConfig = httpRequestConfig(node);
   const setConfig = setNodeConfig(node);
+  const variableConfig = variableNodeConfig(node);
   const ifConfig = ifNodeConfig(node);
   const mergeConfig = mergeNodeConfig(node);
   const codeConfig = codeNodeConfig(node);
@@ -5356,6 +5366,25 @@ function WorkflowNodeInspector({
             spellCheck={false}
           />
         </label>
+      ) : isVariable ? (
+        <>
+          <label className="workflow-inspector__field">
+            <span>{t("workflow.variable.name")}</span>
+            <TemplateInput
+              value={variableConfig.name}
+              onChange={(value) => updateConfig({ name: value })}
+              disabled={running}
+            />
+          </label>
+          <label className="workflow-inspector__field">
+            <span>{t("workflow.variable.value")}</span>
+            <TemplateTextarea
+              value={variableConfig.value}
+              onChange={(value) => updateConfig({ value })}
+              disabled={running}
+            />
+          </label>
+        </>
       ) : (
         !isTrigger &&
         !isCodexPlugin &&
@@ -5954,6 +5983,23 @@ async function executeLocalNode(
         value,
         data: value,
         text: value,
+      },
+    };
+  }
+  if (kind === "variable") {
+    const config = variableNodeConfig(node);
+    const name = resolveBlockTemplate(config.name, record).trim();
+    if (!name) throw new Error(`${node.title} has no variable name.`);
+    const rawValue = resolveBlockTemplate(config.value, record);
+    const value = rawValue.trim() ? parseMaybeJson(rawValue) : "";
+    return {
+      output: {
+        type: "variable",
+        status: "success",
+        name,
+        value,
+        data: value,
+        text: textFromAny(value),
       },
     };
   }
@@ -7164,12 +7210,17 @@ function textFromAny(value: unknown): string {
 
 function resolveBlockTemplate(input: string, record: WorkflowRecord): string {
   assertValidBlockTemplates(input);
-  return input.replace(
-    /\{\{\s*blocks\[(\d+)\]((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}/g,
-    (_match, idText: string, pathText: string) => {
-      return stringifyTemplateValue(resolveBlockReference(record, idText, pathText));
-    },
-  );
+  return input
+    .replace(
+      /\{\{\s*blocks\[(\d+)\]((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}/g,
+      (_match, idText: string, pathText: string) =>
+        stringifyTemplateValue(resolveBlockReference(record, idText, pathText)),
+    )
+    .replace(
+      /\{\{\s*vars\[\s*((?:"[^"\r\n]+"|'[^'\r\n]+'|[^\s"'\]\r\n][^\]\r\n]*?))\s*\]((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}/g,
+      (_match, nameText: string, pathText: string) =>
+        stringifyTemplateValue(resolveVariableReference(record, nameText, pathText)),
+    );
 }
 
 function resolveTemplateValue(input: string, record: WorkflowRecord): unknown {
@@ -7181,12 +7232,19 @@ function resolveTemplateValue(input: string, record: WorkflowRecord): unknown {
   if (whole) {
     return resolveBlockReference(record, whole[1], whole[2] ?? "");
   }
+  const wholeVariable = trimmed.match(
+    /^\{\{\s*vars\[\s*((?:"[^"\r\n]+"|'[^'\r\n]+'|[^\s"'\]\r\n][^\]\r\n]*?))\s*\]((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}$/,
+  );
+  if (wholeVariable) {
+    return resolveVariableReference(record, wholeVariable[1], wholeVariable[2] ?? "");
+  }
   return parseMaybeJson(resolveBlockTemplate(input, record));
 }
 
 function resolveJsonTemplate(input: string, record: WorkflowRecord): string {
   assertValidBlockTemplates(input);
-  const re = /\{\{\s*blocks\[(\d+)\]((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}/g;
+  const re =
+    /\{\{\s*(?:blocks\[(\d+)\]|vars\[\s*((?:"[^"\r\n]+"|'[^'\r\n]+'|[^\s"'\]\r\n][^\]\r\n]*?))\s*\])((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}/g;
   let output = "";
   let index = 0;
   let inString = false;
@@ -7208,7 +7266,10 @@ function resolveJsonTemplate(input: string, record: WorkflowRecord): string {
     const before = input.slice(index, match.index);
     output += before;
     updateState(before);
-    const value = resolveBlockReference(record, match[1] ?? "", match[2] ?? "");
+    const pathText = match[3] ?? "";
+    const value = match[1]
+      ? resolveBlockReference(record, match[1], pathText)
+      : resolveVariableReference(record, match[2] ?? "", pathText);
     output += inString
       ? escapeJsonStringContent(stringifyTemplateValue(value))
       : JSON.stringify(value ?? null);
@@ -7239,6 +7300,47 @@ function resolveBlockReference(record: WorkflowRecord, idText: string, pathText:
   return result.value;
 }
 
+function resolveVariableReference(
+  record: WorkflowRecord,
+  nameText: string,
+  pathText: string,
+): unknown {
+  const name = variableNameFromReference(nameText);
+  const reference = `{{vars[${nameText}]${pathText}}}`;
+  const variableNodes = record.nodes.filter((item) => nodeKind(item) === "variable");
+  const node =
+    variableNodes.find((item) => variableNodeConfig(item).name.trim() === name) ??
+    variableNodes.find((item) => parseBlockOutput(item)?.name === name);
+  if (!node) {
+    throw new Error(`Workflow variable ${reference} references missing variable ${name}.`);
+  }
+  const output = parseBlockOutput(node);
+  const config = variableNodeConfig(node);
+  const value =
+    output &&
+    output.name === name &&
+    Object.prototype.hasOwnProperty.call(output, "value")
+      ? output.value
+      : parseMaybeJson(config.value);
+  const result = getPathResult(value, pathText);
+  if (!result.found) {
+    throw new Error(`Workflow variable ${reference} references a value that does not exist.`);
+  }
+  return result.value;
+}
+
+function variableNameFromReference(nameText: string): string {
+  const trimmed = nameText.trim();
+  if (
+    trimmed.length >= 2 &&
+    ((trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+      (trimmed.startsWith("'") && trimmed.endsWith("'")))
+  ) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
 function resolveBlockTemplatePreview(input: string, record: WorkflowRecord): string {
   try {
     return resolveBlockTemplate(input, record);
@@ -7250,7 +7352,7 @@ function resolveBlockTemplatePreview(input: string, record: WorkflowRecord): str
 function assertValidBlockTemplates(input: string): void {
   const expressionRe = /\{\{[\s\S]*?\}\}/g;
   const validRe =
-    /^\{\{\s*blocks\[(\d+)\]((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}$/;
+    /^\{\{\s*(?:blocks\[(\d+)\]|vars\[\s*(?:"[^"\r\n]+"|'[^'\r\n]+'|[^\s"'\]\r\n][^\]\r\n]*?)\s*\])((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}$/;
   const expressions = input.match(expressionRe) ?? [];
   for (const expression of expressions) {
     if (!validRe.test(expression)) throw invalidWorkflowVariable(expression);
@@ -7264,7 +7366,7 @@ function assertValidBlockTemplates(input: string): void {
 function invalidWorkflowVariable(expression: string): Error {
   const preview = expression.length > 120 ? `${expression.slice(0, 117)}...` : expression;
   return new Error(
-    `Invalid workflow variable ${JSON.stringify(preview)}. Expected syntax: {{blocks[2].text}}.`,
+    `Invalid workflow variable ${JSON.stringify(preview)}. Expected syntax: {{blocks[2].text}} or {{vars[name].id}}.`,
   );
 }
 
@@ -7618,6 +7720,7 @@ function findInputNodeFromPoint(clientX: number, clientY: number): string | null
 
 function blockEyebrow(kind: WorkflowNodeKind): string {
   if (kind === "input") return "Input";
+  if (kind === "variable") return "Environment";
   if (
     kind === "trigger" ||
     kind === "manual-trigger" ||
@@ -7646,6 +7749,7 @@ function blockEyebrow(kind: WorkflowNodeKind): string {
 
 function inputLabelForKind(kind: WorkflowNodeKind): string {
   if (kind === "input") return "Input";
+  if (kind === "variable") return "Value";
   if (kind === "command") return "Command";
   if (kind === "web") return "URL";
   if (kind === "http-request") return "Request";
@@ -7672,6 +7776,7 @@ function inputLabelForKind(kind: WorkflowNodeKind): string {
 function nodeKind(node: WorkflowNode): WorkflowNodeKind {
   if (
     node.kind === "input" ||
+    node.kind === "variable" ||
     node.kind === "trigger" ||
     node.kind === "manual-trigger" ||
     node.kind === "cron" ||
@@ -7741,6 +7846,7 @@ function nodeIconName(node: WorkflowNode): WorkflowIconName {
   if (icon) return icon;
   const kind = nodeKind(node);
   if (kind === "input") return "input";
+  if (kind === "variable") return "set";
   if (kind === "trigger") return "trigger";
   if (kind === "manual-trigger") return "trigger";
   if (kind === "cron") return "cron";
@@ -8498,6 +8604,14 @@ function clamp(value: number, min: number, max: number): number {
 
 function makeId(prefix: string): string {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function variableNodeConfig(node: WorkflowNode): { name: string; value: string } {
+  const config = node.config ?? {};
+  return {
+    name: typeof config.name === "string" ? config.name : "",
+    value: typeof config.value === "string" ? config.value : "",
+  };
 }
 
 function generateWorkflowSessionId(): string {

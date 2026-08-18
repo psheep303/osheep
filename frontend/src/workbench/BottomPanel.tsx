@@ -5,7 +5,7 @@ import type { AgentTerminalLaunchRequest } from "./Terminal";
 const PlanView = lazy(() => import("./PlanView").then((module) => ({ default: module.PlanView })));
 const Terminal = lazy(() => import("./Terminal").then((module) => ({ default: module.Terminal })));
 
-type BottomTab = "terminal" | "log" | "plan";
+type BottomTab = "terminal" | "log" | "docs";
 
 interface BottomPanelProps {
   workspaceId: string | null;
@@ -49,10 +49,10 @@ export function BottomPanel({
           {t("panel.log")}
         </div>
         <div
-          className={`bottom-panel__tab${tab === "plan" ? " is-active" : ""}`}
-          onClick={() => setTab("plan")}
+          className={`bottom-panel__tab${tab === "docs" ? " is-active" : ""}`}
+          onClick={() => setTab("docs")}
         >
-          {t("panel.plan")}
+          {t("panel.docs")}
         </div>
         <button className="icon-btn bottom-panel__close" title={t("panel.close")} onClick={onClose}>
           <svg
@@ -82,7 +82,7 @@ export function BottomPanel({
               {t("panel.logComingSoon")}
             </div>
           )}
-          {tab === "plan" && <PlanView workspaceId={workspaceId} />}
+          {tab === "docs" && <PlanView workspaceId={workspaceId} />}
         </Suspense>
       </div>
     </div>

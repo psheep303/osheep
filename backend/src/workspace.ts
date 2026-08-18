@@ -121,7 +121,6 @@ export function resolveWorkspacePath(workspaceRoot: string, rel: string): string
 export async function ensureOsheepLayout(workspaceRoot: string): Promise<void> {
   const osheepRoot = path.join(workspaceRoot, ".osheep");
   await fs.mkdir(path.join(osheepRoot, "docs"), { recursive: true });
-  await fs.mkdir(path.join(osheepRoot, "plan"), { recursive: true });
   const settingsPath = path.join(osheepRoot, "settings.json");
   try {
     await fs.access(settingsPath);

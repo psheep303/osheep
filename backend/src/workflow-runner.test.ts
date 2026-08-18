@@ -96,6 +96,47 @@ test("workflow templates resolve existing block output values", () => {
   assert.equal(resolveWorkflowTemplate("{{blocks[2].data.items[0]}}", record), "first");
 });
 
+test("workflow templates resolve environment variables and JSON paths", () => {
+  const variable = {
+    ...workflowNode("node_variable", "variable", "Environment variable"),
+    config: { name: "name", value: '{"id": 42, "label": "hello"}' },
+  };
+  const record = workflowRecord([variable]);
+
+  assert.equal(resolveWorkflowTemplate("Value: {{vars[name].label}}", record), "Value: hello");
+  assert.equal(resolveWorkflowTemplate("{{vars['name'].id}}", record), "42");
+  assert.equal(resolveWorkflowTemplate("{{vars[name].id}}", record), "42");
+  assert.equal(resolveWorkflowTemplate('{"id": {{vars["name"].id}}}', record), '{"id": 42}');
+  assert.equal(resolveWorkflowTemplate("{{vars[name]}}", record), '{"id":42,"label":"hello"}');
+});
+
+test("workflow templates resolve empty and string environment variables", () => {
+  const record = workflowRecord([
+    {
+      ...workflowNode("node_empty", "variable", "Empty"),
+      config: { name: "empty", value: "" },
+    },
+    {
+      ...workflowNode("node_string", "variable", "String"),
+      config: { name: "plain", value: "not-json" },
+    },
+  ]);
+
+  assert.equal(resolveWorkflowTemplate("empty={{vars[empty]}}", record), "empty=");
+  assert.equal(resolveWorkflowTemplate("plain={{vars[plain]}}", record), "plain=not-json");
+  assert.throws(() => resolveWorkflowTemplate("{{vars[missing]}}", record), /missing variable/);
+});
+
+test("workflow variable names support non-ASCII names", () => {
+  const record = workflowRecord([
+    {
+      ...workflowNode("node_cn_variable", "variable", "中文变量"),
+      config: { name: "服务地址", value: "https://example.test" },
+    },
+  ]);
+  assert.equal(resolveWorkflowTemplate("{{vars[服务地址]}}", record), "https://example.test");
+});
+
 test("workflow templates reject malformed and missing variables", () => {
   const source = {
     ...workflowNode("node_input", "input", "Input"),

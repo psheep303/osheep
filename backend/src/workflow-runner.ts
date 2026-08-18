@@ -160,6 +160,7 @@ const AGENT_RETAINED_OUTPUT_TRUNCATION_TEXT =
   "[osheep] retained retry output exceeded 512 KiB; keeping the latest output only.";
 const CONFIGURED_LOCAL_KINDS = new Set<WorkflowNodeKind>([
   "input",
+  "variable",
   "http-request",
   "set",
   "if",
@@ -1086,6 +1087,23 @@ async function executeLocalNode(
       },
       nodePatch: {
         config: { ...(node.config ?? {}), waitingForInput: false },
+      },
+    };
+  }
+  if (kind === "variable") {
+    const config = variableNodeConfig(node);
+    const name = resolveBlockTemplate(config.name, record).trim();
+    if (!name) throw new Error(`${node.title} has no variable name.`);
+    const rawValue = resolveBlockTemplate(config.value, record);
+    const value = rawValue.trim() ? parseMaybeJson(rawValue) : "";
+    return {
+      output: {
+        type: "variable",
+        status: "success",
+        name,
+        value,
+        data: value,
+        text: textFromAny(value),
       },
     };
   }
@@ -2265,11 +2283,17 @@ function textFromAny(value: unknown): string {
 
 function resolveBlockTemplate(input: string, record: WorkflowRecord): string {
   assertValidBlockTemplates(input);
-  return input.replace(
-    /\{\{\s*blocks\[(\d+)\]((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}/g,
-    (_match, idText: string, pathText: string) =>
-      stringifyTemplateValue(resolveBlockReference(record, idText, pathText)),
-  );
+  return input
+    .replace(
+      /\{\{\s*blocks\[(\d+)\]((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}/g,
+      (_match, idText: string, pathText: string) =>
+        stringifyTemplateValue(resolveBlockReference(record, idText, pathText)),
+    )
+    .replace(
+      /\{\{\s*vars\[\s*((?:"[^"\r\n]+"|'[^'\r\n]+'|[^\s"'\]\r\n][^\]\r\n]*?))\s*\]((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}/g,
+      (_match, nameText: string, pathText: string) =>
+        stringifyTemplateValue(resolveVariableReference(record, nameText, pathText)),
+    );
 }
 
 function resolveTemplateValue(input: string, record: WorkflowRecord): unknown {
@@ -2279,12 +2303,19 @@ function resolveTemplateValue(input: string, record: WorkflowRecord): unknown {
     /^\{\{\s*blocks\[(\d+)\]((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}$/,
   );
   if (whole) return resolveBlockReference(record, whole[1] ?? "", whole[2] ?? "");
+  const wholeVariable = trimmed.match(
+    /^\{\{\s*vars\[\s*((?:"[^"\r\n]+"|'[^'\r\n]+'|[^\s"'\]\r\n][^\]\r\n]*?))\s*\]((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}$/,
+  );
+  if (wholeVariable) {
+    return resolveVariableReference(record, wholeVariable[1] ?? "", wholeVariable[2] ?? "");
+  }
   return parseMaybeJson(resolveBlockTemplate(input, record));
 }
 
 function resolveJsonTemplate(input: string, record: WorkflowRecord): string {
   assertValidBlockTemplates(input);
-  const re = /\{\{\s*blocks\[(\d+)\]((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}/g;
+  const re =
+    /\{\{\s*(?:blocks\[(\d+)\]|vars\[\s*((?:"[^"\r\n]+"|'[^'\r\n]+'|[^\s"'\]\r\n][^\]\r\n]*?))\s*\])((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}/g;
   let output = "";
   let index = 0;
   let inString = false;
@@ -2301,7 +2332,10 @@ function resolveJsonTemplate(input: string, record: WorkflowRecord): string {
     const before = input.slice(index, match.index);
     output += before;
     updateState(before);
-    const value = resolveBlockReference(record, match[1] ?? "", match[2] ?? "");
+    const pathText = match[3] ?? "";
+    const value = match[1]
+      ? resolveBlockReference(record, match[1], pathText)
+      : resolveVariableReference(record, match[2] ?? "", pathText);
     output += inString
       ? escapeJsonStringContent(stringifyTemplateValue(value))
       : JSON.stringify(value ?? null);
@@ -2330,6 +2364,47 @@ function resolveBlockReference(record: WorkflowRecord, idText: string, pathText:
   return result.value;
 }
 
+function resolveVariableReference(
+  record: WorkflowRecord,
+  nameText: string,
+  pathText: string,
+): unknown {
+  const name = variableNameFromReference(nameText);
+  const reference = `{{vars[${nameText}]${pathText}}}`;
+  const variableNodes = record.nodes.filter((item) => nodeKind(item) === "variable");
+  const node =
+    variableNodes.find((item) => variableNodeConfig(item).name.trim() === name) ??
+    variableNodes.find((item) => parseBlockOutput(item)?.name === name);
+  if (!node) {
+    throw new Error(`Workflow variable ${reference} references missing variable ${name}.`);
+  }
+  const output = parseBlockOutput(node);
+  const config = variableNodeConfig(node);
+  const value =
+    output &&
+    output.name === name &&
+    Object.prototype.hasOwnProperty.call(output, "value")
+      ? output.value
+      : parseMaybeJson(config.value);
+  const result = getPathResult(value, pathText);
+  if (!result.found) {
+    throw new Error(`Workflow variable ${reference} references a value that does not exist.`);
+  }
+  return result.value;
+}
+
+function variableNameFromReference(nameText: string): string {
+  const trimmed = nameText.trim();
+  if (
+    trimmed.length >= 2 &&
+    ((trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+      (trimmed.startsWith("'") && trimmed.endsWith("'")))
+  ) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
 export function resolveWorkflowTemplate(input: string, record: WorkflowRecord): string {
   return resolveBlockTemplate(input, record);
 }
@@ -2337,7 +2412,7 @@ export function resolveWorkflowTemplate(input: string, record: WorkflowRecord): 
 function assertValidBlockTemplates(input: string): void {
   const expressionRe = /\{\{[\s\S]*?\}\}/g;
   const validRe =
-    /^\{\{\s*blocks\[(\d+)\]((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}$/;
+    /^\{\{\s*(?:blocks\[(\d+)\]|vars\[\s*(?:"[^"\r\n]+"|'[^'\r\n]+'|[^\s"'\]\r\n][^\]\r\n]*?)\s*\])((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}$/;
   const expressions = input.match(expressionRe) ?? [];
   for (const expression of expressions) {
     if (!validRe.test(expression)) throw invalidWorkflowVariable(expression);
@@ -2351,7 +2426,7 @@ function assertValidBlockTemplates(input: string): void {
 function invalidWorkflowVariable(expression: string): Error {
   const preview = expression.length > 120 ? `${expression.slice(0, 117)}...` : expression;
   return new Error(
-    `Invalid workflow variable ${JSON.stringify(preview)}. Expected syntax: {{blocks[2].text}}.`,
+    `Invalid workflow variable ${JSON.stringify(preview)}. Expected syntax: {{blocks[2].text}} or {{vars[name].id}}.`,
   );
 }
 
@@ -2618,6 +2693,14 @@ function mcpNodeConfig(node: WorkflowNode): McpNodeConfig {
     toolName: typeof config.toolName === "string" ? config.toolName : "",
     arguments: typeof config.arguments === "string" ? config.arguments : "{}",
     tools,
+  };
+}
+
+function variableNodeConfig(node: WorkflowNode): { name: string; value: string } {
+  const config = node.config ?? {};
+  return {
+    name: typeof config.name === "string" ? config.name : "",
+    value: typeof config.value === "string" ? config.value : "",
   };
 }
 

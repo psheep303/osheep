@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { useUiPreferences } from "../i18n/UiPreferences";
-import { type FsNode, PLAN_DIR, readDirShallow, readFileText } from "./fs";
+import { type FsNode, DOCS_DIR, readDirShallow, readFileText } from "./fs";
 
 const MarkdownPreview = lazy(() =>
   import("./MarkdownPreview").then((module) => ({ default: module.MarkdownPreview })),
@@ -27,7 +27,7 @@ export function PlanView({ workspaceId }: PlanViewProps) {
     let cancelled = false;
     (async () => {
       try {
-        const entries = (await readDirShallow(workspaceId, PLAN_DIR)).filter(
+        const entries = (await readDirShallow(workspaceId, DOCS_DIR)).filter(
           (n) => n.kind === "file",
         );
         if (cancelled) return;
@@ -39,7 +39,7 @@ export function PlanView({ workspaceId }: PlanViewProps) {
           setContent("");
         }
       } catch (e) {
-        if (!cancelled) setError(t("error.loadPlan", { detail: (e as Error).message }));
+        if (!cancelled) setError(t("error.loadDocs", { detail: (e as Error).message }));
       }
     })();
     return () => {
@@ -59,7 +59,7 @@ export function PlanView({ workspaceId }: PlanViewProps) {
         const text = await readFileText(workspaceId, selectedPath);
         if (!cancelled) setContent(text);
       } catch (e) {
-        if (!cancelled) setError(t("error.loadPlan", { detail: (e as Error).message }));
+        if (!cancelled) setError(t("error.loadDocs", { detail: (e as Error).message }));
       }
     })();
     return () => {
@@ -68,15 +68,15 @@ export function PlanView({ workspaceId }: PlanViewProps) {
   }, [workspaceId, selectedPath, t]);
 
   if (!workspaceId) {
-    return <div className="plan-view plan-view--empty muted">{t("plan.openFirst")}</div>;
+    return <div className="plan-view plan-view--empty muted">{t("docs.openFirst")}</div>;
   }
 
   return (
     <div className="plan-view">
       <div className="plan-view__sidebar">
-        <div className="plan-view__sidebar-header">.osheep / plan</div>
+        <div className="plan-view__sidebar-header">.osheep / docs</div>
         {files.length === 0 ? (
-          <div className="plan-view__empty muted">{t("plan.empty")}</div>
+          <div className="plan-view__empty muted">{t("docs.empty")}</div>
         ) : (
           files.map((f) => (
             <div
@@ -98,7 +98,7 @@ export function PlanView({ workspaceId }: PlanViewProps) {
             <MarkdownPreview source={content} />
           </Suspense>
         ) : (
-          <div className="muted plan-view__placeholder">{t("plan.select")}</div>
+          <div className="muted plan-view__placeholder">{t("docs.select")}</div>
         )}
       </div>
     </div>

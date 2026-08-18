@@ -54,6 +54,7 @@ test("every workflow kind has a standard empty output", async () => {
   const expectedTypes = new Map([
     ["agent", "codex"],
     ["input", "input"],
+    ["variable", "variable"],
     ["trigger", "trigger"],
     ["manual-trigger", "manual-trigger"],
     ["cron", "cron"],

@@ -95,6 +95,15 @@ export function emptyBlockOutput(node: WorkflowNode): WorkflowBlockOutput {
         data: "",
         text: "",
       };
+    case "variable":
+      return {
+        type: kind,
+        status: "",
+        name: configString(node, "name"),
+        value: "",
+        data: "",
+        text: "",
+      };
     case "agent":
       return {
         type: node.providerKind === "claude-cli" ? "claude" : "codex",

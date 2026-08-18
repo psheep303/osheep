@@ -23,6 +23,8 @@ test("selected workspaces root persists and owns newly created workspaces", asyn
     const workspace = await createWorkspace("project-a");
     assert.equal(workspace.path, path.join(resolvedRoot, "project-a"));
     assert.equal((await stat(workspace.path)).isDirectory(), true);
+    assert.equal((await stat(path.join(workspace.path, ".osheep", "docs"))).isDirectory(), true);
+    await assert.rejects(stat(path.join(workspace.path, ".osheep", "plan")), { code: "ENOENT" });
     assert.deepEqual(
       (await listWorkspaces()).map(({ id }) => id),
       ["project-a"],

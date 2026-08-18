@@ -122,4 +122,4 @@ export async function saveGlobalOsheepSettings(s: OsheepSettings): Promise<void>
   await apiPutGlobalSettings(s);
 }
 
-export const PLAN_DIR = ".osheep/plan";
+export const DOCS_DIR = ".osheep/docs";
