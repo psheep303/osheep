@@ -884,7 +884,7 @@
   color: var(--fg-default);
 }
 
-.git-view__sync-primary {
+.git-view__primary-action {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -897,12 +897,12 @@
   line-height: 1;
 }
 
-.git-view__sync-primary .codicon {
+.git-view__primary-action .codicon {
   flex: 0 0 auto;
   line-height: 1;
 }
 
-.git-view__sync-primary[aria-busy="true"] {
+.git-view__primary-action[aria-busy="true"] {
   cursor: wait;
 }
 

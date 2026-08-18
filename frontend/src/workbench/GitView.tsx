@@ -21,6 +21,7 @@ import {
   removeGitRemote,
 } from "./api";
 import { GitGraph } from "./GitGraph";
+import { getGitPrimaryAction } from "./git-view-behavior";
 import { useOsheepOverlay } from "./OsheepOverlay";
 import { Resizer } from "./Resizer";
 
@@ -289,7 +290,7 @@ export function GitView({
 
   const doPush = () => {
     void run(
-      t("git.pushing"),
+      t(hasUpstream ? "git.pushing" : "git.publishing"),
       async () => {
         const currentRemotes = hasUpstream ? remotes : await listGitRemotes(workspaceId);
         const pushOpts = hasUpstream ? {} : autoPushOpts(currentRemotes, status);
@@ -302,7 +303,7 @@ export function GitView({
     );
   };
 
-  const showSyncAction = staged.length === 0 && unstaged.length === 0 && (ahead > 0 || behind > 0);
+  const primaryAction = getGitPrimaryAction(status, staged.length, unstaged.length, hasRemotes);
   const commitPlaceholder = status?.branch
     ? resolvedLanguage === "zh-CN"
       ? `消息(Ctrl+Enter 在“${status.branch}”提交)`
@@ -397,9 +398,27 @@ export function GitView({
             rows={2}
             spellCheck={false}
           />
-          {showSyncAction ? (
+          {primaryAction === "publish" ? (
             <button
-              className="primary-btn git-view__sync-primary"
+              className="primary-btn git-view__primary-action"
+              title={t("git.publishTitle")}
+              disabled={busy}
+              aria-busy={operation === "push"}
+              onClick={doPush}
+            >
+              <i
+                className={`codicon ${
+                  operation === "push"
+                    ? "codicon-sync git-view__operation-spin"
+                    : "codicon-cloud-upload"
+                }`}
+                aria-hidden="true"
+              />
+              <span>{operation === "push" ? t("git.publishing") : t("git.publish")}</span>
+            </button>
+          ) : primaryAction === "sync" ? (
+            <button
+              className="primary-btn git-view__primary-action"
               disabled={busy}
               aria-busy={operation === "sync"}
               onClick={doSync}
@@ -583,6 +602,7 @@ function CommitSplitButton({
   onModeChange: (m: CommitMode) => void;
   onCommit: () => void;
 }) {
+  const { t } = useUiPreferences();
   const [menuOpen, setMenuOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
 
@@ -596,7 +616,15 @@ function CommitSplitButton({
     return () => document.removeEventListener("mousedown", onDoc);
   }, [menuOpen]);
 
-  const label = busyLabel ?? labelOf(mode);
+  const label =
+    busyLabel ??
+    t(
+      mode === "commit-push"
+        ? "git.commitPush"
+        : mode === "commit-sync"
+          ? "git.commitSync"
+          : "git.commitOnly",
+    );
   const isBusy = !!busyLabel;
 
   return (
@@ -612,7 +640,7 @@ function CommitSplitButton({
         className="primary-btn git-view__commit-more"
         disabled={isBusy}
         onClick={() => setMenuOpen((v) => !v)}
-        title="提交选项"
+        title={t("git.commitOptions")}
       >
         ▾
       </button>
@@ -625,7 +653,7 @@ function CommitSplitButton({
               setMenuOpen(false);
             }}
           >
-            ✓ 仅提交
+            {t("git.commitOnly")}
           </button>
           <button
             className={
@@ -639,7 +667,7 @@ function CommitSplitButton({
               setMenuOpen(false);
             }}
           >
-            ✓ 提交并推送
+            {t("git.commitPush")}
           </button>
           <button
             className={
@@ -653,18 +681,12 @@ function CommitSplitButton({
               setMenuOpen(false);
             }}
           >
-            ✓ 提交并同步
+            {t("git.commitSync")}
           </button>
         </div>
       )}
     </div>
   );
-}
-
-function labelOf(mode: CommitMode): string {
-  if (mode === "commit-push") return "✓ 提交并推送";
-  if (mode === "commit-sync") return "✓ 提交并同步";
-  return "✓ 提交";
 }
 
 function BranchPopover({
