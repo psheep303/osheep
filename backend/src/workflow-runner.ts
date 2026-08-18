@@ -47,6 +47,7 @@ import { resolveWorkspace, type WorkspaceInfo } from "./workspace.js";
 type WorkflowBlockOutput = Record<string, unknown>;
 type RunLogEntry = { stream: "stdout" | "stderr"; content: string };
 type WorkflowRetryLanguage = "zh-CN" | "en";
+type WorkflowVariableValueType = "auto" | "text" | "json" | "number" | "boolean";
 const WORKFLOW_SESSION_ID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -1092,18 +1093,35 @@ async function executeLocalNode(
   }
   if (kind === "variable") {
     const config = variableNodeConfig(node);
-    const name = resolveBlockTemplate(config.name, record).trim();
-    if (!name) throw new Error(`${node.title} has no variable name.`);
-    const rawValue = resolveBlockTemplate(config.value, record);
-    const value = rawValue.trim() ? parseMaybeJson(rawValue) : "";
+    const resolved: Array<{
+      name: string;
+      type: WorkflowVariableValueType;
+      value: unknown;
+    }> = [];
+    for (const entry of config) {
+      const name = resolveBlockTemplate(entry.name, record).trim();
+      if (!name) continue;
+      const rawValue = resolveBlockTemplate(entry.value, record);
+      resolved.push({
+        name,
+        type: entry.type,
+        value: parseVariableValue(rawValue, entry.type, node.title, name),
+      });
+    }
+    if (resolved.length === 0) throw new Error(`${node.title} has no variable name.`);
+    const variables = Object.fromEntries(resolved.map((entry) => [entry.name, entry.value]));
+    const variableTypes = Object.fromEntries(resolved.map((entry) => [entry.name, entry.type]));
+    const first = resolved[0]!;
     return {
       output: {
         type: "variable",
         status: "success",
-        name,
-        value,
-        data: value,
-        text: textFromAny(value),
+        name: first.name,
+        value: first.value,
+        variables,
+        variableTypes,
+        data: variables,
+        text: textFromAny(variables),
       },
     };
   }
@@ -2373,24 +2391,47 @@ function resolveVariableReference(
   const reference = `{{vars[${nameText}]${pathText}}}`;
   const variableNodes = record.nodes.filter((item) => nodeKind(item) === "variable");
   const node =
-    variableNodes.find((item) => variableNodeConfig(item).name.trim() === name) ??
-    variableNodes.find((item) => parseBlockOutput(item)?.name === name);
+    variableNodes.find((item) =>
+      variableNodeConfig(item).some((entry) => entry.name.trim() === name),
+    ) ??
+    variableNodes.find((item) => variableNodeOutputValue(item, name).found);
   if (!node) {
     throw new Error(`Workflow variable ${reference} references missing variable ${name}.`);
   }
-  const output = parseBlockOutput(node);
   const config = variableNodeConfig(node);
-  const value =
-    output &&
-    output.name === name &&
-    Object.prototype.hasOwnProperty.call(output, "value")
-      ? output.value
-      : parseMaybeJson(config.value);
+  const outputValue = variableNodeOutputValue(node, name);
+  const configuredEntry = [...config].reverse().find((entry) => entry.name.trim() === name);
+  const value = outputValue.found
+    ? outputValue.value
+    : parseVariableValue(
+        configuredEntry?.value ?? "",
+        configuredEntry?.type ?? "auto",
+        node.title,
+        name,
+      );
   const result = getPathResult(value, pathText);
   if (!result.found) {
     throw new Error(`Workflow variable ${reference} references a value that does not exist.`);
   }
   return result.value;
+}
+
+function variableNodeOutputValue(
+  node: WorkflowNode,
+  name: string,
+): { found: boolean; value: unknown } {
+  const output = parseBlockOutput(node);
+  if (!output) return { found: false, value: undefined };
+  const variables = output.variables;
+  if (variables && typeof variables === "object" && !Array.isArray(variables)) {
+    if (Object.prototype.hasOwnProperty.call(variables, name)) {
+      return { found: true, value: (variables as Record<string, unknown>)[name] };
+    }
+  }
+  if (output.name === name && Object.prototype.hasOwnProperty.call(output, "value")) {
+    return { found: true, value: output.value };
+  }
+  return { found: false, value: undefined };
 }
 
 function variableNameFromReference(nameText: string): string {
@@ -2696,12 +2737,62 @@ function mcpNodeConfig(node: WorkflowNode): McpNodeConfig {
   };
 }
 
-function variableNodeConfig(node: WorkflowNode): { name: string; value: string } {
+function variableNodeConfig(
+  node: WorkflowNode,
+): Array<{ name: string; value: string; type: WorkflowVariableValueType }> {
   const config = node.config ?? {};
-  return {
-    name: typeof config.name === "string" ? config.name : "",
-    value: typeof config.value === "string" ? config.value : "",
-  };
+  if (Array.isArray(config.variables)) {
+    return config.variables.map((entry) => {
+      const item = objectValue(entry);
+      return {
+        name: typeof item?.name === "string" ? item.name : "",
+        value: typeof item?.value === "string" ? item.value : "",
+        type: workflowVariableValueType(item?.type),
+      };
+    });
+  }
+  return [
+    {
+      name: typeof config.name === "string" ? config.name : "",
+      value: typeof config.value === "string" ? config.value : "",
+      type: "auto",
+    },
+  ];
+}
+
+function workflowVariableValueType(value: unknown): WorkflowVariableValueType {
+  return value === "text" || value === "json" || value === "number" || value === "boolean"
+    ? value
+    : "auto";
+}
+
+function parseVariableValue(
+  rawValue: string,
+  type: WorkflowVariableValueType,
+  nodeTitle: string,
+  name: string,
+): unknown {
+  if (!rawValue.trim()) return "";
+  if (type === "text") return rawValue;
+  if (type === "auto") return parseMaybeJson(rawValue);
+  if (type === "json") {
+    try {
+      return parseJsonValue(rawValue);
+    } catch (error) {
+      throw new Error(`${nodeTitle} variable ${name} has invalid JSON: ${(error as Error).message}`);
+    }
+  }
+  if (type === "number") {
+    const value = Number(rawValue.trim());
+    if (!Number.isFinite(value)) {
+      throw new Error(`${nodeTitle} variable ${name} must be a finite number.`);
+    }
+    return value;
+  }
+  const normalized = rawValue.trim().toLowerCase();
+  if (normalized === "true") return true;
+  if (normalized === "false") return false;
+  throw new Error(`${nodeTitle} variable ${name} must be true or false.`);
 }
 
 function agentConfiguredSessionId(node: WorkflowNode): string {

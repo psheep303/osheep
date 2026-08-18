@@ -84,6 +84,29 @@ function configNumber(node: WorkflowNode, key: string, fallback: number): number
   return Number.isFinite(value) ? value : fallback;
 }
 
+function configuredVariables(
+  node: WorkflowNode,
+): Array<{ name: string; value: string; type: string }> {
+  const variables = node.config?.variables;
+  if (Array.isArray(variables)) {
+    return variables.map((entry) => {
+      const item = entry && typeof entry === "object" ? (entry as Record<string, unknown>) : {};
+      return {
+        name: typeof item.name === "string" ? item.name : "",
+        value: typeof item.value === "string" ? item.value : "",
+        type: typeof item.type === "string" ? item.type : "auto",
+      };
+    });
+  }
+  return [
+    {
+      name: configString(node, "name"),
+      value: configString(node, "value"),
+      type: "auto",
+    },
+  ];
+}
+
 export function emptyBlockOutput(node: WorkflowNode): WorkflowBlockOutput {
   const kind: WorkflowNodeKind = node.kind ?? "agent";
   switch (kind) {
@@ -95,15 +118,28 @@ export function emptyBlockOutput(node: WorkflowNode): WorkflowBlockOutput {
         data: "",
         text: "",
       };
-    case "variable":
+    case "variable": {
+      const variables = Object.fromEntries(
+        configuredVariables(node)
+          .filter((entry) => entry.name.trim())
+          .map((entry) => [entry.name.trim(), ""]),
+      );
+      const variableTypes = Object.fromEntries(
+        configuredVariables(node)
+          .filter((entry) => entry.name.trim())
+          .map((entry) => [entry.name.trim(), entry.type]),
+      );
       return {
         type: kind,
         status: "",
-        name: configString(node, "name"),
+        name: configuredVariables(node)[0]?.name ?? "",
         value: "",
-        data: "",
+        variables,
+        variableTypes,
+        data: variables,
         text: "",
       };
+    }
     case "agent":
       return {
         type: node.providerKind === "claude-cli" ? "claude" : "codex",

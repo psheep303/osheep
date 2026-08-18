@@ -2999,6 +2999,69 @@
   outline: none;
 }
 
+.workflow-variable-list,
+.workflow-variable-row {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.workflow-variable-row {
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--wf-border);
+}
+
+.workflow-variable-row .workflow-template-editor--textarea,
+.workflow-variable-row .workflow-template-editor--textarea .workflow-template-editor__mirror,
+.workflow-variable-row .workflow-template-editor--textarea .workflow-template-editor__control {
+  min-height: 72px;
+  max-height: 144px;
+}
+
+.workflow-variable-row__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 24px;
+  color: var(--wf-muted);
+  font-size: 11px;
+}
+
+.workflow-variable-row__remove,
+.workflow-variable-list__add {
+  border: 1px solid var(--wf-border);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.025);
+  color: var(--wf-text-soft);
+  cursor: pointer;
+}
+
+.workflow-variable-row__remove {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.workflow-variable-list__add {
+  min-height: 30px;
+  padding: 5px 9px;
+  justify-self: start;
+}
+
+.workflow-variable-row__remove:hover:not(:disabled),
+.workflow-variable-list__add:hover:not(:disabled) {
+  border-color: rgba(96, 165, 250, 0.58);
+  background: rgba(96, 165, 250, 0.08);
+}
+
+.workflow-variable-row__remove:disabled,
+.workflow-variable-list__add:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .workflow-inspector__notice {
   display: flex;
   align-items: center;

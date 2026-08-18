@@ -99,7 +99,14 @@ test("workflow templates resolve existing block output values", () => {
 test("workflow templates resolve environment variables and JSON paths", () => {
   const variable = {
     ...workflowNode("node_variable", "variable", "Environment variable"),
-    config: { name: "name", value: '{"id": 42, "label": "hello"}' },
+    config: {
+      variables: [
+        { name: "name", value: '{"id": 42, "label": "hello"}' },
+        { name: "enabled", value: "true" },
+        { name: "literalJson", value: '{"id": 1}', type: "text" },
+        { name: "typedJson", value: '{"id": 1}', type: "json" },
+      ],
+    },
   };
   const record = workflowRecord([variable]);
 
@@ -108,6 +115,28 @@ test("workflow templates resolve environment variables and JSON paths", () => {
   assert.equal(resolveWorkflowTemplate("{{vars[name].id}}", record), "42");
   assert.equal(resolveWorkflowTemplate('{"id": {{vars["name"].id}}}', record), '{"id": 42}');
   assert.equal(resolveWorkflowTemplate("{{vars[name]}}", record), '{"id":42,"label":"hello"}');
+  assert.equal(resolveWorkflowTemplate("{{vars[enabled]}}", record), "true");
+  assert.equal(resolveWorkflowTemplate("{{vars[literalJson]}}", record), '{"id": 1}');
+  assert.equal(resolveWorkflowTemplate("{{vars[typedJson]}}", record), '{"id":1}');
+});
+
+test("workflow variable types validate configured values", () => {
+  const record = workflowRecord([
+    {
+      ...workflowNode("node_typed_variable", "variable", "Typed variables"),
+      config: {
+        variables: [
+          { name: "badJson", value: "{", type: "json" },
+          { name: "badNumber", value: "NaN", type: "number" },
+          { name: "badBoolean", value: "yes", type: "boolean" },
+        ],
+      },
+    },
+  ]);
+
+  assert.throws(() => resolveWorkflowTemplate("{{vars[badJson]}}", record), /invalid JSON/);
+  assert.throws(() => resolveWorkflowTemplate("{{vars[badNumber]}}", record), /finite number/);
+  assert.throws(() => resolveWorkflowTemplate("{{vars[badBoolean]}}", record), /true or false/);
 });
 
 test("workflow templates resolve empty and string environment variables", () => {

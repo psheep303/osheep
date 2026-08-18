@@ -104,6 +104,24 @@ test("empty output values preserve their JSON types", async () => {
   assert.deepEqual(merge.items, []);
 });
 
+test("environment variable output exposes every configured variable", async () => {
+  const behavior = await loadBehavior();
+  assert.ok(behavior, "workflow behavior module should exist");
+  const output = behavior.emptyBlockOutput(
+    node("variable", "codex-cli", {
+      variables: [
+        { name: "first", value: "one", type: "text" },
+        { name: "second", value: "", type: "json" },
+      ],
+    }) as never,
+  );
+
+  assert.equal(output.name, "first");
+  assert.deepEqual(output.variables, { first: "", second: "" });
+  assert.deepEqual(output.variableTypes, { first: "text", second: "json" });
+  assert.deepEqual(output.data, { first: "", second: "" });
+});
+
 test("inspector output prefers real node state before the empty schema", async () => {
   const behavior = await loadBehavior();
   assert.ok(behavior, "workflow behavior module should exist");

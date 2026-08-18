@@ -253,6 +253,14 @@ interface SetNodeConfig {
   data: string;
 }
 
+type VariableValueType = "auto" | "text" | "json" | "number" | "boolean";
+
+interface VariableEntry {
+  name: string;
+  value: string;
+  type: VariableValueType;
+}
+
 interface IfNodeConfig {
   expression: string;
 }
@@ -526,7 +534,7 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
     nameKey: "workflow.blocks.environmentVariable",
     kind: "variable",
     icon: "set",
-    config: { name: "", value: "" },
+    config: { variables: [{ name: "", value: "", type: "text" }] },
   },
   {
     category: "triggers",
@@ -5367,24 +5375,91 @@ function WorkflowNodeInspector({
           />
         </label>
       ) : isVariable ? (
-        <>
-          <label className="workflow-inspector__field">
-            <span>{t("workflow.variable.name")}</span>
-            <TemplateInput
-              value={variableConfig.name}
-              onChange={(value) => updateConfig({ name: value })}
-              disabled={running}
-            />
-          </label>
-          <label className="workflow-inspector__field">
-            <span>{t("workflow.variable.value")}</span>
-            <TemplateTextarea
-              value={variableConfig.value}
-              onChange={(value) => updateConfig({ value })}
-              disabled={running}
-            />
-          </label>
-        </>
+        <div className="workflow-variable-list">
+          {variableConfig.map((entry, index) => (
+            <div className="workflow-variable-row" key={index}>
+              <div className="workflow-variable-row__head">
+                <span>{t("workflow.variable.item", { index: index + 1 })}</span>
+                <button
+                  type="button"
+                  className="workflow-variable-row__remove"
+                  onClick={() =>
+                    updateConfig({
+                      variables: variableConfig.filter((_, itemIndex) => itemIndex !== index),
+                    })
+                  }
+                  disabled={running || variableConfig.length <= 1}
+                  aria-label={t("workflow.variable.remove")}
+                  title={t("workflow.variable.remove")}
+                >
+                  x
+                </button>
+              </div>
+              <label className="workflow-inspector__field">
+                <span>{t("workflow.variable.name")}</span>
+                <TemplateInput
+                  value={entry.name}
+                  onChange={(value) =>
+                    updateConfig({
+                      variables: variableConfig.map((item, itemIndex) =>
+                        itemIndex === index ? { ...item, name: value } : item,
+                      ),
+                    })
+                  }
+                  disabled={running}
+                />
+              </label>
+              <label className="workflow-inspector__field">
+                <span>{t("workflow.variable.type")}</span>
+                <select
+                  value={entry.type}
+                  onChange={(event) =>
+                    updateConfig({
+                      variables: variableConfig.map((item, itemIndex) =>
+                        itemIndex === index
+                          ? { ...item, type: variableValueType(event.target.value) }
+                          : item,
+                      ),
+                    })
+                  }
+                  disabled={running}
+                >
+                  <option value="auto">{t("workflow.variable.type.auto")}</option>
+                  <option value="text">{t("workflow.variable.type.text")}</option>
+                  <option value="json">{t("workflow.variable.type.json")}</option>
+                  <option value="number">{t("workflow.variable.type.number")}</option>
+                  <option value="boolean">{t("workflow.variable.type.boolean")}</option>
+                </select>
+              </label>
+              <label className="workflow-inspector__field">
+                <span>{t("workflow.variable.value")}</span>
+                <TemplateTextarea
+                  value={entry.value}
+                  onChange={(value) =>
+                    updateConfig({
+                      variables: variableConfig.map((item, itemIndex) =>
+                        itemIndex === index ? { ...item, value } : item,
+                      ),
+                    })
+                  }
+                  disabled={running}
+                />
+              </label>
+            </div>
+          ))}
+          <button
+            type="button"
+            className="workflow-variable-list__add"
+            onClick={() =>
+              updateConfig({
+                variables: [...variableConfig, { name: "", value: "", type: "text" }],
+              })
+            }
+            disabled={running}
+          >
+            + {t("workflow.variable.add")}
+          </button>
+        </div>
       ) : (
         !isTrigger &&
         !isCodexPlugin &&
@@ -5988,18 +6063,31 @@ async function executeLocalNode(
   }
   if (kind === "variable") {
     const config = variableNodeConfig(node);
-    const name = resolveBlockTemplate(config.name, record).trim();
-    if (!name) throw new Error(`${node.title} has no variable name.`);
-    const rawValue = resolveBlockTemplate(config.value, record);
-    const value = rawValue.trim() ? parseMaybeJson(rawValue) : "";
+    const resolved: Array<{ name: string; type: VariableValueType; value: unknown }> = [];
+    for (const entry of config) {
+      const name = resolveBlockTemplate(entry.name, record).trim();
+      if (!name) continue;
+      const rawValue = resolveBlockTemplate(entry.value, record);
+      resolved.push({
+        name,
+        type: entry.type,
+        value: parseVariableValue(rawValue, entry.type, node.title, name),
+      });
+    }
+    if (resolved.length === 0) throw new Error(`${node.title} has no variable name.`);
+    const variables = Object.fromEntries(resolved.map((entry) => [entry.name, entry.value]));
+    const variableTypes = Object.fromEntries(resolved.map((entry) => [entry.name, entry.type]));
+    const first = resolved[0]!;
     return {
       output: {
         type: "variable",
         status: "success",
-        name,
-        value,
-        data: value,
-        text: textFromAny(value),
+        name: first.name,
+        value: first.value,
+        variables,
+        variableTypes,
+        data: variables,
+        text: textFromAny(variables),
       },
     };
   }
@@ -7309,24 +7397,46 @@ function resolveVariableReference(
   const reference = `{{vars[${nameText}]${pathText}}}`;
   const variableNodes = record.nodes.filter((item) => nodeKind(item) === "variable");
   const node =
-    variableNodes.find((item) => variableNodeConfig(item).name.trim() === name) ??
-    variableNodes.find((item) => parseBlockOutput(item)?.name === name);
+    variableNodes.find((item) =>
+      variableNodeConfig(item).some((entry) => entry.name.trim() === name),
+    ) ?? variableNodes.find((item) => variableNodeOutputValue(item, name).found);
   if (!node) {
     throw new Error(`Workflow variable ${reference} references missing variable ${name}.`);
   }
-  const output = parseBlockOutput(node);
   const config = variableNodeConfig(node);
-  const value =
-    output &&
-    output.name === name &&
-    Object.prototype.hasOwnProperty.call(output, "value")
-      ? output.value
-      : parseMaybeJson(config.value);
+  const outputValue = variableNodeOutputValue(node, name);
+  const configuredEntry = [...config].reverse().find((entry) => entry.name.trim() === name);
+  const value = outputValue.found
+    ? outputValue.value
+    : parseVariableValue(
+        configuredEntry?.value ?? "",
+        configuredEntry?.type ?? "auto",
+        node.title,
+        name,
+      );
   const result = getPathResult(value, pathText);
   if (!result.found) {
     throw new Error(`Workflow variable ${reference} references a value that does not exist.`);
   }
   return result.value;
+}
+
+function variableNodeOutputValue(
+  node: WorkflowNode,
+  name: string,
+): { found: boolean; value: unknown } {
+  const output = parseBlockOutput(node);
+  if (!output) return { found: false, value: undefined };
+  const variables = output.variables;
+  if (variables && typeof variables === "object" && !Array.isArray(variables)) {
+    if (Object.prototype.hasOwnProperty.call(variables, name)) {
+      return { found: true, value: (variables as Record<string, unknown>)[name] };
+    }
+  }
+  if (output.name === name && Object.prototype.hasOwnProperty.call(output, "value")) {
+    return { found: true, value: output.value };
+  }
+  return { found: false, value: undefined };
 }
 
 function variableNameFromReference(nameText: string): string {
@@ -8606,12 +8716,60 @@ function makeId(prefix: string): string {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
-function variableNodeConfig(node: WorkflowNode): { name: string; value: string } {
+function variableNodeConfig(node: WorkflowNode): VariableEntry[] {
   const config = node.config ?? {};
-  return {
-    name: typeof config.name === "string" ? config.name : "",
-    value: typeof config.value === "string" ? config.value : "",
-  };
+  if (Array.isArray(config.variables)) {
+    return config.variables.map((entry) => {
+      const item = objectValue(entry);
+      return {
+        name: typeof item?.name === "string" ? item.name : "",
+        value: typeof item?.value === "string" ? item.value : "",
+        type: variableValueType(item?.type),
+      };
+    });
+  }
+  return [
+    {
+      name: typeof config.name === "string" ? config.name : "",
+      value: typeof config.value === "string" ? config.value : "",
+      type: "auto",
+    },
+  ];
+}
+
+function variableValueType(value: unknown): VariableValueType {
+  return value === "text" || value === "json" || value === "number" || value === "boolean"
+    ? value
+    : "auto";
+}
+
+function parseVariableValue(
+  rawValue: string,
+  type: VariableValueType,
+  nodeTitle: string,
+  name: string,
+): unknown {
+  if (!rawValue.trim()) return "";
+  if (type === "text") return rawValue;
+  if (type === "auto") return parseMaybeJson(rawValue);
+  if (type === "json") {
+    try {
+      return parseJsonValue(rawValue);
+    } catch (error) {
+      throw new Error(`${nodeTitle} variable ${name} has invalid JSON: ${(error as Error).message}`);
+    }
+  }
+  if (type === "number") {
+    const value = Number(rawValue.trim());
+    if (!Number.isFinite(value)) {
+      throw new Error(`${nodeTitle} variable ${name} must be a finite number.`);
+    }
+    return value;
+  }
+  const normalized = rawValue.trim().toLowerCase();
+  if (normalized === "true") return true;
+  if (normalized === "false") return false;
+  throw new Error(`${nodeTitle} variable ${name} must be true or false.`);
 }
 
 function generateWorkflowSessionId(): string {
