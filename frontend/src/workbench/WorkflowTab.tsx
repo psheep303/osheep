@@ -122,8 +122,11 @@ interface NodeDragState {
   nodeId: string;
   startX: number;
   startY: number;
-  originX: number;
-  originY: number;
+  nodes: Array<{
+    nodeId: string;
+    originX: number;
+    originY: number;
+  }>;
   moved: boolean;
 }
 
@@ -1297,6 +1300,12 @@ export function WorkflowTab({
       if (target?.matches("input, textarea, select") || target?.isContentEditable) {
         return;
       }
+      if (event.key === "Delete" || event.key === "Backspace") {
+        if (running || selectedIds.length === 0) return;
+        event.preventDefault();
+        deleteNodes(selectedIds);
+        return;
+      }
       const mod = event.ctrlKey || event.metaKey;
       if (!mod) return;
       const key = event.key.toLowerCase();
@@ -1311,7 +1320,7 @@ export function WorkflowTab({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [redo, undo]);
+  }, [redo, running, selectedIds, undo]);
 
   const commitNow = async (record: WorkflowRecord) => {
     localRevisionRef.current += 1;
@@ -1420,13 +1429,29 @@ export function WorkflowTab({
     }
   };
 
-  const moveNodeLive = (nodeId: string, x: number, y: number) => {
-    const position = {
-      x: Math.max(WORLD_MIN_X, Math.round(x)),
-      y: Math.max(WORLD_MIN_Y, Math.round(y)),
-    };
-    if (running) runtimeLayoutRef.current.set(nodeId, position);
-    updateWorkflow((record) => patchNode(record, nodeId, position), false);
+  const moveNodesLive = (positions: Array<{ nodeId: string; x: number; y: number }>) => {
+    const byId = new Map(
+      positions.map(({ nodeId, x, y }) => [
+        nodeId,
+        {
+          x: Math.max(WORLD_MIN_X, Math.round(x)),
+          y: Math.max(WORLD_MIN_Y, Math.round(y)),
+        },
+      ]),
+    );
+    if (running) {
+      for (const [nodeId, position] of byId) runtimeLayoutRef.current.set(nodeId, position);
+    }
+    updateWorkflow(
+      (record) => ({
+        ...record,
+        nodes: record.nodes.map((node) => {
+          const position = byId.get(node.id);
+          return position ? { ...node, ...position } : node;
+        }),
+      }),
+      false,
+    );
   };
 
   const addBlock = (template: BlockTemplate) => {
@@ -1478,6 +1503,7 @@ export function WorkflowTab({
     const remaining = workflowRef.current?.nodes.filter((node) => !ids.has(node.id)) ?? [];
     setNodeSelection(remaining.length === 1 ? [remaining[0].id] : []);
     setNodeMenu(null);
+    setCanvasMenu(null);
   };
 
   const deleteNode = (nodeId: string) => deleteNodes([nodeId]);
@@ -1640,12 +1666,19 @@ export function WorkflowTab({
     e.stopPropagation();
     setNodeMenu(null);
     const point = clientToCanvas(e.clientX, e.clientY);
+    const draggingSelection = selectedIds.includes(node.id);
+    if (!draggingSelection) setNodeSelection([node.id], node.id);
+    const dragIds = draggingSelection ? new Set(selectedIds) : new Set([node.id]);
+    const dragNodes = (workflowRef.current?.nodes ?? [node])
+      .filter((item) => dragIds.has(item.id))
+      .map((item) => ({ nodeId: item.id, originX: item.x, originY: item.y }));
     nodeDragRef.current = {
       nodeId: node.id,
       startX: point.x,
       startY: point.y,
-      originX: node.x,
-      originY: node.y,
+      nodes: dragNodes.length
+        ? dragNodes
+        : [{ nodeId: node.id, originX: node.x, originY: node.y }],
       moved: false,
     };
     setDraggingNodeId(node.id);
@@ -1661,7 +1694,21 @@ export function WorkflowTab({
     const dx = point.x - drag.startX;
     const dy = point.y - drag.startY;
     if (Math.abs(dx) > 1 || Math.abs(dy) > 1) drag.moved = true;
-    moveNodeLive(drag.nodeId, drag.originX + dx, drag.originY + dy);
+    const safeDx = Math.max(
+      WORLD_MIN_X - Math.min(...drag.nodes.map((item) => item.originX)),
+      dx,
+    );
+    const safeDy = Math.max(
+      WORLD_MIN_Y - Math.min(...drag.nodes.map((item) => item.originY)),
+      dy,
+    );
+    moveNodesLive(
+      drag.nodes.map((item) => ({
+        nodeId: item.nodeId,
+        x: item.originX + safeDx,
+        y: item.originY + safeDy,
+      })),
+    );
   };
 
   const finishNodeDrag = (e: ReactPointerEvent<HTMLDivElement>) => {
