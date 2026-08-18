@@ -106,6 +106,12 @@ interface WorkflowTabProps {
   onResumeSession: (session: { app: AgentSessionApp; id: string; title: string }) => void;
   onTemplateBinding: (binding: WorkflowRecord["templateBinding"]) => void;
   onOpenDiff: (title: string, entries: MultiDiffEntry[]) => void;
+  onOpenDetails: (details: {
+    workspaceId: string;
+    workflowId: string;
+    nodeId: string;
+    title: string;
+  }) => void;
 }
 
 interface CanvasPoint {
@@ -810,6 +816,7 @@ export function WorkflowTab({
   onResumeSession,
   onTemplateBinding,
   onOpenDiff,
+  onOpenDetails,
 }: WorkflowTabProps) {
   const { resolvedLanguage, t } = useUiPreferences();
   const [workflow, setWorkflow] = useState<WorkflowRecord | null>(null);
@@ -1148,6 +1155,16 @@ export function WorkflowTab({
         return snapshot?.status === "running" && snapshot.terminalStatus === "waiting-for-choice";
       }) ?? null,
     [workflow],
+  );
+  const showNodeDetails = useCallback(
+    (node: WorkflowNode) => {
+      if (node.kind === "agent") {
+        onOpenDetails({ workspaceId, workflowId, nodeId: node.id, title: node.title });
+        return;
+      }
+      setDetailNodeId(node.id);
+    },
+    [onOpenDetails, workflowId, workspaceId],
   );
   const waitingForChoiceSnapshot = waitingForChoiceNode
     ? runDetailsSnapshot(waitingForChoiceNode)
@@ -2778,7 +2795,7 @@ export function WorkflowTab({
             type="button"
             onClick={() => {
               setNodeSelection([waitingForChoiceNode.id], waitingForChoiceNode.id);
-              setDetailNodeId(waitingForChoiceNode.id);
+              showNodeDetails(waitingForChoiceNode);
             }}
           >
             打开终端
@@ -3037,7 +3054,7 @@ export function WorkflowTab({
               running={running}
               onUpdate={(patch) => updateNode(selectedNode.id, patch)}
               onConnectMcp={() => void connectMcpNode(selectedNode.id)}
-              onShowDetails={() => setDetailNodeId(selectedNode.id)}
+              onShowDetails={() => showNodeDetails(selectedNode)}
               onShowMpe={() => setMpeNodeId(selectedNode.id)}
               onResolveApproval={(approved) =>
                 resolveWorkflowApproval(workspaceId, workflow.id, selectedNode.id, approved)
@@ -3151,8 +3168,12 @@ export function WorkflowTab({
             onExport={exportRunReport}
             onClose={() => setObservabilityOpen(false)}
             onSelectNode={(nodeId) => {
-              setNodeSelection([nodeId], nodeId);
-              setDetailNodeId(nodeId);
+              const node = workflow.nodes.find((item) => item.id === nodeId);
+              if (node?.kind === "agent") showNodeDetails(node);
+              else {
+                setNodeSelection([nodeId], nodeId);
+                setDetailNodeId(nodeId);
+              }
             }}
           />
         </div>
@@ -3704,6 +3725,67 @@ function WorkflowNodeBlock({
   );
 }
 
+export function WorkflowRunDetailsPage({
+  workspaceId,
+  workflowId,
+  nodeId,
+  onClose,
+  onResumeSession,
+}: {
+  workspaceId: string;
+  workflowId: string;
+  nodeId: string;
+  onClose: () => void;
+  onResumeSession: (session: { app: AgentSessionApp; id: string; title: string }) => void;
+}) {
+  const { t } = useUiPreferences();
+  const [workflow, setWorkflow] = useState<WorkflowRecord | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = () =>
+      apiGetWorkflow(workspaceId, workflowId)
+        .then((record) => {
+          if (cancelled) return;
+          setWorkflow(record);
+          setError(null);
+        })
+        .catch((reason) => {
+          if (!cancelled) setError((reason as Error).message);
+        });
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 1_500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [nodeId, workflowId, workspaceId]);
+
+  const node = workflow?.nodes.find((item) => item.id === nodeId) ?? null;
+  return (
+    <main className="workflow-details-page">
+      {node ? (
+        <WorkflowDetailsPanel
+          workspaceId={workspaceId}
+          node={node}
+          trace={workflow ? latestWorkflowNodeTrace(workflow, nodeId) : undefined}
+          onClose={onClose}
+          onResumeSession={onResumeSession}
+        />
+      ) : (
+        <section className="workflow-details-page__state" role={error ? "alert" : "status"}>
+          {error
+            ? t("workflow.details.loadFailed", { detail: error })
+            : workflow
+              ? t("workflow.details.nodeMissing")
+              : t("common.loading")}
+        </section>
+      )}
+    </main>
+  );
+}
+
 function WorkflowDetailsPanel({
   workspaceId,
   node,
@@ -3715,15 +3797,16 @@ function WorkflowDetailsPanel({
   node: WorkflowNode;
   trace?: WorkflowRunTrace;
   onClose: () => void;
-  onResumeSession: (session: { app: AgentSessionApp; id: string; title: string }) => void;
+  onResumeSession?: (session: { app: AgentSessionApp; id: string; title: string }) => void;
 }) {
+  const { t } = useUiPreferences();
   const snapshot = runDetailsSnapshot(node);
   const title = snapshot?.title || node.title;
   const status = snapshot?.status ?? node.status;
   const displayedStatus =
     status === "running" && snapshot?.terminalStatus === "waiting-for-choice"
-      ? "waiting for choice"
-      : status;
+      ? t("workflow.details.waitingForChoice")
+      : workflowRunStatusLabel(status, t);
   const openAgentSession = async () => {
     if (snapshot?.kind !== "agent") return;
     const app: AgentSessionApp = node.providerKind === "claude-cli" ? "claude" : "codex";
@@ -3739,21 +3822,21 @@ function WorkflowDetailsPanel({
         return;
       }
     }
-    if (sessionId) onResumeSession({ app, id: sessionId, title });
+    if (sessionId) onResumeSession?.({ app, id: sessionId, title });
   };
   return (
     <aside className="workflow-inspector workflow-run-details">
       <div className="workflow-inspector__head">
         <div>
-          <div className="workflow-inspector__eyebrow">Run details</div>
+          <div className="workflow-inspector__eyebrow">{t("workflow.details.title")}</div>
           <span className={`workflow-inspector__status is-${status}`}>{displayedStatus}</span>
         </div>
         <button
           type="button"
           className="workflow-inspector__close"
           onClick={onClose}
-          aria-label="Close details"
-          title="Close"
+          aria-label={t("workflow.details.close")}
+          title={t("common.close")}
         >
           x
         </button>
@@ -3767,14 +3850,18 @@ function WorkflowDetailsPanel({
               : `${snapshot.durationMs}ms`}
           </span>
         )}
-        {snapshot?.exitCode !== undefined && <span>exit {snapshot.exitCode ?? "signal"}</span>}
-        {snapshot?.kind === "agent" && snapshot.status !== "running" && (
+        {snapshot?.exitCode !== undefined && (
+          <span>{t("workflow.details.exit", { code: snapshot.exitCode ?? "signal" })}</span>
+        )}
+        {onResumeSession && snapshot?.kind === "agent" && snapshot.status !== "running" && (
           <button
             type="button"
             className="workflow-run-details__open-session"
             onClick={() => void openAgentSession()}
           >
-            Open in {node.providerKind === "claude-cli" ? "Claude Code" : "Codex"}
+            {t("workflow.details.openIn", {
+              agent: node.providerKind === "claude-cli" ? "Claude Code" : "Codex",
+            })}
           </button>
         )}
       </div>
@@ -3785,7 +3872,7 @@ function WorkflowDetailsPanel({
         snapshot.conversationSessionId &&
         snapshot.status === "running" && (
           <div className="workflow-run-details__session">
-            <span>Session</span>
+            <span>{t("workflow.details.session")}</span>
             <code>{snapshot.conversationSessionId}</code>
           </div>
         )}
@@ -3794,7 +3881,7 @@ function WorkflowDetailsPanel({
           <span />
           <span />
           <span />
-          <strong>{snapshot?.commandLine || "No run captured"}</strong>
+          <strong>{snapshot?.commandLine || t("workflow.details.noRun")}</strong>
         </div>
         {snapshot?.kind === "agent" &&
         snapshot.terminalSessionId &&
@@ -4894,7 +4981,7 @@ function WorkflowNodeInspector({
         <div className="workflow-inspector__head-actions">
           {(isAgent || kind === "command") && runDetails && (
             <button type="button" onClick={onShowDetails}>
-              see details
+              {t("workflow.details.see")}
             </button>
           )}
         </div>
@@ -4911,9 +4998,9 @@ function WorkflowNodeInspector({
 
       {waitingForChoice && (
         <div className="workflow-inspector__notice">
-          <span>{waitingAgentLabel} 正在等待用户选择</span>
+          <span>{t("workflow.details.agentWaiting", { agent: waitingAgentLabel })}</span>
           <button type="button" onClick={onShowDetails}>
-            see details
+            {t("workflow.details.see")}
           </button>
         </div>
       )}

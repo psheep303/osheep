@@ -59,6 +59,9 @@ const TemplateView = lazy(() =>
 const WorkflowTab = lazy(() =>
   import("./WorkflowTab").then((module) => ({ default: module.WorkflowTab })),
 );
+const WorkflowRunDetailsPage = lazy(() =>
+  import("./WorkflowTab").then((module) => ({ default: module.WorkflowRunDetailsPage })),
+);
 
 interface FileTab {
   kind: "file";
@@ -89,6 +92,15 @@ interface WorkflowTabState {
     source: "system" | "user";
     id: string;
   };
+}
+
+interface WorkflowDetailsTabState {
+  kind: "workflow-details";
+  path: string;
+  workspaceId: string;
+  workflowId: string;
+  nodeId: string;
+  title: string;
 }
 
 interface TemplateTabState {
@@ -123,11 +135,21 @@ interface MultiDiffTab {
   }>;
 }
 
-type Tab = FileTab | SettingsTab | WorkflowTabState | TemplateTabState | DiffTab | MultiDiffTab;
+type Tab =
+  | FileTab
+  | SettingsTab
+  | WorkflowTabState
+  | WorkflowDetailsTabState
+  | TemplateTabState
+  | DiffTab
+  | MultiDiffTab;
 
 const SETTINGS_PATH = "__settings__";
 const WORKFLOW_PREFIX = "__workflow__:";
 const workflowPath = (workflowId: string) => WORKFLOW_PREFIX + workflowId;
+const WORKFLOW_DETAILS_PREFIX = "__workflow-details__:";
+const workflowDetailsPath = (workflowId: string, nodeId: string) =>
+  `${WORKFLOW_DETAILS_PREFIX}${encodeURIComponent(workflowId)}/${encodeURIComponent(nodeId)}`;
 const TEMPLATE_PREFIX = "__template__:";
 const templatePath = (source: "system" | "user", templateId: string) =>
   `${TEMPLATE_PREFIX}${source}:${templateId}`;
@@ -488,6 +510,25 @@ export function Workbench() {
     [],
   );
 
+  const openWorkflowDetailsTab = useCallback(
+    (details: Omit<WorkflowDetailsTabState, "kind" | "path">) => {
+      const path = workflowDetailsPath(details.workflowId, details.nodeId);
+      setTabs((prev) => {
+        const existing = prev.find((tab) => tab.path === path);
+        if (existing) {
+          return prev.map((tab) =>
+            tab.path === path && tab.kind === "workflow-details"
+              ? { ...tab, ...details }
+              : tab,
+          );
+        }
+        return [...prev, { kind: "workflow-details", path, ...details }];
+      });
+      setActivePath(path);
+    },
+    [],
+  );
+
   const openTemplateTab = useCallback((source: "system" | "user", templateId: string) => {
     const path = templatePath(source, templateId);
     setTabs((prev) => {
@@ -627,6 +668,26 @@ export function Workbench() {
     [activePath],
   );
 
+  const closeWorkflowArtifacts = useCallback(
+    (workflowId: string) => {
+      const matches = (tab: Tab) =>
+        (tab.kind === "workflow" || tab.kind === "workflow-details") &&
+        tab.workflowId === workflowId;
+      setTabs((prev) => {
+        const firstRemovedIndex = prev.findIndex(matches);
+        const activeRemoved = prev.some((tab) => tab.path === activePath && matches(tab));
+        const next = prev.filter((tab) => !matches(tab));
+        if (activeRemoved) {
+          const fallback =
+            next[firstRemovedIndex] ?? next[firstRemovedIndex - 1] ?? next[next.length - 1] ?? null;
+          setActivePath(fallback?.path ?? null);
+        }
+        return next;
+      });
+    },
+    [activePath],
+  );
+
   const closeTemplateArtifacts = useCallback(
     (source: "system" | "user", templateId: string) => {
       const matches = (tab: Tab) =>
@@ -735,6 +796,8 @@ export function Workbench() {
   const activeFileTab = activeTab?.kind === "file" ? activeTab : null;
   const activeDiffTab = activeTab?.kind === "diff" ? activeTab : null;
   const activeMultiDiffTab = activeTab?.kind === "multi-diff" ? activeTab : null;
+  const activeWorkflowDetailsTab =
+    activeTab?.kind === "workflow-details" ? activeTab : null;
   const hasDirtyFiles = tabs.some((tab) => tab.kind === "file" && tab.dirty && !tab.deleted);
   const windowsDesktopShell = isWindowsDesktopShell();
 
@@ -805,7 +868,7 @@ export function Workbench() {
                   onOpenWorkflow={openWorkflowTab}
                   activeWorkflowId={activeTab?.kind === "workflow" ? activeTab.workflowId : null}
                   refreshSignal={aiRefreshSignal}
-                  onWorkflowDeleted={(workflowId) => closeTab(workflowPath(workflowId))}
+                  onWorkflowDeleted={closeWorkflowArtifacts}
                   developerMode={developerMode}
                   onTemplatesChanged={() => setTemplateRefreshSignal((signal) => signal + 1)}
                 />
@@ -891,6 +954,8 @@ export function Workbench() {
                       ? t("common.settings")
                       : tab.kind === "workflow"
                         ? t("nav.workflow")
+                        : tab.kind === "workflow-details"
+                          ? tab.title
                         : tab.kind === "template"
                           ? t("nav.templates")
                           : tab.kind === "multi-diff"
@@ -909,6 +974,8 @@ export function Workbench() {
                           ? tab.title
                           : tab.kind === "workflow"
                             ? `${t("nav.workflow")} ${tab.workflowId}`
+                            : tab.kind === "workflow-details"
+                              ? `${tab.title} - ${t("workflow.details.title")}`
                             : tab.kind === "template"
                               ? `${t("nav.templates")} ${tab.templateId}`
                               : t("common.settings");
@@ -993,6 +1060,14 @@ export function Workbench() {
                       title={activeMultiDiffTab.title}
                     />
                   </div>
+                ) : activeWorkflowDetailsTab ? (
+                  <WorkflowRunDetailsPage
+                    workspaceId={activeWorkflowDetailsTab.workspaceId}
+                    workflowId={activeWorkflowDetailsTab.workflowId}
+                    nodeId={activeWorkflowDetailsTab.nodeId}
+                    onClose={() => closeTab(activeWorkflowDetailsTab.path)}
+                    onResumeSession={resumeAgentSession}
+                  />
                 ) : activeTab?.kind === "settings" ? (
                   <SettingsView settings={settings} onChange={updateSettings} />
                 ) : activeTab?.kind === "workflow" ? (
@@ -1004,6 +1079,7 @@ export function Workbench() {
                       onWorkflowChanged={bumpAiRefresh}
                       onFilesChanged={bumpFileTree}
                       onResumeSession={resumeAgentSession}
+                      onOpenDetails={openWorkflowDetailsTab}
                       onTemplateBinding={(templateBinding) =>
                         setTabs((current) =>
                           current.map((tab) =>

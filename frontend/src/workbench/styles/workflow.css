@@ -2506,6 +2506,37 @@
   opacity: 0.54;
 }
 
+.workflow-details-page {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  background: var(--bg-editor);
+  overflow: hidden;
+}
+
+.workflow-details-page .workflow-run-details {
+  width: 100%;
+  height: 100%;
+  padding: clamp(12px, 2vw, 20px);
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.workflow-details-page__state {
+  display: grid;
+  width: min(720px, 100%);
+  min-height: 160px;
+  margin: 10vh auto 0;
+  padding: 24px;
+  place-items: center;
+  border: 1px solid var(--border-edge);
+  border-radius: var(--radius-lg);
+  background: var(--surface-2);
+  color: var(--fg-muted);
+  text-align: center;
+}
+
 .workflow-edge.is-back {
   stroke: rgba(245, 158, 11, 0.88);
   stroke-dasharray: none;
