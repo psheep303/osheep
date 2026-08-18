@@ -1479,10 +1479,10 @@ export function WorkflowTab({
     setBlockPickerOpen(false);
   };
 
-  const setNodeSelection = (ids: string[], primaryId: string | null = null) => {
+  const setNodeSelection = (ids: string[], primaryId?: string | null) => {
     const unique = [...new Set(ids)];
     setSelectedIds(unique);
-    setSelectedId(primaryId ?? (unique.length === 1 ? unique[0] : null));
+    setSelectedId(primaryId === undefined ? (unique.length === 1 ? unique[0] : null) : primaryId);
   };
 
   const deleteNodes = (nodeIds: string[]) => {
@@ -1490,9 +1490,6 @@ export function WorkflowTab({
     const ids = new Set(nodeIds);
     updateWorkflow(
       (record) => {
-        if (record.nodes.length <= 1) return record;
-        // A workflow always keeps at least one node, even when the whole canvas is selected.
-        if (record.nodes.every((node) => ids.has(node.id))) ids.delete(record.nodes[0].id);
         const nodes = record.nodes.filter((node) => !ids.has(node.id));
         const edges = record.edges.filter((edge) => !ids.has(edge.from) && !ids.has(edge.to));
         return { ...record, nodes, edges };
@@ -1500,8 +1497,7 @@ export function WorkflowTab({
       true,
       true,
     );
-    const remaining = workflowRef.current?.nodes.filter((node) => !ids.has(node.id)) ?? [];
-    setNodeSelection(remaining.length === 1 ? [remaining[0].id] : []);
+    setNodeSelection([]);
     setNodeMenu(null);
     setCanvasMenu(null);
   };
@@ -1667,7 +1663,6 @@ export function WorkflowTab({
     setNodeMenu(null);
     const point = clientToCanvas(e.clientX, e.clientY);
     const draggingSelection = selectedIds.includes(node.id);
-    if (!draggingSelection) setNodeSelection([node.id], node.id);
     const dragIds = draggingSelection ? new Set(selectedIds) : new Set([node.id]);
     const dragNodes = (workflowRef.current?.nodes ?? [node])
       .filter((item) => dragIds.has(item.id))
@@ -1975,7 +1970,7 @@ export function WorkflowTab({
               node.y + NODE_H > top,
           )
           .map((node) => node.id);
-        setNodeSelection([...new Set([...selection.baseIds, ...hitIds])]);
+        setNodeSelection([...new Set([...selection.baseIds, ...hitIds])], null);
       }
       return;
     }
@@ -2547,7 +2542,7 @@ export function WorkflowTab({
         label: multiNodeMenu ? t("workflow.menu.deleteSelectedBlocks") : t("workflow.menu.deleteBlock"),
         shortcut: "Del",
         danger: true,
-        disabled: running || workflow.nodes.length <= 1,
+        disabled: running,
         onSelect: () => deleteNodes(multiNodeMenu ? selectedIds : [menuNode.id]),
       }
     : null;
@@ -5801,7 +5796,7 @@ function WorkflowNodeInspector({
       )}
 
       <div className="workflow-inspector__foot">
-        <button onClick={onDelete} disabled={running || nodes.length <= 1}>
+        <button onClick={onDelete} disabled={running}>
           Delete
         </button>
       </div>
