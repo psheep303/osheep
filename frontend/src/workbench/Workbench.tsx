@@ -1075,6 +1075,8 @@ export function Workbench() {
                     <WorkflowTab
                       workspaceId={workspaceId}
                       workflowId={activeTab.workflowId}
+                      editorFontSize={settings.editor.fontSize}
+                      editorTabSize={settings.editor.tabSize}
                       onOpenDiff={openPreparedMultiDiffTab}
                       onWorkflowChanged={bumpAiRefresh}
                       onFilesChanged={bumpFileTree}

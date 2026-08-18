@@ -8,6 +8,7 @@ import {
   parseWorkflowUsage,
   planWorkflowRunNodeIds,
   resolveWorkflowTemplate,
+  runWorkflowCodeForTest,
   scheduleWorkflowNodes,
   shouldRetryAgentTerminalFailure,
   type WorkflowRunDetailSnapshot,
@@ -118,6 +119,42 @@ test("workflow templates resolve environment variables and JSON paths", () => {
   assert.equal(resolveWorkflowTemplate("{{vars[enabled]}}", record), "true");
   assert.equal(resolveWorkflowTemplate("{{vars[literalJson]}}", record), '{"id": 1}');
   assert.equal(resolveWorkflowTemplate("{{vars[typedJson]}}", record), '{"id":1}');
+});
+
+test("JavaScript workflow code receives typed variable and block template values", async () => {
+  const record: WorkflowRecord = {
+    id: "wf_code_template",
+    title: "Code template",
+    createdAt: 1,
+    updatedAt: 1,
+    runs: [],
+    edges: [],
+    nodes: [
+      {
+        ...workflowNode("node_variable", "variable", "Environment"),
+        blockId: 1,
+        config: {
+          variables: [
+            { name: "name", value: "Osheep", type: "text" },
+            { name: "options", value: '{"enabled":true}', type: "json" },
+          ],
+        },
+      },
+      {
+        ...workflowNode("node_source", "set", "Source"),
+        blockId: 2,
+        rawOutput: JSON.stringify({ status: "success", data: { count: 3 } }),
+      },
+    ],
+  };
+
+  assert.deepEqual(
+    await runWorkflowCodeForTest(
+      "return { name: {{vars[name]}}, enabled: {{vars[options].enabled}}, count: {{blocks[2].data.count}} };",
+      record,
+    ),
+    { name: "Osheep", enabled: true, count: 3 },
+  );
 });
 
 test("workflow variable types validate configured values", () => {

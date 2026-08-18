@@ -98,10 +98,15 @@ import {
 const MarkdownPreview = lazy(() =>
   import("./MarkdownPreview").then((module) => ({ default: module.MarkdownPreview })),
 );
+const WorkflowCodeEditor = lazy(() =>
+  import("./WorkflowCodeEditor").then((module) => ({ default: module.WorkflowCodeEditor })),
+);
 
 interface WorkflowTabProps {
   workspaceId: string;
   workflowId: string;
+  editorFontSize: number;
+  editorTabSize: number;
   onWorkflowChanged: () => void;
   onFilesChanged: () => void;
   onResumeSession: (session: { app: AgentSessionApp; id: string; title: string }) => void;
@@ -194,7 +199,7 @@ type BlockCategoryId =
   | "triggers"
   | "input"
   | "logic"
-  | "command"
+  | "code"
   | "git"
   | "ai"
   | "network"
@@ -548,7 +553,7 @@ const BLOCK_CATEGORIES: BlockCategory[] = [
   { id: "triggers", labelKey: "workflow.blocks.category.triggers", icon: "trigger" },
   { id: "input", labelKey: "workflow.blocks.category.input", icon: "input" },
   { id: "logic", labelKey: "workflow.blocks.category.logic", icon: "if" },
-  { id: "command", labelKey: "workflow.blocks.category.command", icon: "command" },
+  { id: "code", labelKey: "workflow.blocks.category.code", icon: "code" },
   { id: "git", labelKey: "workflow.blocks.category.git", icon: "git" },
   { id: "ai", labelKey: "workflow.blocks.category.ai", icon: "ai" },
   { id: "network", labelKey: "workflow.blocks.category.network", icon: "network" },
@@ -603,7 +608,7 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
     },
   },
   {
-    category: "command",
+    category: "code",
     nameKey: "workflow.blocks.runCommand",
     kind: "command",
     icon: "command",
@@ -758,7 +763,7 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
     },
   },
   {
-    category: "command",
+    category: "code",
     nameKey: "workflow.blocks.javascript",
     kind: "code",
     icon: "code",
@@ -819,6 +824,8 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
 export function WorkflowTab({
   workspaceId,
   workflowId,
+  editorFontSize,
+  editorTabSize,
   onWorkflowChanged,
   onFilesChanged,
   onResumeSession,
@@ -3058,6 +3065,8 @@ export function WorkflowTab({
               }
               node={selectedNode}
               workspaceId={workspaceId}
+              editorFontSize={editorFontSize}
+              editorTabSize={editorTabSize}
               autoFocusName={renameTarget === selectedNode.id}
               nodes={workflow.nodes}
               edges={workflow.edges}
@@ -4899,6 +4908,8 @@ function WorkflowInputDialog({
 function WorkflowNodeInspector({
   workspaceId,
   node,
+  editorFontSize,
+  editorTabSize,
   autoFocusName,
   nodes,
   edges,
@@ -4916,6 +4927,8 @@ function WorkflowNodeInspector({
 }: {
   workspaceId: string;
   node: WorkflowNode;
+  editorFontSize: number;
+  editorTabSize: number;
   autoFocusName?: boolean;
   nodes: WorkflowNode[];
   edges: WorkflowEdge[];
@@ -5595,12 +5608,24 @@ function WorkflowNodeInspector({
         </label>
       ) : isCode ? (
         <label className="workflow-inspector__field">
-          <span>JavaScript</span>
-          <TemplateTextarea
-            value={codeConfig.code}
-            onChange={(value) => updateConfig({ code: value })}
-            disabled={running}
-          />
+          <span>{t("workflow.code.javascript")}</span>
+          <Suspense
+            fallback={
+              <div className="workflow-code-editor workflow-code-editor--loading">
+                {t("workflow.code.loadingEditor")}
+              </div>
+            }
+          >
+            <WorkflowCodeEditor
+              nodeId={node.id}
+              value={codeConfig.code}
+              fontSize={editorFontSize}
+              tabSize={editorTabSize}
+              onChange={(value) => updateConfig({ code: value })}
+              disabled={running}
+              ariaLabel={t("workflow.code.javascriptEditor")}
+            />
+          </Suspense>
         </label>
       ) : isLoopItems ? (
         <>
@@ -6684,7 +6709,8 @@ async function executeLocalNode(
     const config = codeNodeConfig(node);
     const items = incomingOutputs(record, node);
     const inputValue = items[0] ?? {};
-    const value = await runCodeBlock(config.code, inputValue, items);
+    const template = resolveWorkflowCodeTemplate(config.code, record);
+    const value = await runCodeBlock(template.code, inputValue, items, template.values);
     return {
       output: outputFromValue("code", value),
     };
@@ -7966,6 +7992,7 @@ async function runCodeBlock(
   code: string,
   input: WorkflowBlockOutput,
   items: WorkflowBlockOutput[],
+  templateValues: unknown[],
 ): Promise<unknown> {
   const helpers = {
     jsonPreview,
@@ -7975,13 +8002,30 @@ async function runCodeBlock(
     "input",
     "items",
     "helpers",
+    "__osheepWorkflowTemplateValues",
     `"use strict";\nreturn (async () => {\n${code}\n})();`,
   ) as (
     input: WorkflowBlockOutput,
     items: WorkflowBlockOutput[],
     helpers: Record<string, unknown>,
+    templateValues: unknown[],
   ) => Promise<unknown>;
-  return await fn(input, items, helpers);
+  return await fn(input, items, helpers, templateValues);
+}
+
+function resolveWorkflowCodeTemplate(
+  code: string,
+  record: WorkflowRecord,
+): { code: string; values: unknown[] } {
+  assertValidBlockTemplates(code);
+  const values: unknown[] = [];
+  return {
+    code: code.replace(/\{\{[\s\S]*?\}\}/g, (expression) => {
+      const index = values.push(resolveTemplateValue(expression, record)) - 1;
+      return `__osheepWorkflowTemplateValues[${index}]`;
+    }),
+    values,
+  };
 }
 
 function outputFromValue(type: string, value: unknown): WorkflowBlockOutput {

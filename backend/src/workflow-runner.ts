@@ -1471,7 +1471,7 @@ async function executeLocalNode(
   if (kind === "code") {
     const config = codeNodeConfig(node);
     const items = incomingOutputs(record, node);
-    const value = await runCodeBlock(config.code, items[0] ?? {}, items);
+    const value = await runWorkflowCode(config.code, record, items[0] ?? {}, items);
     return { output: outputFromValue("code", value) };
   }
 
@@ -2575,19 +2575,46 @@ async function runCodeBlock(
   code: string,
   input: WorkflowBlockOutput,
   items: WorkflowBlockOutput[],
+  templateValues: unknown[],
 ): Promise<unknown> {
   const helpers = { jsonPreview, textFromAny };
   const fn = new Function(
     "input",
     "items",
     "helpers",
+    "__osheepWorkflowTemplateValues",
     `"use strict";\nreturn (async () => {\n${code}\n})();`,
   ) as (
     input: WorkflowBlockOutput,
     items: WorkflowBlockOutput[],
     helpers: Record<string, unknown>,
+    templateValues: unknown[],
   ) => Promise<unknown>;
-  return await fn(input, items, helpers);
+  return await fn(input, items, helpers, templateValues);
+}
+
+async function runWorkflowCode(
+  code: string,
+  record: WorkflowRecord,
+  input: WorkflowBlockOutput,
+  items: WorkflowBlockOutput[],
+): Promise<unknown> {
+  assertValidBlockTemplates(code);
+  const values: unknown[] = [];
+  const compiledCode = code.replace(/\{\{[\s\S]*?\}\}/g, (expression) => {
+    const index = values.push(resolveTemplateValue(expression, record)) - 1;
+    return `__osheepWorkflowTemplateValues[${index}]`;
+  });
+  return await runCodeBlock(compiledCode, input, items, values);
+}
+
+export async function runWorkflowCodeForTest(
+  code: string,
+  record: WorkflowRecord,
+  input: WorkflowBlockOutput = {},
+  items: WorkflowBlockOutput[] = [],
+): Promise<unknown> {
+  return await runWorkflowCode(code, record, input, items);
 }
 
 function outputFromValue(type: string, value: unknown): WorkflowBlockOutput {
