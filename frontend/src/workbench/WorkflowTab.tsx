@@ -149,6 +149,22 @@ interface CanvasPanState {
   moved: boolean;
 }
 
+interface CanvasSelectionState {
+  pointerId: number;
+  startX: number;
+  startY: number;
+  currentX: number;
+  currentY: number;
+  baseIds: string[];
+  additive: boolean;
+  moved: boolean;
+}
+
+interface CopiedWorkflowGraph {
+  nodes: WorkflowNode[];
+  edges: WorkflowEdge[];
+}
+
 interface PanOffset {
   x: number;
   y: number;
@@ -792,6 +808,7 @@ export function WorkflowTab({
   const [runtimeReadyWorkflowKey, setRuntimeReadyWorkflowKey] = useState("");
   const workflowRef = useRef<WorkflowRecord | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [running, setRunning] = useState(false);
@@ -808,7 +825,7 @@ export function WorkflowTab({
   const [panningCanvas, setPanningCanvas] = useState(false);
   const [nodeMenu, setNodeMenu] = useState<NodeContextMenuState | null>(null);
   const [edgeMenu, setEdgeMenu] = useState<EdgeContextMenuState | null>(null);
-  const [copiedNode, setCopiedNode] = useState<WorkflowNode | null>(null);
+  const [copiedGraph, setCopiedGraph] = useState<CopiedWorkflowGraph | null>(null);
   const [blockPickerOpen, setBlockPickerOpen] = useState(false);
   const [blockPickerCategory, setBlockPickerCategory] = useState<BlockCategoryId>("triggers");
   const [detailNodeId, setDetailNodeId] = useState<string | null>(null);
@@ -826,6 +843,8 @@ export function WorkflowTab({
   const runtimeLayoutRef = useRef<Map<string, CanvasPoint>>(new Map());
   const suppressNodeClickRef = useRef<string | null>(null);
   const canvasPanRef = useRef<CanvasPanState | null>(null);
+  const canvasSelectionRef = useRef<CanvasSelectionState | null>(null);
+  const [canvasSelection, setCanvasSelection] = useState<CanvasSelectionState | null>(null);
   const suppressContextMenuRef = useRef(false);
   const canvasWrapRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
@@ -871,7 +890,7 @@ export function WorkflowTab({
     setLoading(true);
     setError(null);
     setRuntimeReadyWorkflowKey("");
-    setSelectedId(null);
+    setNodeSelection([]);
     setReadmeOpen(false);
     setReadmeEditing(false);
     runtimeLayoutRef.current.clear();
@@ -1242,9 +1261,8 @@ export function WorkflowTab({
     localRevisionRef.current += 1;
     workflowRef.current = next;
     setWorkflow(next);
-    if (selectedId && !next.nodes.some((node) => node.id === selectedId)) {
-      setSelectedId(null);
-    }
+    const validSelected = selectedIds.filter((id) => next.nodes.some((node) => node.id === id));
+    setNodeSelection(validSelected);
     scheduleSave(next);
     setHistoryTick((tick) => tick + 1);
   };
@@ -1426,58 +1444,105 @@ export function WorkflowTab({
       true,
       true,
     );
-    setSelectedId(null);
+    setNodeSelection([]);
     setBlockPickerOpen(false);
   };
 
-  const deleteNode = (nodeId: string) => {
-    if (!workflow || workflow.nodes.length <= 1) return;
+  const setNodeSelection = (ids: string[], primaryId: string | null = null) => {
+    const unique = [...new Set(ids)];
+    setSelectedIds(unique);
+    setSelectedId(primaryId ?? (unique.length === 1 ? unique[0] : null));
+  };
+
+  const deleteNodes = (nodeIds: string[]) => {
+    if (running) return;
+    const ids = new Set(nodeIds);
     updateWorkflow(
       (record) => {
-        const nodes = record.nodes.filter((node) => node.id !== nodeId);
-        const edges = record.edges.filter((edge) => edge.from !== nodeId && edge.to !== nodeId);
-        if (selectedId === nodeId) setSelectedId(null);
+        if (record.nodes.length <= 1) return record;
+        // A workflow always keeps at least one node, even when the whole canvas is selected.
+        if (record.nodes.every((node) => ids.has(node.id))) ids.delete(record.nodes[0].id);
+        const nodes = record.nodes.filter((node) => !ids.has(node.id));
+        const edges = record.edges.filter((edge) => !ids.has(edge.from) && !ids.has(edge.to));
         return { ...record, nodes, edges };
       },
       true,
       true,
     );
+    const remaining = workflowRef.current?.nodes.filter((node) => !ids.has(node.id)) ?? [];
+    setNodeSelection(remaining.length === 1 ? [remaining[0].id] : []);
+    setNodeMenu(null);
   };
 
-  const copyNode = (nodeId: string) => {
-    const node = workflowRef.current?.nodes.find((item) => item.id === nodeId);
-    if (!node) return;
-    setCopiedNode(node);
+  const deleteNode = (nodeId: string) => deleteNodes([nodeId]);
+
+  const copyNodes = (nodeIds: string[]) => {
+    const record = workflowRef.current;
+    if (!record) return;
+    const snapshot = cloneWorkflow(record);
+    const ids = new Set(nodeIds);
+    const nodes = snapshot.nodes.filter((node) => ids.has(node.id));
+    if (nodes.length === 0) return;
+    setCopiedGraph({
+      nodes,
+      edges: snapshot.edges.filter((edge) => ids.has(edge.from) && ids.has(edge.to)),
+    });
   };
 
-  const pasteNode = (anchorId: string) => {
-    if (!copiedNode || running) return;
-    const nodeId = makeId("node");
+  const pasteNodes = (anchorId: string) => {
+    if (!copiedGraph || running) return;
+    const pastedIds: string[] = [];
     updateWorkflow(
       (record) => {
         const anchor = record.nodes.find((item) => item.id === anchorId);
-        const kind = nodeKind(copiedNode);
-        const node: WorkflowNode = {
-          ...copiedNode,
-          id: nodeId,
-          blockId: nextBlockId(record),
-          kind,
-          title: kind === "trigger" ? copiedNode.title : `${copiedNode.title} copy`,
-          x: Math.max(WORLD_MIN_X, (anchor?.x ?? copiedNode.x) + 32),
-          y: Math.max(WORLD_MIN_Y, (anchor?.y ?? copiedNode.y) + 32),
-          status: "idle",
-          summary: "",
-          rawOutput: "",
-          error: "",
-          startedAt: undefined,
-          completedAt: undefined,
+        const sourceAnchor = copiedGraph.nodes.find((item) => item.id === anchorId);
+        const minX = Math.min(...copiedGraph.nodes.map((node) => node.x));
+        const minY = Math.min(...copiedGraph.nodes.map((node) => node.y));
+        const offsetX = (anchor?.x ?? minX) + 32 - (sourceAnchor?.x ?? minX);
+        const offsetY = (anchor?.y ?? minY) + 32 - (sourceAnchor?.y ?? minY);
+        const idMap = new Map<string, string>();
+        let nextBlock = nextBlockId(record);
+        const nodes = copiedGraph.nodes.map((source) => {
+          const nodeId = makeId("node");
+          idMap.set(source.id, nodeId);
+          pastedIds.push(nodeId);
+          const kind = nodeKind(source);
+          const node: WorkflowNode = {
+            ...source,
+            id: nodeId,
+            blockId: nextBlock++,
+            kind,
+            title:
+              copiedGraph.nodes.length === 1 && kind === "trigger"
+                ? source.title
+                : `${source.title} copy`,
+            x: Math.max(WORLD_MIN_X, source.x + offsetX),
+            y: Math.max(WORLD_MIN_Y, source.y + offsetY),
+            status: "idle",
+            summary: "",
+            rawOutput: "",
+            error: "",
+            startedAt: undefined,
+            completedAt: undefined,
+          };
+          return node;
+        });
+        const edges = copiedGraph.edges.map((edge) => ({
+          ...edge,
+          id: makeId("edge"),
+          from: idMap.get(edge.from) ?? edge.from,
+          to: idMap.get(edge.to) ?? edge.to,
+        }));
+        return {
+          ...record,
+          nodes: [...record.nodes, ...nodes],
+          edges: [...record.edges, ...edges],
         };
-        return { ...record, nodes: [...record.nodes, node] };
       },
       true,
       true,
     );
-    setSelectedId(nodeId);
+    setNodeSelection(pastedIds, pastedIds.length === 1 ? pastedIds[0] : null);
   };
 
   const addEdgeWithHistory = (
@@ -1546,13 +1611,20 @@ export function WorkflowTab({
     setDraftEdge(next);
   }, []);
 
-  const selectNodeFromClick = (nodeId: string) => {
+  const selectNodeFromClick = (nodeId: string, event?: ReactMouseEvent<HTMLDivElement>) => {
     if (suppressNodeClickRef.current === nodeId) {
       suppressNodeClickRef.current = null;
       return;
     }
     setBlockPickerOpen(false);
-    setSelectedId(nodeId);
+    if (event?.ctrlKey || event?.metaKey) {
+      const next = selectedIds.includes(nodeId)
+        ? selectedIds.filter((id) => id !== nodeId)
+        : [...selectedIds, nodeId];
+      setNodeSelection(next);
+      return;
+    }
+    setNodeSelection([nodeId], nodeId);
   };
 
   const startNodeDrag = (node: WorkflowNode, e: ReactPointerEvent<HTMLDivElement>) => {
@@ -1770,22 +1842,42 @@ export function WorkflowTab({
 
   const startCanvasPan = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (e.button !== 0 && e.button !== 2) return;
+    const el = e.target as HTMLElement;
     if (e.button === 0) {
-      const el = e.target as HTMLElement;
       if (
         el.closest(".workflow-node") ||
         el.closest(".workflow-minimap") ||
-        el.closest("[data-workflow-input-id]")
+        el.closest("[data-workflow-input-id]") ||
+        el.closest(".workflow-edge-hit")
       ) {
         return;
       }
+      const point = clientToCanvas(e.clientX, e.clientY);
+      const additive = e.ctrlKey || e.metaKey;
+      const baseIds = additive ? selectedIds : [];
+      const nextSelection: CanvasSelectionState = {
+        pointerId: e.pointerId,
+        startX: point.x,
+        startY: point.y,
+        currentX: point.x,
+        currentY: point.y,
+        baseIds,
+        additive,
+        moved: false,
+      };
+      canvasSelectionRef.current = nextSelection;
+      setCanvasSelection(nextSelection);
+      if (!additive) setNodeSelection([]);
+      setNodeMenu(null);
+      setEdgeMenu(null);
+      e.preventDefault();
+      e.currentTarget.setPointerCapture(e.pointerId);
+      return;
     }
     const wrap = canvasWrapRef.current;
     if (!wrap) return;
-    if (e.button === 2) {
-      e.preventDefault();
-      e.stopPropagation();
-    }
+    e.preventDefault();
+    e.stopPropagation();
     setNodeMenu(null);
     setEdgeMenu(null);
     suppressContextMenuRef.current = false;
@@ -1803,6 +1895,35 @@ export function WorkflowTab({
   };
 
   const moveCanvasPan = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const selection = canvasSelectionRef.current;
+    if (selection && selection.pointerId === e.pointerId) {
+      e.preventDefault();
+      e.stopPropagation();
+      const point = clientToCanvas(e.clientX, e.clientY);
+      if (Math.abs(point.x - selection.startX) > 2 || Math.abs(point.y - selection.startY) > 2) {
+        selection.moved = true;
+      }
+      selection.currentX = point.x;
+      selection.currentY = point.y;
+      setCanvasSelection({ ...selection });
+      if (selection.moved) {
+        const left = Math.min(selection.startX, point.x);
+        const right = Math.max(selection.startX, point.x);
+        const top = Math.min(selection.startY, point.y);
+        const bottom = Math.max(selection.startY, point.y);
+        const hitIds = (workflowRef.current?.nodes ?? [])
+          .filter(
+            (node) =>
+              node.x < right &&
+              node.x + NODE_W > left &&
+              node.y < bottom &&
+              node.y + NODE_H > top,
+          )
+          .map((node) => node.id);
+        setNodeSelection([...new Set([...selection.baseIds, ...hitIds])]);
+      }
+      return;
+    }
     const state = canvasPanRef.current;
     if (!state || state.pointerId !== e.pointerId) return;
     e.preventDefault();
@@ -1819,6 +1940,18 @@ export function WorkflowTab({
   };
 
   const finishCanvasPan = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const selection = canvasSelectionRef.current;
+    if (selection && selection.pointerId === e.pointerId) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }
+      canvasSelectionRef.current = null;
+      setCanvasSelection(null);
+      if (!selection.moved && !selection.additive) setNodeSelection([]);
+      return;
+    }
     const state = canvasPanRef.current;
     if (!state || state.pointerId !== e.pointerId) return;
     e.preventDefault();
@@ -2334,35 +2467,45 @@ export function WorkflowTab({
         {
           items: [
             {
-              label: "Rename",
+              label: t("workflow.menu.rename"),
               onSelect: () => {
                 setBlockPickerOpen(false);
-                setSelectedId(menuNode.id);
+                setNodeSelection([menuNode.id], menuNode.id);
                 setRenameTarget(menuNode.id);
                 setRenameSeq((seq) => seq + 1);
               },
             },
             {
-              label: "Copy block",
+              label:
+                selectedIds.length > 1 && selectedIds.includes(menuNode.id)
+                  ? t("workflow.menu.copySelectedBlocks")
+                  : t("workflow.menu.copyBlock"),
               shortcut: "Ctrl+C",
-              onSelect: () => copyNode(menuNode.id),
+              onSelect: () =>
+                copyNodes(selectedIds.includes(menuNode.id) ? selectedIds : [menuNode.id]),
             },
             {
-              label: "Paste block",
+              label: t("workflow.menu.pasteBlock"),
               shortcut: "Ctrl+V",
-              disabled: running || !copiedNode,
-              onSelect: () => pasteNode(menuNode.id),
+              disabled: running || !copiedGraph,
+              onSelect: () => pasteNodes(menuNode.id),
             },
           ],
         },
         {
           items: [
             {
-              label: "Delete block",
+              label:
+                selectedIds.length > 1 && selectedIds.includes(menuNode.id)
+                  ? t("workflow.menu.deleteSelectedBlocks")
+                  : t("workflow.menu.deleteBlock"),
               shortcut: "Del",
               danger: true,
               disabled: running || workflow.nodes.length <= 1,
-              onSelect: () => deleteNode(menuNode.id),
+              onSelect: () =>
+                deleteNodes(selectedIds.length > 1 && selectedIds.includes(menuNode.id)
+                  ? selectedIds
+                  : [menuNode.id]),
             },
           ],
         },
@@ -2437,7 +2580,7 @@ export function WorkflowTab({
           <button
             className="workflow-toolbar__btn workflow-toolbar__btn--icon"
             onClick={() => {
-              setSelectedId(null);
+              setNodeSelection([]);
               setNodeMenu(null);
               setBlockPickerOpen(true);
             }}
@@ -2551,7 +2694,7 @@ export function WorkflowTab({
           <button
             type="button"
             onClick={() => {
-              setSelectedId(waitingForChoiceNode.id);
+              setNodeSelection([waitingForChoiceNode.id], waitingForChoiceNode.id);
               setDetailNodeId(waitingForChoiceNode.id);
             }}
           >
@@ -2573,7 +2716,7 @@ export function WorkflowTab({
             type="button"
             onClick={() => {
               setBlockPickerOpen(false);
-              setSelectedId(waitingForDiffApprovalNode.id);
+              setNodeSelection([waitingForDiffApprovalNode.id], waitingForDiffApprovalNode.id);
             }}
           >
             查看 Diff
@@ -2617,12 +2760,22 @@ export function WorkflowTab({
             ref={canvasRef}
             className="workflow-canvas"
             style={canvasStyle}
-            onPointerDown={(e) => {
+            onPointerDown={() => {
               setNodeMenu(null);
               setEdgeMenu(null);
-              if (e.target === e.currentTarget) setSelectedId(null);
             }}
           >
+            {canvasSelection && (
+              <div
+                className="workflow-selection-box"
+                style={{
+                  left: worldToCanvasX(Math.min(canvasSelection.startX, canvasSelection.currentX)),
+                  top: worldToCanvasY(Math.min(canvasSelection.startY, canvasSelection.currentY)),
+                  width: Math.abs(canvasSelection.currentX - canvasSelection.startX),
+                  height: Math.abs(canvasSelection.currentY - canvasSelection.startY),
+                }}
+              />
+            )}
             <svg
               className="workflow-edges"
               width={canvasSize.width}
@@ -2698,11 +2851,11 @@ export function WorkflowTab({
               <WorkflowNodeBlock
                 key={node.id}
                 node={node}
-                selected={node.id === selectedId}
+                selected={selectedIds.includes(node.id)}
                 running={running}
                 dragging={node.id === draggingNodeId}
                 connectHover={node.id === connectHoverId}
-                onSelect={() => selectNodeFromClick(node.id)}
+                onSelect={(event) => selectNodeFromClick(node.id, event)}
                 onContextMenu={(e) => {
                   if (suppressContextMenuRef.current) {
                     e.preventDefault();
@@ -2714,6 +2867,7 @@ export function WorkflowTab({
                   e.stopPropagation();
                   setBlockPickerOpen(false);
                   setEdgeMenu(null);
+                  if (!selectedIds.includes(node.id)) setNodeSelection([node.id], node.id);
                   setNodeMenu({ x: e.clientX, y: e.clientY, nodeId: node.id });
                 }}
                 onNodePointerDown={(e) => startNodeDrag(node, e)}
@@ -2732,7 +2886,7 @@ export function WorkflowTab({
             pan={pan}
             zoom={zoom}
             wrapSize={wrapSize}
-            selectedId={selectedId}
+            selectedIds={selectedIds}
             onNavigate={navigateToCanvasPoint}
           />
         </div>
@@ -2804,7 +2958,7 @@ export function WorkflowTab({
                 resolveWorkflowApproval(workspaceId, workflow.id, selectedNode.id, approved)
               }
               onOpenDiff={onOpenDiff}
-              onClose={() => setSelectedId(null)}
+              onClose={() => setNodeSelection([])}
               onDelete={() => deleteNode(selectedNode.id)}
               onUpdateEdge={updateEdge}
               onDeleteEdge={deleteEdge}
@@ -2846,7 +3000,7 @@ export function WorkflowTab({
                   label: "Rename",
                   onSelect: () => {
                     setBlockPickerOpen(false);
-                    setSelectedId(null);
+                    setNodeSelection([]);
                     setTitleRenaming(true);
                   },
                 },
@@ -2904,7 +3058,7 @@ export function WorkflowTab({
             onExport={exportRunReport}
             onClose={() => setObservabilityOpen(false)}
             onSelectNode={(nodeId) => {
-              setSelectedId(nodeId);
+              setNodeSelection([nodeId], nodeId);
               setDetailNodeId(nodeId);
             }}
           />
@@ -2919,14 +3073,14 @@ function WorkflowMinimap({
   pan,
   zoom,
   wrapSize,
-  selectedId,
+  selectedIds,
   onNavigate,
 }: {
   nodes: WorkflowNode[];
   pan: PanOffset;
   zoom: number;
   wrapSize: ViewportSize;
-  selectedId: string | null;
+  selectedIds: readonly string[];
   onNavigate: (canvasX: number, canvasY: number) => void;
 }) {
   const MM_W = 184;
@@ -3013,7 +3167,9 @@ function WorkflowMinimap({
           return (
             <rect
               key={node.id}
-              className={`workflow-minimap__node${node.id === selectedId ? " is-selected" : ""}`}
+              className={`workflow-minimap__node${
+                selectedIds.includes(node.id) ? " is-selected" : ""
+              }`}
               x={p.x}
               y={p.y}
               width={Math.max(3, NODE_W * scale)}
@@ -3350,7 +3506,7 @@ function WorkflowNodeBlock({
   running: boolean;
   dragging: boolean;
   connectHover: boolean;
-  onSelect: () => void;
+  onSelect: (e: ReactMouseEvent<HTMLDivElement>) => void;
   onContextMenu: (e: ReactMouseEvent<HTMLDivElement>) => void;
   onNodePointerDown: (e: ReactPointerEvent<HTMLDivElement>) => void;
   onNodePointerMove: (e: ReactPointerEvent<HTMLDivElement>) => void;
