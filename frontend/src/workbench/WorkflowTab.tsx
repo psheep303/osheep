@@ -53,6 +53,7 @@ import {
   readFile,
   resolveWorkflowApproval,
   resolveWorkflowInput,
+  retryWorkflowNodeNow,
   setAiTerminalAutoSuccess,
   type WorkflowEdge,
   type WorkflowNode,
@@ -342,6 +343,9 @@ interface WorkflowRunDetailSnapshot {
   exitCode?: number | null;
   signal?: string | null;
   durationMs?: number;
+  retryAt?: number;
+  retryAttempt?: number;
+  retryReason?: string;
 }
 
 const NODE_W = 176;
@@ -616,6 +620,8 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
       mode: "default",
       retries: 0,
       retryForever: false,
+      retryDelaySeconds: 1,
+      keepRunningOnInterrupt: false,
       alwaysEnter: false,
       autoSuccess: true,
       claudePermissionMode: "acceptEdits",
@@ -633,6 +639,8 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
       effort: "medium",
       retries: 0,
       retryForever: false,
+      retryDelaySeconds: 1,
+      keepRunningOnInterrupt: false,
       alwaysEnter: false,
       autoSuccess: true,
       codexApproval: "on-request",
@@ -2343,6 +2351,7 @@ export function WorkflowTab({
               codexSandbox: agentCodexSandbox(node),
               effort: agentEffort(node),
               alwaysEnter: agentAlwaysEnter(node),
+              keepRunningOnInterrupt: agentKeepRunningOnInterrupt(node),
               conversationSessionId: commandConversationSessionId,
               requestedConversationSessionId: configuredSessionId || undefined,
               resumeConversation: resumeConfiguredSession,
@@ -2362,6 +2371,7 @@ export function WorkflowTab({
             ac.signal,
             agentRetryCount(node),
             agentRetryForever(node),
+            agentRetryDelaySeconds(node),
             resolvedLanguage,
             appendLog,
           );
@@ -3768,6 +3778,7 @@ export function WorkflowRunDetailsPage({
       {node ? (
         <WorkflowDetailsPanel
           workspaceId={workspaceId}
+          workflowId={workflowId}
           node={node}
           trace={workflow ? latestWorkflowNodeTrace(workflow, nodeId) : undefined}
           onClose={onClose}
@@ -3788,18 +3799,22 @@ export function WorkflowRunDetailsPage({
 
 function WorkflowDetailsPanel({
   workspaceId,
+  workflowId,
   node,
   trace,
   onClose,
   onResumeSession,
 }: {
   workspaceId: string;
+  workflowId?: string;
   node: WorkflowNode;
   trace?: WorkflowRunTrace;
   onClose: () => void;
   onResumeSession?: (session: { app: AgentSessionApp; id: string; title: string }) => void;
 }) {
   const { t } = useUiPreferences();
+  const [now, setNow] = useState(Date.now());
+  const [retryingNow, setRetryingNow] = useState(false);
   const snapshot = runDetailsSnapshot(node);
   const title = snapshot?.title || node.title;
   const status = snapshot?.status ?? node.status;
@@ -3807,6 +3822,29 @@ function WorkflowDetailsPanel({
     status === "running" && snapshot?.terminalStatus === "waiting-for-choice"
       ? t("workflow.details.waitingForChoice")
       : workflowRunStatusLabel(status, t);
+  const retryPending =
+    snapshot?.status === "running" &&
+    typeof snapshot.retryAt === "number" &&
+    snapshot.retryAt > now;
+  const retrySeconds = retryPending ? Math.max(0, Math.ceil((snapshot.retryAt! - now) / 1_000)) : 0;
+  useEffect(() => {
+    if (!snapshot?.retryAt || snapshot.retryAt <= Date.now()) return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 250);
+    return () => window.clearInterval(timer);
+  }, [snapshot?.retryAt]);
+  useEffect(() => {
+    if (!retryPending) setRetryingNow(false);
+  }, [retryPending]);
+  const retryNow = async () => {
+    if (!workflowId || retryingNow) return;
+    setRetryingNow(true);
+    try {
+      await retryWorkflowNodeNow(workspaceId, workflowId, node.id);
+    } catch {
+      setRetryingNow(false);
+    }
+  };
   const openAgentSession = async () => {
     if (snapshot?.kind !== "agent") return;
     const app: AgentSessionApp = node.providerKind === "claude-cli" ? "claude" : "codex";
@@ -3867,6 +3905,18 @@ function WorkflowDetailsPanel({
       </div>
       {snapshot?.kind === "agent" && (
         <WorkflowTraceUsageStats trace={trace} className="workflow-run-details__usage" />
+      )}
+      {snapshot?.kind === "agent" && retryPending && (
+        <div className="workflow-run-details__retry" role="status" aria-live="polite">
+          <div>
+            <strong>{t("workflow.details.retryWaiting", { seconds: retrySeconds })}</strong>
+            {snapshot.retryReason && <span>{snapshot.retryReason}</span>}
+          </div>
+          <button type="button" onClick={() => void retryNow()} disabled={!workflowId || retryingNow}>
+            <i className="codicon codicon-debug-restart" aria-hidden="true" />
+            {retryingNow ? t("workflow.details.retrying") : t("workflow.details.retryNow")}
+          </button>
+        </div>
       )}
       {snapshot?.kind === "agent" &&
         snapshot.conversationSessionId &&
@@ -5130,7 +5180,7 @@ function WorkflowNodeInspector({
             </>
           )}
           <label className="workflow-inspector__field">
-            <span>Retries</span>
+            <span>{t("workflow.agent.retries")}</span>
             <BlurNumberInput
               value={agentRetryCount(node)}
               min={0}
@@ -5153,8 +5203,36 @@ function WorkflowNodeInspector({
               onChange={(e) => updateConfig({ retryForever: e.target.checked })}
               disabled={running}
             />
-            <span>Infinite retry</span>
-            <small>Warning</small>
+            <span>{t("workflow.agent.infiniteRetry")}</span>
+            <small>{t("workflow.warning")}</small>
+          </label>
+          <label className="workflow-inspector__field">
+            <span>{t("workflow.agent.retryDelay")}</span>
+            <BlurNumberInput
+              value={agentRetryDelaySeconds(node)}
+              min={0}
+              max={86_400}
+              onCommit={(value) => updateConfig({ retryDelaySeconds: value })}
+              disabled={
+                running || (!agentRetryForever(node) && agentRetryCount(node) === 0)
+              }
+            />
+          </label>
+          <label className="workflow-inspector__check workflow-inspector__check--danger">
+            <input
+              type="checkbox"
+              checked={agentKeepRunningOnInterrupt(node)}
+              onChange={(event) =>
+                updateConfig({ keepRunningOnInterrupt: event.target.checked })
+              }
+              disabled={running}
+            />
+            <span>{t("workflow.agent.keepRunningOnInterrupt")}</span>
+            <i
+              className="codicon codicon-warning"
+              aria-label={t("workflow.warning")}
+              title={t("workflow.agent.keepRunningOnInterruptDescription")}
+            />
           </label>
           <label className="workflow-inspector__check">
             <input
@@ -7048,6 +7126,7 @@ async function runAiTerminalWithRetries(
     codexSandbox?: AiTerminalCodexSandbox;
     effort?: AiTerminalEffort;
     alwaysEnter?: boolean;
+    keepRunningOnInterrupt?: boolean;
     conversationSessionId?: string;
     requestedConversationSessionId?: string;
     resumeConversation?: boolean;
@@ -7056,6 +7135,7 @@ async function runAiTerminalWithRetries(
   signal: AbortSignal,
   retries: number,
   retryForever: boolean,
+  retryDelaySeconds: number,
   retryLanguage: "zh-CN" | "en",
   onLog: (entry: { stream: "stdout" | "stderr"; content: string }) => void,
 ): Promise<{ result: AiTerminalResult | null; aborted: boolean }> {
@@ -7097,7 +7177,7 @@ async function runAiTerminalWithRetries(
         content: `\n[osheep] attempt ${attempt} failed: ${(e as Error).message}\n`,
       });
       attempt += 1;
-      await waitMs(1_000);
+      await waitMs(retryDelaySeconds * 1_000);
     }
   }
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
@@ -7176,6 +7256,16 @@ function supportsFailover(kind: WorkflowNodeKind): boolean {
 
 function agentRetryForever(node: WorkflowNode): boolean {
   return node.config?.retryForever === true;
+}
+
+function agentRetryDelaySeconds(node: WorkflowNode): number {
+  const value = node.config?.retryDelaySeconds;
+  if (typeof value !== "number" || !Number.isInteger(value)) return 1;
+  return clamp(value, 0, 86_400);
+}
+
+function agentKeepRunningOnInterrupt(node: WorkflowNode): boolean {
+  return node.config?.keepRunningOnInterrupt === true;
 }
 
 function agentAlwaysEnter(node: WorkflowNode): boolean {
@@ -8769,6 +8859,9 @@ function runDetailsSnapshot(node: WorkflowNode): WorkflowRunDetailSnapshot | nul
     exitCode: typeof raw.exitCode === "number" || raw.exitCode === null ? raw.exitCode : undefined,
     signal: typeof raw.signal === "string" || raw.signal === null ? raw.signal : undefined,
     durationMs: typeof raw.durationMs === "number" ? raw.durationMs : undefined,
+    retryAt: typeof raw.retryAt === "number" ? raw.retryAt : undefined,
+    retryAttempt: typeof raw.retryAttempt === "number" ? raw.retryAttempt : undefined,
+    retryReason: typeof raw.retryReason === "string" ? raw.retryReason : undefined,
   };
 }
 

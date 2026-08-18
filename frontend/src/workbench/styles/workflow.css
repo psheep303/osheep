@@ -1666,6 +1666,67 @@
   flex: none;
 }
 
+.workflow-run-details__retry {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--ui-warning-border);
+  border-radius: var(--radius-md);
+  background: var(--ui-warning-bg);
+  color: var(--fg-default);
+}
+
+.workflow-run-details__retry > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.workflow-run-details__retry strong {
+  color: var(--ui-warning);
+  font-size: 12px;
+}
+
+.workflow-run-details__retry span {
+  overflow: hidden;
+  color: var(--fg-muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workflow-run-details__retry button {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 4px 9px;
+  border: 1px solid var(--ui-warning-border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-control);
+  color: var(--fg-default);
+  font: inherit;
+  cursor: pointer;
+}
+
+.workflow-run-details__retry button:hover:not(:disabled) {
+  border-color: var(--ui-warning);
+}
+
+.workflow-run-details__retry button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.workflow-inspector__check--danger > .codicon-warning {
+  color: var(--ui-warning);
+  font-size: 14px;
+}
+
 .workflow-run-details__open-session {
   min-height: 24px;
   padding: 3px 8px;

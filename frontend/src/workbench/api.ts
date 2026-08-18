@@ -1372,6 +1372,19 @@ export async function resolveWorkflowInput(
   );
 }
 
+export async function retryWorkflowNodeNow(
+  workspaceId: string,
+  workflowId: string,
+  nodeId: string,
+): Promise<{ ok: boolean }> {
+  return await http.post(
+    workflowsUrl(
+      workspaceId,
+      `/${encodeURIComponent(workflowId)}/nodes/${encodeURIComponent(nodeId)}/retry-now`,
+    ),
+  );
+}
+
 export async function deleteWorkflow(workspaceId: string, workflowId: string): Promise<void> {
   await http.delete(workflowsUrl(workspaceId, `/${encodeURIComponent(workflowId)}`));
 }
@@ -1816,6 +1829,7 @@ export async function aiChatTerminalStream(
     codexSandbox?: AiTerminalCodexSandbox;
     effort?: AiTerminalEffort;
     alwaysEnter?: boolean;
+    keepRunningOnInterrupt?: boolean;
     conversationSessionId?: string;
     requestedConversationSessionId?: string;
     resumeConversation?: boolean;

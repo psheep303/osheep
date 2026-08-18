@@ -4,6 +4,7 @@ import * as fs from "node:fs/promises";
 import test from "node:test";
 import {
   type AgentEffort,
+  agentCompletionDecisionForTest,
   buildAgentTerminalCommand,
   createAgentTerminalControlForTest,
   createClaudePermissionHookRuntimeForTest,
@@ -12,6 +13,36 @@ import {
   selectConversationSessionIdForTest,
   waitForAgentTerminalManualSuccessForTest,
 } from "./ai-terminal.js";
+
+test("JSONL completion policy only keeps user-interrupted turns running", () => {
+  const enabled = { keepRunningOnInterrupt: true, autoFinishPaused: false };
+  assert.equal(
+    agentCompletionDecisionForTest({ state: "completed", outcome: "cancelled" }, enabled),
+    "continue-interrupted",
+  );
+  assert.equal(
+    agentCompletionDecisionForTest({ state: "completed", outcome: "success" }, enabled),
+    "accept",
+  );
+  assert.equal(
+    agentCompletionDecisionForTest({ state: "completed", outcome: "error" }, enabled),
+    "accept",
+  );
+  assert.equal(
+    agentCompletionDecisionForTest(
+      { state: "completed", outcome: "cancelled" },
+      { keepRunningOnInterrupt: false, autoFinishPaused: false },
+    ),
+    "accept",
+  );
+  assert.equal(
+    agentCompletionDecisionForTest(
+      { state: "completed", outcome: "cancelled" },
+      { keepRunningOnInterrupt: true, autoFinishPaused: true },
+    ),
+    "continue-paused",
+  );
+});
 
 test("Claude Code TUI command preserves permission, session, model, effort and prompt", () => {
   const id = "123e4567-e89b-12d3-a456-426614174000";

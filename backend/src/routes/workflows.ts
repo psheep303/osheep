@@ -12,6 +12,7 @@ import { subscribeWorkflowRuntime } from "../workflow-events.js";
 import {
   resolveWorkflowDiffApproval,
   resolveWorkflowInput,
+  retryWorkflowNodeNow,
   startWorkflowRun,
   stopWorkflowRun,
   stopWorkflowRunAndWait,
@@ -217,6 +218,19 @@ export async function registerWorkflowRoutes(app: FastifyInstance) {
     if (!resolved) throw errors.invalidPath("input is no longer pending");
     return { ok: true };
   });
+
+  app.post<{ Params: { id: string; wid: string; nodeId: string } }>(
+    "/api/workspaces/:id/workflows/:wid/nodes/:nodeId/retry-now",
+    async (req) => {
+      const retried = await retryWorkflowNodeNow(
+        req.params.id,
+        req.params.wid,
+        req.params.nodeId,
+      );
+      if (!retried) throw errors.invalidPath("agent retry is no longer pending");
+      return { ok: true };
+    },
+  );
 
   app.delete<{ Params: { id: string; wid: string } }>(
     "/api/workspaces/:id/workflows/:wid",

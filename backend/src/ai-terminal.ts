@@ -73,6 +73,7 @@ export interface AgentTerminalOptions {
   codexSandbox?: CodexSandbox;
   effort?: AgentEffort;
   alwaysEnter?: boolean;
+  keepRunningOnInterrupt?: boolean;
   conversationSessionId?: string;
   requestedConversationSessionId?: string;
   resumeConversation?: boolean;
@@ -107,10 +108,24 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-
 interface AgentTerminalControl {
   autoSuccess: boolean;
   alwaysEnter: boolean;
+  keepRunningOnInterrupt: boolean;
   autoFinishPaused: boolean;
   manualSuccessRequested: boolean;
   manualSuccessWaiters: Set<() => void>;
   lastCompletionState?: AgentTerminalContentState;
+}
+
+export type AgentCompletionDecision = "accept" | "continue-interrupted" | "continue-paused";
+
+export function agentCompletionDecisionForTest(
+  event: AgentSessionEvent,
+  options: { keepRunningOnInterrupt: boolean; autoFinishPaused: boolean },
+): AgentCompletionDecision {
+  if (options.autoFinishPaused) return "continue-paused";
+  if (event.outcome === "cancelled" && options.keepRunningOnInterrupt) {
+    return "continue-interrupted";
+  }
+  return "accept";
 }
 
 const controls = new Map<string, AgentTerminalControl>();
@@ -161,6 +176,7 @@ export async function runAgentTerminal(opts: AgentTerminalOptions): Promise<Agen
   controls.set(session.id, {
     autoSuccess: opts.autoSuccess !== false,
     alwaysEnter: opts.alwaysEnter === true,
+    keepRunningOnInterrupt: opts.keepRunningOnInterrupt === true,
     autoFinishPaused: false,
     manualSuccessRequested: false,
     manualSuccessWaiters: new Set(),
@@ -321,8 +337,14 @@ async function waitForAgentSessionCompletion(
         permissionFilePath,
         signal: localAbort.signal,
         onEvent: (event) => handleAgentSessionEvent(session, event, onFrame),
-        acceptCompletion: () => {
-          if (!control.autoFinishPaused) return true;
+        acceptCompletion: (event) => {
+          const decision = agentCompletionDecisionForTest(event, control);
+          if (decision === "continue-interrupted") {
+            control.lastCompletionState = "empty";
+            onFrame?.({ type: "status", status: "prompt-sent" });
+            return false;
+          }
+          if (decision === "accept") return true;
           control.lastCompletionState = "ready-for-success";
           onFrame?.({ type: "status", status: "ready-for-success" });
           return false;
@@ -527,6 +549,7 @@ export function createAgentTerminalControlForTest(
   controls.set(sessionId, {
     autoSuccess: true,
     alwaysEnter: false,
+    keepRunningOnInterrupt: false,
     autoFinishPaused: false,
     manualSuccessRequested: false,
     manualSuccessWaiters: new Set(),

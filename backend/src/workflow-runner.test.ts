@@ -252,6 +252,20 @@ test("live agent run details capture terminal and JSONL status metadata", async 
   assert.equal(writes[3]?.stdout, "");
   assert.equal(writes[4]?.terminalStatus, "waiting-for-choice");
   assert.equal(details.snapshot("running").stdout, "");
+
+  await details.setRetryWait({
+    retryAt: 9_000,
+    retryAttempt: 1,
+    retryReason: "temporary API failure",
+  });
+  assert.equal(writes.at(-1)?.retryAt, 9_000);
+  assert.equal(writes.at(-1)?.retryAttempt, 1);
+  assert.equal(writes.at(-1)?.retryReason, "temporary API failure");
+
+  await details.setRetryWait();
+  assert.equal(writes.at(-1)?.retryAt, undefined);
+  assert.equal(writes.at(-1)?.retryAttempt, undefined);
+  assert.equal(writes.at(-1)?.retryReason, undefined);
 });
 
 test("workflow scheduler runs sibling branches in parallel and waits before a join", async () => {

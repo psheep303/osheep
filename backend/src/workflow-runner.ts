@@ -93,8 +93,14 @@ interface PendingWorkflowInput {
   dispose: () => void;
 }
 
+interface PendingAgentRetry {
+  resolve: () => void;
+  dispose: () => void;
+}
+
 const pendingDiffApprovals = new Map<string, PendingDiffApproval>();
 const pendingWorkflowInputs = new Map<string, PendingWorkflowInput>();
+const pendingAgentRetries = new Map<string, PendingAgentRetry>();
 
 export interface WorkflowRunDetailSnapshot {
   kind: "agent" | "command";
@@ -114,6 +120,9 @@ export interface WorkflowRunDetailSnapshot {
   signal?: string | null;
   durationMs?: number;
   retryReasons?: string[];
+  retryAt?: number;
+  retryAttempt?: number;
+  retryReason?: string;
 }
 
 interface LiveAgentRunDetailsOptions {
@@ -132,6 +141,11 @@ export interface LiveAgentRunDetails {
     completedAt?: number,
   ) => WorkflowRunDetailSnapshot;
   drain: () => Promise<void>;
+  setRetryWait: (wait?: {
+    retryAt: number;
+    retryAttempt: number;
+    retryReason: string;
+  }) => Promise<void>;
 }
 
 export interface AgentTerminalFailure {
@@ -200,14 +214,17 @@ export function createLiveAgentRunDetails(
   let terminalSessionId = "";
   let conversationSessionId = "";
   let terminalStatus = "";
+  let retryWait:
+    | { retryAt: number; retryAttempt: number; retryReason: string }
+    | undefined;
   let queue = Promise.resolve();
 
   const buildSnapshot = (
     status: WorkflowRunDetailSnapshot["status"],
     completedAt: number | undefined,
     snapshotLogs: RunLogEntry[],
-  ) =>
-    agentRunSnapshot(
+  ) => {
+    const built = agentRunSnapshot(
       options.node,
       status,
       options.startedAt,
@@ -218,6 +235,9 @@ export function createLiveAgentRunDetails(
       terminalStatus || undefined,
       options.autoSuccess,
     );
+    if (retryWait) Object.assign(built, retryWait);
+    return built;
+  };
   const snapshot = (status: WorkflowRunDetailSnapshot["status"], completedAt?: number) =>
     buildSnapshot(status, completedAt, logs);
 
@@ -253,6 +273,10 @@ export function createLiveAgentRunDetails(
     update,
     snapshot,
     drain: () => queue,
+    setRetryWait: (wait) => {
+      retryWait = wait;
+      return update("running");
+    },
   };
 }
 
@@ -823,6 +847,7 @@ async function executeAgentNode(
   let terminalTranscript = "";
   const retries = agentRetryCount(node);
   const retryForever = agentRetryForever(node);
+  const retryDelaySeconds = agentRetryDelaySeconds(node);
   const retryPrompt = agentRetryPromptForLanguage(retryLanguage);
   const configuredSessionId = agentConfiguredSessionId(node);
   const sessionApp = node.providerKind === "claude-cli" ? "claude" : "codex";
@@ -857,6 +882,7 @@ async function executeAgentNode(
         codexSandbox: agentCodexSandbox(node),
         effort: agentEffort(node),
         alwaysEnter: agentAlwaysEnter(node),
+        keepRunningOnInterrupt: agentKeepRunningOnInterrupt(node),
         conversationSessionId,
         requestedConversationSessionId: configuredSessionId || undefined,
         resumeConversation: resumeConfiguredSession || attempt > 0,
@@ -894,7 +920,23 @@ async function executeAgentNode(
     retryReasons.push(terminalFailure.message);
     attempt += 1;
     currentPrompt = retryPrompt;
-    await sleep(1_000, abort.signal);
+    const retryAt = Date.now() + retryDelaySeconds * 1_000;
+    await details.setRetryWait({
+      retryAt,
+      retryAttempt: attempt,
+      retryReason: terminalFailure.message,
+    });
+    try {
+      await waitForAgentRetry(
+        workspace.path,
+        record.id,
+        node.id,
+        retryDelaySeconds,
+        abort.signal,
+      );
+    } finally {
+      await details.setRetryWait();
+    }
   }
   if (!result) throw new Error(`${node.title} did not start.`);
   if (terminalFailure?.failed) {
@@ -2869,8 +2911,18 @@ function agentRetryForever(node: WorkflowNode): boolean {
   return node.config?.retryForever === true;
 }
 
+function agentRetryDelaySeconds(node: WorkflowNode): number {
+  const value = node.config?.retryDelaySeconds;
+  if (typeof value !== "number" || !Number.isInteger(value)) return 1;
+  return clamp(value, 0, 86_400);
+}
+
 function agentAlwaysEnter(node: WorkflowNode): boolean {
   return node.config?.alwaysEnter === true;
+}
+
+function agentKeepRunningOnInterrupt(node: WorkflowNode): boolean {
+  return node.config?.keepRunningOnInterrupt === true;
 }
 
 function agentMode(node: WorkflowNode): AgentMode {
@@ -3268,6 +3320,49 @@ export async function resolveWorkflowInput(
   const pending = pendingWorkflowInputs.get(interactionKey(workspace.path, workflowId, nodeId));
   if (!pending) return false;
   pending.resolve(value);
+  return true;
+}
+
+function waitForAgentRetry(
+  workspaceRoot: string,
+  workflowId: string,
+  nodeId: string,
+  seconds: number,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (seconds <= 0) return Promise.resolve();
+  if (signal?.aborted) return Promise.reject(new Error("Stopped"));
+  const key = interactionKey(workspaceRoot, workflowId, nodeId);
+  return new Promise<void>((resolve, reject) => {
+    let timer: NodeJS.Timeout;
+    const dispose = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      if (pendingAgentRetries.get(key)?.dispose === dispose) pendingAgentRetries.delete(key);
+    };
+    const finish = () => {
+      dispose();
+      resolve();
+    };
+    const onAbort = () => {
+      dispose();
+      reject(new Error("Stopped"));
+    };
+    timer = setTimeout(finish, seconds * 1_000);
+    pendingAgentRetries.set(key, { resolve: finish, dispose });
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+export async function retryWorkflowNodeNow(
+  workspaceId: string,
+  workflowId: string,
+  nodeId: string,
+): Promise<boolean> {
+  const workspace = await resolveWorkspace(workspaceId);
+  const pending = pendingAgentRetries.get(interactionKey(workspace.path, workflowId, nodeId));
+  if (!pending) return false;
+  pending.resolve();
   return true;
 }
 

@@ -305,6 +305,16 @@ export const en = {
   "workflow.details.exit": "exit {code}",
   "workflow.details.loadFailed": "Unable to load run details: {detail}",
   "workflow.details.nodeMissing": "This workflow block no longer exists.",
+  "workflow.details.retryWaiting": "Retrying in {seconds}s",
+  "workflow.details.retryNow": "Retry now",
+  "workflow.details.retrying": "Retrying...",
+  "workflow.agent.retries": "Retries",
+  "workflow.agent.infiniteRetry": "Infinite retry",
+  "workflow.agent.retryDelay": "Retry wait (seconds)",
+  "workflow.agent.keepRunningOnInterrupt": "Keep running after user interruption",
+  "workflow.agent.keepRunningOnInterruptDescription":
+    "When Codex or Claude reports that the current turn was interrupted by the user, the block, workflow, and terminal session keep running for the next instruction.",
+  "workflow.warning": "Warning",
   "workflow.observability.title": "Run observability",
   "workflow.observability.export": "Export",
   "workflow.observability.exportTitle": "Export run report",
@@ -404,6 +414,16 @@ export type MessageKey = keyof typeof en;
 export type MessageParams = Record<string, string | number>;
 
 export const zhCN: Record<MessageKey, string> = {
+  "workflow.details.retryWaiting": "将在 {seconds} 秒后重试",
+  "workflow.details.retryNow": "立即重试",
+  "workflow.details.retrying": "正在重试...",
+  "workflow.agent.retries": "重试次数",
+  "workflow.agent.infiniteRetry": "无限重试",
+  "workflow.agent.retryDelay": "重试等待时间（秒）",
+  "workflow.agent.keepRunningOnInterrupt": "用户中断时保持运行",
+  "workflow.agent.keepRunningOnInterruptDescription":
+    "当 Codex 或 Claude 报告当前轮对话被用户中断时，当前块、工作流和终端会话保持运行，可继续输入下一条指令。",
+  "workflow.warning": "警告",
   "workflow.details.title": "运行详情",
   "workflow.details.see": "查看详情",
   "workflow.details.waitingForChoice": "等待选择",

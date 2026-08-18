@@ -358,6 +358,7 @@ export async function registerAiRoutes(app: FastifyInstance) {
       codexSandbox?: CodexSandbox;
       effort?: AgentEffort;
       alwaysEnter?: boolean;
+      keepRunningOnInterrupt?: boolean;
       conversationSessionId?: string;
       requestedConversationSessionId?: string;
       resumeConversation?: boolean;
@@ -414,6 +415,7 @@ export async function registerAiRoutes(app: FastifyInstance) {
         codexSandbox: parseCodexSandbox(req.body?.codexSandbox),
         effort: parseAgentEffort(req.body?.effort),
         alwaysEnter: req.body?.alwaysEnter === true,
+        keepRunningOnInterrupt: req.body?.keepRunningOnInterrupt === true,
         conversationSessionId:
           typeof req.body?.conversationSessionId === "string"
             ? req.body.conversationSessionId
