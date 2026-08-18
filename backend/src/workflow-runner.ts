@@ -460,6 +460,33 @@ export async function scheduleWorkflowNodes(
   execute: (nodeId: string) => Promise<unknown>,
 ): Promise<void> {
   const scheduledNodeIds = [...new Set(nodeIds)];
+  const selected = new Set(scheduledNodeIds);
+  const selectedEdges = edges.filter((edge) => selected.has(edge.from) && selected.has(edge.to));
+  const backEdgeIds = findWorkflowBackEdgeIds(selectedEdges);
+  const forwardEdges = selectedEdges.filter((edge) => !backEdgeIds.has(edge.id));
+  let passNodeIds = scheduledNodeIds;
+
+  while (passNodeIds.length > 0) {
+    const loopTargets = await scheduleWorkflowNodePass(
+      passNodeIds,
+      forwardEdges,
+      selectedEdges.filter((edge) => backEdgeIds.has(edge.id)),
+      maxParallel,
+      execute,
+    );
+    if (loopTargets.size === 0) return;
+    passNodeIds = reachableWorkflowNodeIds(loopTargets, forwardEdges, scheduledNodeIds);
+  }
+}
+
+async function scheduleWorkflowNodePass(
+  nodeIds: string[],
+  forwardEdges: WorkflowEdge[],
+  backEdges: WorkflowEdge[],
+  maxParallel: number,
+  execute: (nodeId: string) => Promise<unknown>,
+): Promise<Set<string>> {
+  const scheduledNodeIds = [...new Set(nodeIds)];
   const order = new Map(scheduledNodeIds.map((id, index) => [id, index]));
   const selected = new Set(scheduledNodeIds);
   const dependencies = new Map<string, Set<string>>();
@@ -472,7 +499,7 @@ export async function scheduleWorkflowNodes(
     incomingCount.set(id, 0);
     activeIncoming.set(id, 0);
   }
-  for (const edge of edges) {
+  for (const edge of forwardEdges) {
     if (!selected.has(edge.from) || !selected.has(edge.to)) continue;
     dependencies.get(edge.to)?.add(edge.from);
     outgoing.get(edge.from)?.push(edge);
@@ -490,6 +517,7 @@ export async function scheduleWorkflowNodes(
   const limit = Math.max(1, Math.min(32, Math.floor(maxParallel) || 1));
   let failed = false;
   let firstError: unknown;
+  const loopTargets = new Set<string>();
 
   const startReady = () => {
     ready.sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0));
@@ -520,6 +548,14 @@ export async function scheduleWorkflowNodes(
       continue;
     }
     completed.add(result.nodeId);
+    for (const edge of backEdges) {
+      if (edge.from !== result.nodeId || !selected.has(edge.from)) continue;
+      const matches =
+        !edge.sourceHandle ||
+        !result.sourceHandle ||
+        edge.sourceHandle === result.sourceHandle;
+      if (matches) loopTargets.add(edge.to);
+    }
     const propagation: Array<{ nodeId: string; sourceHandle?: string; skipped?: boolean }> = [
       { nodeId: result.nodeId, sourceHandle: result.sourceHandle },
     ];
@@ -552,6 +588,31 @@ export async function scheduleWorkflowNodes(
   }
   await Promise.all(running.values());
   if (failed) throw firstError;
+  return loopTargets;
+}
+
+function reachableWorkflowNodeIds(
+  roots: ReadonlySet<string>,
+  edges: readonly WorkflowEdge[],
+  orderedNodeIds: readonly string[],
+): string[] {
+  const selected = new Set(orderedNodeIds);
+  const outgoing = new Map<string, string[]>();
+  for (const edge of edges) {
+    if (!selected.has(edge.from) || !selected.has(edge.to)) continue;
+    const targets = outgoing.get(edge.from) ?? [];
+    targets.push(edge.to);
+    outgoing.set(edge.from, targets);
+  }
+  const reachable = new Set<string>();
+  const pending = [...roots].filter((id) => selected.has(id));
+  while (pending.length > 0) {
+    const id = pending.pop()!;
+    if (reachable.has(id)) continue;
+    reachable.add(id);
+    pending.push(...(outgoing.get(id) ?? []));
+  }
+  return orderedNodeIds.filter((id) => reachable.has(id));
 }
 
 async function runWorkflowInBackground(
@@ -1705,8 +1766,15 @@ function topoOrder(
     indegree.set(node.id, 0);
     outgoing.set(node.id, []);
   }
-  for (const edge of record.edges) {
-    if (!nodeIds.has(edge.from) || !nodeIds.has(edge.to)) continue;
+  const selectedEdges = record.edges.filter(
+    (edge) => nodeIds.has(edge.from) && nodeIds.has(edge.to),
+  );
+  if (hasClosedWorkflowCycle(nodeIds, selectedEdges)) {
+    return { nodeIds: [], error: "Workflow has a cycle without an exit." };
+  }
+  const backEdgeIds = findWorkflowBackEdgeIds(selectedEdges);
+  for (const edge of selectedEdges) {
+    if (backEdgeIds.has(edge.id)) continue;
     indegree.set(edge.to, (indegree.get(edge.to) ?? 0) + 1);
     outgoing.get(edge.from)?.push(edge.to);
   }
@@ -1727,6 +1795,90 @@ function topoOrder(
     return { nodeIds: [], error: "Workflow has a cycle." };
   }
   return { nodeIds: ordered };
+}
+
+function findWorkflowBackEdgeIds(edges: readonly WorkflowEdge[]): Set<string> {
+  const forward = new Map<string, string[]>();
+  const backEdgeIds = new Set<string>();
+  for (const edge of edges) {
+    if (edge.from === edge.to || canReachWorkflowNode(edge.to, edge.from, forward)) {
+      backEdgeIds.add(edge.id);
+      continue;
+    }
+    const targets = forward.get(edge.from) ?? [];
+    targets.push(edge.to);
+    forward.set(edge.from, targets);
+  }
+  return backEdgeIds;
+}
+
+function canReachWorkflowNode(
+  from: string,
+  target: string,
+  adjacency: ReadonlyMap<string, string[]>,
+): boolean {
+  const pending = [from];
+  const seen = new Set<string>();
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    if (current === target) return true;
+    if (seen.has(current)) continue;
+    seen.add(current);
+    pending.push(...(adjacency.get(current) ?? []));
+  }
+  return false;
+}
+
+function hasClosedWorkflowCycle(
+  nodeIds: ReadonlySet<string>,
+  edges: readonly WorkflowEdge[],
+): boolean {
+  const outgoing = new Map<string, string[]>();
+  for (const id of nodeIds) outgoing.set(id, []);
+  for (const edge of edges) outgoing.get(edge.from)?.push(edge.to);
+
+  let nextIndex = 0;
+  const indexes = new Map<string, number>();
+  const lowLinks = new Map<string, number>();
+  const stack: string[] = [];
+  const onStack = new Set<string>();
+  let closedCycle = false;
+
+  const visit = (id: string) => {
+    indexes.set(id, nextIndex);
+    lowLinks.set(id, nextIndex);
+    nextIndex += 1;
+    stack.push(id);
+    onStack.add(id);
+    for (const target of outgoing.get(id) ?? []) {
+      if (!indexes.has(target)) {
+        visit(target);
+        lowLinks.set(id, Math.min(lowLinks.get(id)!, lowLinks.get(target)!));
+      } else if (onStack.has(target)) {
+        lowLinks.set(id, Math.min(lowLinks.get(id)!, indexes.get(target)!));
+      }
+    }
+    if (lowLinks.get(id) !== indexes.get(id)) return;
+    const component = new Set<string>();
+    while (stack.length > 0) {
+      const member = stack.pop()!;
+      onStack.delete(member);
+      component.add(member);
+      if (member === id) break;
+    }
+    const cyclic =
+      component.size > 1 || edges.some((edge) => edge.from === id && edge.to === id);
+    if (!cyclic) return;
+    const hasExit = edges.some(
+      (edge) => component.has(edge.from) && !component.has(edge.to),
+    );
+    if (!hasExit) closedCycle = true;
+  };
+
+  for (const id of nodeIds) {
+    if (!indexes.has(id)) visit(id);
+  }
+  return closedCycle;
 }
 
 async function patchWorkflowNode(

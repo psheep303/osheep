@@ -2522,23 +2522,27 @@
 
 .workflow-input-dialog__control {
   display: flex;
+  align-items: flex-end;
   gap: 8px;
 }
 
-.workflow-input-dialog__control input {
+.workflow-input-dialog__control textarea {
   flex: 1;
   min-width: 0;
-  height: 32px;
+  min-height: 84px;
+  max-height: min(40vh, 320px);
   padding: 6px 8px;
   border: 1px solid var(--wf-border);
   border-radius: var(--radius-md);
   background: rgba(9, 9, 11, 0.72);
   color: var(--wf-text);
   font: 12px var(--wf-font-mono);
+  line-height: 1.5;
   outline: none;
+  resize: vertical;
 }
 
-.workflow-input-dialog__control input:focus {
+.workflow-input-dialog__control textarea:focus {
   border-color: rgba(96, 165, 250, 0.7);
   box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.12);
 }
@@ -2560,7 +2564,7 @@
 }
 
 .workflow-input-dialog__control button:disabled,
-.workflow-input-dialog__control input:disabled {
+.workflow-input-dialog__control textarea:disabled {
   cursor: not-allowed;
   opacity: 0.55;
 }

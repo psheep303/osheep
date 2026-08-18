@@ -4855,13 +4855,24 @@ function WorkflowInputDialog({
   onSubmit: (value: string) => Promise<void>;
   onError: (message: string) => void;
 }) {
-  const inputRef = useRef<HTMLInputElement | null>(null);
+  const { t } = useUiPreferences();
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const [value, setValue] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
     inputRef.current?.focus();
   }, []);
+
+  const submit = () => {
+    if (submitting) return;
+    setSubmitting(true);
+    void onSubmit(value).catch((error) => {
+      setSubmitting(false);
+      onError((error as Error).message);
+      inputRef.current?.focus();
+    });
+  };
 
   return (
     <div
@@ -4870,24 +4881,12 @@ function WorkflowInputDialog({
       aria-modal="true"
       aria-labelledby="workflow-input-dialog-title"
     >
-      <form
-        className="workflow-input-dialog__panel"
-        onSubmit={(event) => {
-          event.preventDefault();
-          if (submitting) return;
-          setSubmitting(true);
-          void onSubmit(value).catch((error) => {
-            setSubmitting(false);
-            onError((error as Error).message);
-            inputRef.current?.focus();
-          });
-        }}
-      >
+      <div className="workflow-input-dialog__panel">
         <label id="workflow-input-dialog-title" htmlFor="workflow-runtime-input">
           {title}
         </label>
         <div className="workflow-input-dialog__control">
-          <input
+          <textarea
             ref={inputRef}
             id="workflow-runtime-input"
             value={value}
@@ -4896,11 +4895,11 @@ function WorkflowInputDialog({
             autoComplete="off"
             spellCheck={false}
           />
-          <button type="submit" disabled={submitting}>
-            Submit
+          <button type="button" disabled={submitting} onClick={submit}>
+            {t("workflow.input.submit")}
           </button>
         </div>
-      </form>
+      </div>
     </div>
   );
 }

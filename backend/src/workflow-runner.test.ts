@@ -97,6 +97,55 @@ test("workflow templates resolve existing block output values", () => {
   assert.equal(resolveWorkflowTemplate("{{blocks[2].data.items[0]}}", record), "first");
 });
 
+test("workflow run planning allows a cycle that has an exit", () => {
+  const record = workflowRecord([
+    workflowNode("trigger", "trigger", "Workflow run"),
+    workflowNode("body", "agent", "Codex"),
+    workflowNode("condition", "if", "Condition"),
+    workflowNode("exit", "set", "Exit"),
+  ]);
+  record.edges = [
+    { id: "trigger-body", from: "trigger", to: "body", passSummary: true },
+    { id: "body-condition", from: "body", to: "condition", passSummary: true },
+    {
+      id: "condition-loop",
+      from: "condition",
+      to: "body",
+      sourceHandle: "true",
+      passSummary: true,
+    },
+    {
+      id: "condition-exit",
+      from: "condition",
+      to: "exit",
+      sourceHandle: "false",
+      passSummary: true,
+    },
+  ];
+
+  assert.deepEqual(planWorkflowRunNodeIds(record), {
+    nodeIds: ["trigger", "body", "condition", "exit"],
+  });
+});
+
+test("workflow run planning rejects a cycle without an exit", () => {
+  const record = workflowRecord([
+    workflowNode("trigger", "trigger", "Workflow run"),
+    workflowNode("first", "set", "First"),
+    workflowNode("second", "set", "Second"),
+  ]);
+  record.edges = [
+    { id: "trigger-first", from: "trigger", to: "first", passSummary: true },
+    { id: "first-second", from: "first", to: "second", passSummary: true },
+    { id: "second-first", from: "second", to: "first", passSummary: true },
+  ];
+
+  assert.deepEqual(planWorkflowRunNodeIds(record), {
+    nodeIds: [],
+    error: "Workflow has a cycle without an exit.",
+  });
+});
+
 test("workflow templates resolve environment variables and JSON paths", () => {
   const variable = {
     ...workflowNode("node_variable", "variable", "Environment variable"),
@@ -382,6 +431,50 @@ test("workflow scheduler follows only the matching conditional output", async ()
     },
   );
   assert.deepEqual(executed, ["if", "false-node"]);
+});
+
+test("workflow scheduler repeats a loop body until its exit is selected", async () => {
+  const executed: string[] = [];
+  let conditionRuns = 0;
+  await scheduleWorkflowNodes(
+    ["trigger", "body", "condition", "exit"],
+    [
+      { id: "trigger-body", from: "trigger", to: "body", passSummary: true },
+      { id: "body-condition", from: "body", to: "condition", passSummary: true },
+      {
+        id: "condition-loop",
+        from: "condition",
+        to: "body",
+        sourceHandle: "true",
+        passSummary: true,
+      },
+      {
+        id: "condition-exit",
+        from: "condition",
+        to: "exit",
+        sourceHandle: "false",
+        passSummary: true,
+      },
+    ],
+    2,
+    async (nodeId) => {
+      executed.push(nodeId);
+      if (nodeId !== "condition") return undefined;
+      conditionRuns += 1;
+      return conditionRuns < 3 ? "true" : "false";
+    },
+  );
+
+  assert.deepEqual(executed, [
+    "trigger",
+    "body",
+    "condition",
+    "body",
+    "condition",
+    "body",
+    "condition",
+    "exit",
+  ]);
 });
 
 test("workflow scheduler rejoins after an unselected branch without duplicating the join", async () => {
