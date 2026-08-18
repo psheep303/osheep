@@ -943,7 +943,7 @@ export function Workbench() {
         )}
         <Resizer axis="x" onResizeStart={onLeftStart} onResize={onLeftResize} />
 
-        <div className="main">
+        <div className="workbench-main">
           <div className="editor-area">
             <div className="tabs">
               <div className="tabs__list">
