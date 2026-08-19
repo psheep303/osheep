@@ -10,6 +10,10 @@ type BottomTab = "terminal" | "log" | "docs";
 interface BottomPanelProps {
   workspaceId: string | null;
   docsRefreshSignal?: number;
+  editorFontSize?: number;
+  editorTabSize?: number;
+  editorAutoSave?: boolean;
+  onDocsChanged?: () => void;
   onClose: () => void;
   terminalLaunchRequest?: AgentTerminalLaunchRequest | null;
   onTerminalLaunchHandled?: (key: number) => void;
@@ -19,6 +23,10 @@ interface BottomPanelProps {
 export function BottomPanel({
   workspaceId,
   docsRefreshSignal = 0,
+  editorFontSize = 14,
+  editorTabSize = 2,
+  editorAutoSave = false,
+  onDocsChanged,
   onClose,
   terminalLaunchRequest = null,
   onTerminalLaunchHandled,
@@ -85,7 +93,14 @@ export function BottomPanel({
             </div>
           )}
           {tab === "docs" && (
-            <PlanView workspaceId={workspaceId} refreshSignal={docsRefreshSignal} />
+            <PlanView
+              workspaceId={workspaceId}
+              refreshSignal={docsRefreshSignal}
+              editorFontSize={editorFontSize}
+              editorTabSize={editorTabSize}
+              autoSave={editorAutoSave}
+              onDocsChanged={onDocsChanged}
+            />
           )}
         </Suspense>
       </div>

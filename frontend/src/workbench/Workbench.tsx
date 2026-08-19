@@ -1127,6 +1127,10 @@ export function Workbench() {
                 <BottomPanel
                   workspaceId={workspaceId}
                   docsRefreshSignal={fileTreeVersion}
+                  editorFontSize={settings.editor.fontSize}
+                  editorTabSize={settings.editor.tabSize}
+                  editorAutoSave={settings.editor.autoSave}
+                  onDocsChanged={bumpFileTree}
                   onClose={hardCloseBottom}
                   terminalLaunchRequest={terminalLaunchRequest}
                   onTerminalLaunchHandled={handleTerminalLaunch}
