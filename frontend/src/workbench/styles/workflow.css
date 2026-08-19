@@ -2034,11 +2034,13 @@
 .workflow-run-details__xterm-host {
   flex: 1 1 auto;
   min-height: 0;
-  padding: 8px;
+  padding: 0;
+  overflow: hidden;
 }
 
 .workflow-run-details__xterm-host .xterm {
   height: 100%;
+  padding: 8px;
 }
 
 .workflow-run-details__xterm-host .xterm-viewport {

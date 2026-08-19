@@ -77,6 +77,10 @@ import { useOsheepOverlay } from "./OsheepOverlay";
 import { cleanAgentTerminalConversation } from "./terminal-conversation";
 import { createShiftEnterInput, isShiftEnterEvent } from "./terminal-keyboard";
 import {
+  createTerminalUserInputGate,
+  workflowAgentTerminalDimensions,
+} from "./terminal-layout";
+import {
   compactSupersededClaudeStartup,
   createTerminalReplayGuard,
   createTerminalWriteBatcher,
@@ -4622,11 +4626,12 @@ function WorkflowAgentTerminalInner({
     termRef.current = term;
     fitRef.current = fit;
     const fitToUsableDimensions = () => {
-      const dimensions = fit.proposeDimensions();
-      if (!dimensions || dimensions.cols < 20 || dimensions.rows < 4) return null;
+      const dimensions = workflowAgentTerminalDimensions(fit.proposeDimensions());
+      if (!dimensions) return null;
       if (term.cols !== dimensions.cols || term.rows !== dimensions.rows) {
         term.resize(dimensions.cols, dimensions.rows);
       }
+      term.scrollToBottom();
       return dimensions;
     };
     try {
@@ -4668,6 +4673,12 @@ function WorkflowAgentTerminalInner({
     let replayChunks: string[] = [];
     const outputWriter = createTerminalWriteBatcher((data) => term.write(data));
     const replayGuard = createTerminalReplayGuard((data, callback) => term.write(data, callback));
+    const userInputGate = createTerminalUserInputGate();
+    const keyInputSub = term.onKey(({ key }) => userInputGate.markKey(key));
+    const markPastedInput = () => userInputGate.markNextData();
+    const markComposedInput = () => userInputGate.markNextData();
+    hostRef.current.addEventListener("paste", markPastedInput, true);
+    hostRef.current.addEventListener("compositionend", markComposedInput, true);
     shiftEnterSenderRef.current = (data) => {
       // A deliberate user key must never be dropped by replay settling. The
       // normal onData path remains guarded, but Shift+Enter can be sent as
@@ -4679,13 +4690,11 @@ function WorkflowAgentTerminalInner({
     const drainReplayOutput = (initial: string, onDrained: () => void) => {
       const pending = initial + replayOutput.join("");
       replayOutput = [];
-      replayGuard.write(pending, () => {
-        if (replayOutput.length > 0) {
-          drainReplayOutput("", onDrained);
-          return;
-        }
-        onDrained();
-      });
+      // xterm preserves write order internally. Switch to live delivery before
+      // parsing this final batch so a continuously refreshing TUI cannot keep
+      // the terminal in replay mode forever.
+      replayReady = true;
+      replayGuard.write(pending, onDrained);
     };
     const finishStartupRedraw = (preserveTransition: boolean) => {
       if (!awaitingStartupRedraw) return false;
@@ -4808,14 +4817,7 @@ function WorkflowAgentTerminalInner({
               );
               return;
             }
-            const pending = replayOutput.join("");
-            replayOutput = [];
-            replayGuard.write(pending, () => {
-              if (replayOutput.length > 0) {
-                finishReplay();
-                return;
-              }
-              replayReady = true;
+            drainReplayOutput("", () => {
               try {
                 fitToUsableDimensions();
                 if (ws.readyState === WebSocket.OPEN) {
@@ -4869,7 +4871,11 @@ function WorkflowAgentTerminalInner({
     };
 
     const inputSub = term.onData((data) => {
-      if (replayReady && replayGuard.acceptsInput() && ws.readyState === WebSocket.OPEN) {
+      const userInitiated = userInputGate.accept(data);
+      if (
+        ((replayReady && replayGuard.acceptsInput()) || userInitiated) &&
+        ws.readyState === WebSocket.OPEN
+      ) {
         ws.send(JSON.stringify({ type: "input", data }));
       }
     });
@@ -4902,6 +4908,9 @@ function WorkflowAgentTerminalInner({
       shiftEnterSenderRef.current = null;
       if (resizeTimer) clearTimeout(resizeTimer);
       if (startupRedrawFallbackTimer) clearTimeout(startupRedrawFallbackTimer);
+      hostRef.current?.removeEventListener("paste", markPastedInput, true);
+      hostRef.current?.removeEventListener("compositionend", markComposedInput, true);
+      keyInputSub.dispose();
       inputSub.dispose();
       outputWriter.dispose();
       ws.close();
