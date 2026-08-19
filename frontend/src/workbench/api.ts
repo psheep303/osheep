@@ -1215,6 +1215,8 @@ export interface WorkflowRun {
   error?: string;
   trace?: WorkflowRunTrace[];
   stats?: WorkflowRunStats;
+  resumable?: boolean;
+  resumeFingerprint?: string;
 }
 
 export interface WorkflowRunTrace {
@@ -1328,11 +1330,20 @@ export async function runWorkflow(
   workflowId: string,
   language: "zh-CN" | "en",
   nodeIds?: string[],
+  resume = false,
 ): Promise<{ runId: string; workflow: WorkflowRecord }> {
   return await http.post(workflowsUrl(workspaceId, `/${encodeURIComponent(workflowId)}/run`), {
     nodeIds,
     language,
+    resume,
   });
+}
+
+export async function pauseWorkflow(
+  workspaceId: string,
+  workflowId: string,
+): Promise<{ ok: boolean; paused: boolean }> {
+  return await http.post(workflowsUrl(workspaceId, `/${encodeURIComponent(workflowId)}/pause`));
 }
 
 export async function stopWorkflow(

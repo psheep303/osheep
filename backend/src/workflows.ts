@@ -77,6 +77,8 @@ export interface WorkflowRun {
   error?: string;
   trace?: WorkflowRunTrace[];
   stats?: WorkflowRunStats;
+  resumable?: boolean;
+  resumeFingerprint?: string;
 }
 
 export interface WorkflowRunTrace {
@@ -328,6 +330,10 @@ function sanitizeRun(raw: unknown): WorkflowRun | null {
       .slice(-500);
   }
   if ((r as any).stats && typeof (r as any).stats === "object") run.stats = (r as any).stats;
+  if ((r as any).resumable === true) run.resumable = true;
+  if (typeof (r as any).resumeFingerprint === "string") {
+    run.resumeFingerprint = (r as any).resumeFingerprint;
+  }
   return run;
 }
 

@@ -3,8 +3,10 @@ import test from "node:test";
 import {
   agentRetryPromptForLanguage,
   appendAgentAttemptTranscriptForTest,
+  canResumeWorkflowRun,
   classifyAgentTerminalResultFailure,
   createLiveAgentRunDetails,
+  interruptWorkflowRunRecord,
   parseWorkflowUsage,
   planWorkflowRunNodeIds,
   resolveWorkflowTemplate,
@@ -12,6 +14,8 @@ import {
   scheduleWorkflowNodes,
   shouldRetryAgentTerminalFailure,
   type WorkflowRunDetailSnapshot,
+  workflowRunCheckpoints,
+  workflowStopDisposition,
 } from "./workflow-runner.js";
 import type { WorkflowNode, WorkflowRecord } from "./workflows.js";
 
@@ -95,6 +99,135 @@ test("workflow templates resolve existing block output values", () => {
 
   assert.equal(resolveWorkflowTemplate("Say {{blocks[2].text}}", record), "Say hello");
   assert.equal(resolveWorkflowTemplate("{{blocks[2].data.items[0]}}", record), "first");
+});
+
+test("interrupted workflow keeps completed checkpoints and resets the active agent", () => {
+  const completed = {
+    ...workflowNode("node_completed", "set", "Completed"),
+    status: "success" as const,
+    rawOutput: JSON.stringify({ type: "set", value: 1 }),
+    completedAt: 20,
+  };
+  const active = {
+    ...workflowNode("node_active", "agent", "Codex"),
+    status: "running" as const,
+    rawOutput: "partial output",
+    summary: "partial output",
+    startedAt: 30,
+    config: { runDetails: { status: "running" }, retries: 2 },
+  };
+  const record = workflowRecord([completed, active]);
+  record.runs = [
+    {
+      id: "run_interrupted",
+      status: "running",
+      startedAt: 10,
+      nodeIds: [completed.id, active.id],
+      trace: [
+        {
+          nodeId: completed.id,
+          title: completed.title,
+          kind: "set",
+          status: "success",
+          startedAt: 10,
+          completedAt: 20,
+          output: { type: "set", value: 1 },
+        },
+        {
+          nodeId: active.id,
+          title: active.title,
+          kind: "agent",
+          status: "running",
+          startedAt: 30,
+        },
+      ],
+    },
+  ];
+
+  const interrupted = interruptWorkflowRunRecord(record, 50);
+  const run = interrupted.runs[0]!;
+  const resetAgent = interrupted.nodes.find((node) => node.id === active.id)!;
+
+  assert.equal(run.status, "stopped");
+  assert.equal(run.resumable, true);
+  assert.match(run.resumeFingerprint ?? "", /^[a-f0-9]{64}$/);
+  assert.equal(run.completedAt, 50);
+  assert.equal(run.trace?.[0]?.status, "success");
+  assert.equal(run.trace?.[1]?.status, "stopped");
+  assert.equal(resetAgent.status, "idle");
+  assert.equal(resetAgent.rawOutput, "");
+  assert.deepEqual(resetAgent.config, { retries: 2 });
+  assert.equal(interrupted.nodes[0]?.status, "success");
+  assert.equal(canResumeWorkflowRun(interrupted, run, run.nodeIds), true);
+  assert.equal(
+    canResumeWorkflowRun(
+      {
+        ...interrupted,
+        nodes: interrupted.nodes.map((node) =>
+          node.id === active.id ? { ...node, prompt: "changed prompt" } : node,
+        ),
+      },
+      run,
+      run.nodeIds,
+    ),
+    false,
+  );
+});
+
+test("workflow checkpoints preserve every successful loop pass in order", () => {
+  const run = {
+    id: "run_loop",
+    status: "stopped" as const,
+    startedAt: 1,
+    nodeIds: ["node_condition"],
+    trace: [
+      {
+        nodeId: "node_condition",
+        title: "Condition",
+        kind: "if" as const,
+        status: "success" as const,
+        startedAt: 2,
+        output: { result: true },
+      },
+      {
+        nodeId: "node_condition",
+        title: "Condition",
+        kind: "if" as const,
+        status: "success" as const,
+        startedAt: 3,
+        output: { result: false },
+      },
+      {
+        nodeId: "node_condition",
+        title: "Condition",
+        kind: "if" as const,
+        status: "stopped" as const,
+        startedAt: 4,
+      },
+    ],
+  };
+
+  assert.deepEqual(
+    workflowRunCheckpoints(run)
+      .get("node_condition")
+      ?.map((trace) => trace.output),
+    [{ result: true }, { result: false }],
+  );
+});
+
+test("pause remains resumable when an agent reports an abort error", () => {
+  assert.deepEqual(workflowStopDisposition(true, true, true, "The operation was aborted."), {
+    stopped: true,
+    resumable: true,
+  });
+  assert.deepEqual(workflowStopDisposition(false, true, true, "The operation was aborted."), {
+    stopped: false,
+    resumable: false,
+  });
+  assert.deepEqual(workflowStopDisposition(false, true, false, "Stopped"), {
+    stopped: true,
+    resumable: false,
+  });
 });
 
 test("workflow run planning allows a cycle that has an exit", () => {

@@ -48,6 +48,7 @@ import {
   openTerminalSocket,
   openWorkflowRuntimeSocket,
   pauseAiTerminal,
+  pauseWorkflow as apiPauseWorkflow,
   type RemoteMcpTool,
   type RunResult,
   readFile,
@@ -2151,8 +2152,11 @@ export function WorkflowTab({
   };
 
   const stopRun = () => {
-    abortRef.current?.abort();
     void stopBackendRun();
+  };
+
+  const pauseRun = () => {
+    void pauseBackendRun();
   };
 
   const runSelected = async () => {
@@ -2164,10 +2168,16 @@ export function WorkflowTab({
   const runWorkflow = async () => {
     if (!workflow || placingNodeIdRef.current) return;
     prepareWorkflowAlertSound();
-    await startBackendRun();
+    await startBackendRun(undefined, false);
   };
 
-  const startBackendRun = async (nodeIds?: string[]) => {
+  const resumeWorkflow = async () => {
+    if (!workflow || placingNodeIdRef.current) return;
+    prepareWorkflowAlertSound();
+    await startBackendRun(undefined, true);
+  };
+
+  const startBackendRun = async (nodeIds?: string[], resume = false) => {
     const current = workflowRef.current;
     if (!current || running || placingNodeIdRef.current) return;
     await flushPendingSave();
@@ -2178,7 +2188,13 @@ export function WorkflowTab({
     setError(null);
     const runtimeEventSeq = workflowRuntimeEventSeqRef.current;
     try {
-      const result = await apiRunWorkflow(workspaceId, current.id, resolvedLanguage, nodeIds);
+      const result = await apiRunWorkflow(
+        workspaceId,
+        current.id,
+        resolvedLanguage,
+        nodeIds,
+        resume,
+      );
       if (workflowRuntimeEventSeqRef.current === runtimeEventSeq) {
         const next = applyNodePositions(result.workflow, runtimeLayoutRef.current);
         workflowRef.current = next;
@@ -2195,6 +2211,16 @@ export function WorkflowTab({
     if (!workflowRef.current) return;
     try {
       await apiStopWorkflow(workspaceId, workflowRef.current.id);
+      onWorkflowChanged();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  const pauseBackendRun = async () => {
+    if (!workflowRef.current) return;
+    try {
+      await apiPauseWorkflow(workspaceId, workflowRef.current.id);
       onWorkflowChanged();
     } catch (e) {
       setError((e as Error).message);
@@ -2631,6 +2657,9 @@ export function WorkflowTab({
   );
   const canUndo = historyTick >= 0 && undoStackRef.current.length > 0;
   const canRedo = historyTick >= 0 && redoStackRef.current.length > 0;
+  const resumableRun = workflow.runs[workflow.runs.length - 1];
+  const hasCheckpoint =
+    !running && resumableRun?.status === "stopped" && resumableRun.resumable === true;
   const toolbarStatus = saving ? "saving" : running ? "running" : "saved";
   const copyNodeMenuItem = menuNode
     ? {
@@ -2840,18 +2869,28 @@ export function WorkflowTab({
           <button
             className="workflow-toolbar__btn workflow-toolbar__btn--icon"
             onClick={() => void runSelected()}
-            disabled={running || !selectedNode}
+            disabled={running || hasCheckpoint || !selectedNode}
             title="Run selected block"
             aria-label="Run block"
           >
             <IconPlay />
           </button>
+          {(running || hasCheckpoint) && (
+            <button
+              className={`workflow-toolbar__btn workflow-toolbar__btn--icon${hasCheckpoint ? " is-primary" : ""}`}
+              onClick={hasCheckpoint ? () => void resumeWorkflow() : pauseRun}
+              title={hasCheckpoint ? "断点续跑" : "创建断点并暂停"}
+              aria-label={hasCheckpoint ? "Resume workflow from checkpoint" : "Pause at checkpoint"}
+            >
+              {hasCheckpoint ? <IconResume /> : <IconPause />}
+            </button>
+          )}
           {running ? (
             <button
               className="workflow-toolbar__btn workflow-toolbar__btn--icon is-danger"
               onClick={stopRun}
-              title="停止"
-              aria-label="Stop"
+              title="终止整个工作流"
+              aria-label="Stop workflow"
             >
               <IconStop />
             </button>
@@ -2859,8 +2898,8 @@ export function WorkflowTab({
             <button
               className="workflow-toolbar__btn workflow-toolbar__btn--icon is-primary"
               onClick={() => void runWorkflow()}
-              title="Run workflow"
-              aria-label="Run workflow"
+              title={hasCheckpoint ? "从头开始运行工作流" : "运行工作流"}
+              aria-label={hasCheckpoint ? "Restart workflow from beginning" : "Run workflow"}
             >
               <IconPlay solid />
             </button>
@@ -3621,6 +3660,24 @@ function IconStop() {
   return (
     <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden>
       <rect x="7.5" y="7.5" width="9" height="9" rx="1.5" />
+    </svg>
+  );
+}
+
+function IconPause() {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden>
+      <rect x="7" y="6.5" width="3.5" height="11" rx="0.8" />
+      <rect x="13.5" y="6.5" width="3.5" height="11" rx="0.8" />
+    </svg>
+  );
+}
+
+function IconResume() {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden>
+      <rect x="5.5" y="6.5" width="2.5" height="11" rx="0.7" />
+      <path d="m10.5 7.2 8 4.8-8 4.8V7.2z" />
     </svg>
   );
 }

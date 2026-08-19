@@ -55,6 +55,168 @@ test("workflow GET routes support ETag revalidation", async () => {
   }
 });
 
+test("workflow listing recovers a run left active by a terminated backend", async () => {
+  const workspacesRoot = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-workflow-resume-"));
+  const workspaceRoot = path.join(workspacesRoot, "demo");
+  const previousWorkspacesRoot = config.workspacesRoot;
+  const app = Fastify();
+
+  try {
+    config.workspacesRoot = workspacesRoot;
+    await fs.mkdir(workspaceRoot);
+    const created = await createWorkflow(workspaceRoot, { title: "Interrupted workflow" });
+    const [completed, active] = created.nodes;
+    assert.ok(completed && active);
+    await saveWorkflow(workspaceRoot, {
+      ...created,
+      nodes: [
+        {
+          ...completed,
+          status: "success",
+          rawOutput: JSON.stringify({ text: "checkpoint" }),
+          completedAt: 20,
+        },
+        {
+          ...active,
+          status: "running",
+          rawOutput: "partial agent output",
+          startedAt: 30,
+        },
+      ],
+      runs: [
+        {
+          id: "run_interrupted",
+          status: "running",
+          startedAt: 10,
+          nodeIds: [completed.id, active.id],
+          trace: [
+            {
+              nodeId: completed.id,
+              title: completed.title,
+              kind: completed.kind,
+              status: "success",
+              startedAt: 10,
+              completedAt: 20,
+              output: { text: "checkpoint" },
+            },
+            {
+              nodeId: active.id,
+              title: active.title,
+              kind: active.kind,
+              status: "running",
+              startedAt: 30,
+            },
+          ],
+        },
+      ],
+    });
+    await registerWorkflowRoutes(app);
+
+    const response = await app.inject({ method: "GET", url: "/api/workspaces/demo/workflows" });
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.json().workflows[0]?.status, "stopped");
+
+    const recovered = await getWorkflow(workspaceRoot, created.id);
+    assert.equal(recovered.runs[0]?.resumable, true);
+    assert.equal(recovered.nodes[0]?.status, "success");
+    assert.equal(recovered.nodes[1]?.status, "idle");
+    assert.equal(recovered.nodes[1]?.rawOutput, "");
+  } finally {
+    config.workspacesRoot = previousWorkspacesRoot;
+    await app.close();
+    await fs.rm(workspacesRoot, { recursive: true, force: true });
+  }
+});
+
+test("workflow pause resumes the same run while stop clears the checkpoint", async () => {
+  const workspacesRoot = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-workflow-pause-"));
+  const workspaceRoot = path.join(workspacesRoot, "demo");
+  const previousWorkspacesRoot = config.workspacesRoot;
+  const app = Fastify();
+
+  try {
+    config.workspacesRoot = workspacesRoot;
+    await fs.mkdir(workspaceRoot);
+    const created = await createWorkflow(workspaceRoot, { title: "Pause workflow" });
+    const [trigger, second] = created.nodes;
+    assert.ok(trigger && second);
+    const waitNode = {
+      ...second,
+      kind: "wait" as const,
+      title: "Wait",
+      config: { seconds: 30 },
+    };
+    await saveWorkflow(workspaceRoot, {
+      ...created,
+      nodes: [trigger, waitNode],
+      edges: [
+        {
+          id: "edge_pause01",
+          from: trigger.id,
+          to: waitNode.id,
+          passSummary: true,
+        },
+      ],
+    });
+    await registerWorkflowRoutes(app);
+    const runUrl = `/api/workspaces/demo/workflows/${created.id}/run`;
+
+    const started = await app.inject({ method: "POST", url: runUrl, payload: {} });
+    assert.equal(started.statusCode, 200);
+    const firstRunId = started.json().runId as string;
+    const paused = await app.inject({
+      method: "POST",
+      url: `/api/workspaces/demo/workflows/${created.id}/pause`,
+    });
+    assert.equal(paused.json().paused, true);
+    let record = await waitForWorkflowRun(workspaceRoot, created.id, "stopped");
+    assert.equal(record.runs.at(-1)?.id, firstRunId);
+    assert.equal(record.runs.at(-1)?.resumable, true);
+
+    const resumed = await app.inject({
+      method: "POST",
+      url: runUrl,
+      payload: { resume: true },
+    });
+    assert.equal(resumed.statusCode, 200);
+    assert.equal(resumed.json().runId, firstRunId);
+    const stopped = await app.inject({
+      method: "POST",
+      url: `/api/workspaces/demo/workflows/${created.id}/stop`,
+    });
+    assert.equal(stopped.json().stopped, true);
+    record = await waitForWorkflowRun(workspaceRoot, created.id, "stopped");
+    assert.notEqual(record.runs.at(-1)?.resumable, true);
+
+    const restarted = await app.inject({ method: "POST", url: runUrl, payload: {} });
+    assert.equal(restarted.statusCode, 200);
+    assert.notEqual(restarted.json().runId, firstRunId);
+    await app.inject({
+      method: "POST",
+      url: `/api/workspaces/demo/workflows/${created.id}/stop`,
+    });
+    await waitForWorkflowRun(workspaceRoot, created.id, "stopped");
+  } finally {
+    config.workspacesRoot = previousWorkspacesRoot;
+    await app.close();
+    await fs.rm(workspacesRoot, { recursive: true, force: true });
+  }
+});
+
+async function waitForWorkflowRun(
+  workspaceRoot: string,
+  workflowId: string,
+  status: "success" | "error" | "stopped",
+) {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    const record = await getWorkflow(workspaceRoot, workflowId);
+    if (record.runs.at(-1)?.status === status) return record;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`workflow did not reach ${status}`);
+}
+
 test("workflow node model can be saved as an empty string", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-workflow-model-"));
   const created = await createWorkflow(root, {});

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { findAgentSessionFilePath, readAgentSessionUsage } from "./agent-sessions.js";
 import { execRun } from "./ai-exec.js";
 import {
@@ -81,6 +81,7 @@ interface WorkflowRunState {
   runId: string;
   abort: AbortController;
   done: Promise<void>;
+  checkpointOnStop: boolean;
 }
 
 interface PendingDiffApproval {
@@ -166,6 +167,7 @@ interface AgentTerminalProcessResult {
 }
 
 const activeRuns = new Map<string, WorkflowRunState>();
+const startingRuns = new Set<string>();
 const RUN_LOG_CHAR_LIMIT = 256 * 1024;
 const RUN_LOG_TRUNCATION_TEXT =
   "[osheep] run detail output exceeded 256 KiB; keeping the latest output only.";
@@ -355,83 +357,140 @@ export async function startWorkflowRun(
   workflowId: string,
   requestedNodeIds?: string[],
   retryLanguage: WorkflowRetryLanguage = "en",
+  resume = false,
 ): Promise<{ runId: string; workflow: WorkflowRecord }> {
   const key = runKey(workspaceId, workflowId);
-  if (activeRuns.has(key)) throw new Error("Workflow is already running.");
-  const workspace = await resolveWorkspace(workspaceId);
-  let record = await getWorkflow(workspace.path, workflowId);
-  const plan = requestedNodeIds?.length
-    ? { nodeIds: requestedNodeIds }
-    : planWorkflowRunNodeIds(record);
-  if (plan.error) throw new Error(plan.error);
-  const ordered = plan.nodeIds;
-  if (ordered.length === 0) throw new Error("Workflow has no runnable blocks.");
+  if (activeRuns.has(key) || startingRuns.has(key)) {
+    throw new Error("Workflow is already running.");
+  }
+  startingRuns.add(key);
+  try {
+    const workspace = await resolveWorkspace(workspaceId);
+    let record = await getWorkflow(workspace.path, workflowId);
+    if (record.runs.some((run) => run.status === "running")) {
+      record = await updateWorkflow(workspace.path, workflowId, (current) =>
+        interruptWorkflowRunRecord(current),
+      );
+    }
+    const plan = requestedNodeIds?.length
+      ? { nodeIds: requestedNodeIds }
+      : planWorkflowRunNodeIds(record);
+    if (plan.error) throw new Error(plan.error);
+    const ordered = plan.nodeIds;
+    if (ordered.length === 0) throw new Error("Workflow has no runnable blocks.");
 
-  const run: WorkflowRun = {
-    id: makeId("run"),
-    status: "running",
-    startedAt: Date.now(),
-    nodeIds: ordered,
-  };
-  const resetIds = new Set(
-    requestedNodeIds?.length ? ordered : record.nodes.map((node) => node.id),
-  );
-  record = await updateWorkflow(workspace.path, workflowId, (current) => ({
-    ...current,
-    nodes: current.nodes.map((node) =>
-      resetIds.has(node.id)
-        ? {
-            ...node,
-            status: "idle",
-            summary: "",
-            rawOutput: "",
-            error: "",
-            config: clearRunDetails(node.config),
-            startedAt: undefined,
-            completedAt: undefined,
-          }
-        : node,
-    ),
-    runs: [...current.runs.slice(-49), run],
-  }));
-  for (const node of record.nodes) {
-    if (resetIds.has(node.id)) {
+    const latestRun = record.runs.at(-1);
+    const resumeRun =
+      resume &&
+      !requestedNodeIds?.length &&
+      latestRun &&
+      canResumeWorkflowRun(record, latestRun, ordered)
+        ? latestRun
+        : undefined;
+    if (resume && !resumeRun) {
+      throw new Error("Workflow checkpoint is no longer available.");
+    }
+    const run: WorkflowRun = resumeRun
+      ? {
+          ...resumeRun,
+          status: "running",
+          completedAt: undefined,
+          error: undefined,
+          stats: undefined,
+          resumable: undefined,
+          resumeFingerprint: undefined,
+        }
+      : {
+          id: makeId("run"),
+          status: "running",
+          startedAt: Date.now(),
+          nodeIds: ordered,
+        };
+    const checkpoints = resumeRun ? workflowRunCheckpoints(resumeRun) : new Map();
+    const resetIds = new Set(
+      requestedNodeIds?.length ? ordered : record.nodes.map((node) => node.id),
+    );
+    record = await updateWorkflow(workspace.path, workflowId, (current) => ({
+      ...current,
+      nodes: current.nodes.map((node) =>
+        resetIds.has(node.id)
+          ? {
+              ...node,
+              status: "idle",
+              summary: "",
+              rawOutput: "",
+              error: "",
+              config: clearRunDetails(node.config),
+              startedAt: undefined,
+              completedAt: undefined,
+            }
+          : node,
+      ),
+      runs: resumeRun
+        ? current.runs.map((item) => (item.id === run.id ? run : item))
+        : [...current.runs.slice(-49), run],
+    }));
+    for (const node of record.nodes) {
+      if (resetIds.has(node.id)) {
+        publishWorkflowRuntime(workspace.path, workflowId, {
+          type: "node",
+          updatedAt: record.updatedAt,
+          node,
+        });
+      }
+    }
+    const startedRun = record.runs.find((item) => item.id === run.id);
+    if (startedRun) {
       publishWorkflowRuntime(workspace.path, workflowId, {
-        type: "node",
+        type: "run",
         updatedAt: record.updatedAt,
-        node,
+        run: startedRun,
       });
     }
-  }
-  const startedRun = record.runs.find((item) => item.id === run.id);
-  if (startedRun) {
-    publishWorkflowRuntime(workspace.path, workflowId, {
-      type: "run",
-      updatedAt: record.updatedAt,
-      run: startedRun,
-    });
-  }
 
-  const abort = new AbortController();
-  const done = runWorkflowInBackground(
-    workspace,
-    workflowId,
-    run,
-    ordered,
-    abort,
-    retryLanguage,
-  ).catch(() => undefined);
-  activeRuns.set(key, { workspaceId, workflowId, runId: run.id, abort, done });
-  void done.finally(() => {
-    const state = activeRuns.get(key);
-    if (state?.runId === run.id) activeRuns.delete(key);
-  });
-  return { runId: run.id, workflow: record };
+    const abort = new AbortController();
+    const state: WorkflowRunState = {
+      workspaceId,
+      workflowId,
+      runId: run.id,
+      abort,
+      done: Promise.resolve(),
+      checkpointOnStop: false,
+    };
+    const done = runWorkflowInBackground(
+      workspace,
+      workflowId,
+      run,
+      ordered,
+      abort,
+      retryLanguage,
+      checkpoints,
+      () => state.checkpointOnStop,
+    ).catch(() => undefined);
+    state.done = done;
+    activeRuns.set(key, state);
+    void done.finally(() => {
+      const state = activeRuns.get(key);
+      if (state?.runId === run.id) activeRuns.delete(key);
+    });
+    return { runId: run.id, workflow: record };
+  } finally {
+    startingRuns.delete(key);
+  }
 }
 
 export function stopWorkflowRun(workspaceId: string, workflowId: string): boolean {
   const state = activeRuns.get(runKey(workspaceId, workflowId));
   if (!state) return false;
+  state.checkpointOnStop = false;
+  state.abort.abort();
+  return true;
+}
+
+export function pauseWorkflowRun(workspaceId: string, workflowId: string): boolean {
+  const state = activeRuns.get(runKey(workspaceId, workflowId));
+  if (!state) return false;
+  state.checkpointOnStop = true;
   state.abort.abort();
   return true;
 }
@@ -450,7 +509,8 @@ export async function stopWorkflowRunAndWait(
 }
 
 export function isWorkflowRunActive(workspaceId: string, workflowId: string): boolean {
-  return activeRuns.has(runKey(workspaceId, workflowId));
+  const key = runKey(workspaceId, workflowId);
+  return activeRuns.has(key) || startingRuns.has(key);
 }
 
 export async function scheduleWorkflowNodes(
@@ -622,6 +682,8 @@ async function runWorkflowInBackground(
   nodeIds: string[],
   abort: AbortController,
   retryLanguage: WorkflowRetryLanguage,
+  checkpoints: Map<string, WorkflowRunTrace[]>,
+  checkpointOnStop: () => boolean,
 ): Promise<void> {
   let fatalError: unknown;
   try {
@@ -636,6 +698,16 @@ async function runWorkflowInBackground(
     const record = await getWorkflow(workspace.path, workflowId);
     await scheduleWorkflowNodes(nodeIds, record.edges, maxParallel, async (nodeId) => {
       if (abort.signal.aborted) throw new Error("Stopped");
+      const checkpoint = checkpoints.get(nodeId)?.shift();
+      if (checkpoint) {
+        await restoreWorkflowNodeCheckpoint(workspace.path, workflowId, checkpoint);
+        return sourceHandleForOutput(
+          checkpoint.kind,
+          checkpoint.output && typeof checkpoint.output === "object"
+            ? (checkpoint.output as WorkflowBlockOutput)
+            : {},
+        );
+      }
       try {
         return await executeWorkflowNode(
           workspace,
@@ -660,7 +732,15 @@ async function runWorkflowInBackground(
   } catch (e) {
     const failure = fatalError ?? e;
     const message = (failure as Error).message || "Workflow failed.";
-    const stopped = fatalError === undefined && (abort.signal.aborted || message === "Stopped");
+    // A pause aborts the active node. Agent runtimes may surface that abort as
+    // an AbortError before the workflow catch block runs, so the explicit
+    // pause request must take precedence over the captured runtime error.
+    const { stopped, resumable } = workflowStopDisposition(
+      checkpointOnStop(),
+      abort.signal.aborted,
+      fatalError !== undefined,
+      message,
+    );
     let failedNodeIds: string[] = [];
     const failedRecord = await updateWorkflow(workspace.path, workflowId, (record) => {
       const activeNodes = record.nodes.filter((node) => node.status === "running");
@@ -668,17 +748,25 @@ async function runWorkflowInBackground(
       const nodes = activeNodes.length
         ? record.nodes.map((node) =>
             node.status === "running"
-              ? {
-                  ...node,
-                  status: "error" as const,
-                  error: message,
-                  completedAt: Date.now(),
-                  config: finalizeRunDetailsOnError(node, message),
-                }
+              ? stopped && nodeKind(node) === "agent"
+                ? resetInterruptedNode(node)
+                : {
+                    ...node,
+                    status: "error" as const,
+                    error: message,
+                    completedAt: Date.now(),
+                    config: finalizeRunDetailsOnError(node, message),
+                  }
               : node,
           )
         : record.nodes;
-      return finishRunRecord({ ...record, nodes }, run.id, stopped ? "stopped" : "error", message);
+      return finishRunRecord(
+        { ...record, nodes },
+        run.id,
+        stopped ? "stopped" : "error",
+        message,
+        resumable,
+      );
     });
     for (const nodeId of failedNodeIds) {
       const node = failedRecord.nodes.find((item) => item.id === nodeId);
@@ -1908,6 +1996,26 @@ async function patchWorkflowNode(
   return record;
 }
 
+async function restoreWorkflowNodeCheckpoint(
+  workspaceRoot: string,
+  workflowId: string,
+  checkpoint: WorkflowRunTrace,
+): Promise<void> {
+  const outputText =
+    checkpoint.output === undefined
+      ? undefined
+      : typeof checkpoint.output === "string"
+        ? checkpoint.output
+        : stringifyBlockOutput(checkpoint.output as WorkflowBlockOutput);
+  await patchWorkflowNode(workspaceRoot, workflowId, checkpoint.nodeId, {
+    status: "success",
+    ...(outputText === undefined ? {} : { rawOutput: outputText, summary: outputText }),
+    error: "",
+    startedAt: checkpoint.startedAt,
+    completedAt: checkpoint.completedAt,
+  });
+}
+
 async function patchWorkflowRun(
   workspaceRoot: string,
   workflowId: string,
@@ -2154,8 +2262,9 @@ function finishRunRecord(
   runId: string,
   status: WorkflowRun["status"],
   error?: string,
+  resumable = false,
+  completedAt = Date.now(),
 ): WorkflowRecord {
-  const completedAt = Date.now();
   return {
     ...record,
     runs: record.runs.map((run) =>
@@ -2180,11 +2289,97 @@ function finishRunRecord(
               error: error ?? run.error,
               trace,
               stats: runStats(finalized, completedAt),
+              resumable: resumable || undefined,
+              resumeFingerprint: resumable ? workflowDefinitionFingerprint(record) : undefined,
             };
           })()
         : run,
     ),
   };
+}
+
+export function interruptWorkflowRunRecord(
+  record: WorkflowRecord,
+  completedAt = Date.now(),
+): WorkflowRecord {
+  const runningIds = record.runs.filter((run) => run.status === "running").map((run) => run.id);
+  if (runningIds.length === 0) return record;
+  let next = record;
+  for (const runId of runningIds) {
+    next = finishRunRecord(next, runId, "stopped", "Workflow was interrupted.", true, completedAt);
+  }
+  return {
+    ...next,
+    nodes: next.nodes.map((node) =>
+      node.status === "running" ? resetInterruptedNode(node) : node,
+    ),
+  };
+}
+
+function resetInterruptedNode(node: WorkflowNode): WorkflowNode {
+  return {
+    ...node,
+    status: "idle",
+    summary: "",
+    rawOutput: "",
+    error: "",
+    config: clearRunDetails(node.config),
+    startedAt: undefined,
+    completedAt: undefined,
+  };
+}
+
+export function workflowRunCheckpoints(run: WorkflowRun): Map<string, WorkflowRunTrace[]> {
+  const checkpoints = new Map<string, WorkflowRunTrace[]>();
+  for (const trace of run.trace ?? []) {
+    if (trace.status !== "success") continue;
+    const entries = checkpoints.get(trace.nodeId) ?? [];
+    entries.push(trace);
+    checkpoints.set(trace.nodeId, entries);
+  }
+  return checkpoints;
+}
+
+export function canResumeWorkflowRun(
+  record: WorkflowRecord,
+  run: WorkflowRun,
+  orderedNodeIds: readonly string[],
+): boolean {
+  return (
+    run.status === "stopped" &&
+    run.resumable === true &&
+    run.resumeFingerprint === workflowDefinitionFingerprint(record) &&
+    run.nodeIds.length === orderedNodeIds.length &&
+    run.nodeIds.every((id, index) => id === orderedNodeIds[index])
+  );
+}
+
+export function workflowStopDisposition(
+  pauseRequested: boolean,
+  aborted: boolean,
+  hasFatalError: boolean,
+  message: string,
+): { stopped: boolean; resumable: boolean } {
+  const stopped =
+    (pauseRequested && aborted) || (!hasFatalError && (aborted || message === "Stopped"));
+  return { stopped, resumable: pauseRequested && stopped };
+}
+
+function workflowDefinitionFingerprint(record: WorkflowRecord): string {
+  const definition = {
+    nodes: record.nodes.map((node) => ({
+      id: node.id,
+      blockId: node.blockId,
+      kind: node.kind,
+      title: node.title,
+      providerKind: node.providerKind,
+      model: node.model,
+      prompt: node.prompt,
+      config: clearRunDetails(node.config),
+    })),
+    edges: record.edges,
+  };
+  return createHash("sha256").update(JSON.stringify(definition)).digest("hex");
 }
 
 function runStats(run: WorkflowRun, completedAt: number): WorkflowRun["stats"] {
