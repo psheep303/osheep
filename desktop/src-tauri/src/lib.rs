@@ -228,13 +228,60 @@ fn local_backend_paths(app: &tauri::AppHandle) -> io::Result<BackendPaths> {
     }
 
     let resources = app.path().resource_dir().map_err(io::Error::other)?;
+    let data_dir = app.path().app_local_data_dir().map_err(io::Error::other)?;
+    let node = materialize_bundled_node(&resources.join("sidecar/node.exe"), &data_dir)?;
     Ok(BackendPaths {
-        node: resources.join("sidecar/node.exe"),
+        node,
         script: resources.join("backend/dist/index.js"),
         working_dir: resources.join("backend"),
         frontend_root: resources.join("frontend"),
         system_templates_root: resources.join("backend/template-library/system"),
     })
+}
+
+fn materialize_bundled_node(source: &Path, data_dir: &Path) -> io::Result<PathBuf> {
+    require_file(source, "bundled Node executable")?;
+
+    // Running an executable directly from the install directory locks it on
+    // Windows and prevents NSIS from replacing it during an upgrade.
+    let runtime_dir = data_dir.join("runtime").join(env!("CARGO_PKG_VERSION"));
+    let destination = runtime_dir.join("node.exe");
+    if destination.is_file() {
+        return Ok(destination);
+    }
+    if destination.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!(
+                "bundled Node runtime path is not a file: {}",
+                destination.display()
+            ),
+        ));
+    }
+
+    fs::create_dir_all(&runtime_dir)?;
+    let temporary = runtime_dir.join(format!("node.exe.{}.tmp", std::process::id()));
+    match fs::remove_file(&temporary) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    if let Err(error) = fs::copy(source, &temporary) {
+        let _ = fs::remove_file(&temporary);
+        return Err(error);
+    }
+    match fs::rename(&temporary, &destination) {
+        Ok(()) => Ok(destination),
+        Err(_) if destination.is_file() => {
+            // Another app instance completed the same atomic copy first.
+            let _ = fs::remove_file(&temporary);
+            Ok(destination)
+        }
+        Err(error) => {
+            let _ = fs::remove_file(&temporary);
+            Err(error)
+        }
+    }
 }
 
 fn require_file(path: &Path, label: &str) -> io::Result<()> {
@@ -582,6 +629,19 @@ pub fn run() {
 mod tests {
     use super::*;
 
+    fn unique_temp_dir(label: &str) -> PathBuf {
+        use std::time::SystemTime;
+
+        env::temp_dir().join(format!(
+            "osheep-{label}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .expect("system time after Unix epoch")
+                .as_nanos()
+        ))
+    }
+
     #[test]
     fn javascript_string_escapes_script_sensitive_characters() {
         assert_eq!(
@@ -614,6 +674,52 @@ mod tests {
             ui.queue_error("startup failed".into()),
             Some("startup failed".into())
         );
+    }
+
+    #[test]
+    fn bundled_node_is_copied_to_versioned_runtime_directory() {
+        let root = unique_temp_dir("bundled-node-copy");
+        let source = root.join("resources/sidecar/node.exe");
+        let data_dir = root.join("data");
+        fs::create_dir_all(source.parent().expect("source parent")).expect("create resources");
+        fs::write(&source, b"bundled node").expect("write source");
+
+        let runtime = materialize_bundled_node(&source, &data_dir).expect("copy bundled node");
+
+        assert_eq!(
+            runtime,
+            data_dir
+                .join("runtime")
+                .join(env!("CARGO_PKG_VERSION"))
+                .join("node.exe")
+        );
+        assert_eq!(fs::read(runtime).expect("read runtime"), b"bundled node");
+        fs::remove_dir_all(root).expect("remove test directory");
+    }
+
+    #[test]
+    fn existing_bundled_node_runtime_is_reused() {
+        let root = unique_temp_dir("bundled-node-reuse");
+        let source = root.join("resources/sidecar/node.exe");
+        let data_dir = root.join("data");
+        let runtime = data_dir
+            .join("runtime")
+            .join(env!("CARGO_PKG_VERSION"))
+            .join("node.exe");
+        fs::create_dir_all(source.parent().expect("source parent")).expect("create resources");
+        fs::create_dir_all(runtime.parent().expect("runtime parent")).expect("create runtime");
+        fs::write(&source, b"new source").expect("write source");
+        fs::write(&runtime, b"existing runtime").expect("write runtime");
+
+        assert_eq!(
+            materialize_bundled_node(&source, &data_dir).expect("reuse runtime"),
+            runtime
+        );
+        assert_eq!(
+            fs::read(&runtime).expect("read runtime"),
+            b"existing runtime"
+        );
+        fs::remove_dir_all(root).expect("remove test directory");
     }
 
     #[cfg(target_os = "windows")]
