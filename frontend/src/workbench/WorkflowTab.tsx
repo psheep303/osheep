@@ -592,28 +592,12 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
   },
   {
     category: "triggers",
-    nameKey: "workflow.blocks.manualTrigger",
-    kind: "manual-trigger",
-    icon: "trigger",
-  },
-  {
-    category: "triggers",
     nameKey: "workflow.blocks.cron",
     kind: "cron",
     icon: "cron",
     config: {
       cron: "0 9 * * 1-5",
       timezone: "local",
-    },
-  },
-  {
-    category: "triggers",
-    nameKey: "workflow.blocks.webhookTrigger",
-    kind: "webhook-trigger",
-    icon: "webhook",
-    config: {
-      method: "POST",
-      path: "/workflow-hook",
     },
   },
   {
@@ -781,17 +765,6 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
     },
   },
   {
-    category: "logic",
-    nameKey: "workflow.blocks.loopItems",
-    kind: "loop-items",
-    icon: "loop",
-    config: {
-      source: "{{blocks[1].data}}",
-      batchSize: 1,
-      mode: "items",
-    },
-  },
-  {
     category: "file",
     nameKey: "workflow.blocks.readFile",
     kind: "file-read",
@@ -810,23 +783,6 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
     kind: "markdown",
     prompt: "## Result\n\n{{blocks[2].text}}",
     icon: "markdown",
-  },
-  {
-    category: "output",
-    nameKey: "workflow.blocks.mcp",
-    kind: "mcp",
-    icon: "mcp",
-    config: {
-      remoteLink: "",
-      postUrl: "",
-      headers: DEFAULT_MCP_HEADERS_JSON,
-      apiKey: "",
-      toolName: "",
-      arguments: "{}",
-      tools: [],
-      connectionStatus: "",
-      connectionError: "",
-    },
   },
 ];
 
