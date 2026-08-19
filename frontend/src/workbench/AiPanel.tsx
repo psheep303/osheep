@@ -12,6 +12,7 @@ import {
   type WorkflowSummary,
 } from "./api";
 import { ContextMenu, type CtxMenuSection } from "./ContextMenu";
+import { exportTextFile } from "./desktop-file-export";
 import { useOsheepOverlay } from "./OsheepOverlay";
 
 interface AiPanelProps {
@@ -152,15 +153,10 @@ export function AiPanel({
     if (!workspaceId) return;
     try {
       const workflow = await apiGetWorkflow(workspaceId, id);
-      const blob = new Blob([JSON.stringify(workflow, null, 2)], {
-        type: "application/json",
+      await exportTextFile({
+        suggestedName: `${safeFileName(workflow.title || "workflow")}.json`,
+        contents: JSON.stringify(workflow, null, 2),
       });
-      const href = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = href;
-      anchor.download = `${safeFileName(workflow.title || "workflow")}.json`;
-      anchor.click();
-      URL.revokeObjectURL(href);
     } catch (e) {
       setError((e as Error).message);
     }

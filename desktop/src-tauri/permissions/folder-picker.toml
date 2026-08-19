@@ -2,3 +2,8 @@
 identifier = "allow-pick-workspace-folder"
 description = "Allows the main osheep window to open the native workspaces folder picker."
 commands.allow = ["pick_workspace_folder"]
+
+[[permission]]
+identifier = "allow-save-export-file"
+description = "Allows the main osheep window to open the native export save dialog."
+commands.allow = ["save_export_file"]

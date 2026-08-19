@@ -1212,8 +1212,15 @@ async function executeLocalNode(
       });
     }
     if (resolved.length === 0) throw new Error(`${node.title} has no variable name.`);
-    const variables = Object.fromEntries(resolved.map((entry) => [entry.name, entry.value]));
-    const variableTypes = Object.fromEntries(resolved.map((entry) => [entry.name, entry.type]));
+    const inherited = inheritedWorkflowVariables(record, node);
+    const variables = {
+      ...inherited.variables,
+      ...Object.fromEntries(resolved.map((entry) => [entry.name, entry.value])),
+    };
+    const variableTypes = {
+      ...inherited.variableTypes,
+      ...Object.fromEntries(resolved.map((entry) => [entry.name, entry.type])),
+    };
     const first = resolved[0]!;
     return {
       output: {
@@ -2502,7 +2509,7 @@ function resolveBlockTemplate(input: string, record: WorkflowRecord): string {
         stringifyTemplateValue(resolveBlockReference(record, idText, pathText)),
     )
     .replace(
-      /\{\{\s*vars\[\s*((?:"[^"\r\n]+"|'[^'\r\n]+'|[^\s"'\]\r\n][^\]\r\n]*?))\s*\]((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}/g,
+      /\{\{\s*vars\[\s*((?:"[^"\r\n]+"|'[^'\r\n]+'|[^\]"'\r\n]+?))\s*\]((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}/g,
       (_match, nameText: string, pathText: string) =>
         stringifyTemplateValue(resolveVariableReference(record, nameText, pathText)),
     );
@@ -2516,7 +2523,7 @@ function resolveTemplateValue(input: string, record: WorkflowRecord): unknown {
   );
   if (whole) return resolveBlockReference(record, whole[1] ?? "", whole[2] ?? "");
   const wholeVariable = trimmed.match(
-    /^\{\{\s*vars\[\s*((?:"[^"\r\n]+"|'[^'\r\n]+'|[^\s"'\]\r\n][^\]\r\n]*?))\s*\]((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}$/,
+    /^\{\{\s*vars\[\s*((?:"[^"\r\n]+"|'[^'\r\n]+'|[^\]"'\r\n]+?))\s*\]((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}$/,
   );
   if (wholeVariable) {
     return resolveVariableReference(record, wholeVariable[1] ?? "", wholeVariable[2] ?? "");
@@ -2527,7 +2534,7 @@ function resolveTemplateValue(input: string, record: WorkflowRecord): unknown {
 function resolveJsonTemplate(input: string, record: WorkflowRecord): string {
   assertValidBlockTemplates(input);
   const re =
-    /\{\{\s*(?:blocks\[(\d+)\]|vars\[\s*((?:"[^"\r\n]+"|'[^'\r\n]+'|[^\s"'\]\r\n][^\]\r\n]*?))\s*\])((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}/g;
+    /\{\{\s*(?:blocks\[(\d+)\]|vars\[\s*((?:"[^"\r\n]+"|'[^'\r\n]+'|[^\]"'\r\n]+?))\s*\])((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}/g;
   let output = "";
   let index = 0;
   let inString = false;
@@ -2584,11 +2591,31 @@ function resolveVariableReference(
   const name = variableNameFromReference(nameText);
   const reference = `{{vars[${nameText}]${pathText}}}`;
   const variableNodes = record.nodes.filter((item) => nodeKind(item) === "variable");
+  const activeRun = record.runs.find((run) => run.status === "running");
+  const executedNode = variableNodes
+    .filter(
+      (item) =>
+        variableNodeOutputValue(item, name).found &&
+        (!activeRun ||
+          (item.status === "success" && (item.completedAt ?? 0) >= activeRun.startedAt)),
+    )
+    .sort((a, b) => (b.completedAt ?? 0) - (a.completedAt ?? 0))[0];
+  if (activeRun) {
+    if (!executedNode) {
+      throw new Error(`Workflow variable ${reference} references missing variable ${name}.`);
+    }
+    const value = variableNodeOutputValue(executedNode, name).value;
+    const result = getPathResult(value, pathText);
+    if (!result.found) {
+      throw new Error(`Workflow variable ${reference} references a value that does not exist.`);
+    }
+    return result.value;
+  }
   const node =
-    variableNodes.find((item) =>
+    executedNode ??
+    [...variableNodes].reverse().find((item) =>
       variableNodeConfig(item).some((entry) => entry.name.trim() === name),
-    ) ??
-    variableNodes.find((item) => variableNodeOutputValue(item, name).found);
+    );
   if (!node) {
     throw new Error(`Workflow variable ${reference} references missing variable ${name}.`);
   }
@@ -2628,6 +2655,40 @@ function variableNodeOutputValue(
   return { found: false, value: undefined };
 }
 
+function inheritedWorkflowVariables(
+  record: WorkflowRecord,
+  node: WorkflowNode,
+): {
+  variables: Record<string, unknown>;
+  variableTypes: Record<string, unknown>;
+} {
+  const variables: Record<string, unknown> = {};
+  const variableTypes: Record<string, unknown> = {};
+  const nodeIndex = record.nodes.findIndex((item) => item.id === node.id);
+  const precedingNodes = nodeIndex < 0 ? [] : record.nodes.slice(0, nodeIndex);
+  for (const preceding of precedingNodes) {
+    if (nodeKind(preceding) !== "variable") continue;
+    const output = parseBlockOutput(preceding);
+    if (!output) continue;
+    if (output.variables && typeof output.variables === "object" && !Array.isArray(output.variables)) {
+      Object.assign(variables, output.variables);
+    } else if (
+      typeof output.name === "string" &&
+      Object.prototype.hasOwnProperty.call(output, "value")
+    ) {
+      variables[output.name] = output.value;
+    }
+    if (
+      output.variableTypes &&
+      typeof output.variableTypes === "object" &&
+      !Array.isArray(output.variableTypes)
+    ) {
+      Object.assign(variableTypes, output.variableTypes);
+    }
+  }
+  return { variables, variableTypes };
+}
+
 function variableNameFromReference(nameText: string): string {
   const trimmed = nameText.trim();
   if (
@@ -2647,7 +2708,7 @@ export function resolveWorkflowTemplate(input: string, record: WorkflowRecord): 
 function assertValidBlockTemplates(input: string): void {
   const expressionRe = /\{\{[\s\S]*?\}\}/g;
   const validRe =
-    /^\{\{\s*(?:blocks\[(\d+)\]|vars\[\s*(?:"[^"\r\n]+"|'[^'\r\n]+'|[^\s"'\]\r\n][^\]\r\n]*?)\s*\])((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}$/;
+    /^\{\{\s*(?:blocks\[(\d+)\]|vars\[\s*(?:"[^"\r\n]+"|'[^'\r\n]+'|[^\]"'\r\n]+?)\s*\])((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}$/;
   const expressions = input.match(expressionRe) ?? [];
   for (const expression of expressions) {
     if (!validRe.test(expression)) throw invalidWorkflowVariable(expression);

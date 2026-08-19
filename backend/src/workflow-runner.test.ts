@@ -166,6 +166,18 @@ test("workflow templates resolve environment variables and JSON paths", () => {
   assert.equal(resolveWorkflowTemplate('{"id": {{vars["name"].id}}}', record), '{"id": 42}');
   assert.equal(resolveWorkflowTemplate("{{vars[name]}}", record), '{"id":42,"label":"hello"}');
   assert.equal(resolveWorkflowTemplate("{{vars[enabled]}}", record), "true");
+  assert.equal(
+    resolveWorkflowTemplate("{{vars[b]}}", {
+      ...record,
+      nodes: [
+        {
+          ...variable,
+          config: { variables: [{ name: "b", value: "single", type: "text" }] },
+        },
+      ],
+    }),
+    "single",
+  );
   assert.equal(resolveWorkflowTemplate("{{vars[literalJson]}}", record), '{"id": 1}');
   assert.equal(resolveWorkflowTemplate("{{vars[typedJson]}}", record), '{"id":1}');
 });
@@ -240,6 +252,65 @@ test("workflow templates resolve empty and string environment variables", () => 
   assert.equal(resolveWorkflowTemplate("empty={{vars[empty]}}", record), "empty=");
   assert.equal(resolveWorkflowTemplate("plain={{vars[plain]}}", record), "plain=not-json");
   assert.throws(() => resolveWorkflowTemplate("{{vars[missing]}}", record), /missing variable/);
+});
+
+test("later environment variable blocks overwrite existing names", () => {
+  const first = {
+    ...workflowNode("node_first_variable", "variable", "First variables"),
+    config: { variables: [{ name: "shared", value: "first", type: "text" }] },
+  };
+  const second = {
+    ...workflowNode("node_second_variable", "variable", "Second variables"),
+    config: {
+      variables: [
+        { name: "shared", value: "second", type: "text" },
+        { name: "added", value: "new", type: "text" },
+      ],
+    },
+  };
+  const record = workflowRecord([first, second]);
+
+  assert.equal(resolveWorkflowTemplate("{{vars[shared]}}", record), "second");
+  assert.equal(resolveWorkflowTemplate("{{vars[added]}}", record), "new");
+});
+
+test("a running workflow only resolves environment variable blocks that already ran", () => {
+  const upstream = {
+    ...workflowNode("node_upstream_variable", "variable", "Upstream variables"),
+    blockId: 3,
+    status: "success" as const,
+    completedAt: 100,
+    rawOutput: JSON.stringify({
+      type: "variable",
+      status: "success",
+      variables: { instruction: "from block 3" },
+    }),
+    config: {
+      variables: [{ name: "instruction", value: "from block 3", type: "text" }],
+    },
+  };
+  const downstream = {
+    ...workflowNode("node_downstream_variable", "variable", "Downstream variables"),
+    blockId: 13,
+    config: {
+      variables: [{ name: "instruction", value: "from block 13", type: "text" }],
+    },
+  };
+  const record = workflowRecord([upstream, downstream]);
+  record.runs = [{ id: "run_active", status: "running", startedAt: 1, nodeIds: [] }];
+
+  assert.equal(resolveWorkflowTemplate("{{vars[instruction]}}", record), "from block 3");
+
+  upstream.completedAt = 100;
+  downstream.status = "success";
+  downstream.completedAt = 90;
+  downstream.rawOutput = JSON.stringify({
+    type: "variable",
+    status: "success",
+    variables: { instruction: "stale block 13 output" },
+  });
+  record.runs[0]!.startedAt = 95;
+  assert.equal(resolveWorkflowTemplate("{{vars[instruction]}}", record), "from block 3");
 });
 
 test("workflow variable names support non-ASCII names", () => {

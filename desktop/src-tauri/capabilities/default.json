@@ -10,7 +10,8 @@
     "core:window:allow-minimize",
     "core:window:allow-start-dragging",
     "core:window:allow-toggle-maximize",
-    "allow-pick-workspace-folder"
+    "allow-pick-workspace-folder",
+    "allow-save-export-file"
   ],
   "remote": {
     "urls": ["http://127.0.0.1:*"]

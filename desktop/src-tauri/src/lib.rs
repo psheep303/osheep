@@ -48,6 +48,32 @@ async fn pick_workspace_folder(
         .map(|folder| folder.path().to_string_lossy().into_owned()))
 }
 
+#[tauri::command]
+async fn save_export_file(
+    window: tauri::WebviewWindow,
+    suggested_name: String,
+    contents: String,
+) -> Result<Option<String>, String> {
+    let safe_name = Path::new(&suggested_name)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or("workflow.json");
+    let selected = AsyncFileDialog::new()
+        .set_parent(&window)
+        .set_title("Save workflow export")
+        .set_file_name(safe_name)
+        .add_filter("JSON", &["json"])
+        .save_file()
+        .await;
+    let Some(file) = selected else {
+        return Ok(None);
+    };
+    let path = file.path();
+    fs::write(path, contents).map_err(|error| format!("failed to save export: {error}"))?;
+    Ok(Some(path.to_string_lossy().into_owned()))
+}
+
 impl BackendProcess {
     fn spawn(&self, command: &mut Command) -> io::Result<()> {
         let mut state = self
@@ -422,7 +448,10 @@ fn remote_url() -> io::Result<Option<tauri::Url>> {
 
 pub fn run() {
     let app_result = tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![pick_workspace_folder])
+        .invoke_handler(tauri::generate_handler![
+            pick_workspace_folder,
+            save_export_file
+        ])
         .setup(|app| {
             let backend = BackendProcess::default();
             app.manage(backend.clone());

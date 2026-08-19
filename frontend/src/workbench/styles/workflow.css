@@ -650,6 +650,11 @@
   cursor: grabbing;
 }
 
+.workflow-canvas-wrap.is-placing-node,
+.workflow-canvas-wrap.is-placing-node .workflow-node {
+  cursor: crosshair;
+}
+
 .workflow-canvas {
   min-width: 0;
   min-height: 0;
@@ -738,6 +743,13 @@
 .workflow-node.is-dragging {
   cursor: grabbing;
   z-index: 4;
+}
+
+.workflow-node.is-placing {
+  z-index: 6;
+  opacity: 0.82;
+  pointer-events: auto;
+  border-style: dashed;
 }
 
 .workflow-node.is-running {

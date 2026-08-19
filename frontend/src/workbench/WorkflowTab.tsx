@@ -68,6 +68,7 @@ import {
 } from "./api";
 import { ClaudeLogo, OpenAILogo } from "./BrandIcons";
 import { ContextMenu, type CtxMenuSection } from "./ContextMenu";
+import { exportTextFile } from "./desktop-file-export";
 import { evaluateConditionExpression } from "./condition-expression";
 import type { MultiDiffEntry } from "./MultiDiffPane";
 import { cleanAgentTerminalConversation } from "./terminal-conversation";
@@ -869,6 +870,8 @@ export function WorkflowTab({
   const [readmeEditing, setReadmeEditing] = useState(false);
   const [renameSeq, setRenameSeq] = useState(0);
   const [renameTarget, setRenameTarget] = useState<string | null>(null);
+  const [placingNodeId, setPlacingNodeId] = useState<string | null>(null);
+  const placingNodeIdRef = useRef<string | null>(null);
   const localRevisionRef = useRef(0);
   const nodeDragRef = useRef<NodeDragState | null>(null);
   const runtimeLayoutRef = useRef<Map<string, CanvasPoint>>(new Map());
@@ -922,6 +925,8 @@ export function WorkflowTab({
     setError(null);
     setRuntimeReadyWorkflowKey("");
     setNodeSelection([]);
+    placingNodeIdRef.current = null;
+    setPlacingNodeId(null);
     setReadmeOpen(false);
     setReadmeEditing(false);
     runtimeLayoutRef.current.clear();
@@ -1003,6 +1008,7 @@ export function WorkflowTab({
         !current ||
         current.updatedAt >= updatedAt ||
         nodeDragRef.current ||
+        placingNodeIdRef.current ||
         pendingSaveRef.current ||
         saveInFlightRef.current > 0
       ) {
@@ -1016,7 +1022,7 @@ export function WorkflowTab({
             !canApplyWorkflowRefresh({
               requestedRevision,
               currentRevision: localRevisionRef.current,
-              dragging: nodeDragRef.current !== null,
+              dragging: nodeDragRef.current !== null || placingNodeIdRef.current !== null,
               pendingSave: pendingSaveRef.current !== null || saveInFlightRef.current > 0,
             })
           ) {
@@ -1076,7 +1082,14 @@ export function WorkflowTab({
     if (!workflowId || !workspaceId) return;
     let cancelled = false;
     const refresh = async () => {
-      if (nodeDragRef.current || pendingSaveRef.current || saveInFlightRef.current > 0) return;
+      if (
+        nodeDragRef.current ||
+        placingNodeIdRef.current ||
+        pendingSaveRef.current ||
+        saveInFlightRef.current > 0
+      ) {
+        return;
+      }
       const requestedRevision = localRevisionRef.current;
       try {
         const record = await apiGetWorkflow(workspaceId, workflowId);
@@ -1085,7 +1098,7 @@ export function WorkflowTab({
           !canApplyWorkflowRefresh({
             requestedRevision,
             currentRevision: localRevisionRef.current,
-            dragging: nodeDragRef.current !== null,
+            dragging: nodeDragRef.current !== null || placingNodeIdRef.current !== null,
             pendingSave: pendingSaveRef.current !== null || saveInFlightRef.current > 0,
           })
         ) {
@@ -1148,20 +1161,21 @@ export function WorkflowTab({
     );
   }, [workflow, observabilityRunId]);
 
-  const exportRunReport = useCallback(() => {
+  const exportRunReport = useCallback(async () => {
     if (!workflow || !observabilityRun) return;
     const report = {
       workflow: { id: workflow.id, title: workflow.title },
       run: observabilityRun,
       exportedAt: new Date().toISOString(),
     };
-    const blob = new Blob([JSON.stringify(report, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `${workflow.title || "workflow"}-${observabilityRun.id}-report.json`;
-    anchor.click();
-    URL.revokeObjectURL(url);
+    try {
+      await exportTextFile({
+        suggestedName: `${safeExportFileName(workflow.title || "workflow")}-${observabilityRun.id}-report.json`,
+        contents: JSON.stringify(report, null, 2),
+      });
+    } catch (error) {
+      setError((error as Error).message);
+    }
   }, [workflow, observabilityRun]);
   const waitingForChoiceNode = useMemo(
     () =>
@@ -1310,6 +1324,8 @@ export function WorkflowTab({
 
   const undo = useCallback(() => {
     if (running) return;
+    placingNodeIdRef.current = null;
+    setPlacingNodeId(null);
     const current = workflowRef.current;
     const previous = undoStackRef.current.pop();
     if (!current || !previous) return;
@@ -1319,6 +1335,8 @@ export function WorkflowTab({
 
   const redo = useCallback(() => {
     if (running) return;
+    placingNodeIdRef.current = null;
+    setPlacingNodeId(null);
     const current = workflowRef.current;
     const next = redoStackRef.current.pop();
     if (!current || !next) return;
@@ -1489,26 +1507,33 @@ export function WorkflowTab({
   const addBlock = (template: BlockTemplate) => {
     if (running) return;
     const nodeId = makeId("node");
+    const rect = canvasWrapRef.current?.getBoundingClientRect();
+    const z = zoomRef.current || 1;
+    const center = rect
+      ? {
+          x: (rect.width / 2 - panRef.current.x) / z - CANVAS_ORIGIN_X,
+          y: (rect.height / 2 - panRef.current.y) / z - CANVAS_ORIGIN_Y,
+        }
+      : { x: 0, y: 0 };
     updateWorkflow(
       (record) => {
-        const last = record.nodes[record.nodes.length - 1];
-        const x = last ? last.x + NODE_W + 96 : 0;
-        const y = last ? last.y : 0;
         const node = nodeFromTemplate(
           template,
           nodeId,
           nextBlockId(record),
-          x,
-          y,
+          Math.max(WORLD_MIN_X, Math.round(center.x - NODE_W / 2)),
+          Math.max(WORLD_MIN_Y, Math.round(center.y - NODE_H / 2)),
           t(template.nameKey),
         );
         return { ...record, nodes: [...record.nodes, node] };
       },
-      true,
+      false,
       true,
     );
     setNodeSelection([]);
     setBlockPickerOpen(false);
+    placingNodeIdRef.current = nodeId;
+    setPlacingNodeId(nodeId);
   };
 
   const setNodeSelection = (ids: string[], primaryId?: string | null) => {
@@ -1520,6 +1545,10 @@ export function WorkflowTab({
   const deleteNodes = (nodeIds: string[]) => {
     if (running) return;
     const ids = new Set(nodeIds);
+    if (placingNodeIdRef.current && ids.has(placingNodeIdRef.current)) {
+      placingNodeIdRef.current = null;
+      setPlacingNodeId(null);
+    }
     updateWorkflow(
       (record) => {
         const nodes = record.nodes.filter((node) => !ids.has(node.id));
@@ -1665,6 +1694,46 @@ export function WorkflowTab({
       y: (clientY - rect.top - panRef.current.y) / z - CANVAS_ORIGIN_Y,
     };
   }, []);
+
+  useEffect(() => {
+    if (!placingNodeId) return;
+    const positionNode = (clientX: number, clientY: number) => {
+      const rect = canvasWrapRef.current?.getBoundingClientRect();
+      if (
+        !rect ||
+        clientX < rect.left ||
+        clientX > rect.right ||
+        clientY < rect.top ||
+        clientY > rect.bottom
+      ) {
+        return false;
+      }
+      const point = clientToCanvas(clientX, clientY);
+      setLiveNodePatch(placingNodeId, {
+        x: Math.max(WORLD_MIN_X, Math.round(point.x - NODE_W / 2)),
+        y: Math.max(WORLD_MIN_Y, Math.round(point.y - NODE_H / 2)),
+      });
+      return true;
+    };
+    const onPointerMove = (event: PointerEvent) => {
+      positionNode(event.clientX, event.clientY);
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.button !== 0 || !positionNode(event.clientX, event.clientY)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      placingNodeIdRef.current = null;
+      setPlacingNodeId(null);
+      setNodeSelection([placingNodeId], placingNodeId);
+      scheduleCurrentSave();
+    };
+    window.addEventListener("pointermove", onPointerMove, true);
+    window.addEventListener("pointerdown", onPointerDown, true);
+    return () => {
+      window.removeEventListener("pointermove", onPointerMove, true);
+      window.removeEventListener("pointerdown", onPointerDown, true);
+    };
+  }, [clientToCanvas, placingNodeId]);
 
   const setDraftEdgeState = useCallback((next: DraftEdge | null) => {
     draftEdgeRef.current = next;
@@ -2087,20 +2156,20 @@ export function WorkflowTab({
   };
 
   const runSelected = async () => {
-    if (!selectedNode) return;
+    if (!selectedNode || placingNodeIdRef.current) return;
     prepareWorkflowAlertSound();
     await startBackendRun([selectedNode.id]);
   };
 
   const runWorkflow = async () => {
-    if (!workflow) return;
+    if (!workflow || placingNodeIdRef.current) return;
     prepareWorkflowAlertSound();
     await startBackendRun();
   };
 
   const startBackendRun = async (nodeIds?: string[]) => {
     const current = workflowRef.current;
-    if (!current || running) return;
+    if (!current || running || placingNodeIdRef.current) return;
     await flushPendingSave();
     autoSeeRunStartedAtRef.current = Date.now();
     autoSeenMarkdownRef.current.clear();
@@ -2864,7 +2933,10 @@ export function WorkflowTab({
       <div className="workflow-body">
         <div
           ref={canvasWrapRef}
-          className={`workflow-canvas-wrap${panningCanvas ? " is-panning" : ""}`}
+          className={
+            `workflow-canvas-wrap${panningCanvas ? " is-panning" : ""}` +
+            (placingNodeId ? " is-placing-node" : "")
+          }
           style={wrapGridStyle}
           onWheel={handleWheelZoom}
           onPointerDown={startCanvasPan}
@@ -2972,6 +3044,7 @@ export function WorkflowTab({
                 selected={selectedIds.includes(node.id)}
                 running={running}
                 dragging={node.id === draggingNodeId}
+                placing={node.id === placingNodeId}
                 connectHover={node.id === connectHoverId}
                 onSelect={(event) => selectNodeFromClick(node.id, event)}
                 onContextMenu={(e) => {
@@ -2983,10 +3056,8 @@ export function WorkflowTab({
                   }
                   e.preventDefault();
                   e.stopPropagation();
-                  setBlockPickerOpen(false);
                   setEdgeMenu(null);
                   setCanvasMenu(null);
-                  if (!selectedIds.includes(node.id)) setNodeSelection([node.id], node.id);
                   setNodeMenu({ x: e.clientX, y: e.clientY, nodeId: node.id });
                 }}
                 onNodePointerDown={(e) => startNodeDrag(node, e)}
@@ -3622,6 +3693,7 @@ function WorkflowNodeBlock({
   selected,
   running,
   dragging,
+  placing,
   connectHover,
   onSelect,
   onContextMenu,
@@ -3638,6 +3710,7 @@ function WorkflowNodeBlock({
   selected: boolean;
   running: boolean;
   dragging: boolean;
+  placing: boolean;
   connectHover: boolean;
   onSelect: (e: ReactMouseEvent<HTMLDivElement>) => void;
   onContextMenu: (e: ReactMouseEvent<HTMLDivElement>) => void;
@@ -3660,6 +3733,7 @@ function WorkflowNodeBlock({
     "workflow-node" +
     (selected ? " is-selected" : "") +
     (dragging ? " is-dragging" : "") +
+    (placing ? " is-placing" : "") +
     ` is-${nodeKind(node)}` +
     ` is-${node.status}`;
   const hasInputHandle = !isTriggerNodeKind(nodeKind(node));
@@ -4902,6 +4976,10 @@ function WorkflowInputDialog({
       </div>
     </div>
   );
+}
+
+function safeExportFileName(value: string): string {
+  return value.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").trim() || "workflow";
 }
 
 function WorkflowNodeInspector({
@@ -6513,8 +6591,15 @@ async function executeLocalNode(
       });
     }
     if (resolved.length === 0) throw new Error(`${node.title} has no variable name.`);
-    const variables = Object.fromEntries(resolved.map((entry) => [entry.name, entry.value]));
-    const variableTypes = Object.fromEntries(resolved.map((entry) => [entry.name, entry.type]));
+    const inherited = inheritedWorkflowVariables(record, node);
+    const variables = {
+      ...inherited.variables,
+      ...Object.fromEntries(resolved.map((entry) => [entry.name, entry.value])),
+    };
+    const variableTypes = {
+      ...inherited.variableTypes,
+      ...Object.fromEntries(resolved.map((entry) => [entry.name, entry.type])),
+    };
     const first = resolved[0]!;
     return {
       output: {
@@ -7756,7 +7841,7 @@ function resolveBlockTemplate(input: string, record: WorkflowRecord): string {
         stringifyTemplateValue(resolveBlockReference(record, idText, pathText)),
     )
     .replace(
-      /\{\{\s*vars\[\s*((?:"[^"\r\n]+"|'[^'\r\n]+'|[^\s"'\]\r\n][^\]\r\n]*?))\s*\]((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}/g,
+      /\{\{\s*vars\[\s*((?:"[^"\r\n]+"|'[^'\r\n]+'|[^\]"'\r\n]+?))\s*\]((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}/g,
       (_match, nameText: string, pathText: string) =>
         stringifyTemplateValue(resolveVariableReference(record, nameText, pathText)),
     );
@@ -7772,7 +7857,7 @@ function resolveTemplateValue(input: string, record: WorkflowRecord): unknown {
     return resolveBlockReference(record, whole[1], whole[2] ?? "");
   }
   const wholeVariable = trimmed.match(
-    /^\{\{\s*vars\[\s*((?:"[^"\r\n]+"|'[^'\r\n]+'|[^\s"'\]\r\n][^\]\r\n]*?))\s*\]((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}$/,
+    /^\{\{\s*vars\[\s*((?:"[^"\r\n]+"|'[^'\r\n]+'|[^\]"'\r\n]+?))\s*\]((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}$/,
   );
   if (wholeVariable) {
     return resolveVariableReference(record, wholeVariable[1], wholeVariable[2] ?? "");
@@ -7783,7 +7868,7 @@ function resolveTemplateValue(input: string, record: WorkflowRecord): unknown {
 function resolveJsonTemplate(input: string, record: WorkflowRecord): string {
   assertValidBlockTemplates(input);
   const re =
-    /\{\{\s*(?:blocks\[(\d+)\]|vars\[\s*((?:"[^"\r\n]+"|'[^'\r\n]+'|[^\s"'\]\r\n][^\]\r\n]*?))\s*\])((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}/g;
+    /\{\{\s*(?:blocks\[(\d+)\]|vars\[\s*((?:"[^"\r\n]+"|'[^'\r\n]+'|[^\]"'\r\n]+?))\s*\])((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}/g;
   let output = "";
   let index = 0;
   let inString = false;
@@ -7847,10 +7932,31 @@ function resolveVariableReference(
   const name = variableNameFromReference(nameText);
   const reference = `{{vars[${nameText}]${pathText}}}`;
   const variableNodes = record.nodes.filter((item) => nodeKind(item) === "variable");
+  const activeRun = record.runs.find((run) => run.status === "running");
+  const executedNode = variableNodes
+    .filter(
+      (item) =>
+        variableNodeOutputValue(item, name).found &&
+        (!activeRun ||
+          (item.status === "success" && (item.completedAt ?? 0) >= activeRun.startedAt)),
+    )
+    .sort((a, b) => (b.completedAt ?? 0) - (a.completedAt ?? 0))[0];
+  if (activeRun) {
+    if (!executedNode) {
+      throw new Error(`Workflow variable ${reference} references missing variable ${name}.`);
+    }
+    const value = variableNodeOutputValue(executedNode, name).value;
+    const result = getPathResult(value, pathText);
+    if (!result.found) {
+      throw new Error(`Workflow variable ${reference} references a value that does not exist.`);
+    }
+    return result.value;
+  }
   const node =
-    variableNodes.find((item) =>
+    executedNode ??
+    [...variableNodes].reverse().find((item) =>
       variableNodeConfig(item).some((entry) => entry.name.trim() === name),
-    ) ?? variableNodes.find((item) => variableNodeOutputValue(item, name).found);
+    );
   if (!node) {
     throw new Error(`Workflow variable ${reference} references missing variable ${name}.`);
   }
@@ -7890,6 +7996,40 @@ function variableNodeOutputValue(
   return { found: false, value: undefined };
 }
 
+function inheritedWorkflowVariables(
+  record: WorkflowRecord,
+  node: WorkflowNode,
+): {
+  variables: Record<string, unknown>;
+  variableTypes: Record<string, unknown>;
+} {
+  const variables: Record<string, unknown> = {};
+  const variableTypes: Record<string, unknown> = {};
+  const nodeIndex = record.nodes.findIndex((item) => item.id === node.id);
+  const precedingNodes = nodeIndex < 0 ? [] : record.nodes.slice(0, nodeIndex);
+  for (const preceding of precedingNodes) {
+    if (nodeKind(preceding) !== "variable") continue;
+    const output = parseBlockOutput(preceding);
+    if (!output) continue;
+    if (output.variables && typeof output.variables === "object" && !Array.isArray(output.variables)) {
+      Object.assign(variables, output.variables);
+    } else if (
+      typeof output.name === "string" &&
+      Object.prototype.hasOwnProperty.call(output, "value")
+    ) {
+      variables[output.name] = output.value;
+    }
+    if (
+      output.variableTypes &&
+      typeof output.variableTypes === "object" &&
+      !Array.isArray(output.variableTypes)
+    ) {
+      Object.assign(variableTypes, output.variableTypes);
+    }
+  }
+  return { variables, variableTypes };
+}
+
 function variableNameFromReference(nameText: string): string {
   const trimmed = nameText.trim();
   if (
@@ -7913,7 +8053,7 @@ function resolveBlockTemplatePreview(input: string, record: WorkflowRecord): str
 function assertValidBlockTemplates(input: string): void {
   const expressionRe = /\{\{[\s\S]*?\}\}/g;
   const validRe =
-    /^\{\{\s*(?:blocks\[(\d+)\]|vars\[\s*(?:"[^"\r\n]+"|'[^'\r\n]+'|[^\s"'\]\r\n][^\]\r\n]*?)\s*\])((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}$/;
+    /^\{\{\s*(?:blocks\[(\d+)\]|vars\[\s*(?:"[^"\r\n]+"|'[^'\r\n]+'|[^\]"'\r\n]+?)\s*\])((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}$/;
   const expressions = input.match(expressionRe) ?? [];
   for (const expression of expressions) {
     if (!validRe.test(expression)) throw invalidWorkflowVariable(expression);
