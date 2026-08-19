@@ -6,8 +6,8 @@ import {
   copyEntryTo,
   createFile,
   DOCS_DIR,
-  findFreeName,
   type FsNode,
+  findFreeName,
   readDirShallow,
   readFileText,
   removeEntry,
@@ -35,18 +35,40 @@ interface PlanViewProps {
 interface DocsClipboard {
   path: string;
   name: string;
+  kind: FsNode["kind"];
 }
 
 interface DocsMenu {
   x: number;
   y: number;
-  file: FsNode | null;
+  node: FsNode | null;
+}
+
+function isPathWithin(path: string, parent: string): boolean {
+  return path === parent || path.startsWith(`${parent}/`);
+}
+
+function remapPath(path: string, oldPath: string, newPath: string): string {
+  return path === oldPath ? newPath : `${newPath}${path.slice(oldPath.length)}`;
 }
 
 function markdownFileName(value: string): string {
   const trimmed = value.trim();
   if (!trimmed) return "";
   return /\.md$/i.test(trimmed) ? trimmed : `${trimmed}.md`;
+}
+
+function docsEntries(entries: FsNode[]): FsNode[] {
+  return entries
+    .filter((entry) => entry.kind === "directory" || /\.md$/i.test(entry.name))
+    .sort((a, b) => {
+      if (a.kind !== b.kind) return a.kind === "directory" ? -1 : 1;
+      return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
+    });
+}
+
+function basename(path: string): string {
+  return path.slice(path.lastIndexOf("/") + 1);
 }
 
 export function PlanView({
@@ -59,7 +81,9 @@ export function PlanView({
 }: PlanViewProps) {
   const { t } = useUiPreferences();
   const { confirm, notify } = useOsheepOverlay();
-  const [files, setFiles] = useState<FsNode[]>([]);
+  const [entriesByDir, setEntriesByDir] = useState<Record<string, FsNode[]>>({});
+  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
+  const [loadingDirs, setLoadingDirs] = useState<Set<string>>(new Set());
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [content, setContent] = useState("");
   const [savedContent, setSavedContent] = useState("");
@@ -73,6 +97,16 @@ export function PlanView({
   const [error, setError] = useState<string | null>(null);
   const dirty = content !== savedContent;
 
+  useEffect(() => {
+    setEntriesByDir({});
+    setExpandedPaths(new Set());
+    setSelectedPath(null);
+    setContent("");
+    setSavedContent("");
+    setMenu(null);
+    setRenamingPath(null);
+  }, [workspaceId]);
+
   const refreshDocs = useCallback(() => {
     setRefreshVersion((version) => version + 1);
     onDocsChanged?.();
@@ -80,33 +114,46 @@ export function PlanView({
 
   useEffect(() => {
     if (!workspaceId) {
-      setFiles([]);
+      setEntriesByDir({});
+      setExpandedPaths(new Set());
       setSelectedPath(null);
       setContent("");
       setSavedContent("");
       return;
     }
     let cancelled = false;
-    void readDirShallow(workspaceId, DOCS_DIR)
-      .then((entries) => {
+    const directories = [DOCS_DIR, ...expandedPaths];
+    setLoadingDirs(new Set(directories));
+    void Promise.all(
+      directories.map(async (dir) => [dir, await readDirShallow(workspaceId, dir)] as const),
+    )
+      .then((loaded) => {
         if (cancelled) return;
-        const markdownFiles = entries.filter(
-          (entry) => entry.kind === "file" && /\.md$/i.test(entry.name),
-        );
-        setFiles(markdownFiles);
-        setSelectedPath((current) => {
-          if (current && markdownFiles.some((entry) => entry.path === current)) return current;
-          return markdownFiles[0]?.path ?? null;
+        setEntriesByDir((current) => {
+          const next = { ...current };
+          for (const [dir, entries] of loaded) next[dir] = entries;
+          return next;
         });
+        setSelectedPath((current) => {
+          if (current) return current;
+          const firstRootDocument = docsEntries(
+            loaded.find(([dir]) => dir === DOCS_DIR)?.[1] ?? [],
+          ).find((entry) => entry.kind === "file");
+          return firstRootDocument?.path ?? null;
+        });
+        setLoadingDirs(new Set());
         setError(null);
       })
       .catch((reason) => {
-        if (!cancelled) setError(t("error.loadDocs", { detail: (reason as Error).message }));
+        if (!cancelled) {
+          setLoadingDirs(new Set());
+          setError(t("error.loadDocs", { detail: (reason as Error).message }));
+        }
       });
     return () => {
       cancelled = true;
     };
-  }, [workspaceId, refreshSignal, refreshVersion, t]);
+  }, [expandedPaths, refreshSignal, refreshVersion, t, workspaceId]);
 
   useEffect(() => {
     if (!workspaceId || !selectedPath) {
@@ -196,92 +243,135 @@ export function PlanView({
     }
   };
 
-  const renameDocument = async (file: FsNode, rawName: string) => {
+  const renameDocument = async (node: FsNode, rawName: string) => {
     setRenamingPath(null);
     if (!workspaceId) return;
-    const name = markdownFileName(rawName);
-    if (!name || name === file.name) return;
+    const name = node.kind === "file" ? markdownFileName(rawName) : rawName.trim();
+    if (!name || name === node.name) return;
     try {
-      if (selectedPath === file.path && dirty) await saveDocument();
-      const newPath = await renameEntry(workspaceId, file.path, name);
-      if (selectedPath === file.path) setSelectedPath(newPath);
-      if (clipboard?.path === file.path) setClipboard({ path: newPath, name });
+      if (selectedPath && isPathWithin(selectedPath, node.path) && dirty) await saveDocument();
+      const newPath = await renameEntry(workspaceId, node.path, name);
+      if (selectedPath && isPathWithin(selectedPath, node.path)) {
+        setSelectedPath(remapPath(selectedPath, node.path, newPath));
+      }
+      if (clipboard && isPathWithin(clipboard.path, node.path)) {
+        setClipboard({
+          ...clipboard,
+          path: remapPath(clipboard.path, node.path, newPath),
+          name: clipboard.path === node.path ? name : clipboard.name,
+        });
+      }
+      setExpandedPaths((current) => {
+        const next = new Set<string>();
+        for (const path of current) {
+          next.add(isPathWithin(path, node.path) ? remapPath(path, node.path, newPath) : path);
+        }
+        return next;
+      });
+      setEntriesByDir({});
       refreshDocs();
     } catch (reason) {
       notify.error((reason as Error).message);
     }
   };
 
-  const deleteDocument = async (file: FsNode) => {
+  const deleteDocument = async (node: FsNode) => {
     if (!workspaceId) return;
     const accepted = await confirm({
-      message: t("confirm.deleteFile", { name: file.name }),
+      message: t("confirm.deleteFile", { name: node.name }),
       confirmLabel: t("confirm.delete"),
       reminderKey: "delete-doc-file",
     });
     if (!accepted) return;
     try {
-      await removeEntry(workspaceId, file.path);
-      if (selectedPath === file.path) setSelectedPath(null);
-      if (clipboard?.path === file.path) setClipboard(null);
+      await removeEntry(workspaceId, node.path);
+      if (selectedPath && isPathWithin(selectedPath, node.path)) setSelectedPath(null);
+      if (clipboard && isPathWithin(clipboard.path, node.path)) setClipboard(null);
+      setExpandedPaths(
+        (current) => new Set([...current].filter((path) => !isPathWithin(path, node.path))),
+      );
+      setEntriesByDir({});
       refreshDocs();
     } catch (reason) {
       notify.error((reason as Error).message);
     }
   };
 
-  const pasteDocument = async () => {
+  const pasteDocument = async (targetDir = DOCS_DIR) => {
     if (!workspaceId || !clipboard) return;
     try {
       if (dirty) await saveDocument();
-      const name = await findFreeName(workspaceId, DOCS_DIR, clipboard.name, "file");
-      const path = `${DOCS_DIR}/${name}`;
+      const name = await findFreeName(workspaceId, targetDir, clipboard.name, clipboard.kind);
+      const path = `${targetDir}/${name}`;
       await copyEntryTo(workspaceId, clipboard.path, path);
-      setSelectedPath(path);
-      setPreviewMode(true);
+      if (clipboard.kind === "file") {
+        setSelectedPath(path);
+        setPreviewMode(true);
+      }
       refreshDocs();
     } catch (reason) {
       notify.error(t("notification.pasteFailed", { detail: (reason as Error).message }));
     }
   };
 
-  const openFileMenu = (event: React.MouseEvent, file: FsNode) => {
+  const openFileMenu = (event: React.MouseEvent, node: FsNode) => {
     event.preventDefault();
     event.stopPropagation();
-    setMenu({ x: event.clientX, y: event.clientY, file });
+    setMenu({ x: event.clientX, y: event.clientY, node });
   };
 
-  const copyDocument = async (file: FsNode) => {
-    if (selectedPath === file.path && dirty) {
+  const copyDocument = async (node: FsNode) => {
+    if (selectedPath && isPathWithin(selectedPath, node.path) && dirty) {
       try {
         await saveDocument();
       } catch {
         return;
       }
     }
-    setClipboard({ path: file.path, name: file.name });
+    setClipboard({ path: node.path, name: node.name, kind: node.kind });
   };
 
   const openBlankMenu = (event: React.MouseEvent) => {
     if (event.defaultPrevented) return;
     event.preventDefault();
-    setMenu({ x: event.clientX, y: event.clientY, file: null });
+    setMenu({ x: event.clientX, y: event.clientY, node: null });
   };
 
-  const menuSections: CtxMenuSection[] = menu?.file
+  const toggleDirectory = (path: string) => {
+    setExpandedPaths((current) => {
+      if (current.has(path)) {
+        return new Set([...current].filter((entry) => !isPathWithin(entry, path)));
+      }
+      const next = new Set(current);
+      next.add(path);
+      return next;
+    });
+  };
+
+  const menuSections: CtxMenuSection[] = menu?.node
     ? [
         {
           items: [
             {
               label: t("docs.copy"),
               shortcut: "Ctrl+C",
-              onSelect: () => void copyDocument(menu.file!),
+              onSelect: () => void copyDocument(menu.node!),
             },
             {
               label: t("docs.rename"),
               shortcut: "F2",
-              onSelect: () => setRenamingPath(menu.file!.path),
+              onSelect: () => setRenamingPath(menu.node!.path),
             },
+            ...(menu.node.kind === "directory"
+              ? [
+                  {
+                    label: t("docs.paste"),
+                    shortcut: "Ctrl+V",
+                    disabled: !clipboard,
+                    onSelect: () => void pasteDocument(menu.node!.path),
+                  },
+                ]
+              : []),
           ],
         },
         {
@@ -290,7 +380,7 @@ export function PlanView({
               label: t("docs.delete"),
               shortcut: "Delete",
               danger: true,
-              onSelect: () => void deleteDocument(menu.file!),
+              onSelect: () => void deleteDocument(menu.node!),
             },
           ],
         },
@@ -312,7 +402,10 @@ export function PlanView({
     return <div className="plan-view plan-view--empty muted">{t("docs.openFirst")}</div>;
   }
 
-  const selectedFile = files.find((file) => file.path === selectedPath) ?? null;
+  const rootEntries = docsEntries(entriesByDir[DOCS_DIR] ?? []);
+  const selectedFile: FsNode | null = selectedPath
+    ? { name: basename(selectedPath), path: selectedPath, kind: "file" }
+    : null;
 
   return (
     <div className="plan-view">
@@ -338,31 +431,26 @@ export function PlanView({
               onCancel={() => setCreating(false)}
             />
           )}
-          {files.length === 0 && !creating ? (
+          {rootEntries.length === 0 && !creating && !loadingDirs.has(DOCS_DIR) ? (
             <div className="plan-view__empty muted">{t("docs.empty")}</div>
           ) : (
-            files.map((file) =>
-              renamingPath === file.path ? (
-                <DocumentNameInput
-                  key={file.path}
-                  initial={file.name}
-                  onSubmit={(name) => void renameDocument(file, name)}
-                  onCancel={() => setRenamingPath(null)}
-                />
-              ) : (
-                <button
-                  type="button"
-                  key={file.path}
-                  className={`plan-view__item${file.path === selectedPath ? " is-active" : ""}`}
-                  onClick={() => void selectDocument(file.path)}
-                  onContextMenu={(event) => openFileMenu(event, file)}
-                  title={file.name}
-                >
-                  <FileIcon name={file.name} />
-                  <span>{file.name}</span>
-                </button>
-              ),
-            )
+            rootEntries.map((node) => (
+              <DocsTreeEntry
+                key={node.path}
+                node={node}
+                depth={0}
+                selectedPath={selectedPath}
+                expandedPaths={expandedPaths}
+                entriesByDir={entriesByDir}
+                loadingDirs={loadingDirs}
+                renamingPath={renamingPath}
+                onSelectDocument={selectDocument}
+                onToggleDirectory={toggleDirectory}
+                onOpenMenu={openFileMenu}
+                onRename={renameDocument}
+                onCancelRename={() => setRenamingPath(null)}
+              />
+            ))
           )}
         </div>
         {menu && (
@@ -434,14 +522,123 @@ export function PlanView({
   );
 }
 
+function DocsTreeEntry({
+  node,
+  depth,
+  selectedPath,
+  expandedPaths,
+  entriesByDir,
+  loadingDirs,
+  renamingPath,
+  onSelectDocument,
+  onToggleDirectory,
+  onOpenMenu,
+  onRename,
+  onCancelRename,
+}: {
+  node: FsNode;
+  depth: number;
+  selectedPath: string | null;
+  expandedPaths: Set<string>;
+  entriesByDir: Record<string, FsNode[]>;
+  loadingDirs: Set<string>;
+  renamingPath: string | null;
+  onSelectDocument: (path: string) => Promise<void>;
+  onToggleDirectory: (path: string) => void;
+  onOpenMenu: (event: React.MouseEvent, node: FsNode) => void;
+  onRename: (node: FsNode, name: string) => Promise<void>;
+  onCancelRename: () => void;
+}) {
+  const expanded = node.kind === "directory" && expandedPaths.has(node.path);
+  const children = docsEntries(entriesByDir[node.path] ?? []);
+
+  if (renamingPath === node.path) {
+    return (
+      <DocumentNameInput
+        initial={node.name}
+        kind={node.kind}
+        depth={depth}
+        onSubmit={(name) => void onRename(node, name)}
+        onCancel={onCancelRename}
+      />
+    );
+  }
+
+  return (
+    <div className="plan-view__tree-entry">
+      <button
+        type="button"
+        className={`plan-view__item${node.path === selectedPath ? " is-active" : ""}`}
+        style={{ paddingLeft: 8 + depth * 14 }}
+        onClick={() => {
+          if (node.kind === "directory") onToggleDirectory(node.path);
+          else void onSelectDocument(node.path);
+        }}
+        onContextMenu={(event) => onOpenMenu(event, node)}
+        title={node.name}
+        aria-expanded={node.kind === "directory" ? expanded : undefined}
+      >
+        <span
+          className={`plan-view__chevron${node.kind === "directory" ? "" : " is-placeholder"}`}
+          aria-hidden="true"
+        >
+          {node.kind === "directory" && (
+            <i className={`codicon codicon-chevron-${expanded ? "down" : "right"}`} />
+          )}
+        </span>
+        {node.kind === "directory" ? (
+          <i
+            className={`plan-view__folder codicon codicon-folder${expanded ? "-opened" : ""}`}
+            aria-hidden="true"
+          />
+        ) : (
+          <FileIcon name={node.name} />
+        )}
+        <span>{node.name}</span>
+      </button>
+      {expanded && (
+        <div className="plan-view__children">
+          {loadingDirs.has(node.path) && children.length === 0 ? (
+            <div className="plan-view__loading muted" style={{ paddingLeft: 36 + depth * 14 }}>
+              ...
+            </div>
+          ) : (
+            children.map((child) => (
+              <DocsTreeEntry
+                key={child.path}
+                node={child}
+                depth={depth + 1}
+                selectedPath={selectedPath}
+                expandedPaths={expandedPaths}
+                entriesByDir={entriesByDir}
+                loadingDirs={loadingDirs}
+                renamingPath={renamingPath}
+                onSelectDocument={onSelectDocument}
+                onToggleDirectory={onToggleDirectory}
+                onOpenMenu={onOpenMenu}
+                onRename={onRename}
+                onCancelRename={onCancelRename}
+              />
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function DocumentNameInput({
   initial,
   placeholder,
+  kind = "file",
+  depth = 0,
   onSubmit,
   onCancel,
 }: {
   initial: string;
   placeholder?: string;
+  kind?: FsNode["kind"];
+  depth?: number;
   onSubmit: (name: string) => void;
   onCancel: () => void;
 }) {
@@ -453,10 +650,10 @@ function DocumentNameInput({
     const input = inputRef.current;
     if (!input) return;
     input.focus();
-    const dot = initial.lastIndexOf(".");
+    const dot = kind === "file" ? initial.lastIndexOf(".") : -1;
     if (dot > 0) input.setSelectionRange(0, dot);
     else input.select();
-  }, [initial]);
+  }, [initial, kind]);
 
   const submit = () => {
     if (submittedRef.current) return;
@@ -465,8 +662,12 @@ function DocumentNameInput({
   };
 
   return (
-    <div className="plan-view__name-input">
-      <FileIcon name={value || "document.md"} />
+    <div className="plan-view__name-input" style={{ paddingLeft: 28 + depth * 14 }}>
+      {kind === "directory" ? (
+        <i className="plan-view__folder codicon codicon-folder" aria-hidden="true" />
+      ) : (
+        <FileIcon name={value || "document.md"} />
+      )}
       <input
         ref={inputRef}
         value={value}
