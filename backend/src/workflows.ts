@@ -286,6 +286,9 @@ function sanitizeBlockOutputText(value: string): string {
     const sanitized = { ...(parsed as Record<string, unknown>) };
     delete sanitized.CHANGED_FILES;
     delete sanitized.VERIFICATION;
+    // Diff approval output is intentionally metadata-only. Older workflow
+    // records may still contain the full diff, which can be several megabytes.
+    if (sanitized.type === "diff-approval") delete sanitized.diff;
     return JSON.stringify(sanitized, null, 2);
   } catch {
     return value;
@@ -327,6 +330,16 @@ function sanitizeRun(raw: unknown): WorkflowRun | null {
   if (Array.isArray((r as any).trace)) {
     run.trace = (r as any).trace
       .filter((item: any) => item && typeof item.nodeId === "string")
+      .map((item: any) => {
+        if (!item.output || typeof item.output !== "object" || Array.isArray(item.output)) {
+          return item;
+        }
+        const output = { ...item.output } as Record<string, unknown>;
+        if (item.kind === "diff-approval" || output.type === "diff-approval") {
+          delete output.diff;
+        }
+        return { ...item, output };
+      })
       .slice(-500);
   }
   if ((r as any).stats && typeof (r as any).stats === "object") run.stats = (r as any).stats;

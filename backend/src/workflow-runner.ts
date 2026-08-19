@@ -21,7 +21,6 @@ import {
   createPullRequest,
   deleteBranch,
   getRepoInfo,
-  getWorkflowDiff,
   commit as gitCommit,
   isRepo,
   listBranches,
@@ -1471,13 +1470,11 @@ async function executeLocalNode(
 
   if (kind === "diff-approval") {
     if (!(await isRepo(workspaceRoot))) throw new Error(`${node.title} requires a Git repository.`);
-    const diff = await getWorkflowDiff(workspaceRoot);
     const approvalOutput = {
       type: "diff-approval",
       status: "waiting",
       approved: null,
-      diff,
-      text: diff || "No changes to review.",
+      text: "Waiting for diff approval.",
     };
     const approval = waitForDiffApproval(workspaceRoot, record.id, node.id, options.signal);
     try {
@@ -2630,6 +2627,7 @@ function sanitizeBlockOutput(output: WorkflowBlockOutput): WorkflowBlockOutput {
   const sanitized = { ...output };
   delete sanitized.CHANGED_FILES;
   delete sanitized.VERIFICATION;
+  if (sanitized.type === "diff-approval") delete sanitized.diff;
   return sanitized;
 }
 

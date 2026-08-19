@@ -274,6 +274,31 @@ test("workflow loading removes legacy changed-file and verification output field
   assert.equal("VERIFICATION" in output, false);
 });
 
+test("workflow loading removes legacy diff approval payloads", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-workflow-diff-output-"));
+  const created = await createWorkflow(root, {});
+  const legacyOutput = JSON.stringify({
+    type: "diff-approval",
+    status: "waiting",
+    approved: null,
+    diff: `diff --git a/large-file b/large-file\n${"+line\n".repeat(1000)}`,
+    text: "legacy diff",
+  });
+
+  await saveWorkflow(root, {
+    ...created,
+    nodes: created.nodes.map((node, index) =>
+      index === 1 ? { ...node, rawOutput: legacyOutput, summary: legacyOutput } : node,
+    ),
+  });
+  const loaded = await getWorkflow(root, created.id);
+  const output = JSON.parse(loaded.nodes[1]?.rawOutput ?? "{}") as Record<string, unknown>;
+
+  assert.equal(output.type, "diff-approval");
+  assert.equal(output.text, "legacy diff");
+  assert.equal("diff" in output, false);
+});
+
 test("workflow README is persisted inside the workflow JSON record", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-workflow-readme-"));
   const created = await createWorkflow(root, {
