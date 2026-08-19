@@ -3198,6 +3198,49 @@
   font-size: 11px;
 }
 
+.workflow-variable-row__toggle {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  gap: 6px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.workflow-variable-row__toggle:hover {
+  color: var(--wf-text);
+}
+
+.workflow-variable-row__toggle-icon {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-right: 1px solid currentColor;
+  border-bottom: 1px solid currentColor;
+  transform: rotate(45deg) translateY(-1px);
+  transition: transform var(--duration-fast) ease;
+}
+
+.workflow-variable-row.is-collapsed .workflow-variable-row__toggle-icon {
+  transform: rotate(-45deg) translate(-1px, 1px);
+}
+
+.workflow-variable-row__title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workflow-variable-row__value {
+  width: calc(100% + 12px);
+}
+
 .workflow-variable-row__remove,
 .workflow-variable-list__add {
   border: 1px solid var(--wf-border);

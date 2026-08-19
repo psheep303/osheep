@@ -408,6 +408,8 @@ export const en = {
   "workflow.variable.item": "Variable {index}",
   "workflow.variable.add": "Add variable",
   "workflow.variable.remove": "Remove variable",
+  "workflow.variable.collapse": "Collapse variable",
+  "workflow.variable.expand": "Expand variable",
   "workflow.blocks.workflowRun": "Workflow run",
   "workflow.blocks.cron": "Schedule (Cron)",
   "workflow.blocks.runCommand": "Run command",
@@ -872,4 +874,6 @@ export const zhCN: Record<MessageKey, string> = {
   "skills.confirmUninstall": "从此 Agent 卸载“{name}”？",
   "settings.workflow.maxParallelNodesDescription":
     "限制单次工作流运行内部同时执行的节点数，不同工作流分别计算。范围：{min}-{max}。",
+  "workflow.variable.collapse": "折叠变量",
+  "workflow.variable.expand": "展开变量",
 };

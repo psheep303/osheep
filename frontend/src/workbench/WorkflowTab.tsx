@@ -5211,6 +5211,9 @@ function WorkflowNodeInspector({
     CodexPluginSnapshot | ClaudePluginSnapshot | null
   >(null);
   const [pluginSearch, setPluginSearch] = useState("");
+  const [collapsedVariableRows, setCollapsedVariableRows] = useState<Set<number>>(
+    () => new Set(),
+  );
   const showOutput = kind !== "markdown";
   const runDetails = runDetailsSnapshot(node);
   const waitingForChoice =
@@ -5218,6 +5221,27 @@ function WorkflowNodeInspector({
   const waitingAgentLabel = node.providerKind === "claude-cli" ? "Claude Code" : "Codex";
   const updateConfig = (patch: Record<string, unknown>) =>
     onUpdate({ config: { ...(node.config ?? {}), ...patch } });
+  const toggleVariableRow = (index: number) => {
+    setCollapsedVariableRows((current) => {
+      const next = new Set(current);
+      if (next.has(index)) next.delete(index);
+      else next.add(index);
+      return next;
+    });
+  };
+  const removeVariableRow = (index: number) => {
+    setCollapsedVariableRows((current) => {
+      const next = new Set<number>();
+      for (const itemIndex of current) {
+        if (itemIndex < index) next.add(itemIndex);
+        else if (itemIndex > index) next.add(itemIndex - 1);
+      }
+      return next;
+    });
+    updateConfig({
+      variables: variableConfig.filter((_, itemIndex) => itemIndex !== index),
+    });
+  };
 
   useEffect(() => {
     let active = true;
@@ -6038,17 +6062,41 @@ function WorkflowNodeInspector({
       ) : isVariable ? (
         <div className="workflow-variable-list">
           {variableConfig.map((entry, index) => (
-            <div className="workflow-variable-row" key={index}>
+            <div
+              className={
+                "workflow-variable-row" +
+                (collapsedVariableRows.has(index) ? " is-collapsed" : "")
+              }
+              key={index}
+            >
               <div className="workflow-variable-row__head">
-                <span>{t("workflow.variable.item", { index: index + 1 })}</span>
+                <button
+                  type="button"
+                  className="workflow-variable-row__toggle"
+                  onClick={() => toggleVariableRow(index)}
+                  aria-expanded={!collapsedVariableRows.has(index)}
+                  aria-label={t(
+                    collapsedVariableRows.has(index)
+                      ? "workflow.variable.expand"
+                      : "workflow.variable.collapse",
+                  )}
+                  title={t(
+                    collapsedVariableRows.has(index)
+                      ? "workflow.variable.expand"
+                      : "workflow.variable.collapse",
+                  )}
+                >
+                  <span className="workflow-variable-row__toggle-icon" aria-hidden />
+                  <span className="workflow-variable-row__title">
+                    {collapsedVariableRows.has(index) && entry.name.trim()
+                      ? entry.name.trim()
+                      : t("workflow.variable.item", { index: index + 1 })}
+                  </span>
+                </button>
                 <button
                   type="button"
                   className="workflow-variable-row__remove"
-                  onClick={() =>
-                    updateConfig({
-                      variables: variableConfig.filter((_, itemIndex) => itemIndex !== index),
-                    })
-                  }
+                  onClick={() => removeVariableRow(index)}
                   disabled={running || variableConfig.length <= 1}
                   aria-label={t("workflow.variable.remove")}
                   title={t("workflow.variable.remove")}
@@ -6056,56 +6104,60 @@ function WorkflowNodeInspector({
                   x
                 </button>
               </div>
-              <label className="workflow-inspector__field">
-                <span>{t("workflow.variable.name")}</span>
-                <TemplateInput
-                  value={entry.name}
-                  onChange={(value) =>
-                    updateConfig({
-                      variables: variableConfig.map((item, itemIndex) =>
-                        itemIndex === index ? { ...item, name: value } : item,
-                      ),
-                    })
-                  }
-                  disabled={running}
-                />
-              </label>
-              <label className="workflow-inspector__field">
-                <span>{t("workflow.variable.type")}</span>
-                <select
-                  value={entry.type}
-                  onChange={(event) =>
-                    updateConfig({
-                      variables: variableConfig.map((item, itemIndex) =>
-                        itemIndex === index
-                          ? { ...item, type: variableValueType(event.target.value) }
-                          : item,
-                      ),
-                    })
-                  }
-                  disabled={running}
-                >
-                  <option value="auto">{t("workflow.variable.type.auto")}</option>
-                  <option value="text">{t("workflow.variable.type.text")}</option>
-                  <option value="json">{t("workflow.variable.type.json")}</option>
-                  <option value="number">{t("workflow.variable.type.number")}</option>
-                  <option value="boolean">{t("workflow.variable.type.boolean")}</option>
-                </select>
-              </label>
-              <label className="workflow-inspector__field">
-                <span>{t("workflow.variable.value")}</span>
-                <TemplateTextarea
-                  value={entry.value}
-                  onChange={(value) =>
-                    updateConfig({
-                      variables: variableConfig.map((item, itemIndex) =>
-                        itemIndex === index ? { ...item, value } : item,
-                      ),
-                    })
-                  }
-                  disabled={running}
-                />
-              </label>
+              {!collapsedVariableRows.has(index) && (
+                <>
+                  <label className="workflow-inspector__field">
+                    <span>{t("workflow.variable.name")}</span>
+                    <TemplateInput
+                      value={entry.name}
+                      onChange={(value) =>
+                        updateConfig({
+                          variables: variableConfig.map((item, itemIndex) =>
+                            itemIndex === index ? { ...item, name: value } : item,
+                          ),
+                        })
+                      }
+                      disabled={running}
+                    />
+                  </label>
+                  <label className="workflow-inspector__field">
+                    <span>{t("workflow.variable.type")}</span>
+                    <select
+                      value={entry.type}
+                      onChange={(event) =>
+                        updateConfig({
+                          variables: variableConfig.map((item, itemIndex) =>
+                            itemIndex === index
+                              ? { ...item, type: variableValueType(event.target.value) }
+                              : item,
+                          ),
+                        })
+                      }
+                      disabled={running}
+                    >
+                      <option value="auto">{t("workflow.variable.type.auto")}</option>
+                      <option value="text">{t("workflow.variable.type.text")}</option>
+                      <option value="json">{t("workflow.variable.type.json")}</option>
+                      <option value="number">{t("workflow.variable.type.number")}</option>
+                      <option value="boolean">{t("workflow.variable.type.boolean")}</option>
+                    </select>
+                  </label>
+                  <label className="workflow-inspector__field workflow-variable-row__value">
+                    <span>{t("workflow.variable.value")}</span>
+                    <TemplateTextarea
+                      value={entry.value}
+                      onChange={(value) =>
+                        updateConfig({
+                          variables: variableConfig.map((item, itemIndex) =>
+                            itemIndex === index ? { ...item, value } : item,
+                          ),
+                        })
+                      }
+                      disabled={running}
+                    />
+                  </label>
+                </>
+              )}
             </div>
           ))}
           <button
