@@ -157,6 +157,31 @@ export type AgentSessionApp = "claude" | "codex";
 export type CliToolName = "claude" | "codex";
 export type CliToolAction = "install" | "update";
 
+export type SkillAgent = "claude" | "codex";
+
+export interface InstalledSkill {
+  name: string;
+  description?: string;
+  path: string;
+  agents: SkillAgent[];
+  source: "local" | "skills.sh";
+}
+
+export interface SkillsSnapshot {
+  installed: InstalledSkill[];
+  paths: Record<SkillAgent, string[]>;
+}
+
+export interface SkillsLibraryItem {
+  name: string;
+  owner?: string;
+  repo?: string;
+  description?: string;
+  installCount: number;
+  source?: string;
+  url?: string;
+}
+
 export interface CliToolStatus {
   name: CliToolName;
   activeAction: CliToolAction | null;
@@ -608,6 +633,34 @@ export interface GitChange {
 export interface GitStatus extends GitRepoInfo {
   changes: GitChange[];
   ignoredPaths?: string[];
+}
+
+export async function getSkills(): Promise<SkillsSnapshot> {
+  return await http.get<SkillsSnapshot>("/api/skills");
+}
+
+export async function searchSkillsLibrary(query = ""): Promise<SkillsLibraryItem[]> {
+  const result = await http.get<{ skills: SkillsLibraryItem[] }>(
+    `/api/skills/library?${new URLSearchParams({ q: query }).toString()}`,
+  );
+  return result.skills;
+}
+
+export async function installSkillApi(input: {
+  source: string;
+  skill?: string;
+  agents: SkillAgent[];
+}): Promise<SkillsSnapshot> {
+  const result = await http.post<{ snapshot: SkillsSnapshot }>("/api/skills/install", input);
+  return result.snapshot;
+}
+
+export async function uninstallSkillApi(name: string, agents: SkillAgent[]): Promise<SkillsSnapshot> {
+  const result = await http.post<{ snapshot: SkillsSnapshot }>("/api/skills/uninstall", {
+    name,
+    agents,
+  });
+  return result.snapshot;
 }
 
 export interface GitDiff {
