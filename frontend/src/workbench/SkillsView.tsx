@@ -23,9 +23,6 @@ export function SkillsView({ agent }: SkillsViewProps) {
   const [snapshot, setSnapshot] = useState<SkillsSnapshot | null>(null);
   const [library, setLibrary] = useState<SkillsLibraryItem[]>([]);
   const [query, setQuery] = useState("");
-  const [source, setSource] = useState("");
-  const [skill, setSkill] = useState("");
-  const [agents, setAgents] = useState<SkillAgent[]>([agent]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const lastNotifiedError = useRef<string | null>(null);
@@ -64,30 +61,20 @@ export function SkillsView({ agent }: SkillsViewProps) {
     return () => window.clearTimeout(timer);
   }, [query]);
 
-  useEffect(() => setAgents([agent]), [agent]);
-
   const installed = useMemo(
     () => snapshot?.installed.filter((item) => item.agents.includes(agent)) ?? [],
     [snapshot, agent],
   );
 
-  const toggleAgent = (value: SkillAgent) => {
-    setAgents((current) =>
-      current.includes(value) ? current.filter((item) => item !== value) : [...current, value],
-    );
-  };
-
-  const install = async (item?: SkillsLibraryItem) => {
-    const nextSource = item?.url || item?.source || source.trim();
-    const nextSkill = item?.name || skill.trim();
+  const install = async (item: SkillsLibraryItem) => {
+    const nextSource = item.url || item.source;
+    const nextSkill = item.name;
     if (!nextSource) return;
     setBusy(`install:${nextSkill}`);
     try {
-      const next = await installSkillApi({ source: nextSource, skill: nextSkill || undefined, agents });
+      const next = await installSkillApi({ source: nextSource, skill: nextSkill, agents: [agent] });
       setSnapshot(next);
-      setSource("");
-      setSkill("");
-      notify.success(t("skills.installSuccess", { name: nextSkill || nextSource }));
+      notify.success(t("skills.installSuccess", { name: nextSkill }));
     } catch (reason) {
       reportError(reason);
     } finally {
@@ -123,23 +110,6 @@ export function SkillsView({ agent }: SkillsViewProps) {
       </div>
       <div className="skills-view__intro">{t("skills.description")}</div>
 
-      <div className="skills-view__form">
-        <div className="skills-view__form-title">{t("skills.installCustom")}</div>
-        <input className="settings-view__input" value={source} onChange={(event) => setSource(event.target.value)} placeholder={t("skills.sourcePlaceholder")} />
-        <input className="settings-view__input" value={skill} onChange={(event) => setSkill(event.target.value)} placeholder={t("skills.namePlaceholder")} />
-        <div className="skills-view__agents" role="group" aria-label={t("skills.agents")}>
-          {(["claude", "codex"] as const).map((value) => (
-            <label key={value} className="skills-view__agent">
-              <input type="checkbox" checked={agents.includes(value)} onChange={() => toggleAgent(value)} />
-              {value === "claude" ? "Claude" : "Codex"}
-            </label>
-          ))}
-        </div>
-        <button className="primary-btn" type="button" onClick={() => void install()} disabled={!source.trim() || agents.length === 0 || busy !== null}>
-          {busy?.startsWith("install:") ? t("skills.installing") : t("skills.install")}
-        </button>
-      </div>
-
       <section className="skills-view__section">
         <div className="skills-view__section-heading"><span>{t("skills.installed")}</span><span>{installed.length}</span></div>
         <div className="skills-view__list">
@@ -163,7 +133,7 @@ export function SkillsView({ agent }: SkillsViewProps) {
               <div className="skills-view__card-main"><div className="skills-view__name">{item.name}</div><div className="skills-view__installs">{t("skills.installCount", { count: item.installCount.toLocaleString() })}</div></div>
               {(item.owner || item.repo) && <div className="skills-view__repo">{item.owner}{item.owner && item.repo ? "/" : ""}{item.repo}</div>}
               {item.description && <div className="skills-view__description">{item.description}</div>}
-              <button className="tb-btn" type="button" onClick={() => void install(item)} disabled={busy !== null}>{busy === `install:${item.name}` ? t("skills.installing") : t("skills.install")}</button>
+              <button className="tb-btn" type="button" onClick={() => void install(item)} disabled={busy !== null || !item.url && !item.source}>{busy === `install:${item.name}` ? t("skills.installing") : t("skills.install")}</button>
             </div>
           ))}
         </div>

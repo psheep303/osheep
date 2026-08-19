@@ -1249,47 +1249,8 @@
   border-bottom: 1px solid var(--border-faint);
 }
 
-.skills-view__form {
-  display: grid;
-  gap: 7px;
-  margin: 10px;
-  padding: 10px;
-  border: 1px solid var(--border-faint);
-  border-radius: var(--radius-sm);
-  background: var(--ui-surface-card);
-}
-
-.skills-view__form-title {
-  color: var(--fg-strong);
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.skills-view__form .settings-view__input {
-  box-sizing: border-box;
-  width: 100%;
-}
-
-.skills-view__agents {
-  display: flex;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.skills-view__agent {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  color: var(--fg-default);
-  font-size: 11.5px;
-}
-
-.skills-view__agent input {
-  margin: 0;
-}
-
 .skills-view__section {
-  margin: 0 10px 14px;
+  margin: 10px 10px 14px;
 }
 
 .skills-view__section-heading {
