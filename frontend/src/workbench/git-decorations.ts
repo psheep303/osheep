@@ -11,6 +11,8 @@ export interface FileDecoration {
    * Highest-priority status among descendants (only for folders).
    */
   childStatus?: GitFileStatus;
+  /** This path is ignored by Git. Directories implicitly ignore descendants. */
+  ignored?: boolean;
 }
 
 export function statusColor(s: GitFileStatus): string {
@@ -79,6 +81,11 @@ export function buildDecorations(status: GitStatus | null): Map<string, FileDeco
   const map = new Map<string, FileDecoration>();
   if (!status?.isRepo) return map;
 
+  for (const ignoredPath of status.ignoredPaths ?? []) {
+    const existing = map.get(ignoredPath) ?? {};
+    map.set(ignoredPath, { ...existing, ignored: true });
+  }
+
   for (const c of status.changes) {
     const s = effectiveStatus(c);
     if (!s) continue;
@@ -103,4 +110,16 @@ export function buildDecorations(status: GitStatus | null): Map<string, FileDeco
   }
 
   return map;
+}
+
+export function isIgnoredPath(
+  decorations: ReadonlyMap<string, FileDecoration>,
+  filePath: string,
+): boolean {
+  let current = filePath;
+  while (current) {
+    if (decorations.get(current)?.ignored) return true;
+    current = parentOf(current);
+  }
+  return false;
 }

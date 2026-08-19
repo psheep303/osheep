@@ -607,6 +607,7 @@ export interface GitChange {
 
 export interface GitStatus extends GitRepoInfo {
   changes: GitChange[];
+  ignoredPaths?: string[];
 }
 
 export interface GitDiff {

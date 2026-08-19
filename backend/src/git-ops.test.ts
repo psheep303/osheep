@@ -5,10 +5,42 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
-import { deleteBranch, getCommitDetails, getCommitDiff, getLog } from "./git-ops.js";
+import { deleteBranch, getCommitDetails, getCommitDiff, getLog, getStatus } from "./git-ops.js";
 import { findExecutable } from "./runtime-tools.js";
 
 const execFileAsync = promisify(execFile);
+
+test("Git status reports ignored paths separately from changes", async (context) => {
+  const git = findExecutable("git");
+  if (!git) {
+    context.skip("git is not installed");
+    return;
+  }
+
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "osheep ignored status "));
+  try {
+    await execFileAsync(git, ["init"], { cwd: root });
+    await fs.writeFile(path.join(root, ".gitignore"), "dist/\n*.local\n", "utf8");
+    await fs.mkdir(path.join(root, "dist"));
+    await fs.writeFile(path.join(root, "dist", "bundle.js"), "ignored\n", "utf8");
+    await fs.writeFile(path.join(root, "settings.local"), "ignored\n", "utf8");
+    await fs.writeFile(path.join(root, "visible.txt"), "visible\n", "utf8");
+
+    const status = await getStatus(root);
+
+    assert.deepEqual(status.ignoredPaths.sort(), ["dist", "settings.local"]);
+    assert.equal(
+      status.changes.some((change) => change.path === "visible.txt"),
+      true,
+    );
+    assert.equal(
+      status.changes.some((change) => change.path.startsWith("dist")),
+      false,
+    );
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
 
 test("Git history returns VS Code graph data and full commit details", async (context) => {
   const git = findExecutable("git");

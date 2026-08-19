@@ -37,6 +37,15 @@
   opacity: 0.55;
 }
 
+.tree-row.is-ignored {
+  color: var(--fg-faint);
+  opacity: 0.62;
+}
+
+.tree-row.is-ignored .tree-row__icon {
+  color: var(--fg-faint);
+}
+
 .tree-row.is-drop-target {
   background: var(--accent-soft);
   outline: 1px solid var(--accent);

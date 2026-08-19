@@ -62,6 +62,7 @@ export function GitView({
   const { resolvedLanguage, t } = useUiPreferences();
   const { confirm, notify } = useOsheepOverlay();
   const [message, setMessage] = useState("");
+  const messageRef = useRef<HTMLTextAreaElement | null>(null);
   const [busy, setBusy] = useState(false);
   const [busyLabel, setBusyLabel] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -243,14 +244,19 @@ export function GitView({
     }
   }
 
-  const canCommit = staged.length > 0 && message.trim().length > 0 && !busy;
+  const canCommit = staged.length > 0 && !busy;
   const ahead = status?.ahead ?? 0;
   const behind = status?.behind ?? 0;
   const hasUpstream = !!status?.upstream;
   const hasRemotes = remotes.length > 0;
   const detached = !!status?.detached;
 
-  const doCommit = (mode: CommitMode) =>
+  const doCommit = (mode: CommitMode) => {
+    if (!message.trim()) {
+      messageRef.current?.focus();
+      notify.error(t("git.commitMessageRequired"));
+      return;
+    }
     void run(t("git.committing"), async () => {
       await gitCommit(workspaceId, message);
       setMessage("");
@@ -263,6 +269,7 @@ export function GitView({
         await gitPush(workspaceId, hasUpstream ? {} : autoPushOpts(remotes, status));
       }
     });
+  };
 
   const doSync = () =>
     void run(
@@ -385,6 +392,7 @@ export function GitView({
       {repositoryOpen && (
         <div className="git-view__commit">
           <textarea
+            ref={messageRef}
             className="git-view__msg"
             placeholder={commitPlaceholder}
             value={message}
@@ -578,6 +586,7 @@ function gitStatusSignature(status: GitStatus): string {
     behind: status.behind ?? 0,
     upstream: status.upstream ?? null,
     detached: status.detached ?? false,
+    ignoredPaths: status.ignoredPaths ?? [],
     changes: status.changes.map((change) => [
       change.path,
       change.indexStatus,
@@ -638,7 +647,7 @@ function CommitSplitButton({
       </button>
       <button
         className="primary-btn git-view__commit-more"
-        disabled={isBusy}
+        disabled={disabled || isBusy}
         onClick={() => setMenuOpen((v) => !v)}
         title={t("git.commitOptions")}
       >

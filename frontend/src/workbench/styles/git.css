@@ -906,6 +906,18 @@
   cursor: wait;
 }
 
+.git-view button:disabled {
+  cursor: default;
+  filter: brightness(0.68);
+  opacity: 0.46;
+}
+
+.git-view button[aria-busy="true"]:disabled {
+  cursor: wait;
+  filter: brightness(0.62);
+  opacity: 0.55;
+}
+
 .git-view__msg {
   height: 38px;
   min-height: 38px;

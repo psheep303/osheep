@@ -23,6 +23,7 @@ export interface GitChange {
 
 export interface GitStatus extends GitRepoInfo {
   changes: GitChange[];
+  ignoredPaths: string[];
 }
 
 export interface GitDiff {
@@ -165,7 +166,7 @@ export async function getRepoInfo(workspaceRoot: string): Promise<GitRepoInfo> {
 export async function getStatus(workspaceRoot: string): Promise<GitStatus> {
   const info = await getRepoInfo(workspaceRoot);
   if (!info.isRepo) {
-    return { isRepo: false, changes: [] };
+    return { isRepo: false, changes: [], ignoredPaths: [] };
   }
 
   const r = await runGit(workspaceRoot, [
@@ -173,6 +174,7 @@ export async function getStatus(workspaceRoot: string): Promise<GitStatus> {
     "--porcelain=v1",
     "-z",
     "--untracked-files=all",
+    "--ignored=matching",
   ]);
   if (r.code !== 0) {
     throw errors.gitFailed(r.stderr.trim() || "git status 失败");
@@ -180,6 +182,7 @@ export async function getStatus(workspaceRoot: string): Promise<GitStatus> {
 
   const text = r.stdout.toString("utf-8");
   const changes: GitChange[] = [];
+  const ignoredPaths: string[] = [];
   let i = 0;
   while (i < text.length) {
     if (text[i] === "\0") {
@@ -195,6 +198,11 @@ export async function getStatus(workspaceRoot: string): Promise<GitStatus> {
     while (j < text.length && text[j] !== "\0") j++;
     const filePart = text.slice(i, j);
     i = j + 1;
+
+    if (indexStatus === "!" && worktreeStatus === "!") {
+      ignoredPaths.push(filePart.replace(/\/$/, ""));
+      continue;
+    }
 
     let renamedFrom: string | null = null;
     const filePath = filePart;
@@ -214,7 +222,7 @@ export async function getStatus(workspaceRoot: string): Promise<GitStatus> {
     });
   }
 
-  return { ...info, changes };
+  return { ...info, changes, ignoredPaths };
 }
 
 export async function stagePaths(workspaceRoot: string, paths: string[]): Promise<void> {

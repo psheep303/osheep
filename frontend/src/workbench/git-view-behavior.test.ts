@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { GitStatus } from "./api";
+import { buildDecorations, isIgnoredPath } from "./git-decorations";
 import { getGitPrimaryAction } from "./git-view-behavior";
 
 const cleanLocalBranch: GitStatus = {
@@ -36,4 +37,16 @@ test("a clean tracked branch with divergence offers sync", () => {
     getGitPrimaryAction({ ...cleanLocalBranch, upstream: "origin/main", ahead: 1 }, 0, 0, true),
     "sync",
   );
+});
+
+test("ignored Git paths dim both exact entries and directory descendants", () => {
+  const decorations = buildDecorations({
+    ...cleanLocalBranch,
+    ignoredPaths: ["dist", ".env.local"],
+  });
+
+  assert.equal(isIgnoredPath(decorations, "dist"), true);
+  assert.equal(isIgnoredPath(decorations, "dist/assets/app.js"), true);
+  assert.equal(isIgnoredPath(decorations, ".env.local"), true);
+  assert.equal(isIgnoredPath(decorations, "src/app.ts"), false);
 });

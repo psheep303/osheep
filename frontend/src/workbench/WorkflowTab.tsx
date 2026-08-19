@@ -73,6 +73,7 @@ import { evaluateConditionExpression } from "./condition-expression";
 import { exportTextFile } from "./desktop-file-export";
 import { DOCS_DIR, findFreeName, writeFileText } from "./fs";
 import type { MultiDiffEntry } from "./MultiDiffPane";
+import { useOsheepOverlay } from "./OsheepOverlay";
 import { cleanAgentTerminalConversation } from "./terminal-conversation";
 import { createShiftEnterInput, isShiftEnterEvent } from "./terminal-keyboard";
 import {
@@ -838,6 +839,7 @@ export function WorkflowTab({
   onOpenDetails,
 }: WorkflowTabProps) {
   const { resolvedLanguage, t } = useUiPreferences();
+  const { notify } = useOsheepOverlay();
   const [workflow, setWorkflow] = useState<WorkflowRecord | null>(null);
   const [runtimeReadyWorkflowKey, setRuntimeReadyWorkflowKey] = useState("");
   const workflowRef = useRef<WorkflowRecord | null>(null);
@@ -847,6 +849,8 @@ export function WorkflowTab({
   const [saving, setSaving] = useState(false);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const lastErrorToastRef = useRef<string | null>(null);
+  const runtimeErrorToastKeysRef = useRef<Set<string>>(new Set());
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState<PanOffset>({ x: 0, y: 0 });
   const panRef = useRef<PanOffset>({ x: 0, y: 0 });
@@ -906,6 +910,16 @@ export function WorkflowTab({
   }, [workflow?.edges]);
   onWorkflowChangedRef.current = onWorkflowChanged;
 
+  useEffect(() => {
+    if (!error) {
+      lastErrorToastRef.current = null;
+      return;
+    }
+    if (lastErrorToastRef.current === error) return;
+    lastErrorToastRef.current = error;
+    notify.error(error);
+  }, [error, notify]);
+
   const showCompletedMarkdown = useCallback(
     (previous: WorkflowRecord | null, next: WorkflowRecord) => {
       const completedMarkdown = findMarkdownAutoPreviewNode(
@@ -925,6 +939,7 @@ export function WorkflowTab({
 
   useEffect(() => {
     let cancelled = false;
+    runtimeErrorToastKeysRef.current.clear();
     setLoading(true);
     setError(null);
     setWrapSize({ width: 0, height: 0 });
@@ -981,6 +996,20 @@ export function WorkflowTab({
         const layout = runtimeLayoutRef.current.get(event.node.id);
         const node = layout ? { ...event.node, ...layout } : event.node;
         if (!current.nodes.some((item) => item.id === node.id)) return;
+        const previous = current.nodes.find((item) => item.id === node.id);
+        if (
+          node.status === "error" &&
+          node.error &&
+          (previous?.status !== "error" ||
+            previous.error !== node.error ||
+            previous.completedAt !== node.completedAt)
+        ) {
+          const key = `${node.id}:${node.completedAt ?? 0}:${node.error}`;
+          if (!runtimeErrorToastKeysRef.current.has(key)) {
+            runtimeErrorToastKeysRef.current.add(key);
+            notify.error(node.error, { title: node.title });
+          }
+        }
         next = {
           ...current,
           updatedAt: Math.max(current.updatedAt, event.updatedAt),
@@ -1080,7 +1109,7 @@ export function WorkflowTab({
       if (retryTimer !== null) window.clearTimeout(retryTimer);
       socket?.close();
     };
-  }, [workspaceId, workflowId, runtimeReadyWorkflowKey, showCompletedMarkdown]);
+  }, [workspaceId, workflowId, runtimeReadyWorkflowKey, showCompletedMarkdown, notify]);
 
   useEffect(() => {
     if (!workflowId || !workspaceId) return;

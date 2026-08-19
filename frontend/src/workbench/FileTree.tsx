@@ -13,7 +13,7 @@ import {
   removeEntry,
   renameEntry,
 } from "./fs";
-import { type FileDecoration, statusColor } from "./git-decorations";
+import { type FileDecoration, isIgnoredPath, statusColor } from "./git-decorations";
 import { useOsheepOverlay } from "./OsheepOverlay";
 
 type DraftKind = "file" | "folder";
@@ -584,6 +584,7 @@ function TreeNode({ node, depth }: TreeNodeProps) {
   const isSelected = ctx.selectedPath === node.path;
   const isCut = ctx.clipboard?.kind === "cut" && ctx.clipboard.path === node.path;
   const isDropTarget = ctx.dropTarget === node.path;
+  const isIgnored = isIgnoredPath(ctx.decorations, node.path);
 
   const deco = ctx.decorations.get(node.path);
   const nameColor =
@@ -599,6 +600,7 @@ function TreeNode({ node, depth }: TreeNodeProps) {
           "tree-row" +
           (isSelected ? " is-selected" : "") +
           (isCut ? " is-cut" : "") +
+          (isIgnored ? " is-ignored" : "") +
           (isDropTarget ? " is-drop-target" : "")
         }
         style={{ paddingLeft: 8 + depth * 12 }}
