@@ -251,3 +251,42 @@ test("workflow back edges are the edges that close a directed cycle", async () =
   ];
   assert.deepEqual([...behavior.findWorkflowBackEdgeIds(edges as never)], ["ca", "self"]);
 });
+
+test("workflow layout ranks cyclic graphs after removing their back edges", async () => {
+  const behavior = await loadBehavior();
+  assert.ok(behavior, "workflow behavior module should exist");
+  const nodes = ["a", "b", "c", "d", "detached"].map((id) => ({
+    ...node("command"),
+    id,
+  }));
+  const edges = [
+    { id: "ab", from: "a", to: "b", passSummary: true },
+    { id: "bc", from: "b", to: "c", passSummary: true },
+    { id: "ca", from: "c", to: "a", passSummary: true },
+    { id: "cd", from: "c", to: "d", passSummary: true },
+    { id: "self", from: "d", to: "d", passSummary: true },
+  ];
+
+  assert.deepEqual(
+    Object.fromEntries(behavior.workflowLayoutDepths(nodes as never, edges as never)),
+    { a: 0, detached: 0, b: 1, c: 2, d: 3 },
+  );
+});
+
+test("workflow layout reorders branches to remove avoidable crossings", async () => {
+  const behavior = await loadBehavior();
+  assert.ok(behavior, "workflow behavior module should exist");
+  const nodes = ["left-top", "left-bottom", "right-top", "right-bottom"].map((id) => ({
+    ...node("command"),
+    id,
+  }));
+  const edges = [
+    { id: "down", from: "left-top", to: "right-bottom", passSummary: true },
+    { id: "up", from: "left-bottom", to: "right-top", passSummary: true },
+  ];
+
+  assert.deepEqual(behavior.workflowLayoutColumns(nodes as never, edges as never), [
+    ["left-top", "left-bottom"],
+    ["right-bottom", "right-top"],
+  ]);
+});

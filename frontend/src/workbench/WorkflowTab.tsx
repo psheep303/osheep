@@ -95,6 +95,7 @@ import {
   isWorkflowSessionId,
   WORKFLOW_SESSION_ID_PATTERN,
   type WorkflowBlockOutput,
+  workflowLayoutColumns,
   workflowSessionId,
 } from "./workflow-behavior";
 
@@ -884,6 +885,7 @@ export function WorkflowTab({
   const suppressContextMenuRef = useRef(false);
   const canvasWrapRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
+  const pendingInitialFitKeyRef = useRef("");
   const saveTimerRef = useRef<number | null>(null);
   const pendingSaveRef = useRef<WorkflowRecord | null>(null);
   const saveInFlightRef = useRef(0);
@@ -925,6 +927,8 @@ export function WorkflowTab({
     let cancelled = false;
     setLoading(true);
     setError(null);
+    setWrapSize({ width: 0, height: 0 });
+    pendingInitialFitKeyRef.current = "";
     setRuntimeReadyWorkflowKey("");
     setNodeSelection([]);
     placingNodeIdRef.current = null;
@@ -941,12 +945,10 @@ export function WorkflowTab({
         localRevisionRef.current = 0;
         workflowRef.current = record;
         setWorkflow(record);
+        pendingInitialFitKeyRef.current = `${workspaceId}\0${workflowId}`;
         setRuntimeReadyWorkflowKey(`${workspaceId}\0${workflowId}`);
         onTemplateBinding(record.templateBinding);
         setRunning(workflowIsRunning(record));
-        window.requestAnimationFrame(() => {
-          if (!cancelled) centerView(record);
-        });
       })
       .catch((e) => {
         if (!cancelled) setError((e as Error).message);
@@ -1900,39 +1902,6 @@ export function WorkflowTab({
     if (target) addEdgeWithHistory(current.from, target, true, current.sourceHandle);
   };
 
-  const centerView = useCallback((record?: WorkflowRecord) => {
-    const wf = record ?? workflowRef.current;
-    const wrap = canvasWrapRef.current;
-    if (!wrap) return;
-    const rect = wrap.getBoundingClientRect();
-    if (rect.width === 0 || rect.height === 0) return;
-    const nextZoom = 1;
-    let centerX = CANVAS_ORIGIN_X;
-    let centerY = CANVAS_ORIGIN_Y;
-    if (wf?.nodes.length) {
-      let minX = Infinity;
-      let minY = Infinity;
-      let maxX = -Infinity;
-      let maxY = -Infinity;
-      for (const node of wf.nodes) {
-        minX = Math.min(minX, node.x);
-        minY = Math.min(minY, node.y);
-        maxX = Math.max(maxX, node.x + NODE_W);
-        maxY = Math.max(maxY, node.y + NODE_H);
-      }
-      centerX = worldToCanvasX((minX + maxX) / 2);
-      centerY = worldToCanvasY((minY + maxY) / 2);
-    }
-    const nextPan = snapPan({
-      x: rect.width / 2 - centerX * nextZoom,
-      y: rect.height / 2 - centerY * nextZoom,
-    });
-    zoomRef.current = nextZoom;
-    setZoom(nextZoom);
-    panRef.current = nextPan;
-    setPan(nextPan);
-  }, []);
-
   const zoomAround = useCallback(
     (rawZoom: number, originClientX: number, originClientY: number) => {
       const wrap = canvasWrapRef.current;
@@ -2005,6 +1974,21 @@ export function WorkflowTab({
     panRef.current = nextPan;
     setPan(nextPan);
   }, []);
+
+  useEffect(() => {
+    const workflowKey = `${workspaceId}\0${workflowId}`;
+    if (
+      loading ||
+      !workflow ||
+      wrapSize.width <= 0 ||
+      wrapSize.height <= 0 ||
+      pendingInitialFitKeyRef.current !== workflowKey
+    ) {
+      return;
+    }
+    pendingInitialFitKeyRef.current = "";
+    fitView(workflow);
+  }, [fitView, loading, workflow, workflowId, workspaceId, wrapSize]);
 
   const autoArrange = () => {
     const current = workflowRef.current;
@@ -6629,57 +6613,23 @@ const LAYOUT_GAP_Y = 34;
 
 /**
  * Layered left-to-right auto layout. Columns follow the longest-path depth from
- * trigger / indegree-0 nodes; nodes in a column stack vertically in declared
- * order. Falls back to the existing order when the graph has a cycle so we never
- * throw or lose nodes.
+ * trigger / indegree-0 nodes. Feedback edges are ignored for ranking and node
+ * order within each column is optimized to reduce forward-edge crossings.
  */
 function autoLayout(record: WorkflowRecord): WorkflowRecord {
   const nodes = record.nodes;
   if (nodes.length === 0) return record;
-  const ids = new Set(nodes.map((node) => node.id));
-  const incoming = new Map<string, string[]>();
-  const indegree = new Map<string, number>();
-  for (const node of nodes) {
-    incoming.set(node.id, []);
-    indegree.set(node.id, 0);
-  }
-  for (const edge of record.edges) {
-    if (!ids.has(edge.from) || !ids.has(edge.to) || edge.from === edge.to) continue;
-    incoming.get(edge.to)?.push(edge.from);
-    indegree.set(edge.to, (indegree.get(edge.to) ?? 0) + 1);
-  }
-
-  const order = topoOrder(record);
-  const depth = new Map<string, number>();
-  if (order.error) {
-    // cycle: keep declared order, single column fallback
-    nodes.forEach((node, index) => {
-      depth.set(node.id, index === 0 ? 0 : 1);
-    });
-  } else {
-    for (const id of order.nodeIds) {
-      const preds = incoming.get(id) ?? [];
-      const d = preds.length ? Math.max(...preds.map((p) => (depth.get(p) ?? 0) + 1)) : 0;
-      depth.set(id, d);
-    }
-  }
-
-  const columns = new Map<number, string[]>();
-  for (const node of nodes) {
-    const d = depth.get(node.id) ?? 0;
-    if (!columns.has(d)) columns.set(d, []);
-    columns.get(d)!.push(node.id);
-  }
+  const columns = workflowLayoutColumns(nodes, record.edges);
 
   const position = new Map<string, { x: number; y: number }>();
-  for (const [d, columnIds] of columns) {
+  columns.forEach((columnIds, depth) => {
     columnIds.forEach((id, row) => {
       position.set(id, {
-        x: LAYOUT_MARGIN_X + d * (NODE_W + LAYOUT_GAP_X),
+        x: LAYOUT_MARGIN_X + depth * (NODE_W + LAYOUT_GAP_X),
         y: LAYOUT_MARGIN_Y + row * (NODE_H + LAYOUT_GAP_Y),
       });
     });
-  }
+  });
 
   let changed = false;
   const nextNodes = nodes.map((node) => {
@@ -6690,38 +6640,6 @@ function autoLayout(record: WorkflowRecord): WorkflowRecord {
   });
   if (!changed) return record;
   return { ...record, nodes: nextNodes };
-}
-
-function topoOrder(record: WorkflowRecord): { nodeIds: string[]; error?: string } {
-  const nodeIds = new Set(record.nodes.map((node) => node.id));
-  const indegree = new Map<string, number>();
-  const outgoing = new Map<string, string[]>();
-  for (const node of record.nodes) {
-    indegree.set(node.id, 0);
-    outgoing.set(node.id, []);
-  }
-  for (const edge of record.edges) {
-    if (!nodeIds.has(edge.from) || !nodeIds.has(edge.to)) continue;
-    indegree.set(edge.to, (indegree.get(edge.to) ?? 0) + 1);
-    outgoing.get(edge.from)?.push(edge.to);
-  }
-  const queue = record.nodes
-    .filter((node) => (indegree.get(node.id) ?? 0) === 0)
-    .map((node) => node.id);
-  const ordered: string[] = [];
-  while (queue.length) {
-    const id = queue.shift()!;
-    ordered.push(id);
-    for (const to of outgoing.get(id) ?? []) {
-      const next = (indegree.get(to) ?? 0) - 1;
-      indegree.set(to, next);
-      if (next === 0) queue.push(to);
-    }
-  }
-  if (ordered.length !== record.nodes.length) {
-    return { nodeIds: [], error: "Workflow has a cycle." };
-  }
-  return { nodeIds: ordered };
 }
 
 async function executeLocalNode(

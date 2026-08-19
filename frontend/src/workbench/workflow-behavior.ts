@@ -32,6 +32,126 @@ export function findWorkflowBackEdgeIds(edges: readonly WorkflowEdge[]): Set<str
   return backEdgeIds;
 }
 
+export function workflowLayoutDepths(
+  nodes: readonly WorkflowNode[],
+  edges: readonly WorkflowEdge[],
+): Map<string, number> {
+  const forwardEdges = workflowForwardEdges(nodes, edges);
+  const incoming = new Map<string, string[]>();
+  const outgoing = new Map<string, string[]>();
+  const indegree = new Map<string, number>();
+
+  for (const node of nodes) {
+    incoming.set(node.id, []);
+    outgoing.set(node.id, []);
+    indegree.set(node.id, 0);
+  }
+  for (const edge of forwardEdges) {
+    incoming.get(edge.to)!.push(edge.from);
+    outgoing.get(edge.from)!.push(edge.to);
+    indegree.set(edge.to, indegree.get(edge.to)! + 1);
+  }
+
+  const queue = nodes
+    .filter((node) => indegree.get(node.id) === 0)
+    .map((node) => node.id);
+  const depths = new Map<string, number>();
+  while (queue.length > 0) {
+    const id = queue.shift()!;
+    const predecessors = incoming.get(id)!;
+    depths.set(
+      id,
+      predecessors.length > 0
+        ? Math.max(...predecessors.map((predecessor) => (depths.get(predecessor) ?? 0) + 1))
+        : 0,
+    );
+    for (const target of outgoing.get(id)!) {
+      const nextIndegree = indegree.get(target)! - 1;
+      indegree.set(target, nextIndegree);
+      if (nextIndegree === 0) queue.push(target);
+    }
+  }
+
+  // Removing the feedback edges makes the graph acyclic. Keep malformed or
+  // otherwise unresolved nodes visible in the first column as a final guard.
+  for (const node of nodes) {
+    if (!depths.has(node.id)) depths.set(node.id, 0);
+  }
+  return depths;
+}
+
+export function workflowLayoutColumns(
+  nodes: readonly WorkflowNode[],
+  edges: readonly WorkflowEdge[],
+): string[][] {
+  if (nodes.length === 0) return [];
+  const depths = workflowLayoutDepths(nodes, edges);
+  const maxDepth = Math.max(...depths.values());
+  let columns = Array.from({ length: maxDepth + 1 }, () => [] as string[]);
+  for (const node of nodes) columns[depths.get(node.id) ?? 0]!.push(node.id);
+
+  const incoming = new Map<string, string[]>();
+  const outgoing = new Map<string, string[]>();
+  for (const node of nodes) {
+    incoming.set(node.id, []);
+    outgoing.set(node.id, []);
+  }
+  for (const edge of workflowForwardEdges(nodes, edges)) {
+    incoming.get(edge.to)!.push(edge.from);
+    outgoing.get(edge.from)!.push(edge.to);
+  }
+
+  // Alternating barycenter sweeps reduce avoidable crossings while keeping the
+  // result deterministic for nodes with equal or missing neighbor positions.
+  for (let pass = 0; pass < 4; pass += 1) {
+    const before = JSON.stringify(columns);
+    for (let depth = 1; depth < columns.length; depth += 1) {
+      columns[depth] = sortLayoutColumn(columns[depth]!, incoming, columns);
+    }
+    for (let depth = columns.length - 2; depth >= 0; depth -= 1) {
+      columns[depth] = sortLayoutColumn(columns[depth]!, outgoing, columns);
+    }
+    const after = JSON.stringify(columns);
+    if (after === before) break;
+  }
+  return columns;
+}
+
+function workflowForwardEdges(
+  nodes: readonly WorkflowNode[],
+  edges: readonly WorkflowEdge[],
+): WorkflowEdge[] {
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const validEdges = edges.filter(
+    (edge) => nodeIds.has(edge.from) && nodeIds.has(edge.to) && edge.from !== edge.to,
+  );
+  const backEdgeIds = findWorkflowBackEdgeIds(validEdges);
+  return validEdges.filter((edge) => !backEdgeIds.has(edge.id));
+}
+
+function sortLayoutColumn(
+  column: readonly string[],
+  neighborsByNode: ReadonlyMap<string, string[]>,
+  columns: readonly string[][],
+): string[] {
+  const currentRows = new Map(column.map((id, row) => [id, row]));
+  const rows = new Map<string, number>();
+  for (const ids of columns) {
+    ids.forEach((id, row) => rows.set(id, row));
+  }
+  const barycenter = (id: string): number => {
+    const neighborRows = (neighborsByNode.get(id) ?? [])
+      .map((neighbor) => rows.get(neighbor))
+      .filter((row): row is number => row !== undefined);
+    if (neighborRows.length === 0) return currentRows.get(id) ?? 0;
+    return neighborRows.reduce((sum, row) => sum + row, 0) / neighborRows.length;
+  };
+  return [...column].sort((left, right) => {
+    const difference = barycenter(left) - barycenter(right);
+    return difference || currentRows.get(left)! - currentRows.get(right)!;
+  });
+}
+
 function canReach(from: string, target: string, adjacency: ReadonlyMap<string, string[]>): boolean {
   const pending = [from];
   const seen = new Set<string>();
