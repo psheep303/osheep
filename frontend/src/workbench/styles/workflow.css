@@ -1057,9 +1057,12 @@
   min-width: 0;
 }
 
-.workflow-inspector__head-actions {
+.workflow-inspector__head > .workflow-inspector__head-actions {
+  flex: none;
   margin-left: auto;
   display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 6px;
 }
@@ -2536,6 +2539,28 @@
   display: flex;
   align-items: flex-end;
   gap: 8px;
+}
+
+.workflow-mpe-panel__actions button:not(.workflow-inspector__close) {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.workflow-mpe-panel__actions button:disabled {
+  cursor: wait;
+  opacity: 0.62;
+}
+
+.workflow-mpe-panel__saved {
+  padding: 7px 9px;
+  border: 1px solid rgba(74, 222, 128, 0.28);
+  border-radius: var(--radius-sm);
+  background: rgba(34, 197, 94, 0.08);
+  color: #bbf7d0;
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
 }
 
 .workflow-input-dialog__control textarea {

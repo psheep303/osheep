@@ -59,13 +59,21 @@ async fn save_export_file(
         .and_then(|name| name.to_str())
         .filter(|name| !name.trim().is_empty())
         .unwrap_or("workflow.json");
-    let selected = AsyncFileDialog::new()
+    let extension = Path::new(safe_name)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let dialog = AsyncFileDialog::new()
         .set_parent(&window)
-        .set_title("Save workflow export")
-        .set_file_name(safe_name)
-        .add_filter("JSON", &["json"])
-        .save_file()
-        .await;
+        .set_title("Save export")
+        .set_file_name(safe_name);
+    let dialog = match extension.as_str() {
+        "md" | "markdown" => dialog.add_filter("Markdown", &["md", "markdown"]),
+        "json" => dialog.add_filter("JSON", &["json"]),
+        _ => dialog.add_filter("Text", &["txt"]),
+    };
+    let selected = dialog.save_file().await;
     let Some(file) = selected else {
         return Ok(None);
     };

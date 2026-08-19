@@ -9,6 +9,7 @@ type BottomTab = "terminal" | "log" | "docs";
 
 interface BottomPanelProps {
   workspaceId: string | null;
+  docsRefreshSignal?: number;
   onClose: () => void;
   terminalLaunchRequest?: AgentTerminalLaunchRequest | null;
   onTerminalLaunchHandled?: (key: number) => void;
@@ -17,6 +18,7 @@ interface BottomPanelProps {
 
 export function BottomPanel({
   workspaceId,
+  docsRefreshSignal = 0,
   onClose,
   terminalLaunchRequest = null,
   onTerminalLaunchHandled,
@@ -82,7 +84,9 @@ export function BottomPanel({
               {t("panel.logComingSoon")}
             </div>
           )}
-          {tab === "docs" && <PlanView workspaceId={workspaceId} />}
+          {tab === "docs" && (
+            <PlanView workspaceId={workspaceId} refreshSignal={docsRefreshSignal} />
+          )}
         </Suspense>
       </div>
     </div>

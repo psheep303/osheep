@@ -69,8 +69,9 @@ import {
 } from "./api";
 import { ClaudeLogo, OpenAILogo } from "./BrandIcons";
 import { ContextMenu, type CtxMenuSection } from "./ContextMenu";
-import { exportTextFile } from "./desktop-file-export";
 import { evaluateConditionExpression } from "./condition-expression";
+import { exportTextFile } from "./desktop-file-export";
+import { DOCS_DIR, findFreeName, writeFileText } from "./fs";
 import type { MultiDiffEntry } from "./MultiDiffPane";
 import { cleanAgentTerminalConversation } from "./terminal-conversation";
 import { createShiftEnterInput, isShiftEnterEvent } from "./terminal-keyboard";
@@ -1153,6 +1154,10 @@ export function WorkflowTab({
     () => workflow?.nodes.find((node) => node.id === selectedId) ?? null,
     [workflow, selectedId],
   );
+  const mpeNode = useMemo(
+    () => workflow?.nodes.find((node) => node.id === mpeNodeId) ?? null,
+    [workflow, mpeNodeId],
+  );
   const observabilityRun = useMemo(() => {
     if (!workflow) return null;
     return (
@@ -1178,6 +1183,30 @@ export function WorkflowTab({
       setError((error as Error).message);
     }
   }, [workflow, observabilityRun]);
+  const exportMarkdownResult = useCallback(async () => {
+    if (!workflow || !mpeNode) return;
+    await exportTextFile({
+      suggestedName: markdownResultFileName(workflow, mpeNode),
+      contents: markdownResultText(mpeNode, workflow),
+      mimeType: "text/markdown;charset=utf-8",
+    });
+  }, [workflow, mpeNode]);
+  const saveMarkdownResultToDocs = useCallback(async () => {
+    if (!workflow || !mpeNode) return "";
+    const fileName = await findFreeName(
+      workspaceId,
+      DOCS_DIR,
+      markdownResultFileName(workflow, mpeNode),
+      "file",
+    );
+    await writeFileText(
+      workspaceId,
+      `${DOCS_DIR}/${fileName}`,
+      markdownResultText(mpeNode, workflow),
+    );
+    onFilesChanged();
+    return fileName;
+  }, [workspaceId, workflow, mpeNode, onFilesChanged]);
   const waitingForChoiceNode = useMemo(
     () =>
       workflow?.nodes.find((node) => {
@@ -3276,13 +3305,14 @@ export function WorkflowTab({
           />
         </div>
       )}
-      {mpeNodeId && workflow.nodes.some((node) => node.id === mpeNodeId) && (
+      {mpeNode && (
         <div className="workflow-panel-shell">
           <WorkflowMpePanel
-            markdown={markdownResultText(
-              workflow.nodes.find((node) => node.id === mpeNodeId)!,
-              workflow,
-            )}
+            key={mpeNode.id}
+            markdown={markdownResultText(mpeNode, workflow)}
+            onExport={exportMarkdownResult}
+            onSaveToDocs={saveMarkdownResultToDocs}
+            onError={(message) => setError(message)}
             onClose={() => setMpeNodeId(null)}
           />
         </div>
@@ -4462,6 +4492,14 @@ function markdownResultText(node: WorkflowNode, workflow: WorkflowRecord): strin
   return resolveBlockTemplatePreview(node.prompt, workflow);
 }
 
+function markdownResultFileName(workflow: WorkflowRecord, node: WorkflowNode): string {
+  const baseName =
+    safeExportFileName(`${workflow.title || "workflow"}-${node.title || "markdown"}`)
+      .slice(0, 120)
+      .replace(/[. ]+$/g, "") || "workflow-markdown";
+  return `${baseName}.md`;
+}
+
 function formatTraceValue(value: unknown, t: WorkflowTranslate): string {
   if (value === undefined) return t("workflow.observability.notRecorded");
   if (typeof value === "string") return value || t("workflow.observability.empty");
@@ -4950,7 +4988,46 @@ function WorkflowAgentTerminalInner({
 
 const WorkflowAgentTerminal = memo(WorkflowAgentTerminalInner);
 
-function WorkflowMpePanel({ markdown, onClose }: { markdown: string; onClose: () => void }) {
+function WorkflowMpePanel({
+  markdown,
+  onExport,
+  onSaveToDocs,
+  onError,
+  onClose,
+}: {
+  markdown: string;
+  onExport: () => Promise<void>;
+  onSaveToDocs: () => Promise<string>;
+  onError: (message: string) => void;
+  onClose: () => void;
+}) {
+  const { t } = useUiPreferences();
+  const [pendingAction, setPendingAction] = useState<"export" | "save" | null>(null);
+  const [savedDocument, setSavedDocument] = useState("");
+
+  const exportMarkdown = async () => {
+    setPendingAction("export");
+    try {
+      await onExport();
+    } catch (error) {
+      onError((error as Error).message);
+    } finally {
+      setPendingAction(null);
+    }
+  };
+
+  const saveToDocs = async () => {
+    setPendingAction("save");
+    setSavedDocument("");
+    try {
+      setSavedDocument(await onSaveToDocs());
+    } catch (error) {
+      onError((error as Error).message);
+    } finally {
+      setPendingAction(null);
+    }
+  };
+
   return (
     <aside className="workflow-inspector workflow-mpe-panel">
       <div className="workflow-inspector__head">
@@ -4958,16 +5035,49 @@ function WorkflowMpePanel({ markdown, onClose }: { markdown: string; onClose: ()
           <div className="workflow-inspector__eyebrow">MPE</div>
           <span className="workflow-inspector__status is-success">preview</span>
         </div>
-        <button
-          type="button"
-          className="workflow-inspector__close"
-          onClick={onClose}
-          aria-label="Close MPE"
-          title="Close"
-        >
-          x
-        </button>
+        <div className="workflow-inspector__head-actions workflow-mpe-panel__actions">
+          <button
+            type="button"
+            onClick={() => void exportMarkdown()}
+            disabled={pendingAction !== null}
+            title={t("workflow.markdown.exportTitle")}
+          >
+            <i className="codicon codicon-export" aria-hidden="true" />
+            <span>
+              {pendingAction === "export"
+                ? t("workflow.markdown.exporting")
+                : t("workflow.markdown.export")}
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => void saveToDocs()}
+            disabled={pendingAction !== null}
+            title={t("workflow.markdown.saveToDocsTitle")}
+          >
+            <i className="codicon codicon-save-as" aria-hidden="true" />
+            <span>
+              {pendingAction === "save"
+                ? t("workflow.markdown.savingToDocs")
+                : t("workflow.markdown.saveToDocs")}
+            </span>
+          </button>
+          <button
+            type="button"
+            className="workflow-inspector__close"
+            onClick={onClose}
+            aria-label={t("common.close")}
+            title={t("common.close")}
+          >
+            x
+          </button>
+        </div>
       </div>
+      {savedDocument && (
+        <div className="workflow-mpe-panel__saved" role="status">
+          {t("workflow.markdown.savedToDocs", { name: savedDocument })}
+        </div>
+      )}
       <div className="workflow-mpe-panel__body">
         <Suspense fallback={<div className="tab-loading-fallback" />}>
           <MarkdownPreview source={markdown} />

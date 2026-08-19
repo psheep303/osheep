@@ -8,9 +8,10 @@ const MarkdownPreview = lazy(() =>
 
 interface PlanViewProps {
   workspaceId: string | null;
+  refreshSignal?: number;
 }
 
-export function PlanView({ workspaceId }: PlanViewProps) {
+export function PlanView({ workspaceId, refreshSignal = 0 }: PlanViewProps) {
   const { t } = useUiPreferences();
   const [files, setFiles] = useState<FsNode[]>([]);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
@@ -46,7 +47,7 @@ export function PlanView({ workspaceId }: PlanViewProps) {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspaceId, t]);
+  }, [workspaceId, refreshSignal, t]);
 
   useEffect(() => {
     if (!workspaceId || !selectedPath) {

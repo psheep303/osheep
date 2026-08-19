@@ -1126,6 +1126,7 @@ export function Workbench() {
               <Suspense fallback={<div className="tab-loading-fallback" />}>
                 <BottomPanel
                   workspaceId={workspaceId}
+                  docsRefreshSignal={fileTreeVersion}
                   onClose={hardCloseBottom}
                   terminalLaunchRequest={terminalLaunchRequest}
                   onTerminalLaunchHandled={handleTerminalLaunch}
