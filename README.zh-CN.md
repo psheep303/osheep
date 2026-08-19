@@ -175,9 +175,11 @@ backend/                 Fastify API、PTY、Git 与 AI CLI 集成
 frontend/                React/Vite 工作台
 desktop/                 Tauri 2 桌面壳与发布脚本
 backend/template-library 内置工作流模板
-.osheep/docs/            产品与技术设计文档
-docs/                    面向用户和维护者的功能说明
+.osheep/                 本地运行状态与开发上下文（Git 忽略）
+docs/                    面向用户、贡献者和维护者的公开文档
 ```
+
+公开指南及文档边界说明请参阅[文档索引](docs/README.md)。
 
 ## 验证
 

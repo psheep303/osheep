@@ -175,9 +175,11 @@ backend/                 Fastify API, PTY, Git, and AI CLI integration
 frontend/                React/Vite workbench
 desktop/                 Tauri 2 desktop shell and release scripts
 backend/template-library Built-in workflow templates
-.osheep/docs/            Product and technical design documents
-docs/                    User-facing and maintainer-facing feature notes
+.osheep/                 Local runtime state and development context (ignored by Git)
+docs/                    Public user, contributor, and maintainer documentation
 ```
+
+See the [documentation index](docs/README.md) for the public guides and documentation boundary.
 
 ## Verification
 
