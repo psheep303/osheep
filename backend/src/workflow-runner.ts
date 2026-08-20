@@ -359,9 +359,9 @@ function noAgentTerminalFailure(): AgentTerminalFailure {
 }
 
 function isRetryableAgentTerminalMessage(message: string): boolean {
-  const status = message.match(/(?:API Error\s*:\s*|unexpected status\s+)(\d{3})\b/i);
-  if (status) {
-    const code = Number(status[1]);
+  const status = agentApiStatusCode(message);
+  if (status !== undefined) {
+    const code = status;
     return code === 408 || code === 409 || code === 425 || code === 429 || code >= 500;
   }
   return /\b(?:service unavailable|auth_unavailable|rate limit|temporarily unavailable|overloaded|econnreset|etimedout|connection reset|network error|gateway timeout|internal server error)\b/i.test(
@@ -377,13 +377,7 @@ export function isAgentApiFailureMessage(message: string): boolean {
   ) {
     return true;
   }
-  if (
-    /\b(?:unexpected status|HTTP(?: status)?|response status|status code|status)\s*(?:code\s*)?[:=]?\s*[1-5]\d{2}\b|\brequest failed with status(?: code)?\s*[:=]?\s*[1-5]\d{2}\b/i.test(
-      message,
-    )
-  ) {
-    return true;
-  }
+  if (agentApiStatusCode(message) !== undefined) return true;
   if (
     /\b(?:INVALID_API_KEY|authentication_error|permission_error|rate_limit_error|api_error|overloaded_error)\b/i.test(
       message,
@@ -394,6 +388,15 @@ export function isAgentApiFailureMessage(message: string): boolean {
   return /\b(?:fetch failed|network error|socket hang up|service unavailable|temporarily unavailable|gateway timeout|connection (?:error|failed|reset|refused|timed out)|(?:failed|unable|could not) to connect|error sending request|request timed out|proxy error|certificate (?:error|verify failed)|name resolution|name or service not known|econnaborted|econnreset|econnrefused|ehostunreach|enetunreach|etimedout|enotfound|eai_again|dns|tls)\b|网络错误|连接(?:失败|超时)/i.test(
     message,
   );
+}
+
+function agentApiStatusCode(message: string): number | undefined {
+  const match = message.match(
+    /\b(?:API Error\s*:|unexpected status|HTTP(?: status)?|response status|last status|status code|status)\s*(?:code\s*)?[:=]?\s*([1-5]\d{2})\b|\brequest failed with status(?: code)?\s*[:=]?\s*([1-5]\d{2})\b/i,
+  );
+  if (!match) return undefined;
+  const code = Number(match[1] ?? match[2]);
+  return Number.isInteger(code) ? code : undefined;
 }
 
 export function agentRetryPromptForLanguage(language: WorkflowRetryLanguage): string {

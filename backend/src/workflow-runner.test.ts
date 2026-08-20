@@ -918,6 +918,22 @@ test("all API status and network failures are eligible for provider rotation", (
   );
   assert.equal(unauthorized.retryable, false);
   assert.equal(unauthorized.apiFailure, true);
+  const exhausted = classifyAgentTerminalResultFailure(
+    {
+      content: "",
+      transcript: "",
+      exitCode: 1,
+      signal: "error",
+      outcome: "error",
+      errorMessage:
+        "exceeded retry limit, last status: 429 Too Many Requests, request id: request_1",
+    },
+    "Continue",
+  );
+  assert.equal(exhausted.failed, true);
+  assert.equal(exhausted.retryable, true);
+  assert.equal(exhausted.apiFailure, true);
+  assert.equal(shouldRetryAgentTerminalFailure(exhausted, 0, 2, false), true);
   assert.equal(isAgentApiFailureMessage("API Error: Content block not found"), true);
   assert.equal(isAgentApiFailureMessage("API request failed: upstream disconnected"), true);
   assert.equal(isAgentApiFailureMessage("Request failed with status code 401"), true);

@@ -4614,6 +4614,10 @@ function WorkflowAgentTerminalInner({
   }, [initialAutoSuccess, sessionId]);
 
   useEffect(() => {
+    if (terminalStatus === "prompt-sent") setPaused(false);
+  }, [terminalStatus]);
+
+  useEffect(() => {
     if (!hostRef.current) return;
     const term = new XTerm({
       convertEol: false,

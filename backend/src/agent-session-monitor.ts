@@ -26,12 +26,18 @@ export class AgentSessionEventReducer {
   private readonly unresolvedCodexCalls = new Map<string, string>();
   private readonly codexSilentExecDeadlines = new Map<string, number>();
   private readonly unboundCodexPermissions: string[] = [];
-  private pendingCodexAbort?: { turnId: string; error: string; deadline: number };
+  private pendingCodexAbort?: {
+    turnId: string;
+    error: string;
+    deadline: number;
+    userInterrupted: boolean;
+  };
   private nextCodexPermissionKey = 1;
   private nextClaudePermissionKey = 1;
   private activeCodexTurnId = "";
   private claudeTurnUserRejected = false;
   private codexTurnUserRejected = false;
+  private codexTurnUserInterrupted = false;
 
   constructor(app: AgentSessionApp) {
     this.app = app;
@@ -111,7 +117,11 @@ export class AgentSessionEventReducer {
     if (this.pendingCodexAbort && now >= this.pendingCodexAbort.deadline) {
       events.push({
         state: "completed",
-        outcome: this.codexTurnUserRejected ? "user-rejected" : "cancelled",
+        outcome: this.codexTurnUserRejected
+          ? "user-rejected"
+          : this.pendingCodexAbort.userInterrupted
+            ? "cancelled"
+            : "error",
         error: this.codexTurnUserRejected ? undefined : this.pendingCodexAbort.error,
       });
       this.pendingCodexAbort = undefined;
@@ -267,11 +277,17 @@ export class AgentSessionEventReducer {
     const toolName = stringValue(payload.name ?? root.name);
     const callId = stringValue(payload.call_id ?? root.call_id);
 
+    if (isCodexUserInterruptMarker(root, payload)) {
+      this.codexTurnUserInterrupted = true;
+      return [];
+    }
+
     if (type === "task_started" || type === "turn_started") {
-      const startsDifferentTurn =
-        !!this.activeCodexTurnId && !!turnId && turnId !== this.activeCodexTurnId;
-      const previousAbort = startsDifferentTurn ? this.takePendingCodexAbort() : undefined;
+      const startsNewTurn = !!turnId && turnId !== this.activeCodexTurnId;
+      const startsDifferentTurn = !!this.activeCodexTurnId && startsNewTurn;
+      const previousAbort = startsNewTurn ? this.takePendingCodexAbort() : undefined;
       this.activeCodexTurnId = turnId;
+      this.codexTurnUserInterrupted = false;
       if (startsDifferentTurn) {
         this.pendingCodexQuestions.clear();
         this.pendingCodexPermissions.clear();
@@ -352,12 +368,29 @@ export class AgentSessionEventReducer {
       if (this.codexTurnUserRejected) {
         return [];
       }
+      const abortError =
+        errorMessage(payload.reason ?? root.reason) ||
+        errorMessage(payload.error ?? root.error) ||
+        stringValue(payload.message ?? root.message);
+      if (isCodexApiErrorMessage(abortError)) {
+        return [{ state: "completed", outcome: "error", error: abortError }];
+      }
       this.pendingCodexAbort = {
         turnId,
-        error: stringValue(payload.reason ?? root.reason) || "Codex turn was cancelled.",
+        error: abortError || "Codex turn was cancelled.",
         deadline: now + CODEX_ABORT_SETTLE_MS,
+        userInterrupted: this.codexTurnUserInterrupted,
       };
+      this.codexTurnUserInterrupted = false;
       return [];
+    }
+    const terminalStreamError = codexTerminalStreamError(type, payload, root);
+    if (terminalStreamError) {
+      return [{ state: "completed", outcome: "error", error: terminalStreamError }];
+    }
+    const eventError = codexEventApiError(type, payload, root);
+    if (eventError) {
+      return [{ state: "completed", outcome: "error", error: eventError }];
     }
     if (type === "task_complete" || type === "turn_complete" || type === "turn_completed") {
       if (this.codexTurnUserRejected) {
@@ -393,14 +426,41 @@ export class AgentSessionEventReducer {
     if (!this.pendingCodexAbort) return undefined;
     const event: AgentSessionEvent = this.codexTurnUserRejected
       ? { state: "completed", outcome: "user-rejected" }
-      : {
-          state: "completed",
-          outcome: "cancelled",
-          error: this.pendingCodexAbort.error,
-        };
+      : this.pendingCodexAbort.userInterrupted
+        ? {
+            state: "completed",
+            outcome: "cancelled",
+            error: this.pendingCodexAbort.error,
+          }
+        : {
+            state: "completed",
+            outcome: "error",
+            error: this.pendingCodexAbort.error,
+          };
     this.pendingCodexAbort = undefined;
     return event;
   }
+}
+
+function isCodexUserInterruptMarker(
+  root: Record<string, unknown>,
+  payload: Record<string, unknown>,
+): boolean {
+  if (stringValue(root.type) !== "response_item" || stringValue(payload.type) !== "message") {
+    return false;
+  }
+  if (stringValue(payload.role) !== "developer") return false;
+  const content = Array.isArray(payload.content) ? payload.content : [];
+  return content.some((value) => {
+    const item = objectValue(value);
+    const text = stringValue(item.text);
+    return (
+      stringValue(item.type) === "input_text" &&
+      /<turn_aborted>[\s\S]*previous turn was interrupted on purpose[\s\S]*<\/turn_aborted>/i.test(
+        text,
+      )
+    );
+  });
 }
 
 function claudeToolUseWasRejected(root: Record<string, unknown>): boolean {
@@ -597,6 +657,36 @@ function errorMessage(value: unknown): string {
   if (typeof value === "string") return value;
   const object = objectValue(value);
   return stringValue(object.message ?? object.error ?? object.reason);
+}
+
+function codexTerminalStreamError(
+  type: string,
+  payload: Record<string, unknown>,
+  root: Record<string, unknown>,
+): string {
+  if (type !== "stream_error") return "";
+  const message =
+    errorMessage(payload.error ?? root.error) ||
+    stringValue(payload.message ?? root.message ?? payload.reason ?? root.reason);
+  return /\b(?:exceeded|reached) (?:the )?retry limit\b/i.test(message) ? message : "";
+}
+
+function codexEventApiError(
+  type: string,
+  payload: Record<string, unknown>,
+  root: Record<string, unknown>,
+): string {
+  if (!/(?:^|_)(?:error|failed|failure)(?:$|_)/i.test(type)) return "";
+  const message =
+    errorMessage(payload.error ?? root.error) ||
+    stringValue(payload.message ?? root.message ?? payload.reason ?? root.reason);
+  return isCodexApiErrorMessage(message) ? message : "";
+}
+
+function isCodexApiErrorMessage(message: string): boolean {
+  return /\b(?:unexpected status|last status|HTTP(?: status)?|response status|status code|status)\s*(?:code\s*)?[:=]?\s*[1-5]\d{2}\b|\b(?:API Error|API request|api_error|INVALID_API_KEY|API_KEY_DISABLED|rate[_ ]limit|overloaded|service unavailable|fetch failed|network error|connection (?:reset|refused|timed out)|econnreset|econnrefused|etimedout|enotfound|dns|tls)\b/i.test(
+    message,
+  );
 }
 
 function claudeErrorMessage(

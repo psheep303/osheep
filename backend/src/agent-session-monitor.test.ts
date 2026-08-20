@@ -6,6 +6,26 @@ import test from "node:test";
 import { AgentSessionEventReducer, watchAgentSession } from "./agent-session-monitor.js";
 import { buildAgentTerminalCommand } from "./ai-terminal.js";
 
+function codexUserInterruptMarker() {
+  return {
+    type: "response_item",
+    payload: {
+      type: "message",
+      role: "developer",
+      content: [
+        {
+          type: "input_text",
+          text: [
+            "<turn_aborted>",
+            "The previous turn was interrupted on purpose.",
+            "</turn_aborted>",
+          ].join("\n"),
+        },
+      ],
+    },
+  };
+}
+
 test("interactive CLI commands receive the initial prompt without terminal readiness parsing", () => {
   assert.equal(
     buildAgentTerminalCommand("claude-cli", "default", { prompt: "analyze this project" }).command,
@@ -435,6 +455,112 @@ test("Codex task_complete distinguishes success and error for the active turn", 
     }),
     [{ state: "completed", outcome: "error", error: "503 unavailable" }],
   );
+
+  const disabledKey = new AgentSessionEventReducer("codex");
+  disabledKey.push({ type: "event_msg", payload: { type: "task_started", turn_id: "turn_3" } });
+  const disabledKeyMessage =
+    'unexpected status 401 Unauthorized: {"code":"API_KEY_DISABLED","message":"API key is disabled"}, url: https://aihub.top/responses, request id: request_1';
+  assert.deepEqual(
+    disabledKey.push({
+      type: "event_msg",
+      payload: {
+        type: "task_complete",
+        turn_id: "turn_3",
+        last_agent_message: "",
+        error: { message: disabledKeyMessage, codex_error_info: "other" },
+      },
+    }),
+    [{ state: "completed", outcome: "error", error: disabledKeyMessage }],
+  );
+});
+
+test("Codex reports a stream error after its internal retry limit is exhausted", () => {
+  const reducer = new AgentSessionEventReducer("codex");
+  reducer.push({ type: "event_msg", payload: { type: "task_started", turn_id: "turn_1" } });
+
+  assert.deepEqual(
+    reducer.push({
+      type: "event_msg",
+      payload: {
+        type: "stream_error",
+        turn_id: "turn_1",
+        message: "Reconnecting... 5/5",
+      },
+    }),
+    [],
+  );
+  assert.deepEqual(
+    reducer.push({
+      type: "event_msg",
+      payload: {
+        type: "stream_error",
+        turn_id: "turn_1",
+        message: "exceeded retry limit, last status: 429 Too Many Requests, request id: request_1",
+      },
+    }),
+    [
+      {
+        state: "completed",
+        outcome: "error",
+        error: "exceeded retry limit, last status: 429 Too Many Requests, request id: request_1",
+      },
+    ],
+  );
+});
+
+test("Codex API error events are not treated as user interruptions", () => {
+  const reducer = new AgentSessionEventReducer("codex");
+  reducer.push({ type: "event_msg", payload: { type: "task_started", turn_id: "turn_1" } });
+
+  assert.deepEqual(
+    reducer.push({
+      type: "event_msg",
+      payload: {
+        type: "error",
+        turn_id: "turn_1",
+        message:
+          'unexpected status 401 Unauthorized: {"code":"API_KEY_DISABLED","message":"API key is disabled"}',
+      },
+    }),
+    [
+      {
+        state: "completed",
+        outcome: "error",
+        error:
+          'unexpected status 401 Unauthorized: {"code":"API_KEY_DISABLED","message":"API key is disabled"}',
+      },
+    ],
+  );
+
+  const aborted = new AgentSessionEventReducer("codex");
+  aborted.push({ type: "event_msg", payload: { type: "task_started", turn_id: "turn_2" } });
+  assert.deepEqual(
+    aborted.push({
+      type: "event_msg",
+      payload: {
+        type: "turn_aborted",
+        turn_id: "turn_2",
+        reason: "last status: 429 Too Many Requests",
+      },
+    }),
+    [{ state: "completed", outcome: "error", error: "last status: 429 Too Many Requests" }],
+  );
+
+  const genericAbort = new AgentSessionEventReducer("codex");
+  genericAbort.push({ type: "event_msg", payload: { type: "task_started", turn_id: "turn_3" } });
+  assert.deepEqual(
+    genericAbort.push(
+      {
+        type: "event_msg",
+        payload: { type: "turn_aborted", turn_id: "turn_3", reason: "interrupted" },
+      },
+      100,
+    ),
+    [],
+  );
+  assert.deepEqual(genericAbort.poll(350), [
+    { state: "completed", outcome: "error", error: "interrupted" },
+  ]);
 });
 
 test("Codex user input and approval events drive waiting state", () => {
@@ -454,6 +580,7 @@ test("Codex user input and approval events drive waiting state", () => {
     }),
     [{ state: "running" }],
   );
+  assert.deepEqual(reducer.push(codexUserInterruptMarker()), []);
   assert.deepEqual(
     reducer.push(
       {
@@ -760,6 +887,7 @@ test("Codex initial task_started does not overwrite an earlier sidecar wait", ()
 test("Codex reducer continues with a new turn after an aborted turn", () => {
   const reducer = new AgentSessionEventReducer("codex");
   reducer.push({ type: "event_msg", payload: { type: "task_started", turn_id: "turn_1" } }, 0);
+  reducer.push(codexUserInterruptMarker());
   assert.deepEqual(
     reducer.push(
       {
@@ -804,6 +932,7 @@ test("JSONL watcher can reject a paused abort and accept a later turn completion
       type: "event_msg",
       payload: { type: "task_started", turn_id: "turn_1" },
     });
+    await appendJsonl(filePath, codexUserInterruptMarker());
     await appendJsonl(filePath, {
       type: "event_msg",
       payload: { type: "turn_aborted", turn_id: "turn_1", reason: "interrupted" },
@@ -819,6 +948,103 @@ test("JSONL watcher can reject a paused abort and accept a later turn completion
 
     assert.deepEqual(await watched, { state: "completed", outcome: "success" });
     assert.deepEqual(events, ["running:", "completed:cancelled", "running:", "completed:success"]);
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("JSONL watcher accepts an API error after continuing from an explicit user interrupt", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-codex-interrupt-error-"));
+  const filePath = path.join(directory, "session.jsonl");
+  await fs.writeFile(filePath, "");
+  const events: string[] = [];
+  const errorMessage =
+    'unexpected status 401 Unauthorized: {"code":"API_KEY_DISABLED","message":"API key is disabled"}';
+  try {
+    const watched = watchAgentSession({
+      app: "codex",
+      sessionId: "session",
+      filePath,
+      onEvent: (event) => events.push(`${event.state}:${event.outcome ?? ""}`),
+      acceptCompletion: (event) => event.outcome !== "cancelled",
+    });
+    await appendJsonl(filePath, {
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: "turn_1" },
+    });
+    await appendJsonl(filePath, codexUserInterruptMarker());
+    await appendJsonl(filePath, {
+      type: "event_msg",
+      payload: { type: "turn_aborted", turn_id: "turn_1", reason: "interrupted" },
+    });
+    await appendJsonl(filePath, {
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: "turn_2" },
+    });
+    await appendJsonl(filePath, {
+      type: "event_msg",
+      payload: {
+        type: "task_complete",
+        turn_id: "turn_2",
+        last_agent_message: null,
+        error: { message: errorMessage, codex_error_info: "other" },
+      },
+    });
+
+    assert.deepEqual(await watched, { state: "completed", outcome: "error", error: errorMessage });
+    assert.deepEqual(events, ["running:", "completed:cancelled", "running:", "completed:error"]);
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a completed turn after ESC clears interruption handling for later API errors", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-codex-interrupt-next-error-"));
+  const filePath = path.join(directory, "session.jsonl");
+  await fs.writeFile(filePath, "");
+  const errorMessage =
+    'unexpected status 401 Unauthorized: {"code":"API_KEY_DISABLED","message":"API key is disabled"}';
+  try {
+    const watched = watchAgentSession({
+      app: "codex",
+      sessionId: "session",
+      filePath,
+      onEvent: () => {},
+      // Model a workflow terminal that continues after ESC and after a manual-success turn.
+      acceptCompletion: (event) => event.outcome === "error",
+    });
+    await appendJsonl(filePath, {
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: "turn_1" },
+    });
+    await appendJsonl(filePath, codexUserInterruptMarker());
+    await appendJsonl(filePath, {
+      type: "event_msg",
+      payload: { type: "turn_aborted", turn_id: "turn_1", reason: "interrupted" },
+    });
+    await appendJsonl(filePath, {
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: "turn_2" },
+    });
+    await appendJsonl(filePath, {
+      type: "event_msg",
+      payload: { type: "task_complete", turn_id: "turn_2", last_agent_message: "done" },
+    });
+    await appendJsonl(filePath, {
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: "turn_3" },
+    });
+    await appendJsonl(filePath, {
+      type: "event_msg",
+      payload: {
+        type: "task_complete",
+        turn_id: "turn_3",
+        last_agent_message: null,
+        error: { message: errorMessage, codex_error_info: "other" },
+      },
+    });
+
+    assert.deepEqual(await watched, { state: "completed", outcome: "error", error: errorMessage });
   } finally {
     await fs.rm(directory, { recursive: true, force: true });
   }
@@ -945,6 +1171,7 @@ test("JSONL watcher completes a Codex abort after its declined-event window", as
         type: "event_msg",
         payload: { type: "task_started", turn_id: "turn_1" },
       }),
+      JSON.stringify(codexUserInterruptMarker()),
       JSON.stringify({
         type: "event_msg",
         payload: { type: "turn_aborted", turn_id: "turn_1", reason: "interrupted" },

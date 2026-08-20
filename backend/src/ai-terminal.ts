@@ -119,13 +119,26 @@ export type AgentCompletionDecision = "accept" | "continue-interrupted" | "conti
 
 export function agentCompletionDecisionForTest(
   event: AgentSessionEvent,
-  options: { keepRunningOnInterrupt: boolean; autoFinishPaused: boolean },
+  options: {
+    keepRunningOnInterrupt: boolean;
+    autoFinishPaused: boolean;
+    autoSuccess?: boolean;
+  },
 ): AgentCompletionDecision {
+  if (event.outcome === "error") return "accept";
+  if (event.outcome === "success" && options.autoSuccess === false) return "continue-paused";
   if (options.autoFinishPaused) return "continue-paused";
   if (event.outcome === "cancelled" && options.keepRunningOnInterrupt) {
     return "continue-interrupted";
   }
   return "accept";
+}
+
+export function agentAutoFinishPausedAfterEventForTest(
+  event: AgentSessionEvent,
+  paused: boolean,
+): boolean {
+  return event.state === "running" ? false : paused;
 }
 
 const controls = new Map<string, AgentTerminalControl>();
@@ -310,6 +323,10 @@ function handleAgentSessionEvent(
     }
     return;
   }
+  control.autoFinishPaused = agentAutoFinishPausedAfterEventForTest(
+    event,
+    control.autoFinishPaused,
+  );
   control.lastCompletionState = "empty";
   onFrame?.({ type: "status", status: "prompt-sent" });
 }

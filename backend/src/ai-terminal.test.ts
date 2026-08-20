@@ -4,6 +4,7 @@ import * as fs from "node:fs/promises";
 import test from "node:test";
 import {
   type AgentEffort,
+  agentAutoFinishPausedAfterEventForTest,
   agentCompletionDecisionForTest,
   buildAgentTerminalCommand,
   createAgentTerminalControlForTest,
@@ -41,6 +42,44 @@ test("JSONL completion policy only keeps user-interrupted turns running", () => 
       { keepRunningOnInterrupt: true, autoFinishPaused: true },
     ),
     "continue-paused",
+  );
+  assert.equal(
+    agentCompletionDecisionForTest(
+      { state: "completed", outcome: "error", error: "unexpected status 401 Unauthorized" },
+      { keepRunningOnInterrupt: true, autoFinishPaused: true },
+    ),
+    "accept",
+  );
+});
+
+test("a new JSONL turn clears the ESC auto-finish pause", () => {
+  assert.equal(agentAutoFinishPausedAfterEventForTest({ state: "running" }, true), false);
+  assert.equal(agentAutoFinishPausedAfterEventForTest({ state: "waiting-for-choice" }, true), true);
+  assert.equal(
+    agentAutoFinishPausedAfterEventForTest(
+      { state: "completed", outcome: "error", error: "401 Unauthorized" },
+      true,
+    ),
+    true,
+  );
+});
+
+test("manual success keeps monitoring later turns and still accepts errors", () => {
+  const manual = {
+    keepRunningOnInterrupt: true,
+    autoFinishPaused: false,
+    autoSuccess: false,
+  };
+  assert.equal(
+    agentCompletionDecisionForTest({ state: "completed", outcome: "success" }, manual),
+    "continue-paused",
+  );
+  assert.equal(
+    agentCompletionDecisionForTest(
+      { state: "completed", outcome: "error", error: "401 Unauthorized" },
+      manual,
+    ),
+    "accept",
   );
 });
 
