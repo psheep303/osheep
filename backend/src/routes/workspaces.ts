@@ -16,6 +16,7 @@ import {
   createWorkspace,
   ensureOsheepLayout,
   listWorkspaces,
+  markWorkspaceOpened,
   resolveWorkspace,
   setWorkspacesRoot,
 } from "../workspace.js";
@@ -85,7 +86,7 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
   });
 
   app.get<{ Params: { id: string } }>("/api/workspaces/:id", async (req) => {
-    const ws = await resolveWorkspace(req.params.id);
+    const ws = await markWorkspaceOpened(req.params.id);
     await ensureOsheepLayout(ws.path);
     return { id: ws.id, name: ws.name };
   });

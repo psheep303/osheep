@@ -81,6 +81,51 @@
 .settings-pricing__pagination > div { display: flex; align-items: center; gap: 9px; }
 .settings-pricing__pagination .settings-view__icon-button:disabled { opacity: .4; cursor: default; }
 
+.usage-stats { display: grid; gap: 26px; padding-top: 8px; }
+.usage-stats__toolbar { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+.usage-stats__toolbar p { margin: 0; color: var(--fg-muted); font-size: 12px; }
+.usage-stats__actions { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; }
+.usage-stats__range { display: inline-flex; padding: 2px; border: 1px solid var(--border-control); border-radius: var(--radius-sm); background: var(--surface-control); }
+.usage-stats__range button { min-width: 58px; height: 26px; padding: 0 9px; border: 0; border-radius: 2px; background: transparent; color: var(--fg-muted); font: inherit; font-size: 11px; cursor: pointer; }
+.usage-stats__range button:hover { color: var(--fg-strong); }
+.usage-stats__range button.is-active { background: var(--ui-surface-selected); color: var(--fg-strong); box-shadow: inset 0 0 0 1px var(--border-control); }
+.usage-stats__refresh:hover:not(:disabled) { border-color: var(--accent); color: var(--fg-strong); }
+.usage-stats__refresh .is-spinning { display: inline-block; animation: settings-cli-spin .8s linear infinite; }
+.usage-stats__metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.usage-stats__metrics--global { grid-template-columns: repeat(2, minmax(0, 1fr)); max-width: 520px; }
+.usage-stats__metric { display: grid; min-width: 0; min-height: 86px; align-content: space-between; gap: 10px; padding: 14px; border: 1px solid var(--border-control); border-radius: 6px; background: var(--ui-surface-card); }
+.usage-stats__metric span { color: var(--fg-muted); font-size: 11px; }
+.usage-stats__metric strong { overflow: hidden; color: var(--fg-strong); font-family: var(--font-mono); font-size: 18px; font-weight: 600; letter-spacing: 0; text-overflow: ellipsis; white-space: nowrap; }
+.usage-stats__metric.is-tokens { border-top: 2px solid var(--accent); }
+.usage-stats__metric.is-cost { border-top: 2px solid var(--color-success-strong); }
+.usage-stats__metric.is-runs { border-top: 2px solid var(--color-info); }
+.usage-stats__section { min-width: 0; }
+.usage-stats__section > h2 { margin: 0 0 12px; padding-bottom: 6px; border-bottom: 1px solid var(--border-faint); color: var(--fg-strong); font-size: 13px; font-weight: 600; }
+.usage-stats__state { min-height: 120px; display: grid; place-items: center; color: var(--fg-muted); font-size: 12px; text-align: center; }
+.usage-stats__trend { display: flex; min-height: 190px; align-items: stretch; gap: 6px; overflow-x: auto; padding: 8px 2px 5px; }
+.usage-stats__trend-day { display: grid; width: max(24px, calc((100% - 174px) / 30)); min-width: 24px; grid-template-rows: 18px 128px 18px; gap: 4px; align-items: end; text-align: center; }
+.usage-stats__trend-value { overflow: hidden; color: var(--fg-muted); font-family: var(--font-mono); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.usage-stats__trend-track { display: flex; width: 100%; height: 128px; align-items: flex-end; border-bottom: 1px solid var(--border-control); background: color-mix(in srgb, var(--surface-control) 55%, transparent); }
+.usage-stats__trend-track span { display: block; width: 100%; min-height: 3px; background: var(--accent); opacity: .8; transition: opacity var(--duration-fast) ease; }
+.usage-stats__trend-day:hover .usage-stats__trend-track span { opacity: 1; }
+.usage-stats__trend-day time { color: var(--fg-muted); font-family: var(--font-mono); font-size: 9px; white-space: nowrap; }
+.usage-stats__rankings { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }
+.usage-stats__table-wrap { width: 100%; overflow-x: auto; }
+.usage-stats__table { width: 100%; min-width: 360px; border-collapse: collapse; table-layout: fixed; font-size: 11px; }
+.usage-stats__table th, .usage-stats__table td { height: 34px; padding: 0 8px; border-bottom: 1px solid var(--border-faint); text-align: right; white-space: nowrap; }
+.usage-stats__table th { color: var(--fg-muted); font-weight: 500; }
+.usage-stats__table td { color: var(--fg-default); font-family: var(--font-mono); }
+.usage-stats__table th:first-child, .usage-stats__table td:first-child { width: 42%; overflow: hidden; text-align: left; text-overflow: ellipsis; }
+.usage-stats__table tbody tr:hover { background: var(--bg-hover); }
+.usage-stats__table--runs { min-width: 680px; }
+.usage-stats__table--runs th:first-child, .usage-stats__table--runs td:first-child { width: 28%; }
+.usage-stats__table--runs th:nth-child(2), .usage-stats__table--runs td:nth-child(2) { width: 27%; text-align: left; }
+.usage-stats__status { display: inline-flex; align-items: center; min-height: 20px; padding: 0 6px; border: 1px solid var(--border-control); border-radius: 999px; color: var(--fg-muted); font-family: var(--font-sans); font-size: 10px; }
+.usage-stats__status.is-success { color: var(--color-success-strong); }
+.usage-stats__status.is-error { color: var(--color-error); }
+.usage-stats__status.is-running { color: var(--color-info); }
+.usage-stats__status.is-stopped { color: var(--color-warning-strong); }
+
 .settings-about__brand { display: flex; align-items: center; gap: 12px; margin: 20px 0 28px; }
 .settings-about__mark { display: block; width: 44px; height: 44px; object-fit: contain; }
 .settings-about__brand div { display: grid; gap: 3px; }
@@ -281,6 +326,9 @@
   .settings-pricing__toolbar { display: grid; }
   .settings-about__facts div { grid-template-columns: 1fr; gap: 4px; }
   .settings-cli-tools__grid { grid-template-columns: 1fr; }
+  .usage-stats__toolbar { align-items: flex-start; flex-direction: column; }
+  .usage-stats__metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .usage-stats__rankings { grid-template-columns: 1fr; }
 }
 
 .settings-view__option-row {

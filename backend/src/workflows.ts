@@ -1,6 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { errors } from "./errors.js";
+import { calculateModelCost, type ModelPriceRecord } from "./model-pricing.js";
 
 const WORKFLOW_ID_RE = /^wf_[a-z0-9]{8,32}$/;
 const NODE_ID_RE = /^node_[a-z0-9]{6,32}$/;
@@ -149,6 +150,50 @@ export interface WorkflowSummary {
   nodeCount: number;
   edgeCount: number;
   status: WorkflowRunStatus;
+}
+
+export type WorkflowUsageRange = "7d" | "30d" | "all";
+
+export interface WorkflowUsageTotals {
+  runs: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  totalTokens: number;
+  cost: number;
+}
+
+export interface WorkflowUsageStatistics {
+  generatedAt: number;
+  range: WorkflowUsageRange;
+  totals: WorkflowUsageTotals;
+  daily: Array<{ date: string; runs: number; tokens: number; cost: number }>;
+  workflows: Array<{
+    workflowId: string;
+    title: string;
+    runs: number;
+    tokens: number;
+    cost: number;
+  }>;
+  models: Array<{ model: string; runs: number; tokens: number; cost: number }>;
+  recentRuns: Array<{
+    workflowId: string;
+    workflowTitle: string;
+    runId: string;
+    status: WorkflowRunStatus;
+    startedAt: number;
+    completedAt?: number;
+    tokens: number;
+    cost: number;
+  }>;
+}
+
+export interface AllProjectsWorkflowUsage {
+  generatedAt: number;
+  range: WorkflowUsageRange;
+  projectCount: number;
+  totals: WorkflowUsageTotals;
 }
 
 function workflowDir(workspaceRoot: string): string {
@@ -466,6 +511,250 @@ export async function listWorkflows(workspaceRoot: string): Promise<WorkflowSumm
   }
   out.sort((a, b) => b.updatedAt - a.updatedAt);
   return out;
+}
+
+export async function getWorkflowUsageStatistics(
+  workspaceRoot: string,
+  options: {
+    range?: WorkflowUsageRange;
+    timezoneOffsetMinutes?: number;
+    now?: number;
+    prices?: ModelPriceRecord[];
+  } = {},
+): Promise<WorkflowUsageStatistics> {
+  const range = options.range ?? "30d";
+  const now = options.now ?? Date.now();
+  const timezoneOffsetMinutes = Number.isFinite(options.timezoneOffsetMinutes)
+    ? Math.max(-840, Math.min(840, options.timezoneOffsetMinutes!))
+    : 0;
+  const startAt = usageRangeStart(range, now, timezoneOffsetMinutes);
+  const summaries = await listWorkflows(workspaceRoot);
+  const records = await Promise.all(
+    summaries.map((summary) => getWorkflow(workspaceRoot, summary.id).catch(() => null)),
+  );
+  const generatedAt = records.reduce(
+    (latest, record) => Math.max(latest, record?.updatedAt ?? 0),
+    0,
+  );
+  const totals: WorkflowUsageStatistics["totals"] = {
+    runs: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    totalTokens: 0,
+    cost: 0,
+  };
+  const daily = new Map<string, WorkflowUsageStatistics["daily"][number]>();
+  const workflows = new Map<string, WorkflowUsageStatistics["workflows"][number]>();
+  const models = new Map<
+    string,
+    WorkflowUsageStatistics["models"][number] & { runIds: Set<string> }
+  >();
+  const recentRuns: WorkflowUsageStatistics["recentRuns"] = [];
+
+  for (const record of records) {
+    if (!record) continue;
+    for (const run of record.runs) {
+      if (run.startedAt < startAt || run.startedAt > now) continue;
+      const usage = workflowRunUsage(run, record, options.prices ?? []);
+      totals.runs += 1;
+      totals.inputTokens += usage.inputTokens;
+      totals.outputTokens += usage.outputTokens;
+      totals.cacheReadTokens += usage.cacheReadTokens;
+      totals.cacheWriteTokens += usage.cacheWriteTokens;
+      totals.totalTokens += usage.totalTokens;
+      totals.cost += usage.cost;
+
+      const date = usageDateKey(run.startedAt, timezoneOffsetMinutes);
+      const day = daily.get(date) ?? { date, runs: 0, tokens: 0, cost: 0 };
+      day.runs += 1;
+      day.tokens += usage.totalTokens;
+      day.cost += usage.cost;
+      daily.set(date, day);
+
+      const workflow = workflows.get(record.id) ?? {
+        workflowId: record.id,
+        title: record.title,
+        runs: 0,
+        tokens: 0,
+        cost: 0,
+      };
+      workflow.runs += 1;
+      workflow.tokens += usage.totalTokens;
+      workflow.cost += usage.cost;
+      workflows.set(record.id, workflow);
+
+      for (const trace of run.trace ?? []) {
+        const modelName = trace.model?.trim();
+        if (!modelName) continue;
+        const model = models.get(modelName) ?? {
+          model: modelName,
+          runs: 0,
+          tokens: 0,
+          cost: 0,
+          runIds: new Set<string>(),
+        };
+        const scopedRunId = `${record.id}:${run.id}`;
+        if (!model.runIds.has(scopedRunId)) {
+          model.runIds.add(scopedRunId);
+          model.runs += 1;
+        }
+        model.tokens += traceTotalTokens(trace);
+        model.cost += workflowTraceCost(trace, record, options.prices ?? []);
+        models.set(modelName, model);
+      }
+
+      recentRuns.push({
+        workflowId: record.id,
+        workflowTitle: record.title,
+        runId: run.id,
+        status: run.status,
+        startedAt: run.startedAt,
+        completedAt: run.completedAt,
+        tokens: usage.totalTokens,
+        cost: usage.cost,
+      });
+    }
+  }
+
+  if (range !== "all") {
+    const dayCount = range === "7d" ? 7 : 30;
+    for (let index = 0; index < dayCount; index += 1) {
+      const date = usageDateKey(startAt + index * 86_400_000, timezoneOffsetMinutes);
+      if (!daily.has(date)) daily.set(date, { date, runs: 0, tokens: 0, cost: 0 });
+    }
+  }
+
+  return {
+    generatedAt,
+    range,
+    totals,
+    daily: [...daily.values()].sort((a, b) => a.date.localeCompare(b.date)),
+    workflows: [...workflows.values()].sort(
+      (a, b) => b.cost - a.cost || b.tokens - a.tokens || a.title.localeCompare(b.title),
+    ),
+    models: [...models.values()]
+      .map(({ runIds: _runIds, ...model }) => model)
+      .sort((a, b) => b.cost - a.cost || b.tokens - a.tokens || a.model.localeCompare(b.model)),
+    recentRuns: recentRuns.sort((a, b) => b.startedAt - a.startedAt).slice(0, 20),
+  };
+}
+
+export async function getAllProjectsWorkflowUsage(
+  projectPaths: string[],
+  options: {
+    range?: WorkflowUsageRange;
+    timezoneOffsetMinutes?: number;
+    now?: number;
+    prices?: ModelPriceRecord[];
+  } = {},
+): Promise<AllProjectsWorkflowUsage> {
+  const statistics = await Promise.all(
+    projectPaths.map((projectPath) => getWorkflowUsageStatistics(projectPath, options)),
+  );
+  const totals: WorkflowUsageTotals = {
+    runs: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    totalTokens: 0,
+    cost: 0,
+  };
+  let generatedAt = 0;
+  for (const usage of statistics) {
+    generatedAt = Math.max(generatedAt, usage.generatedAt);
+    totals.runs += usage.totals.runs;
+    totals.inputTokens += usage.totals.inputTokens;
+    totals.outputTokens += usage.totals.outputTokens;
+    totals.cacheReadTokens += usage.totals.cacheReadTokens;
+    totals.cacheWriteTokens += usage.totals.cacheWriteTokens;
+    totals.totalTokens += usage.totals.totalTokens;
+    totals.cost += usage.totals.cost;
+  }
+  return {
+    generatedAt,
+    range: options.range ?? "30d",
+    projectCount: projectPaths.length,
+    totals,
+  };
+}
+
+function usageRangeStart(
+  range: WorkflowUsageRange,
+  now: number,
+  timezoneOffsetMinutes: number,
+): number {
+  if (range === "all") return Number.NEGATIVE_INFINITY;
+  const days = range === "7d" ? 7 : 30;
+  const shifted = new Date(now - timezoneOffsetMinutes * 60_000);
+  shifted.setUTCHours(0, 0, 0, 0);
+  return shifted.getTime() + timezoneOffsetMinutes * 60_000 - (days - 1) * 86_400_000;
+}
+
+function usageDateKey(timestamp: number, timezoneOffsetMinutes: number): string {
+  return new Date(timestamp - timezoneOffsetMinutes * 60_000).toISOString().slice(0, 10);
+}
+
+function finiteUsageNumber(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+function traceTotalTokens(trace: WorkflowRunTrace): number {
+  return finiteUsageNumber(
+    trace.tokens?.total ??
+      (trace.tokens?.input !== undefined || trace.tokens?.output !== undefined
+        ? finiteUsageNumber(trace.tokens.input) + finiteUsageNumber(trace.tokens.output)
+        : 0),
+  );
+}
+
+function workflowTraceCost(
+  trace: WorkflowRunTrace,
+  workflow: WorkflowRecord,
+  prices: ModelPriceRecord[],
+): number {
+  const storedCost = finiteUsageNumber(trace.cost);
+  if (storedCost > 0 || trace.cost === 0) return storedCost;
+  const model = trace.model?.trim();
+  if (!model) return 0;
+  const node = workflow.nodes.find((item) => item.id === trace.nodeId);
+  const calculated = calculateModelCost(model, trace.tokens, prices, {
+    inputIncludesCache: node?.providerKind !== "claude-cli",
+  });
+  const multiplier = finiteUsageNumber(trace.billingMultiplier) || 1;
+  return finiteUsageNumber(calculated) * multiplier;
+}
+
+function workflowRunUsage(
+  run: WorkflowRun,
+  workflow: WorkflowRecord,
+  prices: ModelPriceRecord[],
+): Omit<WorkflowUsageStatistics["totals"], "runs"> {
+  const trace = run.trace ?? [];
+  const traceUsage = {
+    inputTokens: trace.reduce((sum, item) => sum + finiteUsageNumber(item.tokens?.input), 0),
+    outputTokens: trace.reduce((sum, item) => sum + finiteUsageNumber(item.tokens?.output), 0),
+    cacheReadTokens: trace.reduce(
+      (sum, item) => sum + finiteUsageNumber(item.tokens?.cacheRead),
+      0,
+    ),
+    cacheWriteTokens: trace.reduce(
+      (sum, item) => sum + finiteUsageNumber(item.tokens?.cacheWrite),
+      0,
+    ),
+    totalTokens: trace.reduce((sum, item) => sum + traceTotalTokens(item), 0),
+    cost: trace.reduce((sum, item) => sum + workflowTraceCost(item, workflow, prices), 0),
+  };
+  return {
+    inputTokens: finiteUsageNumber(run.stats?.inputTokens) || traceUsage.inputTokens,
+    outputTokens: finiteUsageNumber(run.stats?.outputTokens) || traceUsage.outputTokens,
+    cacheReadTokens: finiteUsageNumber(run.stats?.cacheReadTokens) || traceUsage.cacheReadTokens,
+    cacheWriteTokens: finiteUsageNumber(run.stats?.cacheWriteTokens) || traceUsage.cacheWriteTokens,
+    totalTokens: finiteUsageNumber(run.stats?.totalTokens) || traceUsage.totalTokens,
+    cost: finiteUsageNumber(run.stats?.cost) || traceUsage.cost,
+  };
 }
 
 export async function findWorkflowByTemplateBinding(

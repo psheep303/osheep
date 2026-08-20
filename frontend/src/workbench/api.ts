@@ -1350,6 +1350,50 @@ export interface WorkflowSummary {
   status: WorkflowRunStatus;
 }
 
+export type WorkflowUsageRange = "7d" | "30d" | "all";
+
+export interface WorkflowUsageTotals {
+  runs: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  totalTokens: number;
+  cost: number;
+}
+
+export interface WorkflowUsageStatistics {
+  generatedAt: number;
+  range: WorkflowUsageRange;
+  totals: WorkflowUsageTotals;
+  daily: Array<{ date: string; runs: number; tokens: number; cost: number }>;
+  workflows: Array<{
+    workflowId: string;
+    title: string;
+    runs: number;
+    tokens: number;
+    cost: number;
+  }>;
+  models: Array<{ model: string; runs: number; tokens: number; cost: number }>;
+  recentRuns: Array<{
+    workflowId: string;
+    workflowTitle: string;
+    runId: string;
+    status: WorkflowRunStatus;
+    startedAt: number;
+    completedAt?: number;
+    tokens: number;
+    cost: number;
+  }>;
+}
+
+export interface AllProjectsWorkflowUsage {
+  generatedAt: number;
+  range: WorkflowUsageRange;
+  projectCount: number;
+  totals: WorkflowUsageTotals;
+}
+
 const workflowsUrl = (id: string, suffix = "") =>
   `/api/workspaces/${encodeURIComponent(id)}/workflows${suffix}`;
 
@@ -1381,6 +1425,27 @@ export async function saveWorkflow(
   record: WorkflowRecord,
 ): Promise<WorkflowRecord> {
   return await http.put(workflowsUrl(workspaceId, `/${encodeURIComponent(record.id)}`), record);
+}
+
+export async function getWorkflowUsageStatistics(
+  workspaceId: string,
+  range: WorkflowUsageRange,
+): Promise<WorkflowUsageStatistics> {
+  const query = new URLSearchParams({
+    range,
+    timezoneOffset: String(new Date().getTimezoneOffset()),
+  });
+  return await http.get<WorkflowUsageStatistics>(workflowsUrl(workspaceId, `/usage?${query}`));
+}
+
+export async function getAllProjectsWorkflowUsage(
+  range: WorkflowUsageRange,
+): Promise<AllProjectsWorkflowUsage> {
+  const query = new URLSearchParams({
+    range,
+    timezoneOffset: String(new Date().getTimezoneOffset()),
+  });
+  return await http.get<AllProjectsWorkflowUsage>(`/api/workflow-usage?${query}`);
 }
 
 export async function saveWorkflowContent(

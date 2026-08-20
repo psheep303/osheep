@@ -9,32 +9,248 @@ import { registerWorkflowRoutes } from "./routes/workflows.js";
 import {
   createWorkflow,
   findWorkflowByTemplateBinding,
+  getAllProjectsWorkflowUsage,
   getWorkflow,
+  getWorkflowUsageStatistics,
   listWorkflowIdsByTemplateBinding,
   listWorkflows,
   saveWorkflow,
   updateWorkflow,
 } from "./workflows.js";
+import { markWorkspaceOpened } from "./workspace.js";
+
+test("all-project workflow usage sums opened project totals without exposing details", async () => {
+  const sandbox = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-all-project-usage-"));
+  const firstRoot = path.join(sandbox, "first");
+  const secondRoot = path.join(sandbox, "second");
+  try {
+    await fs.mkdir(firstRoot);
+    await fs.mkdir(secondRoot);
+    await createWorkflow(firstRoot, {
+      title: "First workflow",
+      runs: [
+        {
+          id: "run_first",
+          status: "success",
+          startedAt: 100,
+          nodeIds: [],
+          stats: { totalTokens: 120, inputTokens: 80, outputTokens: 40, cost: 0.2 },
+        },
+      ],
+    });
+    await createWorkflow(secondRoot, {
+      title: "Second workflow",
+      runs: [
+        {
+          id: "run_second",
+          status: "success",
+          startedAt: 110,
+          nodeIds: [],
+          stats: { totalTokens: 300, inputTokens: 200, outputTokens: 100, cost: 0.7 },
+        },
+      ],
+    });
+
+    const usage = await getAllProjectsWorkflowUsage([firstRoot, secondRoot], {
+      range: "all",
+      now: 200,
+    });
+
+    assert.equal(usage.projectCount, 2);
+    assert.equal(usage.totals.totalTokens, 420);
+    assert.ok(Math.abs(usage.totals.cost - 0.9) < Number.EPSILON);
+    assert.equal("workflows" in usage, false);
+    assert.equal("recentRuns" in usage, false);
+  } finally {
+    await fs.rm(sandbox, { recursive: true, force: true });
+  }
+});
+
+test("workflow usage statistics aggregate runs by date, workflow, and model", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-workflow-usage-"));
+  const now = Date.UTC(2026, 7, 20, 12);
+
+  try {
+    const first = await createWorkflow(root, { title: "Daily report" });
+    const second = await createWorkflow(root, { title: "Release notes" });
+    const buildRun = (startedAt: number, model: string, cost: number) => ({
+      id: "run_shared",
+      status: "success" as const,
+      startedAt,
+      completedAt: startedAt + 1000,
+      nodeIds: [first.nodes[0]!.id],
+      stats: {
+        inputTokens: 100,
+        outputTokens: 40,
+        cacheReadTokens: 20,
+        cacheWriteTokens: 10,
+        totalTokens: 140,
+        cost,
+      },
+      trace: [
+        {
+          nodeId: first.nodes[0]!.id,
+          title: "Agent",
+          kind: "agent" as const,
+          model,
+          status: "success" as const,
+          startedAt,
+          completedAt: startedAt + 1000,
+          tokens: { input: 100, output: 40, cacheRead: 20, cacheWrite: 10, total: 140 },
+          cost,
+        },
+      ],
+    });
+    await saveWorkflow(root, {
+      ...first,
+      runs: [
+        buildRun(Date.UTC(2026, 7, 19, 3), "gpt-5", 0.25),
+        { ...buildRun(Date.UTC(2026, 6, 1, 3), "old-model", 9), id: "run_old" },
+      ],
+    });
+    await saveWorkflow(root, {
+      ...second,
+      runs: [buildRun(Date.UTC(2026, 7, 20, 3), "gpt-5", 0.5)],
+    });
+
+    const usage = await getWorkflowUsageStatistics(root, {
+      range: "7d",
+      timezoneOffsetMinutes: -480,
+      now,
+    });
+
+    assert.deepEqual(usage.totals, {
+      runs: 2,
+      inputTokens: 200,
+      outputTokens: 80,
+      cacheReadTokens: 40,
+      cacheWriteTokens: 20,
+      totalTokens: 280,
+      cost: 0.75,
+    });
+    assert.deepEqual(
+      usage.daily.filter((day) => day.runs > 0).map((day) => [day.date, day.runs, day.tokens]),
+      [
+        ["2026-08-19", 1, 140],
+        ["2026-08-20", 1, 140],
+      ],
+    );
+    assert.equal(usage.workflows.length, 2);
+    assert.equal(usage.models[0]?.model, "gpt-5");
+    assert.equal(usage.models[0]?.runs, 2);
+    assert.equal(usage.models[0]?.tokens, 280);
+    assert.equal(usage.recentRuns[0]?.workflowTitle, "Release notes");
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("workflow usage statistics price legacy traces with their recorded multiplier", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-workflow-usage-price-"));
+  try {
+    const workflow = await createWorkflow(root, { title: "Legacy usage" });
+    const node = workflow.nodes[0]!;
+    await saveWorkflow(root, {
+      ...workflow,
+      runs: [
+        {
+          id: "run_legacy",
+          status: "success",
+          startedAt: 100,
+          nodeIds: [node.id],
+          trace: [
+            {
+              nodeId: node.id,
+              title: node.title,
+              kind: "agent",
+              model: "legacy-model",
+              status: "success",
+              startedAt: 100,
+              tokens: { input: 1_000_000, output: 0, total: 1_000_000 },
+              billingMultiplier: 2,
+            },
+          ],
+        },
+      ],
+    });
+
+    const usage = await getWorkflowUsageStatistics(root, {
+      range: "all",
+      now: 200,
+      prices: [
+        {
+          model: "legacy-model",
+          provider: "test",
+          billingMode: "dynamic",
+          inputCostPerMillion: 2,
+          outputCostPerMillion: 0,
+        },
+      ],
+    });
+
+    assert.equal(usage.totals.cost, 4);
+    assert.equal(usage.models[0]?.cost, 4);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
 
 test("workflow GET routes support ETag revalidation", async () => {
   const workspacesRoot = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-workflow-etag-"));
   const workspaceRoot = path.join(workspacesRoot, "demo");
+  const unopenedWorkspaceRoot = path.join(workspacesRoot, "unopened");
+  const startedAt = Date.now();
   const previousWorkspacesRoot = config.workspacesRoot;
+  const previousOpenedProjectsFile = config.openedProjectsFile;
   const app = Fastify();
 
   try {
     config.workspacesRoot = workspacesRoot;
+    config.openedProjectsFile = path.join(workspacesRoot, "opened-projects.json");
     await fs.mkdir(workspaceRoot);
-    const workflow = await createWorkflow(workspaceRoot, { title: "Cached workflow" });
+    await fs.mkdir(unopenedWorkspaceRoot);
+    const workflow = await createWorkflow(workspaceRoot, {
+      title: "Cached workflow",
+      runs: [
+        {
+          id: "run_opened",
+          status: "success",
+          startedAt,
+          nodeIds: [],
+          stats: { totalTokens: 100, cost: 0.1 },
+        },
+      ],
+    });
+    await createWorkflow(unopenedWorkspaceRoot, {
+      title: "Never opened",
+      runs: [
+        {
+          id: "run_unopened",
+          status: "success",
+          startedAt,
+          nodeIds: [],
+          stats: { totalTokens: 900, cost: 0.9 },
+        },
+      ],
+    });
+    await markWorkspaceOpened("demo");
     await registerWorkflowRoutes(app);
 
     for (const url of [
       "/api/workspaces/demo/workflows",
+      "/api/workspaces/demo/workflows/usage?range=7d&timezoneOffset=0",
+      "/api/workflow-usage?range=7d&timezoneOffset=0",
       `/api/workspaces/demo/workflows/${workflow.id}`,
     ]) {
       const first = await app.inject({ method: "GET", url });
       assert.equal(first.statusCode, 200);
       assert.match(first.headers["content-type"] ?? "", /^application\/json/);
+      if (url.startsWith("/api/workflow-usage")) {
+        const body = first.json();
+        assert.equal(body.projectCount, 1);
+        assert.equal(body.totals.totalTokens, 100);
+        assert.equal(body.totals.cost, 0.1);
+      }
       const etag = first.headers.etag;
       assert.ok(etag);
 
@@ -50,6 +266,7 @@ test("workflow GET routes support ETag revalidation", async () => {
     }
   } finally {
     config.workspacesRoot = previousWorkspacesRoot;
+    config.openedProjectsFile = previousOpenedProjectsFile;
     await app.close();
     await fs.rm(workspacesRoot, { recursive: true, force: true });
   }

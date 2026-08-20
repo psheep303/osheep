@@ -23,13 +23,15 @@ import {
 import {
   createWorkflow,
   deleteWorkflow,
+  getAllProjectsWorkflowUsage,
   getWorkflow,
+  getWorkflowUsageStatistics,
   listWorkflows,
   saveWorkflow,
   updateWorkflow,
   type WorkflowRecord,
 } from "../workflows.js";
-import { resolveWorkspace } from "../workspace.js";
+import { listOpenedProjects, resolveWorkspace } from "../workspace.js";
 
 const WORKFLOW_SESSION_USAGE_CACHE_LIMIT = 128;
 const workflowSessionUsageCache = new Map<string, Promise<AgentSessionUsage>>();
@@ -63,6 +65,23 @@ async function recoverInterruptedWorkflow(
 }
 
 export async function registerWorkflowRoutes(app: FastifyInstance) {
+  app.get<{
+    Querystring: { range?: string; timezoneOffset?: string };
+  }>("/api/workflow-usage", async (req, reply) => {
+    const range = req.query.range === "7d" || req.query.range === "all" ? req.query.range : "30d";
+    const parsedOffset = Number(req.query.timezoneOffset);
+    const timezoneOffsetMinutes = Number.isFinite(parsedOffset) ? parsedOffset : 0;
+    const [projects, prices] = await Promise.all([
+      listOpenedProjects(),
+      readStoredModelPrices().catch(() => []),
+    ]);
+    const usage = await getAllProjectsWorkflowUsage(
+      projects.map((project) => project.path),
+      { range, timezoneOffsetMinutes, prices },
+    );
+    return sendWithEtag(req, reply, usage);
+  });
+
   app.get<{ Params: { id: string } }>("/api/workspaces/:id/workflows", async (req, reply) => {
     const ws = await resolveWorkspace(req.params.id);
     let workflows = await listWorkflows(ws.path);
@@ -79,6 +98,23 @@ export async function registerWorkflowRoutes(app: FastifyInstance) {
       workflows = await listWorkflows(ws.path);
     }
     return sendWithEtag(req, reply, { workflows });
+  });
+
+  app.get<{
+    Params: { id: string };
+    Querystring: { range?: string; timezoneOffset?: string };
+  }>("/api/workspaces/:id/workflows/usage", async (req, reply) => {
+    const ws = await resolveWorkspace(req.params.id);
+    const range = req.query.range === "7d" || req.query.range === "all" ? req.query.range : "30d";
+    const parsedOffset = Number(req.query.timezoneOffset);
+    const timezoneOffsetMinutes = Number.isFinite(parsedOffset) ? parsedOffset : 0;
+    const prices = await readStoredModelPrices().catch(() => []);
+    const usage = await getWorkflowUsageStatistics(ws.path, {
+      range,
+      timezoneOffsetMinutes,
+      prices,
+    });
+    return sendWithEtag(req, reply, usage);
   });
 
   app.get<{ Params: { id: string; wid: string } }>(

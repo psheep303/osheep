@@ -11,6 +11,7 @@ import {
   getGitDiff,
   getGitStatus,
   getTemplateCapabilities,
+  getWorkspace,
 } from "./api";
 import { DesktopWindowControls } from "./DesktopWindowControls";
 import { isWindowsDesktopShell } from "./desktop-folder-picker";
@@ -269,10 +270,17 @@ export function Workbench() {
   }, []);
 
   const onChooseWorkspace = useCallback(
-    (workspace: { id: string; name: string }) => {
+    async (workspace: { id: string; name: string }) => {
       setError(null);
-      setWorkspaceId(workspace.id);
-      setWorkspaceName(workspace.name);
+      let openedWorkspace: { id: string; name: string };
+      try {
+        openedWorkspace = await getWorkspace(workspace.id);
+      } catch (reason) {
+        notify.error((reason as Error).message);
+        return;
+      }
+      setWorkspaceId(openedWorkspace.id);
+      setWorkspaceName(openedWorkspace.name);
       setTabs([]);
       setActivePath(null);
       setSelectedTreePath(null);
@@ -280,7 +288,7 @@ export function Workbench() {
       if (leftWidth === 0) setLeftWidth(lastLeftWidthRef.current);
       // eslint-disable-next-line react-hooks/exhaustive-deps
     },
-    [leftWidth],
+    [leftWidth, notify],
   );
 
   const openFile = useCallback(
@@ -1083,7 +1091,11 @@ export function Workbench() {
                     onResumeSession={resumeAgentSession}
                   />
                 ) : activeTab?.kind === "settings" ? (
-                  <SettingsView settings={settings} onChange={updateSettings} />
+                  <SettingsView
+                    settings={settings}
+                    onChange={updateSettings}
+                    workspaceId={workspaceId}
+                  />
                 ) : activeTab?.kind === "workflow" ? (
                   workspaceId ? (
                     <WorkflowTab

@@ -19,6 +19,7 @@ export interface Config {
   frontendRoot?: string;
   allowExternalWorkspacePaths: boolean;
   workspaceRootConfigFile?: string;
+  openedProjectsFile: string;
 }
 
 function readEnvList(key: string): string[] {
@@ -78,6 +79,15 @@ export const config: Config = {
   workspaceRootConfigFile: process.env.OSHEEP_WORKSPACE_ROOT_CONFIG
     ? path.resolve(process.env.OSHEEP_WORKSPACE_ROOT_CONFIG)
     : undefined,
+  openedProjectsFile: path.resolve(
+    process.env.OSHEEP_OPENED_PROJECTS_FILE ??
+      path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "..",
+        ".osheep",
+        "opened-projects.json",
+      ),
+  ),
 };
 
 // These Osheep aliases must also be visible to the CLIs spawned by this process.
