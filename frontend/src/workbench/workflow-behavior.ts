@@ -1,4 +1,9 @@
-import type { WorkflowEdge, WorkflowNode, WorkflowNodeKind } from "./api";
+import type {
+  WorkflowEdge,
+  WorkflowNode,
+  WorkflowNodeKind,
+  WorkflowRecord,
+} from "./api";
 
 export type WorkflowBlockOutput = Record<string, unknown>;
 
@@ -460,6 +465,10 @@ interface WorkflowRefreshState {
 
 export function canApplyWorkflowRefresh(state: WorkflowRefreshState): boolean {
   return state.requestedRevision === state.currentRevision && !state.dragging && !state.pendingSave;
+}
+
+export function withWorkflowTitle(record: WorkflowRecord, title: string): WorkflowRecord {
+  return record.title === title ? record : { ...record, title };
 }
 
 export function findMarkdownAutoPreviewNode(

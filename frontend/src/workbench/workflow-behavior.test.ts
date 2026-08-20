@@ -239,6 +239,26 @@ test("workflow session ids use the UUID format shared by Claude and Codex", asyn
   );
 });
 
+test("external workflow renames replace stale titles without changing editor content", async () => {
+  const behavior = await loadBehavior();
+  assert.ok(behavior, "workflow behavior module should exist");
+  const record = {
+    id: "wf_title01",
+    title: "Old title",
+    readme: "edited locally",
+    createdAt: 1,
+    updatedAt: 2,
+    nodes: [node("command")],
+    edges: [],
+    runs: [],
+  };
+
+  const renamed = behavior.withWorkflowTitle(record as never, "New title");
+  assert.equal(renamed.title, "New title");
+  assert.equal(renamed.readme, "edited locally");
+  assert.equal(renamed.nodes, record.nodes);
+});
+
 test("workflow back edges are the edges that close a directed cycle", async () => {
   const behavior = await loadBehavior();
   assert.ok(behavior, "workflow behavior module should exist");

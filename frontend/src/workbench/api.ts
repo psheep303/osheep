@@ -120,6 +120,7 @@ export const http = {
   get: <T>(url: string) => request<T>("GET", url),
   post: <T>(url: string, body?: unknown) => request<T>("POST", url, body ?? {}),
   put: <T>(url: string, body?: unknown) => request<T>("PUT", url, body ?? {}),
+  patch: <T>(url: string, body?: unknown) => request<T>("PATCH", url, body ?? {}),
   delete: <T>(url: string) => request<T>("DELETE", url),
 };
 
@@ -1377,6 +1378,26 @@ export async function saveWorkflow(
   record: WorkflowRecord,
 ): Promise<WorkflowRecord> {
   return await http.put(workflowsUrl(workspaceId, `/${encodeURIComponent(record.id)}`), record);
+}
+
+export async function saveWorkflowContent(
+  workspaceId: string,
+  record: WorkflowRecord,
+): Promise<WorkflowRecord> {
+  return await http.patch(
+    workflowsUrl(workspaceId, `/${encodeURIComponent(record.id)}/content`),
+    record,
+  );
+}
+
+export async function renameWorkflow(
+  workspaceId: string,
+  workflowId: string,
+  title: string,
+): Promise<WorkflowRecord> {
+  return await http.patch(workflowsUrl(workspaceId, `/${encodeURIComponent(workflowId)}/title`), {
+    title,
+  });
 }
 
 export async function runWorkflow(

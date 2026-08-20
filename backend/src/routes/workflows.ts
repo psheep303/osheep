@@ -200,6 +200,38 @@ export async function registerWorkflowRoutes(app: FastifyInstance) {
     return saved;
   });
 
+  app.patch<{
+    Params: { id: string; wid: string };
+    Body: WorkflowRecord;
+  }>("/api/workspaces/:id/workflows/:wid/content", async (req) => {
+    const ws = await resolveWorkspace(req.params.id);
+    const body = req.body;
+    if (!body || body.id !== req.params.wid) {
+      throw errors.invalidPath("workflow id does not match URL");
+    }
+    const saved = await updateWorkflow(ws.path, req.params.wid, (current) => ({
+      ...body,
+      title: current.title,
+    }));
+    await updateTemplateFromWorkflow(saved);
+    return saved;
+  });
+
+  app.patch<{
+    Params: { id: string; wid: string };
+    Body: { title?: string };
+  }>("/api/workspaces/:id/workflows/:wid/title", async (req) => {
+    const ws = await resolveWorkspace(req.params.id);
+    const title = req.body?.title?.trim();
+    if (!title) throw errors.invalidPath("workflow title is required");
+    const saved = await updateWorkflow(ws.path, req.params.wid, (current) => ({
+      ...current,
+      title,
+    }));
+    await updateTemplateFromWorkflow(saved);
+    return saved;
+  });
+
   app.post<{
     Params: { id: string; wid: string };
     Body: { nodeIds?: string[]; language?: "zh-CN" | "en"; resume?: boolean };

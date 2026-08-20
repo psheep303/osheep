@@ -374,6 +374,45 @@ test("concurrent workflow updates preserve both node-runner patches", async () =
   }
 });
 
+test("workflow content saves preserve a concurrently renamed title", async () => {
+  const workspacesRoot = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-workflow-rename-"));
+  const workspaceRoot = path.join(workspacesRoot, "demo");
+  const previousWorkspacesRoot = config.workspacesRoot;
+  const app = Fastify();
+
+  try {
+    config.workspacesRoot = workspacesRoot;
+    await fs.mkdir(workspaceRoot);
+    const created = await createWorkflow(workspaceRoot, {
+      title: "Original title",
+      readme: "Original readme",
+    });
+    await registerWorkflowRoutes(app);
+
+    const renamed = await app.inject({
+      method: "PATCH",
+      url: `/api/workspaces/demo/workflows/${created.id}/title`,
+      payload: { title: "Renamed workflow" },
+    });
+    assert.equal(renamed.statusCode, 200);
+
+    const contentSaved = await app.inject({
+      method: "PATCH",
+      url: `/api/workspaces/demo/workflows/${created.id}/content`,
+      payload: { ...created, readme: "Edited after rename" },
+    });
+    assert.equal(contentSaved.statusCode, 200);
+
+    const loaded = await getWorkflow(workspaceRoot, created.id);
+    assert.equal(loaded.title, "Renamed workflow");
+    assert.equal(loaded.readme, "Edited after rename");
+  } finally {
+    config.workspacesRoot = previousWorkspacesRoot;
+    await app.close();
+    await fs.rm(workspacesRoot, { recursive: true, force: true });
+  }
+});
+
 test("template editing workflows are reusable but hidden from the workflow menu", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-template-editor-"));
   const created = await createWorkflow(root, {

@@ -30,8 +30,10 @@ import {
   aiChatStream,
   aiChatTerminalStream,
   getWorkflow as apiGetWorkflow,
+  pauseWorkflow as apiPauseWorkflow,
+  renameWorkflow as apiRenameWorkflow,
   runWorkflow as apiRunWorkflow,
-  saveWorkflow as apiSaveWorkflow,
+  saveWorkflowContent as apiSaveWorkflowContent,
   stopWorkflow as apiStopWorkflow,
   type ClaudePluginSnapshot,
   type CodexPluginSnapshot,
@@ -48,7 +50,6 @@ import {
   openTerminalSocket,
   openWorkflowRuntimeSocket,
   pauseAiTerminal,
-  pauseWorkflow as apiPauseWorkflow,
   type RemoteMcpTool,
   type RunResult,
   readFile,
@@ -100,6 +101,7 @@ import {
   isWorkflowSessionId,
   WORKFLOW_SESSION_ID_PATTERN,
   type WorkflowBlockOutput,
+  withWorkflowTitle,
   workflowLayoutColumns,
   workflowSessionId,
 } from "./workflow-behavior";
@@ -117,9 +119,11 @@ interface WorkflowTabProps {
   editorFontSize: number;
   editorTabSize: number;
   onWorkflowChanged: () => void;
+  onWorkflowRenamed: (workflowId: string, title: string) => void;
   onFilesChanged: () => void;
   onResumeSession: (session: { app: AgentSessionApp; id: string; title: string }) => void;
   onTemplateBinding: (binding: WorkflowRecord["templateBinding"]) => void;
+  externalTitleUpdate?: { title: string; revision: number };
   onOpenDiff: (title: string, entries: MultiDiffEntry[]) => void;
   onOpenDetails: (details: {
     workspaceId: string;
@@ -792,9 +796,11 @@ export function WorkflowTab({
   editorFontSize,
   editorTabSize,
   onWorkflowChanged,
+  onWorkflowRenamed,
   onFilesChanged,
   onResumeSession,
   onTemplateBinding,
+  externalTitleUpdate,
   onOpenDiff,
   onOpenDetails,
 }: WorkflowTabProps) {
@@ -803,6 +809,7 @@ export function WorkflowTab({
   const [workflow, setWorkflow] = useState<WorkflowRecord | null>(null);
   const [runtimeReadyWorkflowKey, setRuntimeReadyWorkflowKey] = useState("");
   const workflowRef = useRef<WorkflowRecord | null>(null);
+  const externalTitleUpdateRef = useRef(externalTitleUpdate);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
@@ -869,6 +876,7 @@ export function WorkflowTab({
     return new Map([...ids].map((id, index) => [id, index]));
   }, [workflow?.edges]);
   onWorkflowChangedRef.current = onWorkflowChanged;
+  externalTitleUpdateRef.current = externalTitleUpdate;
 
   useEffect(() => {
     if (!error) {
@@ -879,6 +887,18 @@ export function WorkflowTab({
     lastErrorToastRef.current = error;
     notify.error(error);
   }, [error, notify]);
+
+  useEffect(() => {
+    if (!externalTitleUpdate) return;
+    const current = workflowRef.current;
+    if (current) {
+      const next = withWorkflowTitle(current, externalTitleUpdate.title);
+      workflowRef.current = next;
+      setWorkflow(next);
+    }
+    const pending = pendingSaveRef.current;
+    if (pending) pendingSaveRef.current = withWorkflowTitle(pending, externalTitleUpdate.title);
+  }, [externalTitleUpdate]);
 
   const showCompletedMarkdown = useCallback(
     (previous: WorkflowRecord | null, next: WorkflowRecord) => {
@@ -914,16 +934,18 @@ export function WorkflowTab({
     void apiGetWorkflow(workspaceId, workflowId)
       .then((record) => {
         if (cancelled) return;
+        const latestTitle = externalTitleUpdateRef.current?.title;
+        const nextRecord = latestTitle ? withWorkflowTitle(record, latestTitle) : record;
         undoStackRef.current = [];
         redoStackRef.current = [];
         setHistoryTick((tick) => tick + 1);
         localRevisionRef.current = 0;
-        workflowRef.current = record;
-        setWorkflow(record);
+        workflowRef.current = nextRecord;
+        setWorkflow(nextRecord);
         pendingInitialFitKeyRef.current = `${workspaceId}\0${workflowId}`;
         setRuntimeReadyWorkflowKey(`${workspaceId}\0${workflowId}`);
-        onTemplateBinding(record.templateBinding);
-        setRunning(workflowIsRunning(record));
+        onTemplateBinding(nextRecord.templateBinding);
+        setRunning(workflowIsRunning(nextRecord));
       })
       .catch((e) => {
         if (!cancelled) setError((e as Error).message);
@@ -1265,7 +1287,7 @@ export function WorkflowTab({
       .then(async () => {
         setSaving(true);
         try {
-          await apiSaveWorkflow(workspaceId, record);
+          await apiSaveWorkflowContent(workspaceId, record);
           onWorkflowChanged();
         } catch (e) {
           setError((e as Error).message);
@@ -1415,7 +1437,18 @@ export function WorkflowTab({
   };
 
   const updateTitle = (title: string) => {
-    updateWorkflow((record) => ({ ...record, title }));
+    const current = workflowRef.current;
+    if (!current || current.title === title) return;
+    const next = withWorkflowTitle(current, title);
+    localRevisionRef.current += 1;
+    workflowRef.current = next;
+    setWorkflow(next);
+    if (pendingSaveRef.current) {
+      pendingSaveRef.current = withWorkflowTitle(pendingSaveRef.current, title);
+    }
+    void apiRenameWorkflow(workspaceId, current.id, title)
+      .then((saved) => onWorkflowRenamed(saved.id, saved.title))
+      .catch((e) => setError((e as Error).message));
   };
 
   const updateNode = (nodeId: string, patch: Partial<WorkflowNode>) => {

@@ -488,8 +488,21 @@ export function Workbench() {
   }, []);
 
   const [aiRefreshSignal, setAiRefreshSignal] = useState(0);
+  const [workflowTitleUpdate, setWorkflowTitleUpdate] = useState<{
+    workflowId: string;
+    title: string;
+    revision: number;
+  } | null>(null);
   const bumpAiRefresh = useCallback(() => {
     setAiRefreshSignal((v) => v + 1);
+  }, []);
+  const handleWorkflowRenamed = useCallback((workflowId: string, title: string) => {
+    setWorkflowTitleUpdate((current) => ({
+      workflowId,
+      title,
+      revision: (current?.revision ?? 0) + 1,
+    }));
+    setAiRefreshSignal((value) => value + 1);
   }, []);
 
   const openWorkflowTab = useCallback(
@@ -869,6 +882,7 @@ export function Workbench() {
                   activeWorkflowId={activeTab?.kind === "workflow" ? activeTab.workflowId : null}
                   refreshSignal={aiRefreshSignal}
                   onWorkflowDeleted={closeWorkflowArtifacts}
+                  onWorkflowRenamed={handleWorkflowRenamed}
                   developerMode={developerMode}
                   onTemplatesChanged={() => setTemplateRefreshSignal((signal) => signal + 1)}
                 />
@@ -1079,6 +1093,12 @@ export function Workbench() {
                       editorTabSize={settings.editor.tabSize}
                       onOpenDiff={openPreparedMultiDiffTab}
                       onWorkflowChanged={bumpAiRefresh}
+                      onWorkflowRenamed={handleWorkflowRenamed}
+                      externalTitleUpdate={
+                        workflowTitleUpdate?.workflowId === activeTab.workflowId
+                          ? workflowTitleUpdate
+                          : undefined
+                      }
                       onFilesChanged={bumpFileTree}
                       onResumeSession={resumeAgentSession}
                       onOpenDetails={openWorkflowDetailsTab}

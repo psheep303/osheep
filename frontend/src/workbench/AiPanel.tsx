@@ -5,7 +5,7 @@ import {
   deleteWorkflow as apiDeleteWorkflow,
   getWorkflow as apiGetWorkflow,
   listWorkflows as apiListWorkflows,
-  saveWorkflow as apiSaveWorkflow,
+  renameWorkflow as apiRenameWorkflow,
   saveWorkflowAsSystemTemplate as apiSaveWorkflowAsSystemTemplate,
   saveWorkflowAsTemplate as apiSaveWorkflowAsTemplate,
   type WorkflowRecord,
@@ -21,6 +21,7 @@ interface AiPanelProps {
   activeWorkflowId: string | null;
   refreshSignal: number;
   onWorkflowDeleted: (workflowId: string) => void;
+  onWorkflowRenamed: (workflowId: string, title: string) => void;
   developerMode: boolean;
   onTemplatesChanged: () => void;
 }
@@ -31,6 +32,7 @@ export function AiPanel({
   activeWorkflowId,
   refreshSignal,
   onWorkflowDeleted,
+  onWorkflowRenamed,
   developerMode,
   onTemplatesChanged,
 }: AiPanelProps) {
@@ -214,8 +216,8 @@ export function AiPanel({
     if (!title || title === current?.title) return;
     renameCommitRef.current = id;
     try {
-      const workflow = await apiGetWorkflow(workspaceId, id);
-      await apiSaveWorkflow(workspaceId, { ...workflow, title });
+      const workflow = await apiRenameWorkflow(workspaceId, id, title);
+      onWorkflowRenamed(id, workflow.title);
       await reload();
     } catch (e) {
       setError((e as Error).message);
