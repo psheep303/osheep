@@ -660,6 +660,9 @@
 .git-view__input:focus {
   border-color: var(--accent);
 }
+.git-view__branch-search .git-view__input:focus {
+  border-color: var(--border-edge);
+}
 
 .git-view__remote-actions {
   display: flex;

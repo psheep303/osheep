@@ -291,7 +291,7 @@
 }
 
 .template-sidebar__search:focus-within {
-  border-color: #6b8ebd;
+  border-color: #3b3b3d;
 }
 
 .template-sidebar__search input {
@@ -303,6 +303,10 @@
   color: var(--fg-default);
   font: inherit;
   font-size: 12px;
+}
+
+.template-sidebar__search input:focus-visible {
+  outline: none;
 }
 
 .template-sidebar__cards {

@@ -1001,6 +1001,10 @@
   font-size: 12.5px;
 }
 
+.codex-plugins__search-input:focus-visible {
+  outline: none;
+}
+
 .codex-plugins__search-input::placeholder {
   color: var(--fg-faint);
 }

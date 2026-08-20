@@ -1789,8 +1789,24 @@
 }
 
 /* Markdown todos rendered with our custom checkbox visuals. */
+.chat-markdown .task-list-item,
 .chat-markdown .markdown-todo {
   list-style: none;
+}
+
+.chat-markdown .contains-task-list {
+  padding-left: 0;
+}
+
+.chat-markdown .task-list-item .contains-task-list {
+  padding-left: 20px;
+}
+
+.chat-markdown .contains-task-list > li:not(.task-list-item) {
+  margin-left: 20px;
+}
+
+.chat-markdown .markdown-todo {
   margin: 2px 0;
   padding-left: 0;
   display: flex;

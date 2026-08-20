@@ -217,10 +217,23 @@
 .bottom-panel__body {
   flex: 1 1 auto;
   overflow: hidden;
-  display: flex;
-  flex-direction: column;
+  position: relative;
   min-height: 0;
   font-size: 12px;
+}
+
+.bottom-panel__pane {
+  position: absolute;
+  inset: 0;
+  min-width: 0;
+  min-height: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.bottom-panel__pane.is-active {
+  visibility: visible;
+  pointer-events: auto;
 }
 
 /* ==== Resizers ==== */

@@ -75,6 +75,10 @@
   padding: 0;
 }
 
+.ai-panel__search-input:focus-visible {
+  outline: none;
+}
+
 .ai-panel__search-input::placeholder {
   color: var(--fg-faint);
 }
@@ -1466,8 +1470,8 @@
 
 .workflow-inspector__plugin-search:focus {
   outline: none;
-  border-color: rgba(96, 165, 250, 0.7);
-  box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.22);
+  border-color: var(--wf-border);
+  box-shadow: none;
 }
 
 .workflow-inspector__plugin-search:disabled {

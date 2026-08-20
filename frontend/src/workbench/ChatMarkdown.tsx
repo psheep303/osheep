@@ -7,8 +7,8 @@
 //   - reuses marked + DOMPurify so we don't pull in a second toolchain
 
 import DOMPurify from "dompurify";
-import { marked } from "marked";
 import { useEffect, useMemo, useState } from "react";
+import { createMarkdownParser } from "./markdown-parser";
 
 interface ChatMarkdownProps {
   source: string;
@@ -18,7 +18,7 @@ interface ChatMarkdownProps {
   caret?: boolean;
 }
 
-marked.setOptions({ gfm: true, breaks: true });
+const markdownParser = createMarkdownParser(true);
 
 export function ChatMarkdown({ source, compact, caret }: ChatMarkdownProps) {
   const [html, setHtml] = useState("");
@@ -31,7 +31,7 @@ export function ChatMarkdown({ source, compact, caret }: ChatMarkdownProps) {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const raw = await marked.parse(prepared);
+      const raw = await markdownParser.parse(prepared);
       if (cancelled) return;
       const clean = DOMPurify.sanitize(raw, {
         ADD_ATTR: ["target", "rel", "data-state"],
@@ -91,7 +91,13 @@ function decorateTodoCheckboxes(html: string): string {
       const checked = /checked/i.test(input);
       const doing = /data-doing="1"/.test(body);
       const state = doing ? "doing" : checked ? "done" : "todo";
-      return `<li${attrs} class="markdown-todo" data-state="${state}">${input}${body}</li>`;
+      const classPattern = /\sclass=(["'])(.*?)\1/i;
+      const decoratedAttrs = classPattern.test(attrs)
+        ? attrs.replace(classPattern, (_classMatch: string, quote: string, classes: string) => {
+            return ` class=${quote}${classes} markdown-todo${quote}`;
+          })
+        : `${attrs} class="markdown-todo"`;
+      return `<li${decoratedAttrs} data-state="${state}">${input}${body}</li>`;
     },
   );
   return out;

@@ -327,6 +327,22 @@
   margin-top: 16px;
 }
 
+.markdown-preview .task-list-item {
+  list-style: none;
+}
+
+.markdown-preview .contains-task-list {
+  padding-left: 0;
+}
+
+.markdown-preview .task-list-item .contains-task-list {
+  padding-left: 2em;
+}
+
+.markdown-preview .contains-task-list > li:not(.task-list-item) {
+  margin-left: 2em;
+}
+
 .markdown-preview li input[type="checkbox"] {
   margin-right: 6px;
   vertical-align: middle;

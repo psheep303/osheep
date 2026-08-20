@@ -61,7 +61,10 @@
   font-family: inherit;
 }
 .search-view__input:focus {
-  border-color: var(--accent);
+  border-color: var(--border-edge);
+}
+.search-view__input:focus-visible {
+  outline: none;
 }
 .search-view__input--filter {
   padding-right: 8px;

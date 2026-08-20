@@ -43,8 +43,10 @@ export function TerminalSession({
   const wsRef = useRef<WebSocket | null>(null);
   const sessionIdRef = useRef<string | null>(null);
   const activeRef = useRef(active);
+  const onCloseRef = useRef(onClose);
   const resolvedThemeRef = useRef(resolvedTheme);
   activeRef.current = active;
+  onCloseRef.current = onClose;
   resolvedThemeRef.current = resolvedTheme;
   const [status, setStatus] = useState<Status>("connecting");
   const [error, setError] = useState<string | null>(null);
@@ -188,10 +190,8 @@ export function TerminalSession({
               shiftEnterInput.observeOutput(msg.data);
               term.write(normalizeLightTerminalAnsi(msg.data, resolvedThemeRef.current));
             } else if (msg.type === "exit") {
-              term.writeln(
-                `\r\n\x1b[2m[osheep] process exited code=${msg.code} signal=${msg.signal ?? "null"}\x1b[0m`,
-              );
               setStatus("closed");
+              onCloseRef.current();
             } else if (msg.type === "error") {
               term.writeln(`\r\n\x1b[31m[osheep] ${msg.message}\x1b[0m`);
             } else if (msg.type === "ping") {

@@ -80,27 +80,34 @@ export function BottomPanel({
       </div>
       <div className="bottom-panel__body">
         <Suspense fallback={<div className="tab-loading-fallback" />}>
-          {tab === "terminal" && (
+          <div
+            className={`bottom-panel__pane${tab === "terminal" ? " is-active" : ""}`}
+            aria-hidden={tab !== "terminal"}
+          >
             <Terminal
               workspaceId={workspaceId}
               launchRequest={terminalLaunchRequest}
               onLaunchHandled={onTerminalLaunchHandled}
             />
-          )}
+          </div>
           {tab === "log" && (
-            <div className="muted" style={{ padding: "10px 16px" }}>
-              {t("panel.logComingSoon")}
+            <div className="bottom-panel__pane is-active">
+              <div className="muted" style={{ padding: "10px 16px" }}>
+                {t("panel.logComingSoon")}
+              </div>
             </div>
           )}
           {tab === "docs" && (
-            <PlanView
-              workspaceId={workspaceId}
-              refreshSignal={docsRefreshSignal}
-              editorFontSize={editorFontSize}
-              editorTabSize={editorTabSize}
-              autoSave={editorAutoSave}
-              onDocsChanged={onDocsChanged}
-            />
+            <div className="bottom-panel__pane is-active">
+              <PlanView
+                workspaceId={workspaceId}
+                refreshSignal={docsRefreshSignal}
+                editorFontSize={editorFontSize}
+                editorTabSize={editorTabSize}
+                autoSave={editorAutoSave}
+                onDocsChanged={onDocsChanged}
+              />
+            </div>
           )}
         </Suspense>
       </div>

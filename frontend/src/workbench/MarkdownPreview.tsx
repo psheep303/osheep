@@ -1,15 +1,12 @@
 import DOMPurify from "dompurify";
-import { marked } from "marked";
 import { useEffect, useState } from "react";
+import { createMarkdownParser } from "./markdown-parser";
 
 interface MarkdownPreviewProps {
   source: string;
 }
 
-marked.setOptions({
-  gfm: true,
-  breaks: false,
-});
+const markdownParser = createMarkdownParser(false);
 
 export function MarkdownPreview({ source }: MarkdownPreviewProps) {
   const [html, setHtml] = useState("");
@@ -17,7 +14,7 @@ export function MarkdownPreview({ source }: MarkdownPreviewProps) {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const raw = await marked.parse(source ?? "");
+      const raw = await markdownParser.parse(source ?? "");
       if (cancelled) return;
       const clean = DOMPurify.sanitize(raw, {
         ADD_ATTR: ["target", "rel"],
