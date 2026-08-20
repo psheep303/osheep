@@ -3,10 +3,13 @@ import test from "node:test";
 import {
   agentRetryPromptForLanguage,
   appendAgentAttemptTranscriptForTest,
+  buildAgentProviderPlan,
   canResumeWorkflowRun,
   classifyAgentTerminalResultFailure,
   createLiveAgentRunDetails,
   interruptWorkflowRunRecord,
+  isAgentApiFailureMessage,
+  multiplyCost,
   parseWorkflowUsage,
   planWorkflowRunNodeIds,
   resolveWorkflowTemplate,
@@ -22,6 +25,50 @@ import type { WorkflowNode, WorkflowRecord } from "./workflows.js";
 test("agent retry prompt follows the resolved Osheep language", () => {
   assert.equal(agentRetryPromptForLanguage("zh-CN"), "继续");
   assert.equal(agentRetryPromptForLanguage("en"), "continue");
+});
+
+test("provider retry plans preserve round-robin order and sort lowest multipliers", () => {
+  const providers = {
+    expensive: {
+      id: "expensive",
+      name: "Expensive",
+      settingsConfig: {},
+      billingMultiplier: 2,
+    },
+    cheap: { id: "cheap", name: "Cheap", settingsConfig: {}, billingMultiplier: 0.5 },
+    standard: { id: "standard", name: "Standard", settingsConfig: {} },
+  };
+  assert.deepEqual(
+    buildAgentProviderPlan(
+      "round-robin",
+      ["standard", "expensive", "cheap"],
+      providers,
+      "expensive",
+    ),
+    [
+      { id: "standard", multiplier: 1 },
+      { id: "expensive", multiplier: 2 },
+      { id: "cheap", multiplier: 0.5 },
+    ],
+  );
+  assert.deepEqual(
+    buildAgentProviderPlan(
+      "lowest-multiplier",
+      ["standard", "expensive", "cheap"],
+      providers,
+      "expensive",
+    ),
+    [
+      { id: "cheap", multiplier: 0.5 },
+      { id: "standard", multiplier: 1 },
+      { id: "expensive", multiplier: 2 },
+    ],
+  );
+});
+
+test("provider billing multiplies model cost and preserves unavailable cost", () => {
+  assert.ok(Math.abs((multiplyCost(0.0125, 1.8) ?? 0) - 0.0225) < 1e-12);
+  assert.equal(multiplyCost(undefined, 2), undefined);
 });
 
 test("workflow run planning excludes nodes that are not reachable from a trigger", () => {
@@ -849,10 +896,40 @@ test("configured retries are honored for structured permanent failures", () => {
 
   assert.equal(failure.failed, true);
   assert.equal(failure.retryable, false);
+  assert.equal(failure.apiFailure, true);
   assert.equal(shouldRetryAgentTerminalFailure(failure, 0, 2, false), true);
   assert.equal(shouldRetryAgentTerminalFailure(failure, 1, 2, false), true);
   assert.equal(shouldRetryAgentTerminalFailure(failure, 2, 2, false), false);
   assert.equal(shouldRetryAgentTerminalFailure(failure, 2, 0, true), true);
+});
+
+test("all API status and network failures are eligible for provider rotation", () => {
+  const unauthorized = classifyAgentTerminalResultFailure(
+    {
+      content: "",
+      transcript: "",
+      exitCode: 1,
+      signal: "error",
+      outcome: "error",
+      errorMessage:
+        'unexpected status 401 Unauthorized: {"code":"INVALID_API_KEY","message":"Invalid API key"}',
+    },
+    "Continue",
+  );
+  assert.equal(unauthorized.retryable, false);
+  assert.equal(unauthorized.apiFailure, true);
+  assert.equal(isAgentApiFailureMessage("API Error: Content block not found"), true);
+  assert.equal(isAgentApiFailureMessage("API request failed: upstream disconnected"), true);
+  assert.equal(isAgentApiFailureMessage("Request failed with status code 401"), true);
+  assert.equal(isAgentApiFailureMessage("Response status: 403 Forbidden"), true);
+  assert.equal(isAgentApiFailureMessage("Unable to connect to the API"), true);
+  assert.equal(isAgentApiFailureMessage("Failed to connect to api.example.test"), true);
+  assert.equal(isAgentApiFailureMessage("error sending request for url"), true);
+  assert.equal(
+    isAgentApiFailureMessage("fetch failed: getaddrinfo ENOTFOUND api.example.test"),
+    true,
+  );
+  assert.equal(isAgentApiFailureMessage("Tool output could not be parsed"), false);
 });
 
 test("run details retain every terminal retry attempt", () => {
@@ -887,6 +964,7 @@ test("agent result uses the structured JSONL error outcome", () => {
 
   assert.equal(failure.failed, true);
   assert.equal(failure.retryable, false);
+  assert.equal(failure.apiFailure, true);
 });
 
 test("agent result derives retryability from the JSONL error message", () => {
@@ -910,6 +988,7 @@ test("agent result derives retryability from the JSONL error message", () => {
 
   assert.equal(failure.failed, true);
   assert.equal(failure.retryable, true);
+  assert.equal(failure.apiFailure, true);
   assert.match(failure.message, /unexpected status 503/i);
 });
 
@@ -932,6 +1011,7 @@ test("agent result treats a generic JSONL error as non-retryable", () => {
 
   assert.equal(failure.failed, true);
   assert.equal(failure.retryable, false);
+  assert.equal(failure.apiFailure, false);
   assert.match(failure.message, /Fatal exception/i);
 });
 

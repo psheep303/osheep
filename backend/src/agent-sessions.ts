@@ -177,14 +177,26 @@ export async function readAgentSessionUsage(
     if (app === "codex") {
       model = stringValue(payload.model ?? root.model) || model;
       const info = objectValue(payload.info);
-      const usage = objectValue(info.total_token_usage);
+      const usage = firstNonEmptyObject(
+        info.total_token_usage,
+        info.totalTokenUsage,
+        payload.total_token_usage,
+        payload.usage,
+        root.usage,
+      );
       const nextInput = numberValue(usage.input_tokens ?? usage.inputTokens);
       const nextOutput = numberValue(usage.output_tokens ?? usage.outputTokens);
       const nextCacheRead = numberValue(
-        usage.cached_input_tokens ?? usage.cache_read_input_tokens ?? usage.cacheRead,
+        usage.cached_input_tokens ??
+          usage.cachedInputTokens ??
+          usage.cache_read_input_tokens ??
+          usage.cacheReadInputTokens ??
+          usage.cache_read_tokens ??
+          usage.cacheRead,
       );
-      const nextCacheWrite = numberValue(
-        usage.cache_write_input_tokens ?? usage.cache_creation_input_tokens ?? usage.cacheWrite,
+      const totalCacheWrite = cacheWriteTokenValue(usage);
+      const lastCacheWrite = cacheWriteTokenValue(
+        firstNonEmptyObject(info.last_token_usage, info.lastTokenUsage),
       );
       const nextTotal = numberValue(usage.total_tokens ?? usage.totalTokens);
       if (nextInput !== undefined) {
@@ -199,8 +211,11 @@ export async function readAgentSessionUsage(
         cacheRead = nextCacheRead;
         sawCacheRead = true;
       }
-      if (nextCacheWrite !== undefined) {
-        cacheWrite = nextCacheWrite;
+      if (totalCacheWrite !== undefined) {
+        cacheWrite = totalCacheWrite;
+        sawCacheWrite = true;
+      } else if (lastCacheWrite !== undefined) {
+        cacheWrite += lastCacheWrite;
         sawCacheWrite = true;
       }
       if (nextTotal !== undefined) total = nextTotal;
@@ -213,11 +228,14 @@ export async function readAgentSessionUsage(
       const nextInput = numberValue(usage.input_tokens ?? usage.inputTokens);
       const nextOutput = numberValue(usage.output_tokens ?? usage.outputTokens);
       const nextCacheRead = numberValue(
-        usage.cache_read_input_tokens ?? usage.cached_input_tokens ?? usage.cacheRead,
+        usage.cache_read_input_tokens ??
+          usage.cacheReadInputTokens ??
+          usage.cached_input_tokens ??
+          usage.cachedInputTokens ??
+          usage.cache_read_tokens ??
+          usage.cacheRead,
       );
-      const nextCacheWrite = numberValue(
-        usage.cache_creation_input_tokens ?? usage.cache_write_input_tokens ?? usage.cacheWrite,
-      );
+      const nextCacheWrite = cacheWriteTokenValue(usage);
       if (nextInput !== undefined) {
         input += nextInput;
         sawInput = true;
@@ -747,6 +765,33 @@ function numberValue(value: unknown): number | undefined {
   const number =
     typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
   return Number.isFinite(number) ? number : undefined;
+}
+
+function firstNonEmptyObject(...values: unknown[]): Record<string, unknown> {
+  for (const value of values) {
+    const object = objectValue(value);
+    if (Object.keys(object).length > 0) return object;
+  }
+  return {};
+}
+
+function cacheWriteTokenValue(usage: Record<string, unknown>): number | undefined {
+  const direct = numberValue(
+    usage.cache_creation_input_tokens ??
+      usage.cacheCreationInputTokens ??
+      usage.cache_write_input_tokens ??
+      usage.cacheWriteInputTokens ??
+      usage.cache_creation_tokens ??
+      usage.cache_write_tokens ??
+      usage.cacheWrite,
+  );
+  if (direct !== undefined) return direct;
+  const creation = objectValue(usage.cache_creation ?? usage.cacheCreation);
+  const values = Object.entries(creation)
+    .filter(([key]) => /(?:input_?tokens?|tokens?)$/i.test(key))
+    .map(([, value]) => numberValue(value))
+    .filter((value): value is number => value !== undefined);
+  return values.length > 0 ? values.reduce((sum, value) => sum + value, 0) : undefined;
 }
 
 function parseTimestamp(value: unknown): number | null {

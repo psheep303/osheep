@@ -64,6 +64,9 @@ function ProviderCard({
             {isCurrent && (
               <span className="ai-settings__badge ai-settings__badge--green">当前</span>
             )}
+            <span className="ai-settings__badge ai-settings__badge--multiplier">
+              {provider.billingMultiplier ?? 1}x
+            </span>
           </div>
           {url && <div className="ai-settings__card-url">{url}</div>}
         </div>
@@ -132,9 +135,11 @@ interface ProviderDetailProps {
 }
 
 function ProviderDetail({ app, provider, onSave, busy, error }: ProviderDetailProps) {
+  const { t } = useUiPreferences();
   const [id, setId] = useState("");
   const [name, setName] = useState("");
   const [category, setCategory] = useState("custom");
+  const [billingMultiplier, setBillingMultiplier] = useState("1");
   const [claudeSettingsText, setClaudeSettingsText] = useState(prettyJson(defaultClaudeSettings()));
   const [codexAuthText, setCodexAuthText] = useState(prettyJson(defaultCodexAuth()));
   const [codexConfigText, setCodexConfigText] = useState(defaultCodexConfig());
@@ -150,6 +155,7 @@ function ProviderDetail({ app, provider, onSave, busy, error }: ProviderDetailPr
       setId(provider.id);
       setName(provider.name);
       setCategory(provider.category || "custom");
+      setBillingMultiplier(String(provider.billingMultiplier ?? 1));
 
       if (app === "claude") {
         const settingsText = prettyJson(provider.settingsConfig ?? defaultClaudeSettings());
@@ -170,6 +176,7 @@ function ProviderDetail({ app, provider, onSave, busy, error }: ProviderDetailPr
       setId("");
       setName("");
       setCategory("custom");
+      setBillingMultiplier("1");
       const settingsText = prettyJson(defaultClaudeSettings());
       const authText = prettyJson(defaultCodexAuth());
       const configText = defaultCodexConfig();
@@ -191,6 +198,11 @@ function ProviderDetail({ app, provider, onSave, busy, error }: ProviderDetailPr
       throw new Error("ID 不能为空");
     }
 
+    const parsedMultiplier = Number(billingMultiplier);
+    if (!Number.isFinite(parsedMultiplier) || parsedMultiplier <= 0) {
+      throw new Error(t("settings.providerMultiplierInvalid"));
+    }
+
     let settingsConfig: any;
 
     if (app === "claude") {
@@ -208,6 +220,7 @@ function ProviderDetail({ app, provider, onSave, busy, error }: ProviderDetailPr
       name: name.trim() || id.trim(),
       category: category || "custom",
       createdAt: provider?.createdAt ?? Date.now(),
+      billingMultiplier: parsedMultiplier,
       settingsConfig,
     };
   };
@@ -302,6 +315,21 @@ function ProviderDetail({ app, provider, onSave, busy, error }: ProviderDetailPr
               <option value="custom">第三方/中转</option>
               <option value="official">官方</option>
             </select>
+          </Field>
+
+          <Field
+            label={t("settings.providerMultiplier")}
+            hint={t("settings.providerMultiplierHint")}
+          >
+            <input
+              className="settings-view__input ai-settings__input"
+              type="number"
+              min="0.000001"
+              step="0.1"
+              value={billingMultiplier}
+              onChange={(event) => setBillingMultiplier(event.target.value)}
+              inputMode="decimal"
+            />
           </Field>
         </div>
 
@@ -750,7 +778,25 @@ export function AiSettingsView({ app }: AiSettingsViewProps) {
 
   useEffect(() => {
     void refresh();
-  }, []);
+  }, [app]);
+
+  useEffect(() => {
+    if (selectedId !== null) return;
+    let cancelled = false;
+    const syncCurrentProvider = async () => {
+      try {
+        const next = await getAiSettings();
+        if (!cancelled) setSnapshot(next);
+      } catch {
+        // Keep the last usable snapshot while the backend or workspace is changing.
+      }
+    };
+    const timer = window.setInterval(() => void syncCurrentProvider(), 1_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [app, selectedId]);
 
   async function refresh() {
     await run(async () => {

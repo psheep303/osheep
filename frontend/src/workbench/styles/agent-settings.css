@@ -673,6 +673,13 @@
   color: var(--ui-success);
 }
 
+.ai-settings__badge--multiplier {
+  color: var(--fg-default);
+  background: var(--surface-control);
+  border: 1px solid var(--ui-border-card);
+  font-variant-numeric: tabular-nums;
+}
+
 .ai-settings__card-actions {
   display: flex;
   gap: 4px;

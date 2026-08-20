@@ -1,6 +1,17 @@
 import { createHash, randomUUID } from "node:crypto";
-import { findAgentSessionFilePath, readAgentSessionUsage } from "./agent-sessions.js";
+import {
+  type AgentSessionUsage,
+  findAgentSessionFilePath,
+  readAgentSessionUsage,
+} from "./agent-sessions.js";
 import { execRun } from "./ai-exec.js";
+import {
+  type AiProvider,
+  type AiSettingsApp,
+  providerBillingMultiplier,
+  readAiSettings,
+  switchAiProvider,
+} from "./ai-settings.js";
 import {
   type AgentEffort,
   type AgentMode,
@@ -56,6 +67,20 @@ interface LocalNodeResult {
   error?: string;
   nodePatch?: Partial<WorkflowNode>;
   conversationSessionId?: string;
+  usage?: {
+    model?: string;
+    tokens?: WorkflowRunTrace["tokens"];
+    cost?: number;
+    providerId?: string;
+    billingMultiplier?: number;
+  };
+}
+
+export type AgentRetryStrategy = "none" | "lowest-multiplier" | "round-robin";
+
+interface AgentProviderChoice {
+  id: string;
+  multiplier: number;
 }
 
 interface McpNodeConfig {
@@ -151,6 +176,7 @@ export interface LiveAgentRunDetails {
 export interface AgentTerminalFailure {
   failed: boolean;
   retryable: boolean;
+  apiFailure: boolean;
   hasModelOutput: boolean;
   message: string;
   modelOutput: string;
@@ -290,12 +316,14 @@ export function classifyAgentTerminalResultFailure(
     return agentTerminalLifecycleFailure(
       message,
       isRetryableAgentTerminalMessage(message),
+      isAgentApiFailureMessage(message),
       result.content,
     );
   }
   if (result.outcome === "cancelled") {
     return agentTerminalLifecycleFailure(
       result.errorMessage || "Agent session was cancelled.",
+      false,
       false,
       result.content,
     );
@@ -306,11 +334,13 @@ export function classifyAgentTerminalResultFailure(
 function agentTerminalLifecycleFailure(
   message: string,
   retryable: boolean,
+  apiFailure: boolean,
   modelOutput: string,
 ): AgentTerminalFailure {
   return {
     failed: true,
     retryable,
+    apiFailure,
     hasModelOutput: modelOutput.length > 0,
     message,
     modelOutput,
@@ -321,6 +351,7 @@ function noAgentTerminalFailure(): AgentTerminalFailure {
   return {
     failed: false,
     retryable: false,
+    apiFailure: false,
     hasModelOutput: false,
     message: "",
     modelOutput: "",
@@ -334,6 +365,33 @@ function isRetryableAgentTerminalMessage(message: string): boolean {
     return code === 408 || code === 409 || code === 425 || code === 429 || code >= 500;
   }
   return /\b(?:service unavailable|auth_unavailable|rate limit|temporarily unavailable|overloaded|econnreset|etimedout|connection reset|network error|gateway timeout|internal server error)\b/i.test(
+    message,
+  );
+}
+
+export function isAgentApiFailureMessage(message: string): boolean {
+  if (
+    /\bAPI(?: request)? (?:Error|failed|failure)\b|\b(?:unable|failed) to (?:connect to|reach) (?:the )?API\b/i.test(
+      message,
+    )
+  ) {
+    return true;
+  }
+  if (
+    /\b(?:unexpected status|HTTP(?: status)?|response status|status code|status)\s*(?:code\s*)?[:=]?\s*[1-5]\d{2}\b|\brequest failed with status(?: code)?\s*[:=]?\s*[1-5]\d{2}\b/i.test(
+      message,
+    )
+  ) {
+    return true;
+  }
+  if (
+    /\b(?:INVALID_API_KEY|authentication_error|permission_error|rate_limit_error|api_error|overloaded_error)\b/i.test(
+      message,
+    )
+  ) {
+    return true;
+  }
+  return /\b(?:fetch failed|network error|socket hang up|service unavailable|temporarily unavailable|gateway timeout|connection (?:error|failed|reset|refused|timed out)|(?:failed|unable|could not) to connect|error sending request|request timed out|proxy error|certificate (?:error|verify failed)|name resolution|name or service not known|econnaborted|econnreset|econnrefused|ehostunreach|enetunreach|etimedout|enotfound|eai_again|dns|tls)\b|网络错误|连接(?:失败|超时)/i.test(
     message,
   );
 }
@@ -857,7 +915,15 @@ async function executeWorkflowNode(
   try {
     result =
       kind === "agent"
-        ? await executeAgentNode(workspace, record, currentNode, startedAt, abort, retryLanguage)
+        ? await executeAgentNode(
+            workspace,
+            record,
+            currentNode,
+            run.id,
+            startedAt,
+            abort,
+            retryLanguage,
+          )
         : kind === "command"
           ? await executeCommandNode(workspace.path, record, currentNode, startedAt, abort)
           : await executeLocalNode(workspace.path, record, currentNode, {
@@ -919,12 +985,13 @@ async function executeWorkflowNode(
       : undefined);
   const terminalUsage = usageFromTerminal(terminal);
   const sessionUsage =
-    conversationSessionId && kind === "agent"
+    result.usage ??
+    (conversationSessionId && kind === "agent"
       ? await readAgentSessionUsage(
           currentNode.providerKind === "claude-cli" ? "claude" : "codex",
           conversationSessionId,
         ).catch(() => ({}))
-      : {};
+      : {});
   const usage = mergeUsage(terminalUsage, sessionUsage);
   const usageModel = (usage.model ?? currentNode.model) || "default";
   const modelCost =
@@ -936,6 +1003,9 @@ async function executeWorkflowNode(
           { inputIncludesCache: currentNode.providerKind !== "claude-cli" },
         )
       : usage.cost;
+  const billingMultiplier =
+    result.usage?.billingMultiplier ?? (await activeProviderMultiplier(currentNode.providerKind));
+  const billedCost = result.usage?.cost ?? multiplyCost(modelCost, billingMultiplier);
   await patchWorkflowRun(workspace.path, workflowId, run.id, (current) =>
     completeRunTrace(current, nodeId, {
       status: result.error ? "error" : "success",
@@ -947,7 +1017,9 @@ async function executeWorkflowNode(
       retryReasons: retryReasonsFromConfig(detailsConfig),
       model: usageModel === "default" ? undefined : usageModel,
       tokens: usage.tokens,
-      cost: modelCost,
+      cost: billedCost,
+      providerId: result.usage?.providerId,
+      billingMultiplier,
     }),
   );
   if (result.error && !nodeFailover(currentNode)) throw new Error(result.error);
@@ -958,12 +1030,25 @@ async function executeAgentNode(
   workspace: WorkspaceInfo,
   record: WorkflowRecord,
   node: WorkflowNode,
+  runId: string,
   startedAt: number,
   abort: AbortController,
   retryLanguage: WorkflowRetryLanguage,
 ): Promise<LocalNodeResult> {
   if (!node.prompt.trim()) throw new Error(`${node.title} has no prompt.`);
   const logs: RunLogEntry[] = [];
+  const providerRuntime = await prepareAgentProviderRuntime(node);
+  const usageMonitor = await createLiveAgentUsageMonitor({
+    workspaceRoot: workspace.path,
+    workflowId: record.id,
+    runId,
+    nodeId: node.id,
+    app: providerRuntime.app,
+    model: node.model || "default",
+    inputIncludesCache: node.providerKind !== "claude-cli",
+    provider: providerRuntime.current,
+    signal: abort.signal,
+  });
   const autoSuccess = agentAutoSuccess(node);
   const details = createLiveAgentRunDetails({
     node,
@@ -980,6 +1065,7 @@ async function executeAgentNode(
     },
   });
   const onFrame = (frame: AgentTerminalFrame) => {
+    if (frame.type === "conversation") usageMonitor.setSessionId(frame.sessionId);
     void details.handleFrame(frame).catch(() => undefined);
   };
   await details.update("running");
@@ -1039,17 +1125,36 @@ async function executeAgentNode(
       });
     } catch (error) {
       await details.drain();
-      await patchWorkflowNode(workspace.path, record.id, node.id, {
-        config: {
-          ...(node.config ?? {}),
-          runDetails: details.snapshot("error", Date.now()),
-        },
-      });
-      throw error;
+      if (abort.signal.aborted) {
+        await usageMonitor.finalize();
+        await patchWorkflowNode(workspace.path, record.id, node.id, {
+          config: {
+            ...(node.config ?? {}),
+            runDetails: details.snapshot("error", Date.now()),
+          },
+        });
+        throw error;
+      }
+      const message = (error as Error).message || String(error);
+      result = {
+        sessionId: "",
+        content: "",
+        transcript: message,
+        changedFiles: [],
+        verification: [],
+        exitCode: 1,
+        signal: "error",
+        outcome: "error",
+        errorMessage: message,
+      };
     }
     await details.drain();
-    if (abort.signal.aborted) throw new Error("Stopped");
+    if (abort.signal.aborted) {
+      await usageMonitor.finalize();
+      throw new Error("Stopped");
+    }
     conversationSessionId = result.conversationSessionId ?? conversationSessionId;
+    if (conversationSessionId) usageMonitor.setSessionId(conversationSessionId);
     terminalTranscript = appendAgentAttemptTranscript(
       terminalTranscript,
       result.transcript || result.content,
@@ -1067,6 +1172,10 @@ async function executeAgentNode(
     if (!shouldRetryAgentTerminalFailure(terminalFailure, attempt, retries, retryForever)) break;
     retryReasons.push(terminalFailure.message);
     attempt += 1;
+    if (terminalFailure.apiFailure) {
+      const nextProvider = await providerRuntime.rotate();
+      if (nextProvider) await usageMonitor.changeProvider(nextProvider);
+    }
     currentPrompt = retryPrompt;
     const retryAt = Date.now() + retryDelaySeconds * 1_000;
     await details.setRetryWait({
@@ -1087,6 +1196,7 @@ async function executeAgentNode(
     }
   }
   if (!result) throw new Error(`${node.title} did not start.`);
+  const finalUsage = await usageMonitor.finalize();
   if (terminalFailure?.failed) {
     const agentLabel = node.providerKind === "codex-cli" ? "Codex CLI" : "Claude Code CLI";
     const errorMessage =
@@ -1121,6 +1231,7 @@ async function executeAgentNode(
         },
       },
       conversationSessionId,
+      usage: finalUsage,
     };
   }
   const toolRun = await maybeRunAgentMcpToolCalls(
@@ -1154,6 +1265,197 @@ async function executeAgentNode(
       },
     },
     conversationSessionId,
+    usage: finalUsage,
+  };
+}
+
+export function agentRetryStrategy(node: WorkflowNode): AgentRetryStrategy {
+  const value = node.config?.retryStrategy;
+  if (value === "lowest-multiplier" || value === "round-robin") return value;
+  return "none";
+}
+
+function agentRetryProviderIds(node: WorkflowNode): string[] {
+  const value = node.config?.retryProviderIds;
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.filter((item): item is string => typeof item === "string" && !!item))];
+}
+
+export function buildAgentProviderPlan(
+  strategy: AgentRetryStrategy,
+  providerIds: readonly string[],
+  providers: Record<string, AiProvider>,
+  currentId: string,
+): AgentProviderChoice[] {
+  if (strategy === "none") {
+    const current = providers[currentId];
+    return current ? [{ id: current.id, multiplier: providerBillingMultiplier(current) }] : [];
+  }
+  const selected = providerIds.flatMap((id) => {
+    const provider = providers[id];
+    return provider ? [{ id, multiplier: providerBillingMultiplier(provider), provider }] : [];
+  });
+  if (strategy === "lowest-multiplier") {
+    selected.sort(
+      (a, b) =>
+        a.multiplier - b.multiplier ||
+        (a.provider.sortIndex ?? 0) - (b.provider.sortIndex ?? 0) ||
+        a.id.localeCompare(b.id),
+    );
+  }
+  return selected.map(({ id, multiplier }) => ({ id, multiplier }));
+}
+
+async function prepareAgentProviderRuntime(node: WorkflowNode): Promise<{
+  app: AiSettingsApp;
+  current: AgentProviderChoice;
+  rotate: () => Promise<AgentProviderChoice | null>;
+}> {
+  const app: AiSettingsApp = node.providerKind === "claude-cli" ? "claude" : "codex";
+  const settings = await readAiSettings().catch(() => null);
+  const manager = settings?.apps[app];
+  const retryEnabled = agentRetryForever(node) || agentRetryCount(node) > 0;
+  const strategy = retryEnabled ? agentRetryStrategy(node) : "none";
+  const plan = manager
+    ? buildAgentProviderPlan(strategy, agentRetryProviderIds(node), manager.providers, manager.current)
+    : [];
+  if (plan.length === 0) {
+    const fallback = { id: manager?.current ?? "", multiplier: 1 };
+    return { app, current: fallback, rotate: async () => null };
+  }
+  let index = 0;
+  if (strategy !== "none" && manager?.current !== plan[0]?.id) {
+    await switchAiProvider(app, plan[0]!.id);
+  }
+  return {
+    app,
+    current: plan[0]!,
+    rotate: async () => {
+      if (strategy === "none" || plan.length < 2) return null;
+      index = (index + 1) % plan.length;
+      const next = plan[index]!;
+      await switchAiProvider(app, next.id);
+      return next;
+    },
+  };
+}
+
+async function activeProviderMultiplier(kind: WorkflowNode["providerKind"]): Promise<number> {
+  const app: AiSettingsApp = kind === "claude-cli" ? "claude" : "codex";
+  const settings = await readAiSettings().catch(() => null);
+  const manager = settings?.apps[app];
+  return providerBillingMultiplier(manager?.providers[manager.current]);
+}
+
+export function multiplyCost(cost: number | undefined, multiplier: number): number | undefined {
+  if (cost === undefined) return undefined;
+  const billed = cost * multiplier;
+  return Number.isFinite(billed) ? billed : undefined;
+}
+
+interface LiveAgentUsageMonitorOptions {
+  workspaceRoot: string;
+  workflowId: string;
+  runId: string;
+  nodeId: string;
+  app: AiSettingsApp;
+  model: string;
+  inputIncludesCache: boolean;
+  provider: AgentProviderChoice;
+  signal?: AbortSignal;
+}
+
+async function createLiveAgentUsageMonitor(options: LiveAgentUsageMonitorOptions): Promise<{
+  setSessionId: (id: string) => void;
+  changeProvider: (provider: AgentProviderChoice) => Promise<void>;
+  finalize: () => Promise<LocalNodeResult["usage"]>;
+}> {
+  const prices = await readStoredModelPrices().catch(() => []);
+  let sessionId = "";
+  let timer: NodeJS.Timeout | undefined;
+  let currentProvider = options.provider;
+  let latestUsage: Awaited<ReturnType<typeof readAgentSessionUsage>> = {};
+  let latestBaseCost: number | undefined;
+  let segmentBaseCost = 0;
+  let settledCost = 0;
+  let queue = Promise.resolve();
+  const stopTimer = () => {
+    if (timer) clearInterval(timer);
+    timer = undefined;
+  };
+  options.signal?.addEventListener("abort", stopTimer, { once: true });
+
+  const snapshot = (): LocalNodeResult["usage"] => {
+    const segmentCost =
+      latestBaseCost === undefined
+        ? undefined
+        : Math.max(0, latestBaseCost - segmentBaseCost) * currentProvider.multiplier;
+    return {
+      model: latestUsage.model || (options.model === "default" ? undefined : options.model),
+      tokens: latestUsage.tokens,
+      cost: segmentCost === undefined ? undefined : settledCost + segmentCost,
+      providerId: currentProvider.id || undefined,
+      billingMultiplier: currentProvider.multiplier,
+    };
+  };
+
+  const refresh = async () => {
+    if (!sessionId) return;
+    const usage = await readAgentSessionUsage(options.app, sessionId).catch(
+      () => ({} as AgentSessionUsage),
+    );
+    if (!usage.model && !usage.tokens && usage.cost === undefined) return;
+    latestUsage = usage;
+    const model = (usage.model ?? options.model) || "default";
+    const baseCost =
+      usage.cost ??
+      calculateModelCost(model, usage.tokens, prices, {
+        inputIncludesCache: options.inputIncludesCache,
+      });
+    if (baseCost !== undefined) latestBaseCost = baseCost;
+    const usageSnapshot = snapshot();
+    if (!usageSnapshot?.tokens && usageSnapshot?.cost === undefined) return;
+    await patchWorkflowRun(options.workspaceRoot, options.workflowId, options.runId, (run) => {
+      const next = completeRunTrace(run, options.nodeId, {
+        model: usageSnapshot.model,
+        tokens: usageSnapshot.tokens,
+        cost: usageSnapshot.cost,
+        providerId: usageSnapshot.providerId,
+        billingMultiplier: usageSnapshot.billingMultiplier,
+      });
+      return { ...next, stats: runStats(next, Date.now()) };
+    });
+  };
+
+  const enqueue = (task: () => Promise<void>) => {
+    queue = queue.then(task, task);
+    return queue;
+  };
+
+  return {
+    setSessionId: (id) => {
+      if (!id || sessionId === id) return;
+      sessionId = id;
+      void enqueue(refresh).catch(() => undefined);
+      timer ??= setInterval(() => void enqueue(refresh).catch(() => undefined), 1_000);
+    },
+    changeProvider: async (provider) => {
+      await enqueue(async () => {
+        await refresh();
+        if (latestBaseCost !== undefined) {
+          settledCost +=
+            Math.max(0, latestBaseCost - segmentBaseCost) * currentProvider.multiplier;
+          segmentBaseCost = latestBaseCost;
+        }
+        currentProvider = provider;
+      });
+    },
+    finalize: async () => {
+      stopTimer();
+      options.signal?.removeEventListener("abort", stopTimer);
+      await enqueue(refresh).catch(() => undefined);
+      return snapshot();
+    },
   };
 }
 

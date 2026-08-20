@@ -3090,6 +3090,40 @@
   font-size: 12px;
 }
 
+.workflow-inspector__retry-providers {
+  display: grid;
+  gap: 7px;
+  color: var(--wf-muted);
+  font-size: 12px;
+}
+
+.workflow-inspector__retry-provider-list {
+  display: grid;
+  gap: 6px;
+  max-height: 180px;
+  overflow: auto;
+}
+
+.workflow-inspector__retry-provider-list .workflow-inspector__check {
+  min-width: 0;
+}
+
+.workflow-inspector__retry-provider-list .workflow-inspector__check > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workflow-inspector__retry-provider-list .workflow-inspector__check > small {
+  margin-left: auto;
+  color: var(--wf-text-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.workflow-inspector__field-error {
+  color: var(--color-danger-strong);
+}
+
 .workflow-template-editor {
   font-family: var(--wf-font-mono);
   font-size: 12px;

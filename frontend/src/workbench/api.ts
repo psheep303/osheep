@@ -381,6 +381,7 @@ export interface AiSettingsProvider {
   icon?: string;
   iconColor?: string;
   inFailoverQueue?: boolean;
+  billingMultiplier?: number;
 }
 
 export interface AiSettingsProviderManager {
@@ -1303,6 +1304,8 @@ export interface WorkflowRunTrace {
     total?: number;
   };
   cost?: number;
+  providerId?: string;
+  billingMultiplier?: number;
 }
 
 export interface WorkflowRunStats {

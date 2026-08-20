@@ -20,6 +20,7 @@ import type { MessageKey } from "../i18n/messages";
 import { useUiPreferences } from "../i18n/UiPreferences";
 import {
   type AgentSessionApp,
+  type AiSettingsSnapshot,
   type AiTerminalClaudePermissionMode,
   type AiTerminalCodexApproval,
   type AiTerminalCodexSandbox,
@@ -42,6 +43,7 @@ import {
   execRun,
   execRunStream,
   finishAiTerminalSuccess,
+  getAiSettings,
   getClaudePlugins,
   getCodexPlugins,
   getGitDiff,
@@ -623,6 +625,8 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
       retries: 0,
       retryForever: false,
       retryDelaySeconds: 1,
+      retryStrategy: "none",
+      retryProviderIds: [],
       keepRunningOnInterrupt: false,
       alwaysEnter: false,
       autoSuccess: true,
@@ -642,6 +646,8 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
       retries: 0,
       retryForever: false,
       retryDelaySeconds: 1,
+      retryStrategy: "none",
+      retryProviderIds: [],
       keepRunningOnInterrupt: false,
       alwaysEnter: false,
       autoSuccess: true,
@@ -3700,6 +3706,15 @@ function IconStop() {
   );
 }
 
+type RetryStrategyValue = "none" | "lowest-multiplier" | "round-robin";
+
+interface CompactMenuOption<T extends string> {
+  value: T;
+  title: string;
+  description?: string;
+  badge?: string;
+}
+
 function IconPause() {
   return (
     <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden>
@@ -5243,6 +5258,7 @@ function WorkflowNodeInspector({
   const [pluginSnapshot, setPluginSnapshot] = useState<
     CodexPluginSnapshot | ClaudePluginSnapshot | null
   >(null);
+  const [aiSettingsSnapshot, setAiSettingsSnapshot] = useState<AiSettingsSnapshot | null>(null);
   const [pluginSearch, setPluginSearch] = useState("");
   const [collapsedVariableRows, setCollapsedVariableRows] = useState<Set<number>>(
     () => new Set(),
@@ -5299,6 +5315,26 @@ function WorkflowNodeInspector({
     };
   }, [isCodexPlugin, isClaudePlugin]);
 
+  useEffect(() => {
+    let active = true;
+    if (!isAgent) {
+      setAiSettingsSnapshot(null);
+      return () => {
+        active = false;
+      };
+    }
+    void getAiSettings()
+      .then((snapshot) => {
+        if (active) setAiSettingsSnapshot(snapshot);
+      })
+      .catch(() => {
+        if (active) setAiSettingsSnapshot(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [isAgent, node.providerKind]);
+
   const selectedPluginSelectors = pluginSelectorsForNode(node);
   const pluginOptions =
     pluginSnapshot?.plugins.filter((plugin) => isCodexPlugin || plugin.status.installed) ?? [];
@@ -5310,6 +5346,26 @@ function WorkflowNodeInspector({
           .includes(normalizedPluginSearch),
       )
     : pluginOptions;
+  const retryEnabled = isAgent && (agentRetryForever(node) || agentRetryCount(node) > 0);
+  const retryStrategy = agentRetryStrategyValue(node);
+  const retryStrategyOptions: CompactMenuOption<RetryStrategyValue>[] = [
+    { value: "none", title: t("workflow.agent.retryStrategyNone") },
+    { value: "lowest-multiplier", title: t("workflow.agent.retryStrategyLowest") },
+    { value: "round-robin", title: t("workflow.agent.retryStrategyRoundRobin") },
+  ];
+  const retryProviderIds = agentRetryProviderIdsValue(node);
+  const retryApp = node.providerKind === "claude-cli" ? "claude" : "codex";
+  const retryProviders = Object.values(aiSettingsSnapshot?.state.apps[retryApp].providers ?? {}).sort(
+    (a, b) =>
+      (a.sortIndex ?? 0) - (b.sortIndex ?? 0) ||
+      a.name.localeCompare(b.name),
+  );
+  const toggleRetryProvider = (providerId: string) => {
+    const next = retryProviderIds.includes(providerId)
+      ? retryProviderIds.filter((id) => id !== providerId)
+      : [...retryProviderIds, providerId];
+    updateConfig({ retryProviderIds: next });
+  };
 
   return (
     <aside className="workflow-inspector">
@@ -5510,6 +5566,39 @@ function WorkflowNodeInspector({
               }
             />
           </label>
+          <div className="workflow-inspector__field">
+            <span>{t("workflow.agent.retryStrategy")}</span>
+            <EffortMenu
+              value={retryStrategy}
+              options={retryStrategyOptions}
+              onChange={(value) => updateConfig({ retryStrategy: value })}
+              disabled={running || !retryEnabled}
+            />
+          </div>
+          {retryEnabled && retryStrategy !== "none" && (
+            <div className="workflow-inspector__retry-providers">
+              <span>{t("workflow.agent.retryProviders")}</span>
+              <div className="workflow-inspector__retry-provider-list">
+                {retryProviders.map((provider) => (
+                  <label className="workflow-inspector__check" key={provider.id}>
+                    <input
+                      type="checkbox"
+                      checked={retryProviderIds.includes(provider.id)}
+                      onChange={() => toggleRetryProvider(provider.id)}
+                      disabled={running}
+                    />
+                    <span>{provider.name}</span>
+                    <small>{provider.billingMultiplier ?? 1}x</small>
+                  </label>
+                ))}
+              </div>
+              {retryProviderIds.length === 0 && (
+                <small className="workflow-inspector__field-error">
+                  {t("workflow.agent.retryProvidersEmpty")}
+                </small>
+              )}
+            </div>
+          )}
           <label className="workflow-inspector__check workflow-inspector__check--danger">
             <input
               type="checkbox"
@@ -6401,15 +6490,15 @@ function SegmentedControl<T extends string>({
   );
 }
 
-function EffortMenu({
+function EffortMenu<T extends string>({
   value,
   options,
   onChange,
   disabled,
 }: {
-  value: AiTerminalEffort;
-  options: readonly AgentEffortOption[];
-  onChange: (value: AiTerminalEffort) => void;
+  value: T;
+  options: readonly CompactMenuOption<T>[];
+  onChange: (value: T) => void;
   disabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
@@ -7530,6 +7619,19 @@ function supportsFailover(kind: WorkflowNodeKind): boolean {
 
 function agentRetryForever(node: WorkflowNode): boolean {
   return node.config?.retryForever === true;
+}
+
+function agentRetryStrategyValue(
+  node: WorkflowNode,
+): RetryStrategyValue {
+  const value = node.config?.retryStrategy;
+  return value === "lowest-multiplier" || value === "round-robin" ? value : "none";
+}
+
+function agentRetryProviderIdsValue(node: WorkflowNode): string[] {
+  const value = node.config?.retryProviderIds;
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.filter((item): item is string => typeof item === "string" && !!item))];
 }
 
 function agentRetryDelaySeconds(node: WorkflowNode): number {

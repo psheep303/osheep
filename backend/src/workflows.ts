@@ -110,6 +110,8 @@ export interface WorkflowRunTrace {
     total?: number;
   };
   cost?: number;
+  providerId?: string;
+  billingMultiplier?: number;
 }
 
 export interface WorkflowRunStats {

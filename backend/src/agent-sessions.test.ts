@@ -247,6 +247,80 @@ test("Claude session usage sums assistant message usage", async () => {
   }
 });
 
+test("Claude session usage reads nested cache creation buckets", async () => {
+  const fixture = await makeFixture();
+  const id = "cccccccc-dddd-4eee-8fff-111111111111";
+  const sessionPath = path.join(
+    fixture.roots.claudeHome,
+    "projects",
+    "fixture-project",
+    `${id}.jsonl`,
+  );
+  try {
+    await writeLines(sessionPath, [
+      {
+        type: "assistant",
+        sessionId: id,
+        cwd: fixture.projectPath,
+        message: {
+          role: "assistant",
+          usage: {
+            input_tokens: 10,
+            output_tokens: 5,
+            cache_creation: {
+              ephemeral_5m_input_tokens: 30,
+              ephemeral_1h_input_tokens: 20,
+            },
+          },
+        },
+      },
+    ]);
+    assert.equal(
+      (await readAgentSessionUsage("claude", id, fixture.roots)).tokens?.cacheWrite,
+      50,
+    );
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("Codex session usage accumulates cache writes reported per turn", async () => {
+  const fixture = await makeFixture();
+  const id = "41111111-2222-4333-8444-555555555555";
+  const sessionPath = codexSessionPath(fixture.roots, id, "13-00-00");
+  try {
+    await writeLines(sessionPath, [
+      codexMetadata(id, fixture.projectPath),
+      {
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            total_token_usage: { input_tokens: 100, output_tokens: 10 },
+            last_token_usage: { cacheCreationInputTokens: 25 },
+          },
+        },
+      },
+      {
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            total_token_usage: { input_tokens: 200, output_tokens: 20 },
+            last_token_usage: { cache_write_tokens: 35 },
+          },
+        },
+      },
+    ]);
+    assert.equal(
+      (await readAgentSessionUsage("codex", id, fixture.roots)).tokens?.cacheWrite,
+      60,
+    );
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("Claude session deletion removes transcript artifacts and index entries", async () => {
   const fixture = await makeFixture();
   const id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
