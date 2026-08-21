@@ -5265,7 +5265,7 @@ function WorkflowNodeInspector({
   const [aiSettingsSnapshot, setAiSettingsSnapshot] = useState<AiSettingsSnapshot | null>(null);
   const [pluginSearch, setPluginSearch] = useState("");
   const [collapsedVariableRows, setCollapsedVariableRows] = useState<Set<number>>(
-    () => new Set(),
+    () => new Set(variableConfig.map((_, index) => index)),
   );
   const showOutput = kind !== "markdown";
   const runDetails = runDetailsSnapshot(node);
