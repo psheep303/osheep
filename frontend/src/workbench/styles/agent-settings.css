@@ -1238,8 +1238,14 @@
 
 .skills-view {
   min-width: 0;
-  overflow: auto;
+  overflow: hidden;
   background: var(--bg-shell);
+}
+
+.skills-view__scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .skills-view__header {
@@ -1253,7 +1259,7 @@
 }
 
 .skills-view__intro {
-  padding: 8px 10px;
+  padding: 6px 10px;
   color: var(--fg-muted);
   font-size: 11.5px;
   line-height: 1.45;
@@ -1280,14 +1286,14 @@
 
 .skills-view__list {
   display: grid;
-  gap: 7px;
+  gap: 5px;
 }
 
 .skills-view__card {
   display: grid;
-  gap: 5px;
+  gap: 4px;
   min-width: 0;
-  padding: 9px;
+  padding: 7px 8px;
   border: 1px solid var(--border-faint);
   border-radius: var(--radius-sm);
   background: var(--ui-surface-card);
@@ -1356,4 +1362,75 @@
 .skills-view__spin {
   display: inline-block;
   animation: settings-cli-spin .8s linear infinite;
+}
+
+.skills-view__group {
+  margin: 3px 8px 0;
+  border: 1px solid var(--border-faint);
+  border-radius: var(--radius-sm);
+  background: var(--ui-surface-card);
+  overflow: hidden;
+}
+
+.skills-view__group:last-of-type {
+  margin-bottom: 8px;
+}
+
+.skills-view__group-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 28px;
+  padding: 3px 8px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-strong);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .02em;
+  cursor: pointer;
+}
+
+.skills-view__group-header:hover {
+  background: var(--ui-surface-hover, rgba(127, 127, 127, .08));
+}
+
+.skills-view__group-header .codicon {
+  font-size: 14px;
+  color: var(--fg-muted);
+}
+
+.skills-view__group-title {
+  flex: 1 1 auto;
+  text-align: left;
+}
+
+.skills-view__group-count {
+  flex: none;
+  color: var(--fg-faint);
+  font-size: 10px;
+}
+
+.skills-view__group-body {
+  padding: 0 8px 7px;
+  border-top: 1px solid var(--border-faint);
+  padding-top: 7px;
+}
+
+.skills-view__manual {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.skills-view__manual .codex-plugins__search-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.skills-view__actions {
+  display: flex;
+  gap: 6px;
 }

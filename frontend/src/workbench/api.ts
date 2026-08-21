@@ -160,6 +160,8 @@ export type CliToolAction = "install" | "update";
 
 export type SkillAgent = "claude" | "codex";
 
+export type SkillOrigin = "skills.sh" | "manual";
+
 export interface InstalledSkill {
   name: string;
   description?: string;
@@ -168,8 +170,18 @@ export interface InstalledSkill {
   source: "local" | "skills.sh";
 }
 
+export interface StagedSkill {
+  name: string;
+  description?: string;
+  path: string;
+  agent: SkillAgent;
+  origin: SkillOrigin;
+  source?: string;
+}
+
 export interface SkillsSnapshot {
-  installed: InstalledSkill[];
+  enabled: InstalledSkill[];
+  user: StagedSkill[];
   paths: Record<SkillAgent, string[]>;
 }
 
@@ -651,17 +663,25 @@ export async function searchSkillsLibrary(query = ""): Promise<SkillsLibraryItem
 export async function installSkillApi(input: {
   source: string;
   skill?: string;
-  agents: SkillAgent[];
+  agent: SkillAgent;
+  origin: SkillOrigin;
 }): Promise<SkillsSnapshot> {
   const result = await http.post<{ snapshot: SkillsSnapshot }>("/api/skills/install", input);
   return result.snapshot;
 }
 
-export async function uninstallSkillApi(name: string, agents: SkillAgent[]): Promise<SkillsSnapshot> {
-  const result = await http.post<{ snapshot: SkillsSnapshot }>("/api/skills/uninstall", {
-    name,
-    agents,
-  });
+export async function enableSkillApi(name: string, agent: SkillAgent): Promise<SkillsSnapshot> {
+  const result = await http.post<{ snapshot: SkillsSnapshot }>("/api/skills/enable", { name, agent });
+  return result.snapshot;
+}
+
+export async function disableSkillApi(name: string, agent: SkillAgent): Promise<SkillsSnapshot> {
+  const result = await http.post<{ snapshot: SkillsSnapshot }>("/api/skills/disable", { name, agent });
+  return result.snapshot;
+}
+
+export async function deleteSkillApi(name: string, agent: SkillAgent): Promise<SkillsSnapshot> {
+  const result = await http.post<{ snapshot: SkillsSnapshot }>("/api/skills/delete", { name, agent });
   return result.snapshot;
 }
 

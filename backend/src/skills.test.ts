@@ -1,10 +1,18 @@
 import assert from "node:assert/strict";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import test from "node:test";
 import {
   buildInstallSkillArgs,
   buildUninstallSkillArgs,
+  findProducedSkillDirs,
+  moveSkillDir,
   parseSkillsHomepage,
+  parseSkillsManifest,
+  parseSkillsSitemap,
   skillCommandErrorMessage,
+  stagingInstallEnv,
   toSkillsWindowsCommandLine,
 } from "./skills.js";
 
@@ -105,4 +113,96 @@ test("parseSkillsHomepage reads GitHub and well-known leaderboard cards", () => 
       url: "https://open.example.com",
     },
   ]);
+});
+
+test("parseSkillsSitemap indexes skills outside the leaderboard", () => {
+  assert.deepEqual(
+    parseSkillsSitemap(`
+      <url><loc>https://skills.sh/mattpocock/skills/grill-me</loc></url>
+      <url><loc>https://skills.sh/site/example.com/remote-skill</loc></url>
+      <url><loc>https://skills.sh/</loc></url>
+    `),
+    [
+      {
+        name: "grill-me",
+        owner: "mattpocock",
+        repo: "skills",
+        installCount: 0,
+        source: "mattpocock/skills",
+        url: "https://github.com/mattpocock/skills",
+      },
+      {
+        name: "remote-skill",
+        owner: undefined,
+        repo: undefined,
+        installCount: 0,
+        source: "example.com",
+        url: "https://example.com",
+      },
+    ],
+  );
+});
+
+test("parseSkillsManifest normalizes origins and drops malformed entries", () => {
+  assert.deepEqual(
+    parseSkillsManifest(
+      JSON.stringify({
+        "from-library": { origin: "skills.sh", source: "mattpocock/skills" },
+        "no-origin": { source: "https://example.com/x" },
+        "bad-origin": { origin: "nonsense" },
+        "not-an-object": 42,
+      }),
+    ),
+    {
+      "from-library": { origin: "skills.sh", source: "mattpocock/skills" },
+      "no-origin": { origin: "manual", source: "https://example.com/x" },
+      "bad-origin": { origin: "manual" },
+    },
+  );
+});
+
+test("parseSkillsManifest tolerates invalid or non-object JSON", () => {
+  assert.deepEqual(parseSkillsManifest("not json"), {});
+  assert.deepEqual(parseSkillsManifest("[1,2,3]"), {});
+  assert.deepEqual(parseSkillsManifest("null"), {});
+});
+
+test("stagingInstallEnv redirects each agent's global skills directory", () => {
+  assert.deepEqual(stagingInstallEnv("claude", "/tmp/stage"), {
+    CLAUDE_CONFIG_DIR: "/tmp/stage",
+  });
+  assert.deepEqual(stagingInstallEnv("codex", "/tmp/stage"), {
+    CODEX_HOME: "/tmp/stage",
+  });
+});
+
+test("moveSkillDir relocates a skill folder across directories and removes the source", async () => {
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-skill-move-"));
+  try {
+    const src = path.join(base, "src", "my-skill");
+    const dest = path.join(base, "dest-parent", "my-skill");
+    await fs.mkdir(path.join(src, "nested"), { recursive: true });
+    await fs.writeFile(path.join(src, "SKILL.md"), "name: my-skill\n", "utf8");
+    await fs.writeFile(path.join(src, "nested", "extra.txt"), "hello", "utf8");
+
+    await moveSkillDir(src, dest);
+
+    assert.equal(await fs.readFile(path.join(dest, "SKILL.md"), "utf8"), "name: my-skill\n");
+    assert.equal(await fs.readFile(path.join(dest, "nested", "extra.txt"), "utf8"), "hello");
+    await assert.rejects(fs.access(src));
+  } finally {
+    await fs.rm(base, { recursive: true, force: true });
+  }
+});
+
+test("findProducedSkillDirs discovers skills below hidden CLI output directories", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-skill-output-"));
+  try {
+    const skill = path.join(root, ".agents", "skills", "hidden-skill");
+    await fs.mkdir(skill, { recursive: true });
+    await fs.writeFile(path.join(skill, "SKILL.md"), "---\ndescription: test\n---\n", "utf8");
+    assert.deepEqual(await findProducedSkillDirs(root), [skill]);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
 });

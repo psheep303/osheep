@@ -3,10 +3,11 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { promisify, stripVTControlCharacters } from "node:util";
-import { ApiError } from "./errors.js";
-import { platform } from "./config.js";
-import { findExecutable } from "./runtime-tools.js";
+import { APP_SETTINGS_DIR } from "./app-settings.js";
 import { toWindowsCmdCommandLine } from "./codex-plugins.js";
+import { platform } from "./config.js";
+import { ApiError } from "./errors.js";
+import { findExecutable } from "./runtime-tools.js";
 
 const execFileAsync = promisify(execFile);
 export type SkillAgent = "claude" | "codex";
@@ -19,9 +20,58 @@ export interface InstalledSkill {
   source: "local" | "skills.sh";
 }
 
+export type SkillOrigin = "skills.sh" | "manual";
+
+export interface SkillManifestEntry {
+  origin: SkillOrigin;
+  source?: string;
+}
+
+export type SkillsManifest = Record<string, SkillManifestEntry>;
+
+export interface StagedSkill {
+  name: string;
+  description?: string;
+  path: string;
+  agent: SkillAgent;
+  origin: SkillOrigin;
+  source?: string;
+}
+
 export interface SkillsSnapshot {
-  installed: InstalledSkill[];
+  enabled: InstalledSkill[];
+  user: StagedSkill[];
   paths: Record<SkillAgent, string[]>;
+}
+
+export function parseSkillsManifest(text: string): SkillsManifest {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return {};
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const result: SkillsManifest = {};
+  for (const [name, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    const entry = value as Record<string, unknown>;
+    const origin: SkillOrigin = entry.origin === "skills.sh" ? "skills.sh" : "manual";
+    const source = typeof entry.source === "string" ? entry.source : undefined;
+    result[name] = source ? { origin, source } : { origin };
+  }
+  return result;
+}
+
+export function stagingInstallEnv(agent: SkillAgent, dir: string): Record<string, string> {
+  return agent === "claude" ? { CLAUDE_CONFIG_DIR: dir } : { CODEX_HOME: dir };
+}
+
+export async function moveSkillDir(src: string, dest: string): Promise<void> {
+  await fs.mkdir(path.dirname(dest), { recursive: true });
+  await fs.rm(dest, { recursive: true, force: true });
+  await fs.cp(src, dest, { recursive: true });
+  await fs.rm(src, { recursive: true, force: true });
 }
 
 export interface SkillsLibraryItem {
@@ -52,7 +102,7 @@ function home(): string {
 
 function skillPaths(): Record<SkillAgent, string[]> {
   const shared = path.resolve(process.env.OSHEEP_AGENTS_SKILLS_DIR || path.join(home(), ".agents", "skills"));
-  const claudeDir = path.resolve(process.env.OSHEEP_CLAUDE_CONFIG_DIR || path.join(home(), ".claude"));
+  const claudeDir = path.resolve(process.env.CLAUDE_CONFIG_DIR || process.env.OSHEEP_CLAUDE_CONFIG_DIR || path.join(home(), ".claude"));
   const codexDir = path.resolve(process.env.CODEX_HOME || process.env.OSHEEP_CODEX_CONFIG_DIR || path.join(home(), ".codex"));
   return {
     claude: [path.join(claudeDir, "skills"), shared],
@@ -91,6 +141,61 @@ async function listDirectory(root: string, agent: SkillAgent): Promise<Installed
   }
 }
 
+function stagingRoot(agent: SkillAgent): string {
+  // Skills managed by Osheep belong beside the backend settings/database.
+  // Do not use the host home directory or a caller-provided staging override:
+  // desktop and web deployments must share the same backend/.osheep store.
+  return path.join(APP_SETTINGS_DIR, "skills", agent);
+}
+
+function manifestPath(agent: SkillAgent): string {
+  return path.join(stagingRoot(agent), "manifest.json");
+}
+
+async function readManifest(agent: SkillAgent): Promise<SkillsManifest> {
+  try {
+    return parseSkillsManifest(await fs.readFile(manifestPath(agent), "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+async function writeManifest(agent: SkillAgent, manifest: SkillsManifest): Promise<void> {
+  const root = stagingRoot(agent);
+  await fs.mkdir(root, { recursive: true });
+  const tempPath = path.join(root, `.manifest.${process.pid}.${Date.now()}.tmp`);
+  await fs.writeFile(tempPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+  await fs.rename(tempPath, manifestPath(agent));
+}
+
+async function listStaged(agent: SkillAgent): Promise<StagedSkill[]> {
+  const root = stagingRoot(agent);
+  const entries = await fs.readdir(root, { withFileTypes: true }).catch(() => null);
+  if (!entries) return [];
+  const manifest = await readManifest(agent);
+  const result: StagedSkill[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !SAFE_NAME.test(entry.name)) continue;
+    const directory = path.join(root, entry.name);
+    try {
+      await fs.access(path.join(directory, "SKILL.md"));
+    } catch {
+      continue;
+    }
+    const base = await readSkill(entry.name, directory, [agent]);
+    const record = manifest[entry.name];
+    result.push({
+      name: entry.name,
+      description: base.description,
+      path: directory,
+      agent,
+      origin: record?.origin ?? "manual",
+      source: record?.source,
+    });
+  }
+  return result;
+}
+
 export async function getSkillsSnapshot(): Promise<SkillsSnapshot> {
   const paths = skillPaths();
   const byPath = new Map<string, InstalledSkill>();
@@ -103,7 +208,12 @@ export async function getSkillsSnapshot(): Promise<SkillsSnapshot> {
       }
     }
   }
-  return { installed: [...byPath.values()].sort((a, b) => a.name.localeCompare(b.name)), paths };
+  const staged = [...(await listStaged("claude")), ...(await listStaged("codex"))];
+  return {
+    enabled: [...byPath.values()].sort((a, b) => a.name.localeCompare(b.name)),
+    user: staged.sort((a, b) => a.name.localeCompare(b.name)),
+    paths,
+  };
 }
 
 export function skillCommandErrorMessage(
@@ -134,7 +244,7 @@ function parseError(error: unknown): string {
   return stripVTControlCharacters(String(error));
 }
 
-async function runNpx(args: string[]): Promise<string> {
+async function runNpx(args: string[], extraEnv?: Record<string, string>): Promise<string> {
   const command = findExecutable(platform === "windows" ? "npx.cmd" : "npx") ?? findExecutable("npx");
   if (!command) throw new ApiError(409, "NPX_NOT_FOUND", "Node.js/npx is required to manage skills");
   try {
@@ -143,7 +253,7 @@ async function runNpx(args: string[]): Promise<string> {
       platform === "windows"
         ? ["/d", "/s", "/c", toSkillsWindowsCommandLine(command, args)]
         : args,
-      { encoding: "utf8", windowsHide: true, windowsVerbatimArguments: platform === "windows", maxBuffer: 8 * 1024 * 1024, timeout: ACTION_TIMEOUT_MS },
+      { encoding: "utf8", windowsHide: true, windowsVerbatimArguments: platform === "windows", maxBuffer: 8 * 1024 * 1024, timeout: ACTION_TIMEOUT_MS, env: extraEnv ? { ...process.env, ...extraEnv } : process.env },
     );
     return `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
   } catch (error) {
@@ -174,18 +284,148 @@ export function buildUninstallSkillArgs(name: string, agents: SkillAgent[]): str
   return ["--yes", "skills", "remove", name, "-a", ...agents.map(cliAgent), "-g", "-y"];
 }
 
-export async function installSkill(input: { source: string; skill?: string; agents: SkillAgent[] }) {
+function enableTargetDir(agent: SkillAgent): string {
+  return skillPaths()[agent][0];
+}
+
+async function findEnabledSkillDir(name: string, agent: SkillAgent): Promise<string | null> {
+  for (const root of skillPaths()[agent]) {
+    const candidate = path.join(root, name);
+    try {
+      await fs.access(path.join(candidate, "SKILL.md"));
+      return candidate;
+    } catch {
+      // Not enabled in this directory; keep looking.
+    }
+  }
+  return null;
+}
+
+export async function findProducedSkillDirs(root: string, depth = 0): Promise<string[]> {
+  if (depth > 4) return [];
+  const entries = await fs.readdir(root, { withFileTypes: true }).catch(() => []);
+  const result: string[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const directory = path.join(root, entry.name);
+    if (SAFE_NAME.test(entry.name)) {
+      try {
+        await fs.access(path.join(directory, "SKILL.md"));
+        result.push(directory);
+        continue;
+      } catch {
+        // Continue looking below directories that are not skills themselves.
+      }
+    }
+    result.push(...(await findProducedSkillDirs(directory, depth + 1)));
+  }
+  return result;
+}
+
+async function skillDirsInRoots(roots: string[]): Promise<Map<string, string>> {
+  const result = new Map<string, string>();
+  for (const root of roots) {
+    for (const directory of await findProducedSkillDirs(root)) {
+      result.set(path.basename(directory), directory);
+    }
+  }
+  return result;
+}
+
+/**
+ * Install a skill into the osheep staging area (the "user" group) rather than
+ * the agent's live skills directory. The skills CLI installs globally into the
+ * config directory named by CLAUDE_CONFIG_DIR / CODEX_HOME, so we point those at
+ * a throwaway directory, then relocate the produced skill folders into staging.
+ */
+export async function installSkill(input: {
+  source: string;
+  skill?: string;
+  agent: SkillAgent;
+  origin?: SkillOrigin;
+}) {
   if (!SAFE_SOURCE.test(input.source.trim())) throw new ApiError(400, "INVALID_SKILL_SOURCE", "Skill source must be a URL or GitHub source");
   if (input.skill && !SAFE_NAME.test(input.skill)) throw new ApiError(400, "INVALID_SKILL_NAME", "Skill name contains unsupported characters");
-  if (input.agents.length === 0) throw new ApiError(400, "INVALID_SKILL_AGENTS", "Select at least one agent");
-  await runNpx(buildInstallSkillArgs(input));
+  const origin: SkillOrigin = input.origin === "skills.sh" ? "skills.sh" : "manual";
+  const temp = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-skill-install-"));
+  const liveBefore = await skillDirsInRoots(skillPaths()[input.agent]);
+  try {
+    const args = buildInstallSkillArgs({ source: input.source, skill: input.skill, agents: [input.agent] });
+    if (!args.includes("--copy")) args.push("--copy");
+    let commandError: unknown;
+    try {
+      await runNpx(args, stagingInstallEnv(input.agent, temp));
+    } catch (error) {
+      // The CLI can exit non-zero after copying a valid skill (for example
+      // when another skill in a repository has invalid YAML). Inspect outputs
+      // before surfacing the command failure so successful skills are not left
+      // in the live directory or reported as a failed install.
+      commandError = error;
+    }
+    const produced = await findProducedSkillDirs(temp);
+    // Older skills CLI versions may ignore CLAUDE_CONFIG_DIR/CODEX_HOME and
+    // write directly to the live global directory. Capture only newly-created
+    // skills and move them to user storage.
+    if (produced.length === 0) {
+      const liveAfter = await skillDirsInRoots(skillPaths()[input.agent]);
+      for (const [name, directory] of liveAfter) {
+        if (!liveBefore.has(name)) produced.push(directory);
+      }
+    }
+    if (produced.length === 0 && commandError) throw commandError;
+    if (produced.length === 0) throw new ApiError(502, "SKILL_INSTALL_EMPTY", "The installer produced no skill to stage");
+    const manifest = await readManifest(input.agent);
+    for (const sourceDirectory of produced) {
+      const name = path.basename(sourceDirectory);
+      const destination = path.join(stagingRoot(input.agent), name);
+      if (path.resolve(sourceDirectory) !== path.resolve(destination)) {
+        await moveSkillDir(sourceDirectory, destination);
+      }
+      manifest[name] = input.source.trim() ? { origin, source: input.source.trim() } : { origin };
+    }
+    await writeManifest(input.agent, manifest);
+  } finally {
+    await fs.rm(temp, { recursive: true, force: true });
+  }
   return getSkillsSnapshot();
 }
 
-export async function uninstallSkill(input: { name: string; agents: SkillAgent[] }) {
+/** Move a staged skill into the agent's live skills directory. */
+export async function enableSkill(input: { name: string; agent: SkillAgent }) {
   if (!SAFE_NAME.test(input.name)) throw new ApiError(400, "INVALID_SKILL_NAME", "Skill name contains unsupported characters");
-  if (input.agents.length === 0) throw new ApiError(400, "INVALID_SKILL_AGENTS", "Select at least one agent");
-  await runNpx(buildUninstallSkillArgs(input.name, input.agents));
+  const from = path.join(stagingRoot(input.agent), input.name);
+  try {
+    await fs.access(path.join(from, "SKILL.md"));
+  } catch {
+    throw new ApiError(404, "SKILL_NOT_FOUND", "This skill is not in the staging area");
+  }
+  await moveSkillDir(from, path.join(enableTargetDir(input.agent), input.name));
+  return getSkillsSnapshot();
+}
+
+/** Move an enabled skill out of the agent's live directory back into staging. */
+export async function disableSkill(input: { name: string; agent: SkillAgent }) {
+  if (!SAFE_NAME.test(input.name)) throw new ApiError(400, "INVALID_SKILL_NAME", "Skill name contains unsupported characters");
+  const from = await findEnabledSkillDir(input.name, input.agent);
+  if (!from) throw new ApiError(404, "SKILL_NOT_FOUND", "This skill is not enabled");
+  await moveSkillDir(from, path.join(stagingRoot(input.agent), input.name));
+  const manifest = await readManifest(input.agent);
+  if (!manifest[input.name]) {
+    manifest[input.name] = { origin: "manual" };
+    await writeManifest(input.agent, manifest);
+  }
+  return getSkillsSnapshot();
+}
+
+/** Delete a staged skill and forget its provenance. */
+export async function deleteSkill(input: { name: string; agent: SkillAgent }) {
+  if (!SAFE_NAME.test(input.name)) throw new ApiError(400, "INVALID_SKILL_NAME", "Skill name contains unsupported characters");
+  await fs.rm(path.join(stagingRoot(input.agent), input.name), { recursive: true, force: true });
+  const manifest = await readManifest(input.agent);
+  if (manifest[input.name]) {
+    delete manifest[input.name];
+    await writeManifest(input.agent, manifest);
+  }
   return getSkillsSnapshot();
 }
 
@@ -258,6 +498,38 @@ export function parseSkillsHomepage(html: string): SkillsLibraryItem[] {
   return items;
 }
 
+/** Extract the complete skill route index published by skills.sh. The home
+ * page is intentionally limited to the leaderboard, while the sitemap keeps
+ * the long tail searchable without requiring an API token. */
+export function parseSkillsSitemap(xml: string): SkillsLibraryItem[] {
+  const result: SkillsLibraryItem[] = [];
+  const seen = new Set<string>();
+  for (const match of xml.matchAll(/<loc>\s*https?:\/\/[^<]+?\/([^<?#]+)\s*<\/loc>/gi)) {
+    const route = decodeURIComponent(match[1] ?? "").replace(/^\/+|\/+$/g, "");
+    const parts = route.split("/").filter(Boolean);
+    if (parts.length < 3) continue;
+    const name = parts.at(-1) ?? "";
+    if (!SAFE_NAME.test(name)) continue;
+    const isSite = parts[0] === "site";
+    const source = isSite ? parts[1] : parts.slice(0, -1).join("/");
+    if (!source || !SAFE_NAME.test(source.split("/").at(-1) ?? "")) continue;
+    const key = `${source}/${name}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const sourceParts = source.split("/");
+    const host = isSite ? sourceParts[0] : undefined;
+    result.push({
+      name,
+      owner: !host && sourceParts.length > 1 ? sourceParts[0] : undefined,
+      repo: !host && sourceParts.length > 1 ? sourceParts[1] : undefined,
+      installCount: 0,
+      source,
+      url: host ? `https://${host}` : `https://github.com/${source}`,
+    });
+  }
+  return result;
+}
+
 async function getPublicSkillsLibrary(): Promise<SkillsLibraryItem[]> {
   if (publicLibraryCache && publicLibraryCache.expiresAt > Date.now()) {
     return publicLibraryCache.skills;
@@ -269,7 +541,50 @@ async function getPublicSkillsLibrary(): Promise<SkillsLibraryItem[]> {
   if (!response.ok) {
     throw new ApiError(502, "SKILLS_LIBRARY_FAILED", `skills.sh returned HTTP ${response.status}`);
   }
-  const skills = parseSkillsHomepage(await response.text());
+  const homepage = parseSkillsHomepage(await response.text());
+  // Sitemap fetch is best-effort: older skills.sh deployments may not expose
+  // it, but the leaderboard remains a useful fallback in that case.
+  let indexed: SkillsLibraryItem[] = [];
+  try {
+    const sitemapResponse = await fetch("https://www.skills.sh/sitemap.xml", {
+      headers: { accept: "application/xml,text/xml" },
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (sitemapResponse.ok) {
+      const sitemapText = await sitemapResponse.text();
+      indexed = parseSkillsSitemap(sitemapText);
+      // Some deployments publish a sitemap index instead of skill URLs.
+      if (indexed.length === 0) {
+        const childUrls = [...sitemapText.matchAll(/<loc>\s*(https?:\/\/[^<]*sitemap[^<]*)\s*<\/loc>/gi)]
+          .map((match) => match[1])
+          .filter((url): url is string => Boolean(url))
+          .slice(0, 50);
+        const childResults = await Promise.allSettled(
+          childUrls.map(async (url) => {
+            const child = await fetch(url, {
+              headers: { accept: "application/xml,text/xml" },
+              signal: AbortSignal.timeout(8_000),
+            });
+            return child.ok ? parseSkillsSitemap(await child.text()) : [];
+          }),
+        );
+        indexed = childResults.flatMap((result) => (result.status === "fulfilled" ? result.value : []));
+      }
+    }
+  } catch {
+    // Keep the public catalog usable when sitemap access is unavailable.
+  }
+  const byKey = new Map<string, SkillsLibraryItem>();
+  // Keep the homepage's ranked order first so an empty search still shows the
+  // official top 50; sitemap-only entries extend the searchable index after it.
+  for (const item of [...homepage, ...indexed]) {
+    const key = `${item.source ?? `${item.owner ?? ""}/${item.repo ?? ""}`}/${item.name}`;
+    const existing = byKey.get(key);
+    // Homepage entries carry ranking/count metadata; preserve it over sitemap
+    // placeholders while retaining the complete sitemap index.
+    byKey.set(key, existing && existing.installCount > item.installCount ? existing : item);
+  }
+  const skills = [...byKey.values()];
   if (skills.length === 0) {
     throw new ApiError(502, "SKILLS_LIBRARY_FAILED", "skills.sh returned no readable skills");
   }
@@ -287,6 +602,9 @@ async function searchPublicSkillsLibrary(query: string): Promise<SkillsLibraryRe
           .includes(normalizedQuery),
       )
     : skills;
+  // Homepage order is the official ranking. For search results, known counts
+  // are sorted first while sitemap-only matches remain searchable at count 0.
+  if (normalizedQuery) filtered.sort((a, b) => b.installCount - a.installCount || a.name.localeCompare(b.name));
   return { skills: filtered.slice(0, 50), total: filtered.length, next: null };
 }
 
@@ -309,9 +627,10 @@ export async function searchSkillsLibrary(query: string): Promise<SkillsLibraryR
   const body = (await response.json()) as unknown;
   const object = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
   const raw = Array.isArray(body) ? body : Array.isArray(object.skills) ? object.skills : Array.isArray(object.data) ? object.data : [];
+  const skills = raw.map(normalizeLibraryItem).filter((item): item is SkillsLibraryItem => item !== null);
   return {
-    skills: raw.map(normalizeLibraryItem).filter((item): item is SkillsLibraryItem => item !== null),
-    total: typeof object.total === "number" ? object.total : undefined,
+    skills: skills.slice(0, 50),
+    total: typeof object.total === "number" ? object.total : skills.length,
     next: typeof object.next === "string" ? object.next : null,
   };
 }
