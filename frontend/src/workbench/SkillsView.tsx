@@ -5,6 +5,7 @@ import {
   disableSkillApi,
   enableSkillApi,
   getSkills,
+  importSkillApi,
   installSkillApi,
   searchSkillsLibrary,
   type InstalledSkill,
@@ -16,6 +17,7 @@ import {
 import { hideInstalledFromLibrary, nextOpenGroup, type SkillGroup } from "./skills-view-behavior";
 import { useUiPreferences } from "../i18n/UiPreferences";
 import { useOsheepOverlay } from "./OsheepOverlay";
+import { isDesktopShell, pickSkillFolder } from "./desktop-folder-picker";
 
 interface SkillsViewProps {
   agent: SkillAgent;
@@ -30,7 +32,8 @@ export function SkillsView({ agent }: SkillsViewProps) {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [openGroup, setOpenGroup] = useState<SkillGroup | null>("user");
-  const [manualSource, setManualSource] = useState("");
+  const [importing, setImporting] = useState(false);
+  const importInputRef = useRef<HTMLInputElement | null>(null);
   const lastNotifiedError = useRef<string | null>(null);
 
   const reportError = (reason: unknown) => {
@@ -39,6 +42,8 @@ export function SkillsView({ agent }: SkillsViewProps) {
     const message =
       reason instanceof ApiClientError && reason.code === "SKILL_COMMAND_FAILED" && yamlDetail
         ? t("skills.invalidYaml", { detail: yamlDetail })
+        : reason instanceof ApiClientError && reason.code === "INVALID_SKILL_FOLDER"
+          ? t("skills.invalidFolder")
         : rawMessage;
     if (lastNotifiedError.current !== message) {
       lastNotifiedError.current = message;
@@ -107,11 +112,47 @@ export function SkillsView({ agent }: SkillsViewProps) {
     );
   };
 
-  const addManual = async () => {
-    const source = manualSource.trim();
-    if (!source) return;
-    await run("manual", () => installSkillApi({ source, agent, origin: "manual" }), t("skills.installSuccess", { name: source }));
-    setManualSource("");
+  const importFolder = async (files: FileList | null) => {
+    if (!files?.length || importing) return;
+    setImporting(true);
+    try {
+      const encoded = await Promise.all(
+        [...files].map(async (file) => {
+          const bytes = new Uint8Array(await file.arrayBuffer());
+          let binary = "";
+          for (let index = 0; index < bytes.length; index += 0x8000) {
+            binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
+          }
+          return { path: file.webkitRelativePath || file.name, data: btoa(binary) };
+        }),
+      );
+      setSnapshot(await importSkillApi({ agent, files: encoded }));
+      notify.success(t("skills.importSuccess"));
+    } catch (reason) {
+      reportError(reason);
+    } finally {
+      setImporting(false);
+      if (importInputRef.current) importInputRef.current.value = "";
+    }
+  };
+
+  const chooseImportFolder = async () => {
+    if (importing) return;
+    if (!isDesktopShell()) {
+      importInputRef.current?.click();
+      return;
+    }
+    setImporting(true);
+    try {
+      const sourcePath = await pickSkillFolder();
+      if (!sourcePath) return;
+      setSnapshot(await importSkillApi({ agent, sourcePath }));
+      notify.success(t("skills.importSuccess"));
+    } catch (reason) {
+      reportError(reason);
+    } finally {
+      setImporting(false);
+    }
   };
 
   const enable = (item: StagedSkill) =>
@@ -182,9 +223,18 @@ export function SkillsView({ agent }: SkillsViewProps) {
         {groupHeader("user", t("skills.groupUser"), staged.length)}
         {openGroup === "user" && (
           <div className="skills-view__group-body">
-            <div className="skills-view__manual" title={t("skills.manualAddTitle")}>
-              <input className="codex-plugins__search-input" value={manualSource} onChange={(event) => setManualSource(event.target.value)} placeholder={t("skills.manualAddPlaceholder")} />
-              <button className="tb-btn" type="button" onClick={() => void addManual()} disabled={busy !== null || manualSource.trim().length === 0}>{busy === "manual" ? t("skills.installing") : t("skills.manualAddSubmit")}</button>
+            <div className="skills-view__manual" title={t("skills.importFolderTitle")}>
+              <button className="tb-btn" type="button" onClick={() => void chooseImportFolder()} disabled={busy !== null || importing}>
+                {importing ? t("skills.importing") : t("skills.importFolder")}
+              </button>
+              <input
+                ref={importInputRef}
+                className="skills-view__folder-input"
+                type="file"
+                multiple
+                onChange={(event) => void importFolder(event.currentTarget.files)}
+                {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
+              />
             </div>
             <div className="skills-view__list">
               {loading && !snapshot ? <div className="skills-view__empty">{t("common.loading")}</div> : staged.length === 0 ? <div className="skills-view__empty">{t("skills.emptyUser")}</div> : staged.map((item) => (

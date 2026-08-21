@@ -1430,6 +1430,10 @@
   min-width: 0;
 }
 
+.skills-view__folder-input {
+  display: none;
+}
+
 .skills-view__actions {
   display: flex;
   gap: 6px;

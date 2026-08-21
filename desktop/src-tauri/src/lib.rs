@@ -49,6 +49,16 @@ async fn pick_workspace_folder(
 }
 
 #[tauri::command]
+async fn pick_skill_folder(window: tauri::WebviewWindow) -> Result<Option<String>, String> {
+    Ok(AsyncFileDialog::new()
+        .set_parent(&window)
+        .set_title("选择 Skill 文件夹")
+        .pick_folder()
+        .await
+        .map(|folder| folder.path().to_string_lossy().into_owned()))
+}
+
+#[tauri::command]
 async fn save_export_file(
     window: tauri::WebviewWindow,
     suggested_name: String,
@@ -505,6 +515,7 @@ pub fn run() {
     let app_result = tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             pick_workspace_folder,
+            pick_skill_folder,
             save_export_file
         ])
         .setup(|app| {

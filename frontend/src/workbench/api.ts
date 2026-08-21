@@ -670,6 +670,15 @@ export async function installSkillApi(input: {
   return result.snapshot;
 }
 
+export async function importSkillApi(input: {
+  agent: SkillAgent;
+  sourcePath?: string;
+  files?: Array<{ path: string; data: string }>;
+}): Promise<SkillsSnapshot> {
+  const result = await http.post<{ snapshot: SkillsSnapshot }>("/api/skills/import", input);
+  return result.snapshot;
+}
+
 export async function enableSkillApi(name: string, agent: SkillAgent): Promise<SkillsSnapshot> {
   const result = await http.post<{ snapshot: SkillsSnapshot }>("/api/skills/enable", { name, agent });
   return result.snapshot;

@@ -7,6 +7,7 @@ import {
   buildInstallSkillArgs,
   buildUninstallSkillArgs,
   findProducedSkillDirs,
+  importSkill,
   moveSkillDir,
   parseSkillsHomepage,
   parseSkillsManifest,
@@ -205,4 +206,14 @@ test("findProducedSkillDirs discovers skills below hidden CLI output directories
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
+});
+
+test("importSkill rejects a folder upload without SKILL.md", async () => {
+  await assert.rejects(
+    importSkill({
+      agent: "codex",
+      files: [{ path: "not-a-skill/README.md", data: "cmVhZG1l" }],
+    }),
+    (error: unknown) => error instanceof Error && "code" in error && error.code === "INVALID_SKILL_FOLDER",
+  );
 });

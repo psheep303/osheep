@@ -44,6 +44,11 @@ export interface SkillsSnapshot {
   paths: Record<SkillAgent, string[]>;
 }
 
+export interface SkillImportFile {
+  path: string;
+  data: string;
+}
+
 export function parseSkillsManifest(text: string): SkillsManifest {
   let raw: unknown;
   try {
@@ -383,6 +388,68 @@ export async function installSkill(input: {
       }
       manifest[name] = input.source.trim() ? { origin, source: input.source.trim() } : { origin };
     }
+    await writeManifest(input.agent, manifest);
+  } finally {
+    await fs.rm(temp, { recursive: true, force: true });
+  }
+  return getSkillsSnapshot();
+}
+
+/** Import a local skill directory into Osheep's user-managed skill store. */
+export async function importSkill(input: {
+  agent: SkillAgent;
+  sourcePath?: string;
+  files?: SkillImportFile[];
+}) {
+  const temp = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-skill-import-"));
+  try {
+    let sourceDirectory = temp;
+    if (input.sourcePath) {
+      const source = path.resolve(input.sourcePath);
+      const stat = await fs.stat(source).catch(() => null);
+      if (!stat?.isDirectory()) throw new ApiError(400, "INVALID_SKILL_FOLDER", "Selected item is not a folder");
+      sourceDirectory = source;
+    } else if (input.files?.length) {
+      const normalizedFiles = input.files.map((file) => ({
+        ...file,
+        parts: file.path.replaceAll("\\", "/").replace(/^\/+/, "").split("/").filter(Boolean),
+      }));
+      const firstParts = new Set(normalizedFiles.map((file) => file.parts[0]).filter(Boolean));
+      const stripDirectory = !normalizedFiles.some((file) => file.parts.length === 1 && file.parts[0] === "SKILL.md") && firstParts.size === 1;
+      for (const file of normalizedFiles) {
+        const parts = stripDirectory ? file.parts.slice(1) : file.parts;
+        if (parts.length < 1 || parts.some((part) => part === "." || part === ".." || !SAFE_NAME.test(part))) {
+          throw new ApiError(400, "INVALID_SKILL_FOLDER", "Selected folder contains an invalid file path");
+        }
+        const destination = path.join(temp, ...parts);
+        await fs.mkdir(path.dirname(destination), { recursive: true });
+        let content: Buffer;
+        try {
+          if (!/^[A-Za-z0-9+/]*={0,2}$/.test(file.data)) throw new Error("invalid base64");
+          content = Buffer.from(file.data, "base64");
+        } catch {
+          throw new ApiError(400, "INVALID_SKILL_FOLDER", "Selected folder contains an unreadable file");
+        }
+        await fs.writeFile(destination, content);
+      }
+    } else {
+      throw new ApiError(400, "INVALID_SKILL_FOLDER", "Select a skill folder to import");
+    }
+
+    const skillFile = path.join(sourceDirectory, "SKILL.md");
+    await fs.access(skillFile).catch(() => {
+      throw new ApiError(400, "INVALID_SKILL_FOLDER", "Selected folder must contain SKILL.md");
+    });
+    const name = input.sourcePath
+      ? path.basename(sourceDirectory)
+      : path.basename(input.files?.[0]?.path.replaceAll("\\", "/").split("/").filter(Boolean)[0] ?? "");
+    if (!SAFE_NAME.test(name)) throw new ApiError(400, "INVALID_SKILL_NAME", "Skill folder name contains unsupported characters");
+    const destination = path.join(stagingRoot(input.agent), name);
+    await fs.mkdir(path.dirname(destination), { recursive: true });
+    await fs.rm(destination, { recursive: true, force: true });
+    await fs.cp(sourceDirectory, destination, { recursive: true });
+    const manifest = await readManifest(input.agent);
+    manifest[name] = { origin: "manual" };
     await writeManifest(input.agent, manifest);
   } finally {
     await fs.rm(temp, { recursive: true, force: true });
