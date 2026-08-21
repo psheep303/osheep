@@ -11,7 +11,7 @@ export interface AgentSessionEvent {
 }
 
 const POLL_INTERVAL_MS = 120;
-const CODEX_SILENT_EXEC_WAIT_MS = 4_000;
+const CODEX_SILENT_EXEC_WAIT_MS = 5_000;
 const CODEX_ABORT_SETTLE_MS = 250;
 
 export class AgentSessionEventReducer {
@@ -20,19 +20,15 @@ export class AgentSessionEventReducer {
   private readonly pendingClaudePermissionTools = new Set<string>();
   private readonly unresolvedClaudeTools = new Map<string, string>();
   private readonly unboundClaudePermissions: Array<{ key: string; toolName: string }> = [];
-  private readonly pendingCodexQuestions = new Set<string>();
-  private readonly pendingCodexPermissions = new Set<string>();
   private readonly pendingCodexSilentExecs = new Set<string>();
   private readonly unresolvedCodexCalls = new Map<string, string>();
   private readonly codexSilentExecDeadlines = new Map<string, number>();
-  private readonly unboundCodexPermissions: string[] = [];
   private pendingCodexAbort?: {
     turnId: string;
     error: string;
     deadline: number;
     userInterrupted: boolean;
   };
-  private nextCodexPermissionKey = 1;
   private nextClaudePermissionKey = 1;
   private activeCodexTurnId = "";
   private claudeTurnUserRejected = false;
@@ -82,23 +78,6 @@ export class AgentSessionEventReducer {
       this.unboundClaudePermissions.push({ key, toolName });
       this.pendingClaudePermissionTools.add(key);
     }
-    return [{ state: "waiting-for-choice" }];
-  }
-
-  pushCodexPermission(value: unknown): AgentSessionEvent[] {
-    if (this.app !== "codex" || !value || typeof value !== "object" || Array.isArray(value)) {
-      return [];
-    }
-    const root = value as Record<string, unknown>;
-    if (stringValue(root.osheep_event) !== "codex-permission-request") return [];
-    const payload = objectValue(root.payload);
-    const callId =
-      stringValue(payload.tool_use_id ?? payload.toolUseId) || this.latestUnresolvedCodexCall();
-    const key = callId || `permission-${this.nextCodexPermissionKey++}`;
-    if (this.pendingCodexPermissions.has(key)) return [];
-    if (callId) this.codexSilentExecDeadlines.delete(callId);
-    this.pendingCodexPermissions.add(key);
-    if (!callId) this.unboundCodexPermissions.push(key);
     return [{ state: "waiting-for-choice" }];
   }
 
@@ -289,21 +268,14 @@ export class AgentSessionEventReducer {
       this.activeCodexTurnId = turnId;
       this.codexTurnUserInterrupted = false;
       if (startsDifferentTurn) {
-        this.pendingCodexQuestions.clear();
-        this.pendingCodexPermissions.clear();
         this.pendingCodexSilentExecs.clear();
         this.unresolvedCodexCalls.clear();
         this.codexSilentExecDeadlines.clear();
-        this.unboundCodexPermissions.length = 0;
         this.pendingCodexAbort = undefined;
         this.codexTurnUserRejected = false;
       }
       const startEvents: AgentSessionEvent[] = previousAbort ? [previousAbort] : [];
-      if (
-        this.pendingCodexQuestions.size > 0 ||
-        this.pendingCodexPermissions.size > 0 ||
-        this.pendingCodexSilentExecs.size > 0
-      ) {
+      if (this.pendingCodexSilentExecs.size > 0) {
         return startEvents;
       }
       startEvents.push({ state: "running" });
@@ -311,20 +283,9 @@ export class AgentSessionEventReducer {
     }
     if (this.activeCodexTurnId && turnId && turnId !== this.activeCodexTurnId) return [];
 
-    if (
-      (type === "function_call" || type === "custom_tool_call") &&
-      toolName === "request_user_input"
-    ) {
-      if (callId) this.pendingCodexQuestions.add(callId);
-      return [{ state: "waiting-for-choice" }];
-    }
     if ((type === "function_call" || type === "custom_tool_call") && callId) {
       this.unresolvedCodexCalls.set(callId, toolName);
-      const permissionKey = this.unboundCodexPermissions.shift();
-      if (permissionKey) {
-        this.pendingCodexPermissions.delete(permissionKey);
-        this.pendingCodexPermissions.add(callId);
-      } else if (type === "custom_tool_call" && toolName === "exec") {
+      if (type === "custom_tool_call" && toolName === "exec") {
         this.codexSilentExecDeadlines.set(callId, now + CODEX_SILENT_EXEC_WAIT_MS);
       }
       return [];
@@ -334,34 +295,21 @@ export class AgentSessionEventReducer {
         this.unresolvedCodexCalls.delete(callId);
         this.codexSilentExecDeadlines.delete(callId);
       }
-      const resolvedPermission = callId
-        ? this.pendingCodexPermissions.delete(callId)
-        : this.deleteFirstCodexPermission();
       const resolvedSilentExec = callId
         ? this.pendingCodexSilentExecs.delete(callId)
         : this.deleteFirstCodexSilentExec();
-      if (
-        ((callId && this.pendingCodexQuestions.delete(callId)) ||
-          resolvedPermission ||
-          resolvedSilentExec) &&
-        this.pendingCodexQuestions.size === 0 &&
-        this.pendingCodexPermissions.size === 0 &&
-        this.pendingCodexSilentExecs.size === 0
-      ) {
+      if (resolvedSilentExec && this.pendingCodexSilentExecs.size === 0) {
         return [{ state: "running" }];
       }
       return [];
     }
-
-    if (isCodexWaitingEvent(type, payload)) return [{ state: "waiting-for-choice" }];
-    if (isCodexChoiceResolvedEvent(type, payload)) return [{ state: "running" }];
 
     if (type === "item_completed") {
       const item = objectValue(payload.item);
       if (stringValue(item.status) !== "declined") return [];
       this.codexTurnUserRejected = true;
       this.pendingCodexAbort = undefined;
-      return [{ state: "waiting-for-choice" }];
+      return [];
     }
 
     if (type === "turn_aborted" || type === "task_aborted") {
@@ -407,19 +355,9 @@ export class AgentSessionEventReducer {
     return [];
   }
 
-  private deleteFirstCodexPermission(): boolean {
-    const key = this.pendingCodexPermissions.values().next().value;
-    return typeof key === "string" && this.pendingCodexPermissions.delete(key);
-  }
-
   private deleteFirstCodexSilentExec(): boolean {
     const callId = this.pendingCodexSilentExecs.values().next().value;
     return typeof callId === "string" && this.pendingCodexSilentExecs.delete(callId);
-  }
-
-  private latestUnresolvedCodexCall(): string {
-    const calls = [...this.unresolvedCodexCalls.keys()];
-    return calls.at(-1) ?? "";
   }
 
   private takePendingCodexAbort(): AgentSessionEvent | undefined {
@@ -546,10 +484,10 @@ export async function watchAgentSession(input: {
       if (!input.filePath) filePath = null;
     }
 
-    // Session events establish the active turn and unresolved tool calls. Read
-    // them before the sidecar so a permission cannot be overwritten by replayed
-    // task_started history on the watcher's first poll.
-    if (input.permissionFilePath) {
+    // Session events establish the active turn and unresolved tool calls. For
+    // Claude, read the permission sidecar after the session so replayed history
+    // cannot overwrite a permission wait on the watcher's first poll.
+    if (input.app === "claude" && input.permissionFilePath) {
       const read = await readJsonlIncrement(
         input.permissionFilePath,
         permissionOffset,
@@ -558,10 +496,7 @@ export async function watchAgentSession(input: {
       permissionOffset = read.offset;
       permissionRemainder = read.remainder;
       for (const value of read.values) {
-        const events =
-          input.app === "claude"
-            ? reducer.pushClaudePermission(value)
-            : reducer.pushCodexPermission(value);
+        const events = reducer.pushClaudePermission(value);
         for (const event of events) input.onEvent(event);
       }
     }
@@ -629,18 +564,6 @@ function parseJsonlValue(lineBuffer: Buffer, values: unknown[]): void {
   } catch {
     /* malformed lines do not stop the live watcher */
   }
-}
-
-function isCodexWaitingEvent(type: string, payload: Record<string, unknown>): boolean {
-  if (/request_user_input|approval_request|request_permission/i.test(type)) return true;
-  const item = objectValue(payload.item);
-  return /request_user_input|approval_request|request_permission/i.test(stringValue(item.type));
-}
-
-function isCodexChoiceResolvedEvent(type: string, payload: Record<string, unknown>): boolean {
-  if (/user_input|approval_response|permission_response/i.test(type)) return true;
-  const item = objectValue(payload.item);
-  return /user_input|approval_response|permission_response/i.test(stringValue(item.type));
 }
 
 function objectValue(value: unknown): Record<string, unknown> {
