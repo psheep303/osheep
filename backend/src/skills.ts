@@ -44,6 +44,11 @@ export interface SkillsSnapshot {
   paths: Record<SkillAgent, string[]>;
 }
 
+export interface SkillsServiceOptions {
+  paths?: Record<SkillAgent, string[]>;
+  stagingRoots?: Partial<Record<SkillAgent, string>>;
+}
+
 export interface SkillImportFile {
   path: string;
   data: string;
@@ -105,7 +110,8 @@ function home(): string {
   return os.homedir() || ".";
 }
 
-function skillPaths(): Record<SkillAgent, string[]> {
+function skillPaths(options: SkillsServiceOptions = {}): Record<SkillAgent, string[]> {
+  if (options.paths) return options.paths;
   const shared = path.resolve(process.env.OSHEEP_AGENTS_SKILLS_DIR || path.join(home(), ".agents", "skills"));
   const claudeDir = path.resolve(process.env.CLAUDE_CONFIG_DIR || process.env.OSHEEP_CLAUDE_CONFIG_DIR || path.join(home(), ".claude"));
   const codexDir = path.resolve(process.env.CODEX_HOME || process.env.OSHEEP_CODEX_CONFIG_DIR || path.join(home(), ".codex"));
@@ -146,38 +152,48 @@ async function listDirectory(root: string, agent: SkillAgent): Promise<Installed
   }
 }
 
-function stagingRoot(agent: SkillAgent): string {
+function stagingRoot(agent: SkillAgent, options: SkillsServiceOptions = {}): string {
   // Skills managed by Osheep belong beside the backend settings/database.
-  // Do not use the host home directory or a caller-provided staging override:
-  // desktop and web deployments must share the same backend/.osheep store.
-  return path.join(APP_SETTINGS_DIR, "skills", agent);
+  // Production callers use the shared backend/.osheep store on desktop and web;
+  // the override exists so filesystem behavior can be tested in isolation.
+  return options.stagingRoots?.[agent] ?? path.join(APP_SETTINGS_DIR, "skills", agent);
 }
 
-function manifestPath(agent: SkillAgent): string {
-  return path.join(stagingRoot(agent), "manifest.json");
+function manifestPath(agent: SkillAgent, options: SkillsServiceOptions = {}): string {
+  return path.join(stagingRoot(agent, options), "manifest.json");
 }
 
-async function readManifest(agent: SkillAgent): Promise<SkillsManifest> {
+async function readManifest(
+  agent: SkillAgent,
+  options: SkillsServiceOptions = {},
+): Promise<SkillsManifest> {
   try {
-    return parseSkillsManifest(await fs.readFile(manifestPath(agent), "utf8"));
+    return parseSkillsManifest(await fs.readFile(manifestPath(agent, options), "utf8"));
   } catch {
     return {};
   }
 }
 
-async function writeManifest(agent: SkillAgent, manifest: SkillsManifest): Promise<void> {
-  const root = stagingRoot(agent);
+async function writeManifest(
+  agent: SkillAgent,
+  manifest: SkillsManifest,
+  options: SkillsServiceOptions = {},
+): Promise<void> {
+  const root = stagingRoot(agent, options);
   await fs.mkdir(root, { recursive: true });
   const tempPath = path.join(root, `.manifest.${process.pid}.${Date.now()}.tmp`);
   await fs.writeFile(tempPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
-  await fs.rename(tempPath, manifestPath(agent));
+  await fs.rename(tempPath, manifestPath(agent, options));
 }
 
-async function listStaged(agent: SkillAgent): Promise<StagedSkill[]> {
-  const root = stagingRoot(agent);
+async function listStaged(
+  agent: SkillAgent,
+  options: SkillsServiceOptions = {},
+): Promise<StagedSkill[]> {
+  const root = stagingRoot(agent, options);
   const entries = await fs.readdir(root, { withFileTypes: true }).catch(() => null);
   if (!entries) return [];
-  const manifest = await readManifest(agent);
+  const manifest = await readManifest(agent, options);
   const result: StagedSkill[] = [];
   for (const entry of entries) {
     if (!entry.isDirectory() || !SAFE_NAME.test(entry.name)) continue;
@@ -201,8 +217,10 @@ async function listStaged(agent: SkillAgent): Promise<StagedSkill[]> {
   return result;
 }
 
-export async function getSkillsSnapshot(): Promise<SkillsSnapshot> {
-  const paths = skillPaths();
+export async function getSkillsSnapshot(
+  options: SkillsServiceOptions = {},
+): Promise<SkillsSnapshot> {
+  const paths = skillPaths(options);
   const byPath = new Map<string, InstalledSkill>();
   for (const agent of ["claude", "codex"] as const) {
     for (const item of await Promise.all(paths[agent].map((root) => listDirectory(root, agent)))) {
@@ -213,12 +231,94 @@ export async function getSkillsSnapshot(): Promise<SkillsSnapshot> {
       }
     }
   }
-  const staged = [...(await listStaged("claude")), ...(await listStaged("codex"))];
+  const staged = [
+    ...(await listStaged("claude", options)),
+    ...(await listStaged("codex", options)),
+  ];
   return {
     enabled: [...byPath.values()].sort((a, b) => a.name.localeCompare(b.name)),
     user: staged.sort((a, b) => a.name.localeCompare(b.name)),
     paths,
   };
+}
+
+/**
+ * Apply a workflow block's desired enabled set without installing or deleting
+ * skills. Skills not selected for this agent move back to its user group.
+ */
+export async function applySkillSelection(
+  input: { agent: SkillAgent; selectedNames: string[] },
+  options: SkillsServiceOptions = {},
+): Promise<SkillsSnapshot> {
+  const before = await getSkillsSnapshot(options);
+  const stagedNames = new Set(
+    before.user.filter((item) => item.agent === input.agent).map((item) => item.name),
+  );
+  const enabledNames = new Set(
+    before.enabled
+      .filter((item) => item.agents.includes(input.agent))
+      .map((item) => item.name),
+  );
+  const knownNames = new Set([...stagedNames, ...enabledNames]);
+  const selected = new Set(
+    input.selectedNames
+      .filter((name): name is string => typeof name === "string" && SAFE_NAME.test(name))
+      .filter((name) => knownNames.has(name)),
+  );
+
+  for (const name of enabledNames) {
+    if (selected.has(name)) continue;
+    await moveEnabledSkillToStaging(name, input.agent, options);
+  }
+  for (const name of stagedNames) {
+    if (!selected.has(name)) continue;
+    const from = path.join(stagingRoot(input.agent, options), name);
+    await moveSkillDir(from, path.join(skillPaths(options)[input.agent][0]!, name));
+  }
+  return await getSkillsSnapshot(options);
+}
+
+async function moveEnabledSkillToStaging(
+  name: string,
+  agent: SkillAgent,
+  options: SkillsServiceOptions,
+): Promise<void> {
+  const paths = skillPaths(options);
+  const otherAgent: SkillAgent = agent === "codex" ? "claude" : "codex";
+  const targetRoot = stagingRoot(agent, options);
+  let moved = false;
+  for (const root of paths[agent]) {
+    const source = path.join(root, name);
+    try {
+      await fs.access(path.join(source, "SKILL.md"));
+    } catch {
+      continue;
+    }
+
+    const sharedWithOtherAgent = paths[otherAgent].some(
+      (otherRoot) => path.resolve(otherRoot) === path.resolve(root),
+    );
+    if (sharedWithOtherAgent) {
+      const preserved = path.join(paths[otherAgent][0]!, name);
+      const alreadyPreserved = await fs
+        .access(path.join(preserved, "SKILL.md"))
+        .then(() => true)
+        .catch(() => false);
+      if (path.resolve(preserved) !== path.resolve(source) && !alreadyPreserved) {
+        await fs.mkdir(path.dirname(preserved), { recursive: true });
+        await fs.cp(source, preserved, { recursive: true });
+      }
+    }
+    await moveSkillDir(source, path.join(targetRoot, name));
+    moved = true;
+  }
+  if (!moved) throw new ApiError(404, "SKILL_NOT_FOUND", "This skill is not enabled");
+
+  const manifest = await readManifest(agent, options);
+  if (!manifest[name]) {
+    manifest[name] = { origin: "manual" };
+    await writeManifest(agent, manifest, options);
+  }
 }
 
 export function skillCommandErrorMessage(

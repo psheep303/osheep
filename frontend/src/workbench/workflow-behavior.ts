@@ -428,6 +428,8 @@ export function emptyBlockOutput(node: WorkflowNode): WorkflowBlockOutput {
       };
     case "codex-plugin":
     case "claude-plugin":
+    case "codex-skill":
+    case "claude-skill":
       return {
         type: kind,
         status: "",

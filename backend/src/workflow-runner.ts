@@ -41,6 +41,7 @@ import {
 } from "./git-ops.js";
 import { calculateModelCost, readStoredModelPrices } from "./model-pricing.js";
 import { callRemoteMcp, discoverRemoteMcp, type RemoteMcpTool } from "./remote-mcp.js";
+import { applySkillSelection } from "./skills.js";
 import { publishWorkflowRuntime } from "./workflow-events.js";
 import {
   getWorkflow,
@@ -225,6 +226,8 @@ const CONFIGURED_LOCAL_KINDS = new Set<WorkflowNodeKind>([
   "webhook-trigger",
   "codex-plugin",
   "claude-plugin",
+  "codex-skill",
+  "claude-skill",
 ]);
 
 const DEFAULT_MCP_HEADERS_JSON = JSON.stringify(
@@ -2028,6 +2031,24 @@ async function executeLocalNode(
     };
   }
 
+  if (kind === "codex-skill" || kind === "claude-skill") {
+    const selected = skillNames(node);
+    const agent = kind === "codex-skill" ? "codex" : "claude";
+    const snapshot = await applySkillSelection({ agent, selectedNames: selected });
+    const enabled = snapshot.enabled
+      .filter((skill) => skill.agents.includes(agent))
+      .map((skill) => skill.name);
+    return {
+      output: {
+        type: kind,
+        status: "success",
+        selected,
+        enabled,
+        text: `${agent === "codex" ? "Codex" : "Claude"} skills updated: ${enabled.length} enabled.`,
+      },
+    };
+  }
+
   if (kind === "markdown") {
     const markdown = resolveBlockTemplate(node.prompt, record);
     return {
@@ -3510,6 +3531,13 @@ function pluginSelectors(node: WorkflowNode): string[] {
     : [];
 }
 
+function skillNames(node: WorkflowNode): string[] {
+  const value = node.config?.skillNames;
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
+}
+
 function mcpNodeConfig(node: WorkflowNode): McpNodeConfig {
   const config = node.config ?? {};
   const tools = Array.isArray(config.tools)
@@ -4131,7 +4159,9 @@ function supportsFailover(kind: WorkflowNodeKind): boolean {
     kind === "file-write" ||
     kind === "mcp" ||
     kind === "codex-plugin" ||
-    kind === "claude-plugin"
+    kind === "claude-plugin" ||
+    kind === "codex-skill" ||
+    kind === "claude-skill"
   );
 }
 

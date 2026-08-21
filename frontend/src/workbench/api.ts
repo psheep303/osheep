@@ -689,6 +689,17 @@ export async function disableSkillApi(name: string, agent: SkillAgent): Promise<
   return result.snapshot;
 }
 
+export async function applySkillSelectionApi(
+  names: string[],
+  agent: SkillAgent,
+): Promise<SkillsSnapshot> {
+  const result = await http.post<{ snapshot: SkillsSnapshot }>("/api/skills/apply", {
+    names,
+    agent,
+  });
+  return result.snapshot;
+}
+
 export async function deleteSkillApi(name: string, agent: SkillAgent): Promise<SkillsSnapshot> {
   const result = await http.post<{ snapshot: SkillsSnapshot }>("/api/skills/delete", { name, agent });
   return result.snapshot;
@@ -1280,7 +1291,9 @@ export type WorkflowNodeKind =
   | "markdown"
   | "mcp"
   | "codex-plugin"
-  | "claude-plugin";
+  | "claude-plugin"
+  | "codex-skill"
+  | "claude-skill";
 export type WorkflowNodeStatus = "idle" | "running" | "success" | "error";
 export type WorkflowRunStatus = "idle" | "running" | "success" | "error" | "stopped";
 

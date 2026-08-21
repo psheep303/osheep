@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
 import {
+  applySkillSelection,
   buildInstallSkillArgs,
   buildUninstallSkillArgs,
   findProducedSkillDirs,
@@ -205,6 +206,59 @@ test("findProducedSkillDirs discovers skills below hidden CLI output directories
     assert.deepEqual(await findProducedSkillDirs(root), [skill]);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("applySkillSelection only moves skills between user and enabled groups", async () => {
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-skill-selection-"));
+  const paths = {
+    claude: [path.join(base, "claude-live"), path.join(base, "shared-live")],
+    codex: [path.join(base, "codex-live"), path.join(base, "shared-live")],
+  };
+  const stagingRoots = {
+    claude: path.join(base, "claude-user"),
+    codex: path.join(base, "codex-user"),
+  };
+  const writeSkill = async (root: string, name: string, marker: string) => {
+    const directory = path.join(root, name);
+    await fs.mkdir(directory, { recursive: true });
+    await fs.writeFile(path.join(directory, "SKILL.md"), `description: ${marker}\n`, "utf8");
+  };
+
+  try {
+    await writeSkill(stagingRoots.codex, "enable-me", "staged");
+    await writeSkill(paths.codex[0], "disable-me", "codex only");
+    await writeSkill(paths.claude[0], "shared-skill", "claude private");
+    await writeSkill(paths.codex[1], "shared-skill", "shared");
+
+    const snapshot = await applySkillSelection(
+      { agent: "codex", selectedNames: ["enable-me", "unknown-skill"] },
+      { paths, stagingRoots },
+    );
+
+    assert.deepEqual(
+      snapshot.enabled
+        .filter((skill) => skill.agents.includes("codex"))
+        .map((skill) => skill.name),
+      ["enable-me"],
+    );
+    assert.deepEqual(
+      snapshot.user
+        .filter((skill) => skill.agent === "codex")
+        .map((skill) => skill.name),
+      ["disable-me", "shared-skill"],
+    );
+    assert.equal(
+      await fs.readFile(path.join(paths.claude[0], "shared-skill", "SKILL.md"), "utf8"),
+      "description: claude private\n",
+    );
+    assert.ok(
+      snapshot.enabled.some(
+        (skill) => skill.name === "shared-skill" && skill.agents.includes("claude"),
+      ),
+    );
+  } finally {
+    await fs.rm(base, { recursive: true, force: true });
   }
 });
 

@@ -36,6 +36,7 @@ import {
   runWorkflow as apiRunWorkflow,
   saveWorkflowContent as apiSaveWorkflowContent,
   stopWorkflow as apiStopWorkflow,
+  applySkillSelectionApi,
   type ClaudePluginSnapshot,
   type CodexPluginSnapshot,
   callRemoteMcp,
@@ -48,6 +49,7 @@ import {
   getCodexPlugins,
   getGitDiff,
   getGitStatus,
+  getSkills,
   listAgentSessions,
   openTerminalSocket,
   openWorkflowRuntimeSocket,
@@ -58,6 +60,8 @@ import {
   resolveWorkflowApproval,
   resolveWorkflowInput,
   retryWorkflowNodeNow,
+  type SkillAgent,
+  type SkillsSnapshot,
   setAiTerminalAutoSuccess,
   type WorkflowEdge,
   type WorkflowNode,
@@ -440,6 +444,8 @@ const CONFIGURED_LOCAL_KINDS = new Set<WorkflowNodeKind>([
   "webhook-trigger",
   "codex-plugin",
   "claude-plugin",
+  "codex-skill",
+  "claude-skill",
 ]);
 const HTTP_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
 const HTTP_RESPONSE_TYPES = ["auto", "json", "text"] as const;
@@ -668,6 +674,20 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
     kind: "claude-plugin",
     icon: "claude",
     config: { pluginSelectors: [] },
+  },
+  {
+    category: "ai",
+    nameKey: "workflow.blocks.codexSkills",
+    kind: "codex-skill",
+    icon: "codex",
+    config: { skillNames: [] },
+  },
+  {
+    category: "ai",
+    nameKey: "workflow.blocks.claudeSkills",
+    kind: "claude-skill",
+    icon: "claude",
+    config: { skillNames: [] },
   },
   {
     category: "network",
@@ -5232,6 +5252,8 @@ function WorkflowNodeInspector({
   const isVariable = kind === "variable";
   const isCodexPlugin = kind === "codex-plugin";
   const isClaudePlugin = kind === "claude-plugin";
+  const isCodexSkill = kind === "codex-skill";
+  const isClaudeSkill = kind === "claude-skill";
   const isFileWrite = kind === "file-write";
   const isMcp = kind === "mcp";
   const isMarkdown = kind === "markdown";
@@ -5264,6 +5286,8 @@ function WorkflowNodeInspector({
   >(null);
   const [aiSettingsSnapshot, setAiSettingsSnapshot] = useState<AiSettingsSnapshot | null>(null);
   const [pluginSearch, setPluginSearch] = useState("");
+  const [skillsSnapshot, setSkillsSnapshot] = useState<SkillsSnapshot | null>(null);
+  const [skillSearch, setSkillSearch] = useState("");
   const [collapsedVariableRows, setCollapsedVariableRows] = useState<Set<number>>(
     () => new Set(variableConfig.map((_, index) => index)),
   );
@@ -5321,6 +5345,29 @@ function WorkflowNodeInspector({
 
   useEffect(() => {
     let active = true;
+    if (!isCodexSkill && !isClaudeSkill) {
+      setSkillsSnapshot(null);
+      setSkillSearch("");
+      return () => {
+        active = false;
+      };
+    }
+    setSkillsSnapshot(null);
+    setSkillSearch("");
+    void getSkills()
+      .then((snapshot) => {
+        if (active) setSkillsSnapshot(snapshot);
+      })
+      .catch(() => {
+        if (active) setSkillsSnapshot(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [isCodexSkill, isClaudeSkill]);
+
+  useEffect(() => {
+    let active = true;
     if (!isAgent) {
       setAiSettingsSnapshot(null);
       return () => {
@@ -5350,6 +5397,17 @@ function WorkflowNodeInspector({
           .includes(normalizedPluginSearch),
       )
     : pluginOptions;
+  const skillAgent: SkillAgent = isClaudeSkill ? "claude" : "codex";
+  const selectedSkillNames = skillNamesForNode(node);
+  const skillOptions = skillsSnapshot
+    ? skillOptionsForAgent(skillsSnapshot, skillAgent)
+    : [];
+  const normalizedSkillSearch = skillSearch.trim().toLowerCase();
+  const visibleSkillOptions = normalizedSkillSearch
+    ? skillOptions.filter((skill) =>
+        `${skill.name} ${skill.description ?? ""}`.toLowerCase().includes(normalizedSkillSearch),
+      )
+    : skillOptions;
   const retryEnabled = isAgent && (agentRetryForever(node) || agentRetryCount(node) > 0);
   const retryStrategy = agentRetryStrategyValue(node);
   const retryStrategyOptions: CompactMenuOption<RetryStrategyValue>[] = [
@@ -5700,6 +5758,60 @@ function WorkflowNodeInspector({
             {isCodexPlugin
               ? "Selected plugins are enabled; all other discovered Codex plugins are disabled."
               : "Selected installed plugins are enabled; other installed plugins are disabled."}
+          </div>
+        </div>
+      )}
+
+      {(isCodexSkill || isClaudeSkill) && (
+        <div className="workflow-inspector__section">
+          <div className="workflow-inspector__section-title">
+            {t(isCodexSkill ? "workflow.skills.codexTitle" : "workflow.skills.claudeTitle")}
+          </div>
+          <input
+            className="workflow-inspector__plugin-search"
+            type="search"
+            value={skillSearch}
+            onChange={(event) => setSkillSearch(event.target.value)}
+            placeholder={t("workflow.skills.search")}
+            aria-label={t("workflow.skills.search")}
+            disabled={!skillsSnapshot}
+          />
+          <div className="workflow-inspector__plugin-list">
+            {!skillsSnapshot && (
+              <div className="workflow-inspector__muted">{t("workflow.skills.loading")}</div>
+            )}
+            {skillsSnapshot && skillOptions.length === 0 && (
+              <div className="workflow-inspector__muted">{t("workflow.skills.empty")}</div>
+            )}
+            {skillsSnapshot && skillOptions.length > 0 && visibleSkillOptions.length === 0 && (
+              <div className="workflow-inspector__muted">{t("workflow.skills.noMatches")}</div>
+            )}
+            {visibleSkillOptions.map((skill) => {
+              const checked = selectedSkillNames.includes(skill.name);
+              return (
+                <label
+                  key={skill.name}
+                  className="workflow-inspector__check"
+                  title={skill.description || skill.name}
+                >
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={(event) => {
+                      const next = new Set(selectedSkillNames);
+                      if (event.target.checked) next.add(skill.name);
+                      else next.delete(skill.name);
+                      updateConfig({ skillNames: [...next] });
+                    }}
+                    disabled={running}
+                  />
+                  <span>{skill.name}</span>
+                </label>
+              );
+            })}
+          </div>
+          <div className="workflow-inspector__section-title">
+            {t("workflow.skills.description")}
           </div>
         </div>
       )}
@@ -6302,7 +6414,9 @@ function WorkflowNodeInspector({
       ) : (
         !isTrigger &&
         !isCodexPlugin &&
-        !isClaudePlugin && (
+        !isClaudePlugin &&
+        !isCodexSkill &&
+        !isClaudeSkill && (
           <label className="workflow-inspector__field">
             <span>{inputLabelForKind(kind)}</span>
             <TemplateTextarea
@@ -7118,6 +7232,24 @@ async function executeLocalNode(
     };
   }
 
+  if (kind === "codex-skill" || kind === "claude-skill") {
+    const selected = skillNamesForNode(node);
+    const agent = kind === "codex-skill" ? "codex" : "claude";
+    const snapshot = await applySkillSelectionApi(selected, agent);
+    const enabled = snapshot.enabled
+      .filter((skill) => skill.agents.includes(agent))
+      .map((skill) => skill.name);
+    return {
+      output: {
+        type: kind,
+        status: "success",
+        selected,
+        enabled,
+        text: `${agent === "codex" ? "Codex" : "Claude"} skills updated: ${enabled.length} enabled.`,
+      },
+    };
+  }
+
   if (kind === "markdown") {
     const markdown = resolveBlockTemplate(node.prompt, record);
     return {
@@ -7617,7 +7749,9 @@ function supportsFailover(kind: WorkflowNodeKind): boolean {
     kind === "file-write" ||
     kind === "mcp" ||
     kind === "codex-plugin" ||
-    kind === "claude-plugin"
+    kind === "claude-plugin" ||
+    kind === "codex-skill" ||
+    kind === "claude-skill"
   );
 }
 
@@ -8733,6 +8867,7 @@ function blockEyebrow(kind: WorkflowNodeKind): string {
   if (kind === "markdown" || kind === "set" || kind === "merge" || kind === "json") return "Data";
   if (kind === "mcp") return "MCP";
   if (kind === "codex-plugin" || kind === "claude-plugin") return "Plugins";
+  if (kind === "codex-skill" || kind === "claude-skill") return "Skills";
   return "AI";
 }
 
@@ -8759,6 +8894,7 @@ function inputLabelForKind(kind: WorkflowNodeKind): string {
   if (kind === "markdown") return "Markdown";
   if (kind === "mcp") return "MCP";
   if (kind === "codex-plugin" || kind === "claude-plugin") return "Plugins";
+  if (kind === "codex-skill" || kind === "claude-skill") return "Skills";
   return "Prompt";
 }
 
@@ -8790,7 +8926,9 @@ function nodeKind(node: WorkflowNode): WorkflowNodeKind {
     node.kind === "markdown" ||
     node.kind === "mcp" ||
     node.kind === "codex-plugin" ||
-    node.kind === "claude-plugin"
+    node.kind === "claude-plugin" ||
+    node.kind === "codex-skill" ||
+    node.kind === "claude-skill"
   ) {
     return node.kind;
   }
@@ -8864,6 +9002,8 @@ function nodeIconName(node: WorkflowNode): WorkflowIconName {
   if (kind === "mcp") return "mcp";
   if (kind === "codex-plugin") return "codex";
   if (kind === "claude-plugin") return "claude";
+  if (kind === "codex-skill") return "codex";
+  if (kind === "claude-skill") return "claude";
   return node.providerKind === "claude-cli" ? "claude" : "codex";
 }
 
@@ -9316,6 +9456,29 @@ function runDetailsSnapshot(node: WorkflowNode): WorkflowRunDetailSnapshot | nul
     retryAttempt: typeof raw.retryAttempt === "number" ? raw.retryAttempt : undefined,
     retryReason: typeof raw.retryReason === "string" ? raw.retryReason : undefined,
   };
+}
+
+function skillNamesForNode(node: WorkflowNode): string[] {
+  const value = node.config?.skillNames;
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
+}
+
+function skillOptionsForAgent(snapshot: SkillsSnapshot, agent: SkillAgent) {
+  const byName = new Map<string, { name: string; description?: string }>();
+  for (const skill of snapshot.user) {
+    if (skill.agent === agent) byName.set(skill.name, skill);
+  }
+  for (const skill of snapshot.enabled) {
+    if (!skill.agents.includes(agent)) continue;
+    const existing = byName.get(skill.name);
+    byName.set(skill.name, {
+      name: skill.name,
+      description: skill.description ?? existing?.description,
+    });
+  }
+  return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
 function isRemoteMcpTool(value: unknown): value is RemoteMcpTool {

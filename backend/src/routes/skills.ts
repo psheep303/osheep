@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { errors } from "../errors.js";
 import {
+  applySkillSelection,
   deleteSkill,
   disableSkill,
   enableSkill,
@@ -37,6 +38,15 @@ function stringField(body: unknown, field: string): string | undefined {
       ? (body as Record<string, unknown>)[field]
       : undefined;
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function stringArrayField(body: unknown, field: string): string[] {
+  const value =
+    body && typeof body === "object" && !Array.isArray(body)
+      ? (body as Record<string, unknown>)[field]
+      : undefined;
+  if (!Array.isArray(value)) throw errors.invalidQuery(`${field} must be an array`);
+  return value.filter((item): item is string => typeof item === "string");
 }
 
 export async function registerSkillsRoutes(app: FastifyInstance) {
@@ -84,6 +94,13 @@ export async function registerSkillsRoutes(app: FastifyInstance) {
     if (!name) throw errors.invalidQuery("name is required");
     return { ok: true, snapshot: await disableSkill({ name, agent: agentField(req.body) }) };
   });
+  app.post<{ Body: unknown }>("/api/skills/apply", async (req) => ({
+    ok: true,
+    snapshot: await applySkillSelection({
+      agent: agentField(req.body),
+      selectedNames: stringArrayField(req.body, "names"),
+    }),
+  }));
   app.post<{ Body: unknown }>("/api/skills/delete", async (req) => {
     const name = stringField(req.body, "name");
     if (!name) throw errors.invalidQuery("name is required");

@@ -73,6 +73,10 @@ test("every workflow kind has a standard empty output", async () => {
     ["file-write", "file-write"],
     ["markdown", "markdown"],
     ["mcp", "mcp"],
+    ["codex-plugin", "codex-plugin"],
+    ["claude-plugin", "claude-plugin"],
+    ["codex-skill", "codex-skill"],
+    ["claude-skill", "claude-skill"],
   ]);
 
   for (const [kind, type] of expectedTypes) {
