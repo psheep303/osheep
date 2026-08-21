@@ -3,6 +3,7 @@ import websocket from "@fastify/websocket";
 import Fastify from "fastify";
 import { config } from "./config.js";
 import { ApiError } from "./errors.js";
+import { registerAdapterRoutes } from "./routes/adapters.js";
 import { registerAgentSessionRoutes } from "./routes/agent-sessions.js";
 import { registerAgentRoutes } from "./routes/agents.js";
 import { registerAiRoutes } from "./routes/ai.js";
@@ -89,6 +90,7 @@ export async function buildServer() {
   await registerClaudePluginRoutes(app);
   await registerCodexPluginRoutes(app);
   await registerAgentSessionRoutes(app);
+  await registerAdapterRoutes(app);
   await registerSkillsRoutes(app);
   await registerTemplateRoutes(app);
 

@@ -49,6 +49,8 @@ export interface WorkflowNode {
   kind: WorkflowNodeKind;
   title: string;
   providerKind: WorkflowProviderKind;
+  /** Stable OSheep adapter identifier; providerKind remains for old workflows. */
+  adapterId?: "claude-code" | "codex" | string;
   model: string;
   prompt: string;
   x: number;
@@ -324,6 +326,7 @@ function sanitizeNode(raw: unknown, index: number): WorkflowNode | null {
   if (!raw || typeof raw !== "object") return null;
   const r = raw as Partial<WorkflowNode>;
   const id = typeof r.id === "string" && NODE_ID_RE.test(r.id) ? r.id : generateWorkflowNodeId();
+  const providerKind = asProviderKind(r.providerKind);
   const node: WorkflowNode = {
     id,
     blockId: asPositiveInteger(r.blockId) ?? index + 1,
@@ -334,7 +337,13 @@ function sanitizeNode(raw: unknown, index: number): WorkflowNode | null {
         : asNodeKind(r.kind) === "trigger"
           ? "Workflow run"
           : `Block ${index + 1}`,
-    providerKind: asProviderKind(r.providerKind),
+    providerKind,
+    adapterId:
+      typeof r.adapterId === "string" && r.adapterId.trim()
+        ? r.adapterId.trim()
+        : providerKind === "claude-cli"
+          ? "claude-code"
+          : "codex",
     model: typeof r.model === "string" ? r.model : "default",
     prompt: typeof r.prompt === "string" ? r.prompt : "",
     x: asFiniteNumber(r.x, 80 + index * 340),

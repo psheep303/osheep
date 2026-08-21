@@ -1231,6 +1231,26 @@ export async function addClaudeMarketplaceApi(source: string): Promise<ClaudePlu
 
 // Workflows
 
+export type AdapterConfigField = {
+  key: string;
+  label: string;
+  type: "text" | "select" | "number" | "boolean";
+  required?: boolean;
+  defaultValue?: unknown;
+  options?: Array<{ value: string; label: string }>;
+};
+export interface AdapterMetadata {
+  id: string;
+  name: string;
+  kind: "agent" | "harness";
+  capabilities: Record<string, boolean>;
+  configSchema: { fields: AdapterConfigField[] };
+}
+export async function getAdapters(): Promise<AdapterMetadata[]> {
+  const result = await http.get<{ adapters: AdapterMetadata[] }>("/api/adapters");
+  return result.adapters;
+}
+
 export type WorkflowProviderKind = "codex-cli" | "claude-cli";
 export type WorkflowNodeKind =
   | "agent"
@@ -1270,6 +1290,7 @@ export interface WorkflowNode {
   kind?: WorkflowNodeKind;
   title: string;
   providerKind: WorkflowProviderKind;
+  adapterId?: string;
   model: string;
   prompt: string;
   x: number;
