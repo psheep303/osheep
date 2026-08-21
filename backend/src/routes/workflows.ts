@@ -71,13 +71,10 @@ export async function registerWorkflowRoutes(app: FastifyInstance) {
     const range = req.query.range === "7d" || req.query.range === "all" ? req.query.range : "30d";
     const parsedOffset = Number(req.query.timezoneOffset);
     const timezoneOffsetMinutes = Number.isFinite(parsedOffset) ? parsedOffset : 0;
-    const [projects, prices] = await Promise.all([
-      listOpenedProjects(),
-      readStoredModelPrices().catch(() => []),
-    ]);
+    const projects = await listOpenedProjects();
     const usage = await getAllProjectsWorkflowUsage(
       projects.map((project) => project.path),
-      { range, timezoneOffsetMinutes, prices },
+      { range, timezoneOffsetMinutes },
     );
     return sendWithEtag(req, reply, usage);
   });
@@ -108,11 +105,9 @@ export async function registerWorkflowRoutes(app: FastifyInstance) {
     const range = req.query.range === "7d" || req.query.range === "all" ? req.query.range : "30d";
     const parsedOffset = Number(req.query.timezoneOffset);
     const timezoneOffsetMinutes = Number.isFinite(parsedOffset) ? parsedOffset : 0;
-    const prices = await readStoredModelPrices().catch(() => []);
     const usage = await getWorkflowUsageStatistics(ws.path, {
       range,
       timezoneOffsetMinutes,
-      prices,
     });
     return sendWithEtag(req, reply, usage);
   });

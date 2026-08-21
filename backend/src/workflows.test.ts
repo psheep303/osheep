@@ -8,12 +8,14 @@ import { config } from "./config.js";
 import { registerWorkflowRoutes } from "./routes/workflows.js";
 import {
   createWorkflow,
+  deleteWorkflow,
   findWorkflowByTemplateBinding,
   getAllProjectsWorkflowUsage,
   getWorkflow,
   getWorkflowUsageStatistics,
   listWorkflowIdsByTemplateBinding,
   listWorkflows,
+  recordWorkflowUsageSnapshot,
   saveWorkflow,
   updateWorkflow,
 } from "./workflows.js";
@@ -23,10 +25,12 @@ test("all-project workflow usage sums opened project totals without exposing det
   const sandbox = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-all-project-usage-"));
   const firstRoot = path.join(sandbox, "first");
   const secondRoot = path.join(sandbox, "second");
+  const previousWorkflowUsageFile = config.workflowUsageFile;
   try {
+    config.workflowUsageFile = path.join(sandbox, "workflow-usage.json");
     await fs.mkdir(firstRoot);
     await fs.mkdir(secondRoot);
-    await createWorkflow(firstRoot, {
+    const first = await createWorkflow(firstRoot, {
       title: "First workflow",
       runs: [
         {
@@ -35,10 +39,22 @@ test("all-project workflow usage sums opened project totals without exposing det
           startedAt: 100,
           nodeIds: [],
           stats: { totalTokens: 120, inputTokens: 80, outputTokens: 40, cost: 0.2 },
+          trace: [
+            {
+              nodeId: "node_first",
+              title: "First",
+              kind: "agent",
+              model: "model-a",
+              status: "success",
+              startedAt: 100,
+              tokens: { total: 120, input: 80, output: 40 },
+              cost: 0.2,
+            },
+          ],
         },
       ],
     });
-    await createWorkflow(secondRoot, {
+    const second = await createWorkflow(secondRoot, {
       title: "Second workflow",
       runs: [
         {
@@ -47,9 +63,30 @@ test("all-project workflow usage sums opened project totals without exposing det
           startedAt: 110,
           nodeIds: [],
           stats: { totalTokens: 300, inputTokens: 200, outputTokens: 100, cost: 0.7 },
+          trace: [
+            {
+              nodeId: "node_second",
+              title: "Second",
+              kind: "agent",
+              model: "model-b",
+              status: "success",
+              startedAt: 110,
+              tokens: { total: 300, input: 200, output: 100 },
+              cost: 0.7,
+            },
+          ],
         },
       ],
     });
+
+    const beforeRecording = await getAllProjectsWorkflowUsage([firstRoot, secondRoot], {
+      range: "all",
+      now: 200,
+    });
+    assert.equal(beforeRecording.totals.totalTokens, 0);
+
+    await recordWorkflowUsageSnapshot(firstRoot, first, first.runs[0]!);
+    await recordWorkflowUsageSnapshot(secondRoot, second, second.runs[0]!);
 
     const usage = await getAllProjectsWorkflowUsage([firstRoot, secondRoot], {
       range: "all",
@@ -62,6 +99,7 @@ test("all-project workflow usage sums opened project totals without exposing det
     assert.equal("workflows" in usage, false);
     assert.equal("recentRuns" in usage, false);
   } finally {
+    config.workflowUsageFile = previousWorkflowUsageFile;
     await fs.rm(sandbox, { recursive: true, force: true });
   }
 });
@@ -69,8 +107,10 @@ test("all-project workflow usage sums opened project totals without exposing det
 test("workflow usage statistics aggregate runs by date, workflow, and model", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-workflow-usage-"));
   const now = Date.UTC(2026, 7, 20, 12);
+  const previousWorkflowUsageFile = config.workflowUsageFile;
 
   try {
+    config.workflowUsageFile = path.join(root, "workflow-usage.json");
     const first = await createWorkflow(root, { title: "Daily report" });
     const second = await createWorkflow(root, { title: "Release notes" });
     const buildRun = (startedAt: number, model: string, cost: number) => ({
@@ -101,17 +141,25 @@ test("workflow usage statistics aggregate runs by date, workflow, and model", as
         },
       ],
     });
-    await saveWorkflow(root, {
+    const savedFirst = await saveWorkflow(root, {
       ...first,
       runs: [
         buildRun(Date.UTC(2026, 7, 19, 3), "gpt-5", 0.25),
         { ...buildRun(Date.UTC(2026, 6, 1, 3), "old-model", 9), id: "run_old" },
       ],
     });
-    await saveWorkflow(root, {
+    const savedSecond = await saveWorkflow(root, {
       ...second,
       runs: [buildRun(Date.UTC(2026, 7, 20, 3), "gpt-5", 0.5)],
     });
+
+    assert.equal(
+      (await getWorkflowUsageStatistics(root, { range: "all", now })).totals.totalTokens,
+      0,
+    );
+    await recordWorkflowUsageSnapshot(root, savedFirst, savedFirst.runs[0]!);
+    await recordWorkflowUsageSnapshot(root, savedSecond, savedSecond.runs[0]!);
+    await deleteWorkflow(root, savedFirst.id);
 
     const usage = await getWorkflowUsageStatistics(root, {
       range: "7d",
@@ -141,16 +189,19 @@ test("workflow usage statistics aggregate runs by date, workflow, and model", as
     assert.equal(usage.models[0]?.tokens, 280);
     assert.equal(usage.recentRuns[0]?.workflowTitle, "Release notes");
   } finally {
+    config.workflowUsageFile = previousWorkflowUsageFile;
     await fs.rm(root, { recursive: true, force: true });
   }
 });
 
-test("workflow usage statistics price legacy traces with their recorded multiplier", async () => {
+test("workflow usage snapshots are monotonic and idempotent", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-workflow-usage-price-"));
+  const previousWorkflowUsageFile = config.workflowUsageFile;
   try {
+    config.workflowUsageFile = path.join(root, "workflow-usage.json");
     const workflow = await createWorkflow(root, { title: "Legacy usage" });
     const node = workflow.nodes[0]!;
-    await saveWorkflow(root, {
+    const saved = await saveWorkflow(root, {
       ...workflow,
       runs: [
         {
@@ -167,30 +218,25 @@ test("workflow usage statistics price legacy traces with their recorded multipli
               status: "success",
               startedAt: 100,
               tokens: { input: 1_000_000, output: 0, total: 1_000_000 },
-              billingMultiplier: 2,
+              cost: 4,
             },
           ],
         },
       ],
     });
+    await recordWorkflowUsageSnapshot(root, saved, saved.runs[0]!);
+    await recordWorkflowUsageSnapshot(root, saved, saved.runs[0]!);
+    const lowerSnapshot = structuredClone(saved);
+    lowerSnapshot.runs[0]!.trace![0]!.tokens = { total: 500_000, input: 500_000 };
+    lowerSnapshot.runs[0]!.trace![0]!.cost = 2;
+    await recordWorkflowUsageSnapshot(root, lowerSnapshot, lowerSnapshot.runs[0]!);
 
-    const usage = await getWorkflowUsageStatistics(root, {
-      range: "all",
-      now: 200,
-      prices: [
-        {
-          model: "legacy-model",
-          provider: "test",
-          billingMode: "dynamic",
-          inputCostPerMillion: 2,
-          outputCostPerMillion: 0,
-        },
-      ],
-    });
-
+    const usage = await getWorkflowUsageStatistics(root, { range: "all", now: 200 });
+    assert.equal(usage.totals.totalTokens, 1_000_000);
     assert.equal(usage.totals.cost, 4);
     assert.equal(usage.models[0]?.cost, 4);
   } finally {
+    config.workflowUsageFile = previousWorkflowUsageFile;
     await fs.rm(root, { recursive: true, force: true });
   }
 });
@@ -202,11 +248,13 @@ test("workflow GET routes support ETag revalidation", async () => {
   const startedAt = Date.now();
   const previousWorkspacesRoot = config.workspacesRoot;
   const previousOpenedProjectsFile = config.openedProjectsFile;
+  const previousWorkflowUsageFile = config.workflowUsageFile;
   const app = Fastify();
 
   try {
     config.workspacesRoot = workspacesRoot;
     config.openedProjectsFile = path.join(workspacesRoot, "opened-projects.json");
+    config.workflowUsageFile = path.join(workspacesRoot, "workflow-usage.json");
     await fs.mkdir(workspaceRoot);
     await fs.mkdir(unopenedWorkspaceRoot);
     const workflow = await createWorkflow(workspaceRoot, {
@@ -218,6 +266,17 @@ test("workflow GET routes support ETag revalidation", async () => {
           startedAt,
           nodeIds: [],
           stats: { totalTokens: 100, cost: 0.1 },
+          trace: [
+            {
+              nodeId: "node_opened",
+              title: "Agent",
+              kind: "agent",
+              status: "success",
+              startedAt,
+              tokens: { total: 100 },
+              cost: 0.1,
+            },
+          ],
         },
       ],
     });
@@ -234,6 +293,7 @@ test("workflow GET routes support ETag revalidation", async () => {
       ],
     });
     await markWorkspaceOpened("demo");
+    await recordWorkflowUsageSnapshot(workspaceRoot, workflow, workflow.runs[0]!);
     await registerWorkflowRoutes(app);
 
     for (const url of [
@@ -267,6 +327,7 @@ test("workflow GET routes support ETag revalidation", async () => {
   } finally {
     config.workspacesRoot = previousWorkspacesRoot;
     config.openedProjectsFile = previousOpenedProjectsFile;
+    config.workflowUsageFile = previousWorkflowUsageFile;
     await app.close();
     await fs.rm(workspacesRoot, { recursive: true, force: true });
   }
@@ -276,10 +337,12 @@ test("workflow listing recovers a run left active by a terminated backend", asyn
   const workspacesRoot = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-workflow-resume-"));
   const workspaceRoot = path.join(workspacesRoot, "demo");
   const previousWorkspacesRoot = config.workspacesRoot;
+  const previousWorkflowUsageFile = config.workflowUsageFile;
   const app = Fastify();
 
   try {
     config.workspacesRoot = workspacesRoot;
+    config.workflowUsageFile = path.join(workspacesRoot, "workflow-usage.json");
     await fs.mkdir(workspaceRoot);
     const created = await createWorkflow(workspaceRoot, { title: "Interrupted workflow" });
     const [completed, active] = created.nodes;
@@ -338,8 +401,13 @@ test("workflow listing recovers a run left active by a terminated backend", asyn
     assert.equal(recovered.nodes[0]?.status, "success");
     assert.equal(recovered.nodes[1]?.status, "idle");
     assert.equal(recovered.nodes[1]?.rawOutput, "");
+    assert.equal(
+      (await getWorkflowUsageStatistics(workspaceRoot, { range: "all" })).totals.totalTokens,
+      0,
+    );
   } finally {
     config.workspacesRoot = previousWorkspacesRoot;
+    config.workflowUsageFile = previousWorkflowUsageFile;
     await app.close();
     await fs.rm(workspacesRoot, { recursive: true, force: true });
   }
@@ -349,10 +417,12 @@ test("workflow pause resumes the same run while stop clears the checkpoint", asy
   const workspacesRoot = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-workflow-pause-"));
   const workspaceRoot = path.join(workspacesRoot, "demo");
   const previousWorkspacesRoot = config.workspacesRoot;
+  const previousWorkflowUsageFile = config.workflowUsageFile;
   const app = Fastify();
 
   try {
     config.workspacesRoot = workspacesRoot;
+    config.workflowUsageFile = path.join(workspacesRoot, "workflow-usage.json");
     await fs.mkdir(workspaceRoot);
     const created = await createWorkflow(workspaceRoot, { title: "Pause workflow" });
     const [trigger, second] = created.nodes;
@@ -415,6 +485,7 @@ test("workflow pause resumes the same run while stop clears the checkpoint", asy
     await waitForWorkflowRun(workspaceRoot, created.id, "stopped");
   } finally {
     config.workspacesRoot = previousWorkspacesRoot;
+    config.workflowUsageFile = previousWorkflowUsageFile;
     await app.close();
     await fs.rm(workspacesRoot, { recursive: true, force: true });
   }

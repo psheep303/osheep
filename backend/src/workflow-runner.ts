@@ -44,6 +44,7 @@ import { callRemoteMcp, discoverRemoteMcp, type RemoteMcpTool } from "./remote-m
 import { publishWorkflowRuntime } from "./workflow-events.js";
 import {
   getWorkflow,
+  recordWorkflowUsageSnapshot,
   updateWorkflow,
   type WorkflowEdge,
   type WorkflowNode,
@@ -840,6 +841,7 @@ async function runWorkflowInBackground(
     }
     const failedRun = failedRecord.runs.find((item) => item.id === run.id);
     if (failedRun) {
+      await saveWorkflowUsageSnapshot(workspace.path, failedRecord, failedRun);
       publishWorkflowRuntime(workspace.path, workflowId, {
         type: "run",
         updatedAt: failedRecord.updatedAt,
@@ -2330,6 +2332,7 @@ async function patchWorkflowRun(
   }));
   const run = record.runs.find((item) => item.id === runId);
   if (run) {
+    await saveWorkflowUsageSnapshot(workspaceRoot, record, run);
     publishWorkflowRuntime(workspaceRoot, workflowId, {
       type: "run",
       updatedAt: record.updatedAt,
@@ -2550,6 +2553,7 @@ async function finishRun(
   );
   const run = record.runs.find((item) => item.id === runId);
   if (run) {
+    await saveWorkflowUsageSnapshot(workspaceRoot, record, run);
     publishWorkflowRuntime(workspaceRoot, workflowId, {
       type: "run",
       updatedAt: record.updatedAt,
@@ -2557,6 +2561,14 @@ async function finishRun(
     });
   }
   return record;
+}
+
+async function saveWorkflowUsageSnapshot(
+  workspaceRoot: string,
+  workflow: WorkflowRecord,
+  run: WorkflowRun,
+): Promise<void> {
+  await recordWorkflowUsageSnapshot(workspaceRoot, workflow, run).catch(() => undefined);
 }
 
 function finishRunRecord(

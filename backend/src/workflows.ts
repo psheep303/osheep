@@ -1,13 +1,14 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { config } from "./config.js";
 import { errors } from "./errors.js";
-import { calculateModelCost, type ModelPriceRecord } from "./model-pricing.js";
 
 const WORKFLOW_ID_RE = /^wf_[a-z0-9]{8,32}$/;
 const NODE_ID_RE = /^node_[a-z0-9]{6,32}$/;
 const EDGE_ID_RE = /^edge_[a-z0-9]{6,32}$/;
 const writeLocks = new Map<string, Promise<void>>();
 const updateLocks = new Map<string, Promise<void>>();
+let workflowUsageWrite = Promise.resolve();
 
 export type WorkflowProviderKind = "codex-cli" | "claude-cli";
 export type WorkflowNodeKind =
@@ -194,6 +195,31 @@ export interface AllProjectsWorkflowUsage {
   range: WorkflowUsageRange;
   projectCount: number;
   totals: WorkflowUsageTotals;
+}
+
+interface StoredWorkflowUsageEntry {
+  key: string;
+  projectPath: string;
+  workflowId: string;
+  workflowTitle: string;
+  runId: string;
+  runStatus: WorkflowRunStatus;
+  runStartedAt: number;
+  runCompletedAt?: number;
+  traceStartedAt: number;
+  model?: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  totalTokens: number;
+  cost: number;
+}
+
+interface StoredWorkflowUsage {
+  version: 1;
+  updatedAt: number;
+  entries: StoredWorkflowUsageEntry[];
 }
 
 function workflowDir(workspaceRoot: string): string {
@@ -519,7 +545,6 @@ export async function getWorkflowUsageStatistics(
     range?: WorkflowUsageRange;
     timezoneOffsetMinutes?: number;
     now?: number;
-    prices?: ModelPriceRecord[];
   } = {},
 ): Promise<WorkflowUsageStatistics> {
   const range = options.range ?? "30d";
@@ -528,13 +553,14 @@ export async function getWorkflowUsageStatistics(
     ? Math.max(-840, Math.min(840, options.timezoneOffsetMinutes!))
     : 0;
   const startAt = usageRangeStart(range, now, timezoneOffsetMinutes);
-  const summaries = await listWorkflows(workspaceRoot);
-  const records = await Promise.all(
-    summaries.map((summary) => getWorkflow(workspaceRoot, summary.id).catch(() => null)),
-  );
-  const generatedAt = records.reduce(
-    (latest, record) => Math.max(latest, record?.updatedAt ?? 0),
-    0,
+  const projectPath = await fs.realpath(workspaceRoot).catch(() => path.resolve(workspaceRoot));
+  await workflowUsageWrite.catch(() => undefined);
+  const stored = await readStoredWorkflowUsage();
+  const entries = stored.entries.filter(
+    (entry) =>
+      openedProjectKey(entry.projectPath) === openedProjectKey(projectPath) &&
+      entry.runStartedAt >= startAt &&
+      entry.runStartedAt <= now,
   );
   const totals: WorkflowUsageStatistics["totals"] = {
     runs: 0,
@@ -545,99 +571,118 @@ export async function getWorkflowUsageStatistics(
     totalTokens: 0,
     cost: 0,
   };
-  const daily = new Map<string, WorkflowUsageStatistics["daily"][number]>();
-  const workflows = new Map<string, WorkflowUsageStatistics["workflows"][number]>();
+  const runIds = new Set<string>();
+  const daily = new Map<
+    string,
+    WorkflowUsageStatistics["daily"][number] & { runIds: Set<string> }
+  >();
+  const workflows = new Map<
+    string,
+    WorkflowUsageStatistics["workflows"][number] & { runIds: Set<string> }
+  >();
   const models = new Map<
     string,
     WorkflowUsageStatistics["models"][number] & { runIds: Set<string> }
   >();
-  const recentRuns: WorkflowUsageStatistics["recentRuns"] = [];
+  const recentRuns = new Map<string, WorkflowUsageStatistics["recentRuns"][number]>();
 
-  for (const record of records) {
-    if (!record) continue;
-    for (const run of record.runs) {
-      if (run.startedAt < startAt || run.startedAt > now) continue;
-      const usage = workflowRunUsage(run, record, options.prices ?? []);
-      totals.runs += 1;
-      totals.inputTokens += usage.inputTokens;
-      totals.outputTokens += usage.outputTokens;
-      totals.cacheReadTokens += usage.cacheReadTokens;
-      totals.cacheWriteTokens += usage.cacheWriteTokens;
-      totals.totalTokens += usage.totalTokens;
-      totals.cost += usage.cost;
+  for (const entry of entries) {
+    const scopedRunId = `${entry.workflowId}:${entry.runId}`;
+    runIds.add(scopedRunId);
+    totals.inputTokens += entry.inputTokens;
+    totals.outputTokens += entry.outputTokens;
+    totals.cacheReadTokens += entry.cacheReadTokens;
+    totals.cacheWriteTokens += entry.cacheWriteTokens;
+    totals.totalTokens += entry.totalTokens;
+    totals.cost += entry.cost;
 
-      const date = usageDateKey(run.startedAt, timezoneOffsetMinutes);
-      const day = daily.get(date) ?? { date, runs: 0, tokens: 0, cost: 0 };
-      day.runs += 1;
-      day.tokens += usage.totalTokens;
-      day.cost += usage.cost;
-      daily.set(date, day);
+    const date = usageDateKey(entry.runStartedAt, timezoneOffsetMinutes);
+    const day = daily.get(date) ?? {
+      date,
+      runs: 0,
+      tokens: 0,
+      cost: 0,
+      runIds: new Set<string>(),
+    };
+    day.runIds.add(scopedRunId);
+    day.runs = day.runIds.size;
+    day.tokens += entry.totalTokens;
+    day.cost += entry.cost;
+    daily.set(date, day);
 
-      const workflow = workflows.get(record.id) ?? {
-        workflowId: record.id,
-        title: record.title,
+    const workflow = workflows.get(entry.workflowId) ?? {
+      workflowId: entry.workflowId,
+      title: entry.workflowTitle,
+      runs: 0,
+      tokens: 0,
+      cost: 0,
+      runIds: new Set<string>(),
+    };
+    workflow.title = entry.workflowTitle;
+    workflow.runIds.add(scopedRunId);
+    workflow.runs = workflow.runIds.size;
+    workflow.tokens += entry.totalTokens;
+    workflow.cost += entry.cost;
+    workflows.set(entry.workflowId, workflow);
+
+    if (entry.model) {
+      const model = models.get(entry.model) ?? {
+        model: entry.model,
         runs: 0,
         tokens: 0,
         cost: 0,
+        runIds: new Set<string>(),
       };
-      workflow.runs += 1;
-      workflow.tokens += usage.totalTokens;
-      workflow.cost += usage.cost;
-      workflows.set(record.id, workflow);
-
-      for (const trace of run.trace ?? []) {
-        const modelName = trace.model?.trim();
-        if (!modelName) continue;
-        const model = models.get(modelName) ?? {
-          model: modelName,
-          runs: 0,
-          tokens: 0,
-          cost: 0,
-          runIds: new Set<string>(),
-        };
-        const scopedRunId = `${record.id}:${run.id}`;
-        if (!model.runIds.has(scopedRunId)) {
-          model.runIds.add(scopedRunId);
-          model.runs += 1;
-        }
-        model.tokens += traceTotalTokens(trace);
-        model.cost += workflowTraceCost(trace, record, options.prices ?? []);
-        models.set(modelName, model);
-      }
-
-      recentRuns.push({
-        workflowId: record.id,
-        workflowTitle: record.title,
-        runId: run.id,
-        status: run.status,
-        startedAt: run.startedAt,
-        completedAt: run.completedAt,
-        tokens: usage.totalTokens,
-        cost: usage.cost,
-      });
+      model.runIds.add(scopedRunId);
+      model.runs = model.runIds.size;
+      model.tokens += entry.totalTokens;
+      model.cost += entry.cost;
+      models.set(entry.model, model);
     }
+
+    const recent = recentRuns.get(scopedRunId) ?? {
+      workflowId: entry.workflowId,
+      workflowTitle: entry.workflowTitle,
+      runId: entry.runId,
+      status: entry.runStatus,
+      startedAt: entry.runStartedAt,
+      completedAt: entry.runCompletedAt,
+      tokens: 0,
+      cost: 0,
+    };
+    recent.workflowTitle = entry.workflowTitle;
+    recent.status = entry.runStatus;
+    recent.completedAt = entry.runCompletedAt;
+    recent.tokens += entry.totalTokens;
+    recent.cost += entry.cost;
+    recentRuns.set(scopedRunId, recent);
   }
+  totals.runs = runIds.size;
 
   if (range !== "all") {
     const dayCount = range === "7d" ? 7 : 30;
     for (let index = 0; index < dayCount; index += 1) {
       const date = usageDateKey(startAt + index * 86_400_000, timezoneOffsetMinutes);
-      if (!daily.has(date)) daily.set(date, { date, runs: 0, tokens: 0, cost: 0 });
+      if (!daily.has(date)) {
+        daily.set(date, { date, runs: 0, tokens: 0, cost: 0, runIds: new Set<string>() });
+      }
     }
   }
 
   return {
-    generatedAt,
+    generatedAt: stored.updatedAt,
     range,
     totals,
-    daily: [...daily.values()].sort((a, b) => a.date.localeCompare(b.date)),
-    workflows: [...workflows.values()].sort(
-      (a, b) => b.cost - a.cost || b.tokens - a.tokens || a.title.localeCompare(b.title),
-    ),
+    daily: [...daily.values()]
+      .map(({ runIds: _runIds, ...day }) => day)
+      .sort((a, b) => a.date.localeCompare(b.date)),
+    workflows: [...workflows.values()]
+      .map(({ runIds: _runIds, ...workflow }) => workflow)
+      .sort((a, b) => b.cost - a.cost || b.tokens - a.tokens || a.title.localeCompare(b.title)),
     models: [...models.values()]
       .map(({ runIds: _runIds, ...model }) => model)
       .sort((a, b) => b.cost - a.cost || b.tokens - a.tokens || a.model.localeCompare(b.model)),
-    recentRuns: recentRuns.sort((a, b) => b.startedAt - a.startedAt).slice(0, 20),
+    recentRuns: [...recentRuns.values()].sort((a, b) => b.startedAt - a.startedAt).slice(0, 20),
   };
 }
 
@@ -647,7 +692,6 @@ export async function getAllProjectsWorkflowUsage(
     range?: WorkflowUsageRange;
     timezoneOffsetMinutes?: number;
     now?: number;
-    prices?: ModelPriceRecord[];
   } = {},
 ): Promise<AllProjectsWorkflowUsage> {
   const statistics = await Promise.all(
@@ -681,6 +725,51 @@ export async function getAllProjectsWorkflowUsage(
   };
 }
 
+export async function recordWorkflowUsageSnapshot(
+  workspaceRoot: string,
+  workflow: WorkflowRecord,
+  run: WorkflowRun,
+): Promise<void> {
+  const usageFile = config.workflowUsageFile;
+  const projectPath = await fs.realpath(workspaceRoot).catch(() => path.resolve(workspaceRoot));
+  const candidates = (run.trace ?? []).map((trace) =>
+    storedUsageEntry(projectPath, workflow, run, trace),
+  );
+  if (candidates.length === 0) return;
+
+  const previous = workflowUsageWrite;
+  const current = previous
+    .catch(() => undefined)
+    .then(async () => {
+      const stored = await readStoredWorkflowUsage(usageFile);
+      const entries = new Map(stored.entries.map((entry) => [entry.key, entry]));
+      for (const candidate of candidates) {
+        const existing = entries.get(candidate.key);
+        entries.set(candidate.key, existing ? mergeUsageEntry(existing, candidate) : candidate);
+      }
+      for (const [key, entry] of entries) {
+        if (
+          openedProjectKey(entry.projectPath) === openedProjectKey(projectPath) &&
+          entry.workflowId === workflow.id &&
+          entry.runId === run.id
+        ) {
+          entries.set(key, {
+            ...entry,
+            workflowTitle: workflow.title,
+            runStatus: run.status,
+            runCompletedAt: run.completedAt,
+          });
+        }
+      }
+      await writeStoredWorkflowUsage(
+        { version: 1, updatedAt: Date.now(), entries: [...entries.values()] },
+        usageFile,
+      );
+    });
+  workflowUsageWrite = current;
+  await current;
+}
+
 function usageRangeStart(
   range: WorkflowUsageRange,
   now: number,
@@ -710,51 +799,140 @@ function traceTotalTokens(trace: WorkflowRunTrace): number {
   );
 }
 
-function workflowTraceCost(
-  trace: WorkflowRunTrace,
+function storedUsageEntry(
+  projectPath: string,
   workflow: WorkflowRecord,
-  prices: ModelPriceRecord[],
-): number {
-  const storedCost = finiteUsageNumber(trace.cost);
-  if (storedCost > 0 || trace.cost === 0) return storedCost;
-  const model = trace.model?.trim();
-  if (!model) return 0;
-  const node = workflow.nodes.find((item) => item.id === trace.nodeId);
-  const calculated = calculateModelCost(model, trace.tokens, prices, {
-    inputIncludesCache: node?.providerKind !== "claude-cli",
-  });
-  const multiplier = finiteUsageNumber(trace.billingMultiplier) || 1;
-  return finiteUsageNumber(calculated) * multiplier;
+  run: WorkflowRun,
+  trace: WorkflowRunTrace,
+): StoredWorkflowUsageEntry {
+  return {
+    key: JSON.stringify([
+      openedProjectKey(projectPath),
+      workflow.id,
+      run.id,
+      trace.nodeId,
+      trace.startedAt,
+    ]),
+    projectPath,
+    workflowId: workflow.id,
+    workflowTitle: workflow.title,
+    runId: run.id,
+    runStatus: run.status,
+    runStartedAt: run.startedAt,
+    runCompletedAt: run.completedAt,
+    traceStartedAt: trace.startedAt,
+    model: trace.model?.trim() || undefined,
+    inputTokens: finiteUsageNumber(trace.tokens?.input),
+    outputTokens: finiteUsageNumber(trace.tokens?.output),
+    cacheReadTokens: finiteUsageNumber(trace.tokens?.cacheRead),
+    cacheWriteTokens: finiteUsageNumber(trace.tokens?.cacheWrite),
+    totalTokens: traceTotalTokens(trace),
+    cost: finiteUsageNumber(trace.cost),
+  };
 }
 
-function workflowRunUsage(
-  run: WorkflowRun,
-  workflow: WorkflowRecord,
-  prices: ModelPriceRecord[],
-): Omit<WorkflowUsageStatistics["totals"], "runs"> {
-  const trace = run.trace ?? [];
-  const traceUsage = {
-    inputTokens: trace.reduce((sum, item) => sum + finiteUsageNumber(item.tokens?.input), 0),
-    outputTokens: trace.reduce((sum, item) => sum + finiteUsageNumber(item.tokens?.output), 0),
-    cacheReadTokens: trace.reduce(
-      (sum, item) => sum + finiteUsageNumber(item.tokens?.cacheRead),
-      0,
-    ),
-    cacheWriteTokens: trace.reduce(
-      (sum, item) => sum + finiteUsageNumber(item.tokens?.cacheWrite),
-      0,
-    ),
-    totalTokens: trace.reduce((sum, item) => sum + traceTotalTokens(item), 0),
-    cost: trace.reduce((sum, item) => sum + workflowTraceCost(item, workflow, prices), 0),
-  };
+function mergeUsageEntry(
+  existing: StoredWorkflowUsageEntry,
+  next: StoredWorkflowUsageEntry,
+): StoredWorkflowUsageEntry {
   return {
-    inputTokens: finiteUsageNumber(run.stats?.inputTokens) || traceUsage.inputTokens,
-    outputTokens: finiteUsageNumber(run.stats?.outputTokens) || traceUsage.outputTokens,
-    cacheReadTokens: finiteUsageNumber(run.stats?.cacheReadTokens) || traceUsage.cacheReadTokens,
-    cacheWriteTokens: finiteUsageNumber(run.stats?.cacheWriteTokens) || traceUsage.cacheWriteTokens,
-    totalTokens: finiteUsageNumber(run.stats?.totalTokens) || traceUsage.totalTokens,
-    cost: finiteUsageNumber(run.stats?.cost) || traceUsage.cost,
+    ...existing,
+    ...next,
+    model: next.model ?? existing.model,
+    runCompletedAt: next.runCompletedAt ?? existing.runCompletedAt,
+    inputTokens: Math.max(existing.inputTokens, next.inputTokens),
+    outputTokens: Math.max(existing.outputTokens, next.outputTokens),
+    cacheReadTokens: Math.max(existing.cacheReadTokens, next.cacheReadTokens),
+    cacheWriteTokens: Math.max(existing.cacheWriteTokens, next.cacheWriteTokens),
+    totalTokens: Math.max(existing.totalTokens, next.totalTokens),
+    cost: Math.max(existing.cost, next.cost),
   };
+}
+
+async function readStoredWorkflowUsage(
+  usageFile = config.workflowUsageFile,
+): Promise<StoredWorkflowUsage> {
+  try {
+    const parsed = JSON.parse(await fs.readFile(usageFile, "utf8")) as Partial<StoredWorkflowUsage>;
+    const entries = Array.isArray(parsed.entries)
+      ? parsed.entries.map(sanitizeStoredUsageEntry).filter((entry) => entry !== null)
+      : [];
+    return {
+      version: 1,
+      updatedAt: finiteTimestamp(parsed.updatedAt),
+      entries,
+    };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT" || error instanceof SyntaxError) {
+      return { version: 1, updatedAt: 0, entries: [] };
+    }
+    throw error;
+  }
+}
+
+function sanitizeStoredUsageEntry(value: unknown): StoredWorkflowUsageEntry | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const entry = value as Partial<StoredWorkflowUsageEntry>;
+  if (
+    typeof entry.key !== "string" ||
+    typeof entry.projectPath !== "string" ||
+    !path.isAbsolute(entry.projectPath) ||
+    typeof entry.workflowId !== "string" ||
+    typeof entry.workflowTitle !== "string" ||
+    typeof entry.runId !== "string" ||
+    !isWorkflowRunStatus(entry.runStatus) ||
+    !finiteTimestamp(entry.runStartedAt) ||
+    !finiteTimestamp(entry.traceStartedAt)
+  ) {
+    return null;
+  }
+  return {
+    key: entry.key,
+    projectPath: path.resolve(entry.projectPath),
+    workflowId: entry.workflowId,
+    workflowTitle: entry.workflowTitle,
+    runId: entry.runId,
+    runStatus: entry.runStatus,
+    runStartedAt: finiteTimestamp(entry.runStartedAt),
+    runCompletedAt: finiteTimestamp(entry.runCompletedAt) || undefined,
+    traceStartedAt: finiteTimestamp(entry.traceStartedAt),
+    model: typeof entry.model === "string" && entry.model.trim() ? entry.model.trim() : undefined,
+    inputTokens: finiteUsageNumber(entry.inputTokens),
+    outputTokens: finiteUsageNumber(entry.outputTokens),
+    cacheReadTokens: finiteUsageNumber(entry.cacheReadTokens),
+    cacheWriteTokens: finiteUsageNumber(entry.cacheWriteTokens),
+    totalTokens: finiteUsageNumber(entry.totalTokens),
+    cost: finiteUsageNumber(entry.cost),
+  };
+}
+
+async function writeStoredWorkflowUsage(
+  usage: StoredWorkflowUsage,
+  usageFile: string,
+): Promise<void> {
+  await fs.mkdir(path.dirname(usageFile), { recursive: true });
+  const tempPath = `${usageFile}.${process.pid}.${Date.now()}.tmp`;
+  await fs.writeFile(tempPath, `${JSON.stringify(usage, null, 2)}\n`, "utf8");
+  await fs.rename(tempPath, usageFile);
+}
+
+function finiteTimestamp(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+function isWorkflowRunStatus(value: unknown): value is WorkflowRunStatus {
+  return (
+    value === "idle" ||
+    value === "running" ||
+    value === "success" ||
+    value === "error" ||
+    value === "stopped"
+  );
+}
+
+function openedProjectKey(projectPath: string): string {
+  const resolved = path.resolve(projectPath);
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 
 export async function findWorkflowByTemplateBinding(

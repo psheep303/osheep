@@ -20,6 +20,7 @@ export interface Config {
   allowExternalWorkspacePaths: boolean;
   workspaceRootConfigFile?: string;
   openedProjectsFile: string;
+  workflowUsageFile: string;
 }
 
 function readEnvList(key: string): string[] {
@@ -86,6 +87,15 @@ export const config: Config = {
         "..",
         ".osheep",
         "opened-projects.json",
+      ),
+  ),
+  workflowUsageFile: path.resolve(
+    process.env.OSHEEP_WORKFLOW_USAGE_FILE ??
+      path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "..",
+        ".osheep",
+        "workflow-usage.json",
       ),
   ),
 };
