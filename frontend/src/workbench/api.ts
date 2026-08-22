@@ -1501,6 +1501,11 @@ export function openWorkflowRuntimeSocket(workspaceId: string, workflowId: strin
   return openTerminalSocket(workflowsUrl(workspaceId, `/${encodeURIComponent(workflowId)}/events`));
 }
 
+export function openAdapterEventsSocket(workspaceId?: string): WebSocket {
+  const suffix = workspaceId ? `?workspaceId=${encodeURIComponent(workspaceId)}` : "";
+  return openTerminalSocket(`/api/adapter-events${suffix}`);
+}
+
 export async function createWorkflow(
   workspaceId: string,
   partial: Partial<WorkflowRecord> = {},

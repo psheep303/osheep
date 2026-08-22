@@ -119,11 +119,15 @@ export type AdapterEvent = AdapterEventBase & {
     | "tool.completed"
     | "approval.required"
     | "approval.resolved"
-    | "agent.waiting";
+    | "agent.waiting"
+    | "adapter.frame";
   state?: AgentState;
   reason?: AgentWaitingReason;
   error?: string;
   content?: string;
+  frameType?: string;
+  frameStatus?: string;
+  frameSessionId?: string;
   [key: string]: unknown;
 };
 

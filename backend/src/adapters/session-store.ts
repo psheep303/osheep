@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { AdapterError } from "./errors.js";
-import type { AdapterSession, OsheepSession } from "./types.js";
+import type { AdapterEvent, AdapterSession, OsheepSession } from "./types.js";
 
 const sessions = new Map<string, AdapterSession>();
+const eventListeners = new Set<(event: AdapterEvent) => void>();
 export function createOsheepSession(
   adapterId: string,
   kind: OsheepSession["kind"],
@@ -36,4 +37,19 @@ export function deleteAdapterSession(id: string): void {
 }
 export function listAdapterSessions(): AdapterSession[] {
   return [...sessions.values()];
+}
+
+export function subscribeAdapterEvents(listener: (event: AdapterEvent) => void): () => void {
+  eventListeners.add(listener);
+  return () => eventListeners.delete(listener);
+}
+
+export function publishAdapterEvent(event: AdapterEvent): void {
+  for (const listener of eventListeners) {
+    try {
+      listener(event);
+    } catch {
+      // Observers must never affect an adapter session.
+    }
+  }
 }

@@ -4,7 +4,7 @@ import { killSession } from "../pty.js";
 import type { WorkspaceInfo } from "../workspace.js";
 import { AdapterError } from "./errors.js";
 import { createAdapterEvent } from "./events.js";
-import { createOsheepSession, saveAdapterSession } from "./session-store.js";
+import { createOsheepSession, publishAdapterEvent, saveAdapterSession } from "./session-store.js";
 import type {
   AdapterConfig,
   AdapterEventListener,
@@ -146,6 +146,18 @@ class TerminalAdapterSession implements AdapterSession {
     if (frame.type === "session" && frame.sessionId) this.terminalSessionId = frame.sessionId;
     if (frame.type === "conversation" && frame.sessionId)
       this.session.nativeSessionId = frame.sessionId;
+    const event = createAdapterEvent(
+      { sessionId: this.session.id, adapterId: this.adapter.id },
+      "adapter.frame",
+      {
+        frameType: frame.type,
+        frameStatus: frame.status,
+        frameSessionId: frame.sessionId,
+      },
+      ++this.sequence,
+    );
+    publishAdapterEvent(event);
+    for (const listener of this.listeners) listener(event);
     if (frame.type === "status" && frame.status === "waiting-for-choice")
       this.setState("waiting", "approval");
     else if (frame.type === "status" && frame.status !== "exited") this.setState("running");
@@ -175,6 +187,7 @@ class TerminalAdapterSession implements AdapterSession {
       { state, reason, error: this.error },
       ++this.sequence,
     );
+    publishAdapterEvent(event);
     for (const listener of this.listeners) listener(event);
   }
   async interrupt(reason = "interrupted"): Promise<void> {
