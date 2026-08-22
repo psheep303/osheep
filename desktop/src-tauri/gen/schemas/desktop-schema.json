@@ -177,6 +177,12 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Allows the main osheep window to open validated HTTP(S) URLs in the system browser.",
+          "type": "string",
+          "const": "allow-open-external-url",
+          "markdownDescription": "Allows the main osheep window to open validated HTTP(S) URLs in the system browser."
+        },
+        {
           "description": "Allows the main osheep window to open the native workspaces folder picker.",
           "type": "string",
           "const": "allow-pick-workspace-folder",

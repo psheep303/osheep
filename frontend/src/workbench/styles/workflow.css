@@ -3802,16 +3802,20 @@
   background: #060609;
 }
 
+.workflow-run-details__terminal {
+  border: 0;
+}
+
 .workflow-run-details__bar {
   height: 28px;
-  border-color: var(--wf-border);
+  border-bottom: 0;
   background: var(--wf-panel-strong);
 }
 
 .workflow-run-details__controls {
   gap: 6px;
   padding: 6px 8px;
-  border-color: var(--wf-border);
+  border-bottom: 0;
   background: var(--wf-panel);
 }
 
