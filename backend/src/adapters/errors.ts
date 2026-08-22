@@ -7,6 +7,7 @@ export type AdapterErrorCode =
   | "TIMEOUT"
   | "INTERRUPTED"
   | "PERMISSION_DENIED"
+  | "INVALID_CONFIG"
   | "UNKNOWN";
 export class AdapterError extends Error {
   readonly name = "AdapterError";

@@ -17,8 +17,9 @@ import type {
 } from "./types.js";
 
 export abstract class TerminalAgentAdapter implements AgentAdapter {
-  abstract readonly id: "claude-code" | "codex";
+  abstract readonly id: string;
   abstract readonly name: string;
+  abstract readonly version: string;
   readonly kind = "agent" as const;
   abstract getCapabilities(): ReturnType<AgentAdapter["getCapabilities"]>;
   abstract getConfigSchema(): ReturnType<AgentAdapter["getConfigSchema"]>;
@@ -162,10 +163,7 @@ class TerminalAdapterSession implements AdapterSession {
       this.setState("waiting", "approval");
     else if (frame.type === "status" && frame.status !== "exited") this.setState("running");
   }
-  private setState(
-    state: AgentState,
-    reason?: "approval" | "user-input" | "manual-success" | "unknown",
-  ): void {
+  private setState(state: AgentState, reason?: string): void {
     this.state = state;
     this.session.state = state;
     this.session.updatedAt = Date.now();
@@ -178,9 +176,15 @@ class TerminalAdapterSession implements AdapterSession {
             ? "agent.completed"
             : state === "starting"
               ? "session.started"
-              : state === "running" && this.resume && this.sequence === 0
-                ? "session.resumed"
-                : "assistant.message";
+              : state === "interrupted"
+                ? "session.interrupted"
+                : state === "stopped"
+                  ? "session.stopped"
+                  : state === "closed"
+                    ? "session.closed"
+                    : state === "running" && this.resume && this.sequence === 0
+                      ? "session.resumed"
+                      : "assistant.message";
     const event = createAdapterEvent(
       { sessionId: this.session.id, adapterId: this.adapter.id },
       eventType,
@@ -191,6 +195,7 @@ class TerminalAdapterSession implements AdapterSession {
     for (const listener of this.listeners) listener(event);
   }
   async interrupt(reason = "interrupted"): Promise<void> {
+    if (this.state === "interrupted" || this.state === "stopped" || this.state === "closed") return;
     this.controller.abort();
     if (this.terminalSessionId) {
       try {
@@ -199,16 +204,21 @@ class TerminalAdapterSession implements AdapterSession {
         // The terminal may have exited before the interrupt reached it.
       }
     }
-    this.setState("interrupted", "user-input");
-    void reason;
+    this.setState("interrupted", reason);
   }
   async stop(reason = "stopped"): Promise<void> {
+    if (this.state === "stopped" || this.state === "closed") return;
     this.controller.abort();
     if (this.terminalSessionId) killSession(this.terminalSessionId, reason);
-    this.setState("stopped");
+    this.setState("stopped", reason);
+    this.setState("closed");
   }
   async getState(): Promise<AgentStateSnapshot> {
     return { state: this.state, error: this.error || undefined, updatedAt: this.session.updatedAt };
+  }
+  async wait(): Promise<AgentStateSnapshot> {
+    if (this.running) await this.running.catch(() => undefined);
+    return this.getState();
   }
   async getSession(): Promise<OsheepSession> {
     return this.session;

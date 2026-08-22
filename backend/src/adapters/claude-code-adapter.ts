@@ -4,6 +4,7 @@ import type { AdapterCapabilities, AdapterConfigSchema } from "./types.js";
 export class ClaudeCodeAdapter extends TerminalAgentAdapter {
   readonly id = "claude-code" as const;
   readonly name = "Claude Code";
+  readonly version = "1.0.0";
   getCapabilities(): AdapterCapabilities {
     return {
       streaming: true,
@@ -11,10 +12,12 @@ export class ClaudeCodeAdapter extends TerminalAgentAdapter {
       session: true,
       resume: true,
       multiTurn: false,
-      approval: true,
-      interruption: true,
+      approval: "manual",
+      interruption: "hard",
+      transport: "pty",
       modelSelection: true,
       workingDirectory: true,
+      usage: true,
     };
   }
   getConfigSchema(): AdapterConfigSchema {

@@ -4,6 +4,7 @@ import type { AdapterEvent, AdapterSession, OsheepSession } from "./types.js";
 
 const sessions = new Map<string, AdapterSession>();
 const eventListeners = new Set<(event: AdapterEvent) => void>();
+const eventHistory: AdapterEvent[] = [];
 export function createOsheepSession(
   adapterId: string,
   kind: OsheepSession["kind"],
@@ -45,6 +46,8 @@ export function subscribeAdapterEvents(listener: (event: AdapterEvent) => void):
 }
 
 export function publishAdapterEvent(event: AdapterEvent): void {
+  eventHistory.push(event);
+  if (eventHistory.length > 2_000) eventHistory.splice(0, eventHistory.length - 2_000);
   for (const listener of eventListeners) {
     try {
       listener(event);
@@ -52,4 +55,17 @@ export function publishAdapterEvent(event: AdapterEvent): void {
       // Observers must never affect an adapter session.
     }
   }
+}
+
+export function listAdapterEvents(
+  options: { adapterId?: string; sessionId?: string; limit?: number } = {},
+): AdapterEvent[] {
+  const limit = Math.max(1, Math.min(2_000, Math.floor(options.limit ?? 200)));
+  return eventHistory
+    .filter(
+      (event) =>
+        (!options.adapterId || event.adapterId === options.adapterId) &&
+        (!options.sessionId || event.sessionId === options.sessionId),
+    )
+    .slice(-limit);
 }

@@ -1,6 +1,10 @@
 import type { FastifyInstance } from "fastify";
 import { adapterRegistry } from "../adapters/default-registry.js";
-import { listAdapterSessions, subscribeAdapterEvents } from "../adapters/session-store.js";
+import {
+  listAdapterEvents,
+  listAdapterSessions,
+  subscribeAdapterEvents,
+} from "../adapters/session-store.js";
 import { subscribeWorkspaceWorkflowRuntime } from "../workflow-events.js";
 import { resolveWorkspace } from "../workspace.js";
 export async function registerAdapterRoutes(app: FastifyInstance): Promise<void> {
@@ -8,6 +12,7 @@ export async function registerAdapterRoutes(app: FastifyInstance): Promise<void>
     adapters: adapterRegistry.list().map((adapter) => ({
       id: adapter.id,
       name: adapter.name,
+      version: adapter.version,
       kind: adapter.kind,
       capabilities: adapter.getCapabilities(),
       configSchema: adapter.getConfigSchema(),
@@ -40,13 +45,16 @@ export async function registerAdapterRoutes(app: FastifyInstance): Promise<void>
               JSON.stringify({
                 type: "ready",
                 sessions: listAdapterSessions().map((item) => item.session),
+                events: listAdapterEvents({ limit: 200 }),
                 updatedAt: Date.now(),
               }),
             );
           }
         } catch {
           if (!closed && socket.readyState === socket.OPEN) {
-            socket.send(JSON.stringify({ type: "ready", sessions: [], updatedAt: Date.now() }));
+            socket.send(
+              JSON.stringify({ type: "ready", sessions: [], events: [], updatedAt: Date.now() }),
+            );
           }
         }
       })();

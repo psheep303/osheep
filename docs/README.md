@@ -9,6 +9,7 @@ contributors, or maintainers.
 - [Workflow blocks](workflow-blocks.md): available workflow blocks, configuration, and behavior.
 - [Workflow block output contract](workflow-block-output.md): structured outputs shared between
   workflow blocks.
+- [Adapter development](adapter-development.md): how to connect an agent or harness to OSheep.
 - [Public repository checklist](public-release-checklist.md): security and release checks required
   before publishing the repository.
 
