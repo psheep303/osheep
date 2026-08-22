@@ -164,6 +164,7 @@ export async function readAgentSessionUsage(
   let sawOutput = false;
   let sawCacheRead = false;
   let sawCacheWrite = false;
+  const seenClaudeMessages = new Set<string>();
   for (const line of text.split(/\r?\n/)) {
     if (!line.trim()) continue;
     let value: unknown;
@@ -225,6 +226,15 @@ export async function readAgentSessionUsage(
       const nestedUsage = objectValue(message.usage);
       const directUsage = objectValue(root.usage);
       const usage = Object.keys(nestedUsage).length > 0 ? nestedUsage : directUsage;
+      const messageId = stringValue(message.id) || stringValue(root.message_id);
+      const duplicateUsage = messageId !== "" && seenClaudeMessages.has(messageId);
+      if (messageId) seenClaudeMessages.add(messageId);
+      const inputDetails = firstNonEmptyObject(
+        usage.input_tokens_details,
+        usage.inputTokensDetails,
+        usage.prompt_tokens_details,
+        usage.promptTokensDetails,
+      );
       const nextInput = numberValue(usage.input_tokens ?? usage.inputTokens);
       const nextOutput = numberValue(usage.output_tokens ?? usage.outputTokens);
       const nextCacheRead = numberValue(
@@ -233,28 +243,39 @@ export async function readAgentSessionUsage(
           usage.cached_input_tokens ??
           usage.cachedInputTokens ??
           usage.cache_read_tokens ??
-          usage.cacheRead,
+          usage.cacheRead ??
+          usage.cached_tokens ??
+          usage.cachedTokens ??
+          inputDetails.cached_tokens ??
+          inputDetails.cachedTokens,
       );
       const nextCacheWrite = cacheWriteTokenValue(usage);
-      if (nextInput !== undefined) {
+      if (!duplicateUsage && nextInput !== undefined) {
         input += nextInput;
         sawInput = true;
       }
-      if (nextOutput !== undefined) {
+      if (!duplicateUsage && nextOutput !== undefined) {
         output += nextOutput;
         sawOutput = true;
       }
-      if (nextCacheRead !== undefined) {
+      if (!duplicateUsage && nextCacheRead !== undefined) {
         cacheRead += nextCacheRead;
         sawCacheRead = true;
       }
-      if (nextCacheWrite !== undefined) {
+      if (!duplicateUsage && nextCacheWrite !== undefined) {
         cacheWrite += nextCacheWrite;
         sawCacheWrite = true;
       }
     }
     const nextCost = numberValue(
-      root.cost_usd ?? root.total_cost_usd ?? payload.cost_usd ?? payload.total_cost_usd,
+      root.cost_usd ??
+        root.total_cost_usd ??
+        payload.cost_usd ??
+        payload.total_cost_usd ??
+        objectValue(root.message).cost_usd ??
+        objectValue(root.message).total_cost_usd ??
+        objectValue(objectValue(root.message).usage).cost_usd ??
+        objectValue(objectValue(root.message).usage).total_cost_usd,
     );
     if (nextCost !== undefined) cost = nextCost;
   }

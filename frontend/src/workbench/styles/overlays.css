@@ -204,6 +204,10 @@
   border-left-color: var(--ui-danger);
 }
 
+.osheep-toast--warning {
+  border-left-color: var(--ui-warning);
+}
+
 .osheep-toast__icon {
   margin-top: 1px;
   font-size: 18px;
@@ -215,6 +219,10 @@
 
 .osheep-toast--error .osheep-toast__icon {
   color: var(--ui-danger);
+}
+
+.osheep-toast--warning .osheep-toast__icon {
+  color: var(--ui-warning);
 }
 
 .osheep-toast__content {

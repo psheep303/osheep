@@ -49,6 +49,9 @@ export interface AiAutoAllow {
 export type ReasoningEffort = "off" | "minimal" | "low" | "medium" | "high";
 
 export interface OsheepSettings {
+  layout: {
+    sidebarWidth: number;
+  };
   editor: {
     fontSize: number;
     tabSize: TabSize;
@@ -76,6 +79,7 @@ export const DEFAULT_AUTO_ALLOW: AiAutoAllow = {
 };
 
 export const DEFAULT_SETTINGS: OsheepSettings = {
+  layout: { sidebarWidth: 250 },
   editor: { fontSize: 14, tabSize: 2, autoSave: false },
   ai: {
     autoAllow: { ...DEFAULT_AUTO_ALLOW },
@@ -108,6 +112,7 @@ function sanitizeAutoAllow(raw: unknown): AiAutoAllow {
 
 export function mergeSettings(partial: unknown): OsheepSettings {
   const p = (partial ?? {}) as {
+    layout?: { sidebarWidth?: unknown };
     editor?: { fontSize?: unknown; tabSize?: unknown; autoSave?: unknown };
     ai?: {
       autoAllow?: unknown;
@@ -115,6 +120,13 @@ export function mergeSettings(partial: unknown): OsheepSettings {
     workflow?: { maxParallelNodes?: unknown };
     pricing?: { models?: unknown };
   };
+  const sidebarWidth =
+    typeof p.layout?.sidebarWidth === "number" &&
+    Number.isFinite(p.layout.sidebarWidth) &&
+    p.layout.sidebarWidth >= 180 &&
+    p.layout.sidebarWidth <= 600
+      ? Math.round(p.layout.sidebarWidth)
+      : DEFAULT_SETTINGS.layout.sidebarWidth;
   const fontSize =
     typeof p.editor?.fontSize === "number" && p.editor.fontSize >= 8 && p.editor.fontSize <= 64
       ? p.editor.fontSize
@@ -179,6 +191,7 @@ export function mergeSettings(partial: unknown): OsheepSettings {
     ).values(),
   ];
   return {
+    layout: { sidebarWidth },
     editor: { fontSize, tabSize, autoSave },
     ai: {
       autoAllow,

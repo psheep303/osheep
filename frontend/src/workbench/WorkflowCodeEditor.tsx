@@ -67,7 +67,8 @@ export function WorkflowCodeEditor({
           renderValidationDecorations: "off",
           scrollBeyondLastLine: false,
           tabSize,
-          wordWrap: "on",
+          wordWrap: "off",
+          scrollBeyondLastColumn: 5,
         }}
       />
     </div>

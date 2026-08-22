@@ -128,7 +128,8 @@ export function EditorPane({
         minimap: { enabled: true },
         automaticLayout: true,
         scrollBeyondLastLine: false,
-        wordWrap: "on",
+        wordWrap: "off",
+        scrollBeyondLastColumn: 5,
         renderLineHighlight: "line",
       }}
     />

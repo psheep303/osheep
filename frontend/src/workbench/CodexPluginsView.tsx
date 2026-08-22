@@ -17,11 +17,9 @@ type DialogMode = "new" | "import" | "marketplace" | null;
 
 export function CodexPluginsView() {
   const { t } = useUiPreferences();
-  const { confirm } = useOsheepOverlay();
+  const { confirm, notify } = useOsheepOverlay();
   const [snapshot, setSnapshot] = useState<CodexPluginSnapshot | null>(null);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
   const [dialog, setDialog] = useState<DialogMode>(null);
   const [name, setName] = useState("");
   const [displayName, setDisplayName] = useState("");
@@ -50,16 +48,13 @@ export function CodexPluginsView() {
 
   async function run(task: () => Promise<void>, done = true) {
     setBusy(true);
-    setError(null);
-    setMessage(null);
     try {
       await task();
       if (done) {
-        setMessage("Restart Codex sessions for plugin changes to take effect.");
-        window.setTimeout(() => setMessage(null), 4000);
+        notify.success(t("notification.codexPluginChanged"));
       }
     } catch (e) {
-      setError((e as Error).message);
+      notify.error((e as Error).message);
     } finally {
       setBusy(false);
     }
@@ -72,8 +67,6 @@ export function CodexPluginsView() {
     setDescription("");
     setPluginPath("");
     setSource("");
-    setError(null);
-    setMessage(null);
   }
 
   function install(plugin: CodexPluginRecord) {
@@ -190,10 +183,6 @@ export function CodexPluginsView() {
         </div>
       )}
 
-      {error && <div className="codex-plugins__banner codex-plugins__banner--error">{error}</div>}
-      {message && (
-        <div className="codex-plugins__banner codex-plugins__banner--success">{message}</div>
-      )}
       {snapshot?.warnings.map((warning) => (
         <div key={warning} className="codex-plugins__banner codex-plugins__banner--warn">
           {warning}

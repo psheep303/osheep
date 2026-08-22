@@ -34,6 +34,7 @@ export function BottomPanel({
 }: BottomPanelProps) {
   const { t } = useUiPreferences();
   const [tab, setTab] = useState<BottomTab>("terminal");
+  const [docsMounted, setDocsMounted] = useState(false);
 
   useEffect(() => {
     if (terminalLaunchRequest) setTab("terminal");
@@ -60,7 +61,10 @@ export function BottomPanel({
         </div>
         <div
           className={`bottom-panel__tab${tab === "docs" ? " is-active" : ""}`}
-          onClick={() => setTab("docs")}
+          onClick={() => {
+            setDocsMounted(true);
+            setTab("docs");
+          }}
         >
           {t("panel.docs")}
         </div>
@@ -97,8 +101,11 @@ export function BottomPanel({
               </div>
             </div>
           )}
-          {tab === "docs" && (
-            <div className="bottom-panel__pane is-active">
+          {docsMounted && (
+            <div
+              className={`bottom-panel__pane${tab === "docs" ? " is-active" : ""}`}
+              aria-hidden={tab !== "docs"}
+            >
               <PlanView
                 workspaceId={workspaceId}
                 refreshSignal={docsRefreshSignal}

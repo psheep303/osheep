@@ -147,13 +147,15 @@ export function PlanView({
       .catch((reason) => {
         if (!cancelled) {
           setLoadingDirs(new Set());
-          setError(t("error.loadDocs", { detail: (reason as Error).message }));
+          const message = t("error.loadDocs", { detail: (reason as Error).message });
+          setError(null);
+          notify.error(message);
         }
       });
     return () => {
       cancelled = true;
     };
-  }, [expandedPaths, refreshSignal, refreshVersion, t, workspaceId]);
+  }, [expandedPaths, notify, refreshSignal, refreshVersion, t, workspaceId]);
 
   useEffect(() => {
     if (!workspaceId || !selectedPath) {
@@ -170,12 +172,16 @@ export function PlanView({
         setError(null);
       })
       .catch((reason) => {
-        if (!cancelled) setError(t("error.loadDocs", { detail: (reason as Error).message }));
+        if (!cancelled) {
+          const message = t("error.loadDocs", { detail: (reason as Error).message });
+          setError(null);
+          notify.error(message);
+        }
       });
     return () => {
       cancelled = true;
     };
-  }, [workspaceId, selectedPath, t]);
+  }, [notify, workspaceId, selectedPath, t]);
 
   const saveDocument = useCallback(async () => {
     if (!workspaceId || !selectedPath || content === savedContent) return;

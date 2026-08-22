@@ -1209,10 +1209,10 @@ export async function installClaudePluginApi(selector: string): Promise<ClaudePl
   return result.snapshot;
 }
 
-export async function uninstallClaudePluginApi(selector: string): Promise<ClaudePluginSnapshot> {
+export async function uninstallClaudePluginApi(selector: string, scope?: string): Promise<ClaudePluginSnapshot> {
   const result = await http.post<{ snapshot: ClaudePluginSnapshot }>(
     "/api/claude-plugins/uninstall",
-    { selector },
+    { selector, ...(scope ? { scope } : {}) },
   );
   return result.snapshot;
 }

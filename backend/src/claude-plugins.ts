@@ -9,6 +9,7 @@ import { detectAiCli } from "./runtime-tools.js";
 const execFileAsync = promisify(execFile);
 const UNSAFE_ARGUMENT_PATTERN = /[\r\n"&|<>%^!]/;
 const SAFE_SELECTOR_PATTERN = /^[a-z0-9._-]+(?:@[a-z0-9._-]+)?$/i;
+const CLAUDE_PLUGIN_SCOPES = ["user", "project", "local"] as const;
 
 export interface ClaudePluginRecord {
   name: string;
@@ -68,6 +69,7 @@ export interface ClaudePluginPaths {
 export interface ClaudePluginServiceOptions {
   paths?: Partial<ClaudePluginPaths>;
   runCli?: (args: string[]) => Promise<string>;
+  scope?: string;
 }
 
 interface MergeRecord {
@@ -797,8 +799,31 @@ export async function uninstallClaudePlugin(
   options: ClaudePluginServiceOptions = {},
 ): Promise<unknown> {
   const runCli = options.runCli ?? runClaudePluginCli;
-  const output = await runCli(["plugin", "uninstall", validatePluginSelector(selector), "--yes"]);
-  return { output };
+  const pluginSelector = validatePluginSelector(selector);
+  const requestedScope = options.scope?.trim();
+  if (requestedScope && !/^[a-z0-9_-]+$/i.test(requestedScope)) {
+    throw errors.invalidQuery("Invalid Claude plugin scope");
+  }
+
+  const scopes = requestedScope
+    ? [requestedScope, ...CLAUDE_PLUGIN_SCOPES.filter((scope) => scope !== requestedScope)]
+    : [undefined, ...CLAUDE_PLUGIN_SCOPES];
+  let lastError: unknown;
+  for (let index = 0; index < scopes.length; index += 1) {
+    const scope = scopes[index];
+    const args = ["plugin", "uninstall", pluginSelector, "--yes"];
+    if (scope) args.push("--scope", scope);
+    try {
+      return { output: await runCli(args) };
+    } catch (error) {
+      lastError = error;
+      const message = error instanceof Error ? error.message : String(error);
+      const canTryAnotherScope =
+        index < scopes.length - 1 && /not installed in .*scope|use\s+--scope\b/i.test(message);
+      if (!canTryAnotherScope) throw error;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
 export async function enableClaudePlugin(

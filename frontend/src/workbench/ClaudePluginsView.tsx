@@ -16,11 +16,9 @@ type DialogMode = "marketplace" | null;
 
 export function ClaudePluginsView() {
   const { t } = useUiPreferences();
-  const { confirm } = useOsheepOverlay();
+  const { confirm, notify } = useOsheepOverlay();
   const [snapshot, setSnapshot] = useState<ClaudePluginSnapshot | null>(null);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
   const [dialog, setDialog] = useState<DialogMode>(null);
   const [source, setSource] = useState("");
   const [searchText, setSearchText] = useState("");
@@ -42,16 +40,13 @@ export function ClaudePluginsView() {
 
   async function run(task: () => Promise<void>, done = true) {
     setBusy(true);
-    setError(null);
-    setMessage(null);
     try {
       await task();
       if (done) {
-        setMessage("Restart Claude sessions for plugin changes to take effect.");
-        window.setTimeout(() => setMessage(null), 4000);
+        notify.success(t("notification.claudePluginChanged"));
       }
     } catch (e) {
-      setError((e as Error).message);
+      notify.error((e as Error).message);
     } finally {
       setBusy(false);
     }
@@ -60,8 +55,6 @@ export function ClaudePluginsView() {
   function resetDialog(next: DialogMode) {
     setDialog(next);
     setSource("");
-    setError(null);
-    setMessage(null);
   }
 
   function install(plugin: ClaudePluginRecord) {
@@ -81,7 +74,7 @@ export function ClaudePluginsView() {
     )
       return;
     void run(async () => {
-      const next = await uninstallClaudePluginApi(plugin.selector);
+      const next = await uninstallClaudePluginApi(plugin.selector, plugin.scope);
       setSnapshot((current) => retainPluginPresentation(current, next));
     });
   }
@@ -139,10 +132,6 @@ export function ClaudePluginsView() {
         </div>
       )}
 
-      {error && <div className="codex-plugins__banner codex-plugins__banner--error">{error}</div>}
-      {message && (
-        <div className="codex-plugins__banner codex-plugins__banner--success">{message}</div>
-      )}
       {snapshot?.warnings.map((warning) => (
         <div key={warning} className="codex-plugins__banner codex-plugins__banner--warn">
           {warning}

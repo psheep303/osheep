@@ -16,6 +16,10 @@ export const en = {
   "notification.region": "Notifications",
   "notification.success": "Success",
   "notification.error": "Error",
+  "notification.warning": "Warning",
+  "notification.claudePluginChanged": "Claude plugin change applied. Restart Claude sessions to take effect.",
+  "notification.codexPluginChanged": "Codex plugin change applied. Restart Codex sessions to take effect.",
+  "notification.waitingForChoice": "{name} is waiting for your choice.",
   "notification.providerCreated": "Provider created successfully.",
   "notification.providerSaved": "Provider saved successfully.",
   "notification.providerSwitched": "Provider switched successfully.",
@@ -538,6 +542,7 @@ export const zhCN: Record<MessageKey, string> = {
   "workflow.agent.keepRunningOnInterruptDescription":
     "当 Codex 或 Claude 报告当前轮对话被用户中断时，当前块、工作流和终端会话保持运行，可继续输入下一条指令。",
   "workflow.warning": "警告",
+  "notification.warning": "提示",
   "workflow.details.title": "运行详情",
   "workflow.details.see": "查看详情",
   "workflow.details.waitingForChoice": "等待选择",
@@ -1025,4 +1030,7 @@ export const zhCN: Record<MessageKey, string> = {
     "限制单次工作流运行内部同时执行的节点数，不同工作流分别计算。范围：{min}-{max}。",
   "workflow.variable.collapse": "折叠变量",
   "workflow.variable.expand": "展开变量",
+  "notification.claudePluginChanged": "Claude 插件操作已完成。重启 Claude 会话后生效。",
+  "notification.codexPluginChanged": "Codex 插件操作已完成。重启 Codex 会话后生效。",
+  "notification.waitingForChoice": "{name} 正在等待你的选择。",
 };

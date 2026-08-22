@@ -87,7 +87,14 @@ export async function readFileText(
   if (stat.size > config.maxFileSizeBytes) {
     throw errors.fileTooLarge(config.maxFileSizeBytes);
   }
-  const content = await fs.readFile(abs, "utf-8");
+  const bytes = await fs.readFile(abs);
+  if (bytes.includes(0)) throw errors.binaryFile();
+  let content: string;
+  try {
+    content = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw errors.binaryFile();
+  }
   return {
     path: toPosix(relPath),
     content,

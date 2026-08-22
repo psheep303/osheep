@@ -10,6 +10,7 @@ import {
   getGitCommitDiff,
   getGitDiff,
   getGitStatus,
+  getWorkflow,
   getTemplateCapabilities,
   getWorkspace,
 } from "./api";
@@ -28,6 +29,7 @@ import { useOsheepOverlay } from "./OsheepOverlay";
 import { Resizer } from "./Resizer";
 import { SettingsView } from "./SettingsView";
 import { StatusBar } from "./StatusBar";
+import { playWorkflowWaitingSound } from "./workflow-alert-sound";
 import { DEFAULT_SETTINGS, type OsheepSettings } from "./settings";
 import type { AgentTerminalLaunchRequest } from "./Terminal";
 import { WorkspacePicker } from "./WorkspacePicker";
@@ -155,10 +157,30 @@ const TEMPLATE_PREFIX = "__template__:";
 const templatePath = (source: "system" | "user", templateId: string) =>
   `${TEMPLATE_PREFIX}${source}:${templateId}`;
 
-const DEFAULT_LEFT_WIDTH = 230;
+const DEFAULT_LEFT_WIDTH = 250;
 const SIDE_THRESHOLD = 80;
 const BOTTOM_THRESHOLD = 60;
 const SIDE_MAX = 600;
+const SIDEBAR_WIDTH_STORAGE_KEY = "osheep.sidebarWidth.v1";
+
+function readStoredSidebarWidth(): number | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY);
+    const value = raw ? Number(raw) : NaN;
+    return Number.isFinite(value) && value >= 180 && value <= SIDE_MAX ? Math.round(value) : null;
+  } catch {
+    return null;
+  }
+}
+
+function storeSidebarWidth(width: number) {
+  try {
+    window.localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(width));
+  } catch {
+    // Backend settings remain the durable fallback when browser storage is unavailable.
+  }
+}
 
 export function Workbench() {
   const { t } = useUiPreferences();
@@ -170,8 +192,8 @@ export function Workbench() {
   const [activePath, setActivePath] = useState<string | null>(null);
   const [cursorStatus, setCursorStatus] = useState<EditorCursorStatus | null>(null);
   const [selectedTreePath, setSelectedTreePath] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [settings, setSettings] = useState<OsheepSettings>(DEFAULT_SETTINGS);
+  const settingsLoadedRef = useRef(false);
 
   const [activeView, setActiveView] = useState<ViewId>("workflow");
   const [developerMode, setDeveloperMode] = useState(false);
@@ -236,7 +258,9 @@ export function Workbench() {
     };
   }, [activeView, notify, workspaceId, statusVersion]);
 
-  const [leftWidth, setLeftWidth] = useState(DEFAULT_LEFT_WIDTH);
+  const [leftWidth, setLeftWidth] = useState(
+    () => readStoredSidebarWidth() ?? DEFAULT_LEFT_WIDTH,
+  );
   const [bottomHeight, setBottomHeight] = useState(0);
   // BottomPanel keeps mounting across collapse so terminals survive.
   // Toggling visibility or drag-collapse leaves this true; only an explicit
@@ -247,7 +271,7 @@ export function Workbench() {
     useState<AgentTerminalLaunchRequest | null>(null);
   const [openTerminalSignal, setOpenTerminalSignal] = useState(0);
 
-  const lastLeftWidthRef = useRef(DEFAULT_LEFT_WIDTH);
+  const lastLeftWidthRef = useRef(leftWidth);
   const leftProgressRef = useRef(0);
   const bottomProgressRef = useRef(0);
 
@@ -257,7 +281,13 @@ export function Workbench() {
   useEffect(() => {
     let cancelled = false;
     void loadGlobalOsheepSettings().then((s) => {
-      if (!cancelled) setSettings(s);
+      if (!cancelled) {
+        setSettings(s);
+        const width = readStoredSidebarWidth() ?? s.layout.sidebarWidth;
+        setLeftWidth(width);
+        lastLeftWidthRef.current = width;
+        settingsLoadedRef.current = true;
+      }
     });
     return () => {
       cancelled = true;
@@ -269,9 +299,75 @@ export function Workbench() {
     void saveGlobalOsheepSettings(next);
   }, []);
 
+  useEffect(() => {
+    if (!settingsLoadedRef.current || leftWidth <= 0) return;
+    const width = Math.max(180, Math.min(SIDE_MAX, Math.round(leftWidth)));
+    storeSidebarWidth(width);
+    if (settings.layout.sidebarWidth === width) return;
+    const next = { ...settings, layout: { ...settings.layout, sidebarWidth: width } };
+    setSettings(next);
+    const timer = window.setTimeout(() => void saveGlobalOsheepSettings(next), 250);
+    return () => window.clearTimeout(timer);
+  }, [leftWidth, settings]);
+
+  // Keep waiting-for-choice notifications alive even when the workflow tab is
+  // no longer the active tab (inactive tabs are intentionally unmounted).
+  const waitingNotificationKeysRef = useRef(new Set<string>());
+  const waitingSoundKnownWorkflowsRef = useRef(new Set<string>());
+  useEffect(() => {
+    if (!workspaceId) return;
+    const workflowIds = tabs
+      .filter((tab): tab is WorkflowTabState => tab.kind === "workflow")
+      .map((tab) => tab.workflowId);
+    if (workflowIds.length === 0) return;
+    let cancelled = false;
+    const check = async () => {
+      const observedWaitingKeys = new Set<string>();
+      await Promise.all(
+        workflowIds.map(async (workflowId) => {
+          try {
+            const workflow = await getWorkflow(workspaceId, workflowId);
+            const workflowKey = `${workspaceId}:${workflowId}`;
+            const firstObservation = !waitingSoundKnownWorkflowsRef.current.has(workflowKey);
+            waitingSoundKnownWorkflowsRef.current.add(workflowKey);
+            for (const node of workflow.nodes) {
+              const details = node.config?.runDetails;
+              const terminalStatus =
+                details && typeof details === "object"
+                  ? (details as { terminalStatus?: unknown }).terminalStatus
+                  : undefined;
+              const waiting =
+                node.status === "running" &&
+                (terminalStatus === "waiting-for-choice" || node.config?.waitingForChoice === true);
+              const key = `${workflowKey}:${node.id}:${node.completedAt ?? node.startedAt ?? 0}`;
+              if (waiting) observedWaitingKeys.add(key);
+              if (waiting && !waitingNotificationKeysRef.current.has(key)) {
+                waitingNotificationKeysRef.current.add(key);
+                if (!firstObservation) playWorkflowWaitingSound();
+                notify.warning(t("notification.waitingForChoice", { name: node.title }), {
+                  title: t("workflow.details.waitingForChoice"),
+                });
+              }
+            }
+          } catch {
+            // The active workflow tab owns its detailed error handling.
+          }
+        }),
+      );
+      if (!cancelled) {
+        waitingNotificationKeysRef.current = observedWaitingKeys;
+      }
+    };
+    void check();
+    const timer = window.setInterval(() => void check(), 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [notify, tabs, t, workspaceId]);
+
   const onChooseWorkspace = useCallback(
     async (workspace: { id: string; name: string }) => {
-      setError(null);
       let openedWorkspace: { id: string; name: string };
       try {
         openedWorkspace = await getWorkspace(workspace.id);
@@ -303,7 +399,7 @@ export function Workbench() {
       try {
         text = await readFileText(workspaceId, node.path);
       } catch (e) {
-        setError(t("error.readFile", { detail: (e as Error).message }));
+        notify.error(t("error.readFile", { detail: (e as Error).message }));
         return;
       }
       setTabs((prev) => [
@@ -320,7 +416,7 @@ export function Workbench() {
       ]);
       setActivePath(node.path);
     },
-    [tabs, workspaceId, t],
+    [notify, tabs, workspaceId, t],
   );
 
   const openFileAt = useCallback(
@@ -343,7 +439,7 @@ export function Workbench() {
       try {
         text = await readFileText(workspaceId, filePath);
       } catch (e) {
-        setError(t("error.readFile", { detail: (e as Error).message }));
+        notify.error(t("error.readFile", { detail: (e as Error).message }));
         return;
       }
       setTabs((prev) => [
@@ -361,7 +457,7 @@ export function Workbench() {
       ]);
       setActivePath(filePath);
     },
-    [tabs, workspaceId, t],
+    [notify, tabs, workspaceId, t],
   );
 
   const openDiffTab = useCallback(
@@ -390,10 +486,10 @@ export function Workbench() {
         ]);
         setActivePath(diffId);
       } catch (e) {
-        setError(t("error.loadDiff", { detail: (e as Error).message }));
+        notify.error(t("error.loadDiff", { detail: (e as Error).message }));
       }
     },
-    [tabs, workspaceId, t],
+    [notify, tabs, workspaceId, t],
   );
 
   const openMultiDiffTab = useCallback(
@@ -430,10 +526,10 @@ export function Workbench() {
         setTabs((prev) => [...prev, { kind: "multi-diff", path: diffId, title, entries }]);
         setActivePath(diffId);
       } catch (e) {
-        setError(t("error.loadDiff", { detail: (e as Error).message }));
+        notify.error(t("error.loadDiff", { detail: (e as Error).message }));
       }
     },
-    [tabs, workspaceId, t],
+    [notify, tabs, workspaceId, t],
   );
 
   const openCommitDiffTab = useCallback(
@@ -464,10 +560,10 @@ export function Workbench() {
         setTabs((prev) => [...prev, { kind: "multi-diff", path: diffId, title, entries }]);
         setActivePath(diffId);
       } catch (e) {
-        setError(t("error.loadDiff", { detail: (e as Error).message }));
+        notify.error(t("error.loadDiff", { detail: (e as Error).message }));
       }
     },
-    [tabs, workspaceId, t],
+    [notify, tabs, workspaceId, t],
   );
 
   const openPreparedMultiDiffTab = useCallback(
@@ -644,10 +740,10 @@ export function Workbench() {
       if (failure) {
         const detail =
           failure.reason instanceof Error ? failure.reason.message : String(failure.reason);
-        setError(t("error.writeFile", { detail }));
+        notify.error(t("error.writeFile", { detail }));
       }
     },
-    [refreshGitStatus, t, workspaceId],
+    [notify, refreshGitStatus, t, workspaceId],
   );
 
   const saveActive = useCallback(async () => {
@@ -858,19 +954,6 @@ export function Workbench() {
         <span className="titlebar__drag-region" data-tauri-drag-region />
         {windowsDesktopShell && <DesktopWindowControls />}
       </div>
-
-      {error && (
-        <div className="banner-error">
-          {error}
-          <button
-            className="banner-error__close"
-            onClick={() => setError(null)}
-            title={t("common.close")}
-          >
-            ×
-          </button>
-        </div>
-      )}
 
       <div className="body">
         <ActivityBar

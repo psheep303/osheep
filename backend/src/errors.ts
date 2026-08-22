@@ -24,6 +24,8 @@ export const errors = {
   dirNotEmpty: () => new ApiError(409, "DIR_NOT_EMPTY", "目录非空且未带 recursive"),
   fileTooLarge: (limit: number) =>
     new ApiError(413, "FILE_TOO_LARGE", `文件超过上限 ${limit} 字节`),
+  binaryFile: () =>
+    new ApiError(415, "BINARY_FILE", "文件不是标准 UTF-8 文本，暂不支持在编辑器中打开"),
   ioError: (msg: string) => new ApiError(500, "IO_ERROR", msg),
   unsupportedShell: (id: string) =>
     new ApiError(400, "UNSUPPORTED_SHELL", `服务器未探测到 shell: ${id}`),

@@ -97,6 +97,7 @@ import {
   terminalReplaySegments,
 } from "./terminal-write-batcher";
 import { normalizeLightTerminalAnsi, workflowXtermTheme, xtermAnsiTheme } from "./theme";
+import { prepareWorkflowAlertSound } from "./workflow-alert-sound";
 import {
   blockOutputText,
   canApplyWorkflowRefresh,
@@ -385,41 +386,6 @@ const SAVE_DELAY_MS = 450;
 const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 1.8;
 const ZOOM_STEP = 0.1;
-let workflowAlertAudioContext: AudioContext | null = null;
-
-function prepareWorkflowAlertSound(): void {
-  try {
-    workflowAlertAudioContext ??= new AudioContext();
-    if (workflowAlertAudioContext.state === "suspended") {
-      void workflowAlertAudioContext.resume();
-    }
-  } catch {
-    /* Web Audio may be unavailable or blocked by browser policy. */
-  }
-}
-
-function playWorkflowWaitingSound(): void {
-  prepareWorkflowAlertSound();
-  const audio = workflowAlertAudioContext;
-  if (audio?.state !== "running") return;
-  const now = audio.currentTime;
-  for (const [offset, frequency] of [
-    [0, 660],
-    [0.16, 880],
-  ] as const) {
-    const oscillator = audio.createOscillator();
-    const gain = audio.createGain();
-    oscillator.type = "sine";
-    oscillator.frequency.setValueAtTime(frequency, now + offset);
-    gain.gain.setValueAtTime(0.0001, now + offset);
-    gain.gain.exponentialRampToValueAtTime(0.12, now + offset + 0.015);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + offset + 0.13);
-    oscillator.connect(gain);
-    gain.connect(audio.destination);
-    oscillator.start(now + offset);
-    oscillator.stop(now + offset + 0.14);
-  }
-}
 const CONFIGURED_LOCAL_KINDS = new Set<WorkflowNodeKind>([
   "input",
   "variable",
@@ -888,7 +854,6 @@ export function WorkflowTab({
   const saveInFlightRef = useRef(0);
   const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const abortRef = useRef<AbortController | null>(null);
-  const waitingAlertKeyRef = useRef("");
   const workflowRuntimeConnectedRef = useRef(false);
   const workflowRuntimeEventSeqRef = useRef(0);
   const onWorkflowChangedRef = useRef(onWorkflowChanged);
@@ -1264,9 +1229,6 @@ export function WorkflowTab({
     },
     [onOpenDetails, workflowId, workspaceId],
   );
-  const waitingForChoiceSnapshot = waitingForChoiceNode
-    ? runDetailsSnapshot(waitingForChoiceNode)
-    : null;
   const waitingForDiffApprovalNode =
     workflow?.nodes.find(
       (node) =>
@@ -1279,17 +1241,6 @@ export function WorkflowTab({
       (node) =>
         node.kind === "input" && node.status === "running" && node.config?.waitingForInput === true,
     ) ?? null;
-  const waitingAlertKey = waitingForChoiceNode
-    ? `${waitingForChoiceNode.id}:${waitingForChoiceSnapshot?.terminalSessionId ?? ""}`
-    : "";
-
-  useEffect(() => {
-    if (waitingAlertKey && waitingAlertKeyRef.current !== waitingAlertKey) {
-      playWorkflowWaitingSound();
-    }
-    waitingAlertKeyRef.current = waitingAlertKey;
-  }, [waitingAlertKey]);
-
   const canvasSize = useMemo(() => {
     const nodes = workflow?.nodes ?? [];
     const maxX = Math.max(

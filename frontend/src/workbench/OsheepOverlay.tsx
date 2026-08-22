@@ -36,7 +36,7 @@ export interface ToastOptions {
 interface ToastItem extends ToastOptions {
   id: number;
   message: string;
-  type: "success" | "error";
+  type: "success" | "error" | "warning";
 }
 
 interface OsheepOverlayContextValue {
@@ -45,6 +45,7 @@ interface OsheepOverlayContextValue {
   notify: {
     success: (message: string, options?: ToastOptions) => void;
     error: (message: string, options?: ToastOptions) => void;
+    warning: (message: string, options?: ToastOptions) => void;
   };
 }
 
@@ -138,6 +139,7 @@ export function OsheepOverlayProvider({ children }: { children: ReactNode }) {
     () => ({
       success: (message, options) => addToast("success", message, options),
       error: (message, options) => addToast("error", message, options),
+      warning: (message, options) => addToast("warning", message, options),
     }),
     [addToast],
   );
@@ -159,7 +161,7 @@ export function OsheepOverlayProvider({ children }: { children: ReactNode }) {
             role={toast.type === "error" ? "alert" : "status"}
           >
             <span
-              className={`osheep-toast__icon codicon codicon-${toast.type === "success" ? "pass-filled" : "error"}`}
+              className={`osheep-toast__icon codicon codicon-${toast.type === "success" ? "pass-filled" : toast.type === "warning" ? "warning" : "error"}`}
               aria-hidden="true"
             />
             <div className="osheep-toast__content">

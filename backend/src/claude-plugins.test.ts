@@ -645,6 +645,46 @@ test("Claude plugin actions reject unsafe selectors before invoking the CLI", as
   assert.equal(calls, 0);
 });
 
+test("Claude uninstall passes the installed plugin scope to the CLI", async () => {
+  let call: string[] = [];
+  await uninstallClaudePlugin("superpowers@claude-plugins-official", {
+    scope: "local",
+    runCli: async (args) => {
+      call = args;
+      return "{}";
+    },
+  });
+  assert.deepEqual(call, [
+    "plugin",
+    "uninstall",
+    "superpowers@claude-plugins-official",
+    "--yes",
+    "--scope",
+    "local",
+  ]);
+});
+
+test("Claude uninstall retries other scopes when the reported scope is stale", async () => {
+  const calls: string[][] = [];
+  await uninstallClaudePlugin("superpowers@claude-plugins-official", {
+    scope: "user",
+    runCli: async (args) => {
+      calls.push(args);
+      if (args.at(-1) !== "local") {
+        throw new Error(
+          'Plugin "superpowers@claude-plugins-official" is installed in local scope, not user. Use --scope local to uninstall.',
+        );
+      }
+      return "{}";
+    },
+  });
+  assert.deepEqual(calls, [
+    ["plugin", "uninstall", "superpowers@claude-plugins-official", "--yes", "--scope", "user"],
+    ["plugin", "uninstall", "superpowers@claude-plugins-official", "--yes", "--scope", "project"],
+    ["plugin", "uninstall", "superpowers@claude-plugins-official", "--yes", "--scope", "local"],
+  ]);
+});
+
 test("workflow Claude plugin selection only toggles installed plugins", async () => {
   const calls: string[][] = [];
   const enabled = new Set(["alpha@official", "beta@official"]);
