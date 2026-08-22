@@ -275,6 +275,16 @@ body :where(
   outline: none;
 }
 
+/* Monaco exposes the active IME textarea while composing. The editor line
+   renderer already paints that composition; keeping the textarea glyphs
+   visible creates a second, offset copy for CJK input near the right edge. */
+.monaco-editor .inputarea.ime-input {
+  color: transparent !important;
+  -webkit-text-fill-color: transparent !important;
+  caret-color: transparent !important;
+  text-shadow: none !important;
+}
+
 body.is-resizing-x {
   cursor: col-resize !important;
   user-select: none;

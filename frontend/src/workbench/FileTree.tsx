@@ -294,6 +294,10 @@ export function FileTree({
           onDragOver={onRootDragOver}
           onDragLeave={onRootDragLeave}
           onDrop={onRootDrop}
+          onDragEnd={() => {
+            setRootDropActive(false);
+            setDropTarget(null);
+          }}
         >
           {draft && (
             <DraftRow
@@ -611,6 +615,7 @@ function TreeNode({ node, depth }: TreeNodeProps) {
         onDragOver={onDragOver}
         onDragLeave={onDragLeave}
         onDrop={onDrop}
+        onDragEnd={() => ctx.setDropTarget(null)}
       >
         <span
           className={

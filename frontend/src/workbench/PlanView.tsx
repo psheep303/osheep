@@ -4,17 +4,19 @@ import { ContextMenu, type CtxMenuSection } from "./ContextMenu";
 import { FileIcon } from "./FileIcon";
 import {
   copyEntryTo,
+  createDirectory,
   createFile,
   DOCS_DIR,
   type FsNode,
-  findFreeName,
   findFreeImageName,
+  findFreeName,
+  moveEntryTo,
   readDirShallow,
   readFileText,
   removeEntry,
   renameEntry,
-  writeFileText,
   writeFileBase64,
+  writeFileText,
 } from "./fs";
 import { useOsheepOverlay } from "./OsheepOverlay";
 
@@ -39,6 +41,9 @@ interface DocsClipboard {
   name: string;
   kind: FsNode["kind"];
 }
+
+const DOCS_DRAG_MIME = "application/x-osheep-doc-path";
+const DOCS_DRAG_KIND_MIME = "application/x-osheep-doc-kind";
 
 interface DocsMenu {
   x: number;
@@ -87,10 +92,12 @@ export function PlanView({
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
   const [loadingDirs, setLoadingDirs] = useState<Set<string>>(new Set());
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const [selectedDirectory, setSelectedDirectory] = useState<string | null>(null);
   const [content, setContent] = useState("");
   const [savedContent, setSavedContent] = useState("");
   const [previewMode, setPreviewMode] = useState(true);
   const [creating, setCreating] = useState(false);
+  const [creatingKind, setCreatingKind] = useState<"file" | "directory">("file");
   const [renamingPath, setRenamingPath] = useState<string | null>(null);
   const [clipboard, setClipboard] = useState<DocsClipboard | null>(null);
   const [menu, setMenu] = useState<DocsMenu | null>(null);
@@ -98,11 +105,16 @@ export function PlanView({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const dirty = content !== savedContent;
+  const startCreating = (kind: "file" | "directory") => {
+    setCreatingKind(kind);
+    setCreating(true);
+  };
 
   useEffect(() => {
     setEntriesByDir({});
     setExpandedPaths(new Set());
     setSelectedPath(null);
+    setSelectedDirectory(null);
     setContent("");
     setSavedContent("");
     setMenu(null);
@@ -119,6 +131,7 @@ export function PlanView({
       setEntriesByDir({});
       setExpandedPaths(new Set());
       setSelectedPath(null);
+      setSelectedDirectory(null);
       setContent("");
       setSavedContent("");
       return;
@@ -258,21 +271,72 @@ export function PlanView({
     [notify, refreshDocs, selectedPath, t, workspaceId],
   );
 
-  const createDocument = async (rawName: string) => {
+  const createDocument = async (rawName: string, targetDir = selectedDirectory ?? DOCS_DIR) => {
     setCreating(false);
     if (!workspaceId) return;
     const requestedName = markdownFileName(rawName);
     if (!requestedName) return;
     try {
       if (dirty) await saveDocument();
-      const name = await findFreeName(workspaceId, DOCS_DIR, requestedName, "file");
-      const path = `${DOCS_DIR}/${name}`;
+      const name = await findFreeName(workspaceId, targetDir, requestedName, "file");
+      const path = `${targetDir}/${name}`;
       await createFile(workspaceId, path);
       setPreviewMode(false);
       setSelectedPath(path);
       refreshDocs();
     } catch (reason) {
       notify.error((reason as Error).message);
+    }
+  };
+
+  const createFolder = async (rawName: string, targetDir = selectedDirectory ?? DOCS_DIR) => {
+    setCreating(false);
+    if (!workspaceId) return;
+    const name = rawName.trim();
+    if (!name) return;
+    try {
+      const freeName = await findFreeName(workspaceId, targetDir, name, "directory");
+      await createDirectory(workspaceId, `${targetDir}/${freeName}`);
+      setExpandedPaths((current) => new Set(current).add(targetDir));
+      refreshDocs();
+    } catch (reason) {
+      notify.error((reason as Error).message);
+    }
+  };
+
+  const moveDocument = async (
+    sourcePath: string,
+    targetDir: string,
+    sourceKind: FsNode["kind"] = "file",
+  ) => {
+    if (!workspaceId || sourcePath === targetDir || targetDir.startsWith(`${sourcePath}/`)) {
+      notify.error(t("notification.invalidMove"));
+      return;
+    }
+    const sourceName = basename(sourcePath);
+    if (sourcePath.slice(0, sourcePath.lastIndexOf("/")) === targetDir) return;
+    try {
+      const name = await findFreeName(workspaceId, targetDir, sourceName, sourceKind);
+      const nextPath = `${targetDir}/${name}`;
+      await moveEntryTo(workspaceId, sourcePath, nextPath);
+      if (selectedPath && isPathWithin(selectedPath, sourcePath)) {
+        setSelectedPath(remapPath(selectedPath, sourcePath, nextPath));
+      }
+      if (selectedDirectory && isPathWithin(selectedDirectory, sourcePath)) {
+        setSelectedDirectory(remapPath(selectedDirectory, sourcePath, nextPath));
+      }
+      setExpandedPaths((current) => {
+        const next = new Set(current);
+        next.add(targetDir);
+        for (const path of current) {
+          if (isPathWithin(path, sourcePath)) next.delete(path);
+        }
+        return next;
+      });
+      setEntriesByDir({});
+      refreshDocs();
+    } catch (reason) {
+      notify.error(t("notification.moveFailed", { detail: (reason as Error).message }));
     }
   };
 
@@ -286,6 +350,9 @@ export function PlanView({
       const newPath = await renameEntry(workspaceId, node.path, name);
       if (selectedPath && isPathWithin(selectedPath, node.path)) {
         setSelectedPath(remapPath(selectedPath, node.path, newPath));
+      }
+      if (selectedDirectory && isPathWithin(selectedDirectory, node.path)) {
+        setSelectedDirectory(remapPath(selectedDirectory, node.path, newPath));
       }
       if (clipboard && isPathWithin(clipboard.path, node.path)) {
         setClipboard({
@@ -319,6 +386,9 @@ export function PlanView({
     try {
       await removeEntry(workspaceId, node.path);
       if (selectedPath && isPathWithin(selectedPath, node.path)) setSelectedPath(null);
+      if (selectedDirectory && isPathWithin(selectedDirectory, node.path)) {
+        setSelectedDirectory(null);
+      }
       if (clipboard && isPathWithin(clipboard.path, node.path)) setClipboard(null);
       setExpandedPaths(
         (current) => new Set([...current].filter((path) => !isPathWithin(path, node.path))),
@@ -350,6 +420,7 @@ export function PlanView({
   const openFileMenu = (event: React.MouseEvent, node: FsNode) => {
     event.preventDefault();
     event.stopPropagation();
+    if (node.kind === "directory") setSelectedDirectory(node.path);
     setMenu({ x: event.clientX, y: event.clientY, node });
   };
 
@@ -415,6 +486,10 @@ export function PlanView({
               danger: true,
               onSelect: () => void deleteDocument(menu.node!),
             },
+            {
+              label: t("docs.newFolder"),
+              onSelect: () => startCreating("directory"),
+            },
           ],
         },
       ]
@@ -445,22 +520,52 @@ export function PlanView({
       <div className="plan-view__sidebar">
         <div className="plan-view__sidebar-header">
           <span>.osheep / docs</span>
-          <button
-            type="button"
-            className="plan-view__new"
-            onClick={() => setCreating(true)}
-            title={t("docs.new")}
-            aria-label={t("docs.new")}
-          >
-            <i className="codicon codicon-add" aria-hidden="true" />
-          </button>
+          <span className="plan-view__actions">
+            <button
+              type="button"
+              className="plan-view__new"
+              onClick={() => startCreating("file")}
+              title={t("docs.new")}
+              aria-label={t("docs.new")}
+            >
+              <i className="codicon codicon-add" aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              className="plan-view__new"
+              onClick={() => startCreating("directory")}
+              title={t("docs.newFolder")}
+              aria-label={t("docs.newFolder")}
+            >
+              <i className="codicon codicon-new-folder" aria-hidden="true" />
+            </button>
+          </span>
         </div>
-        <div className="plan-view__list" onContextMenu={openBlankMenu}>
+        <div
+          className="plan-view__list"
+          onContextMenu={openBlankMenu}
+          onDragOver={(event) => {
+            if (!event.dataTransfer.types.includes(DOCS_DRAG_MIME)) return;
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "move";
+          }}
+          onDrop={(event) => {
+            if (!event.dataTransfer.types.includes(DOCS_DRAG_MIME)) return;
+            event.preventDefault();
+            const source = event.dataTransfer.getData(DOCS_DRAG_MIME);
+            const kind = event.dataTransfer.getData(DOCS_DRAG_KIND_MIME);
+            if (source)
+              void moveDocument(source, DOCS_DIR, kind === "directory" ? "directory" : "file");
+          }}
+        >
           {creating && (
             <DocumentNameInput
               initial=""
               placeholder={t("docs.newPlaceholder")}
-              onSubmit={(name) => void createDocument(name)}
+              kind={creatingKind}
+              onSubmit={(name) =>
+                void (creatingKind === "directory" ? createFolder(name) : createDocument(name))
+              }
               onCancel={() => setCreating(false)}
             />
           )}
@@ -478,10 +583,12 @@ export function PlanView({
                 loadingDirs={loadingDirs}
                 renamingPath={renamingPath}
                 onSelectDocument={selectDocument}
+                onSelectDirectory={setSelectedDirectory}
                 onToggleDirectory={toggleDirectory}
                 onOpenMenu={openFileMenu}
                 onRename={renameDocument}
                 onCancelRename={() => setRenamingPath(null)}
+                onDropMove={moveDocument}
               />
             ))
           )}
@@ -569,10 +676,12 @@ function DocsTreeEntry({
   loadingDirs,
   renamingPath,
   onSelectDocument,
+  onSelectDirectory,
   onToggleDirectory,
   onOpenMenu,
   onRename,
   onCancelRename,
+  onDropMove,
 }: {
   node: FsNode;
   depth: number;
@@ -582,10 +691,12 @@ function DocsTreeEntry({
   loadingDirs: Set<string>;
   renamingPath: string | null;
   onSelectDocument: (path: string) => Promise<void>;
+  onSelectDirectory: (path: string) => void;
   onToggleDirectory: (path: string) => void;
   onOpenMenu: (event: React.MouseEvent, node: FsNode) => void;
   onRename: (node: FsNode, name: string) => Promise<void>;
   onCancelRename: () => void;
+  onDropMove: (sourcePath: string, targetDir: string, sourceKind?: FsNode["kind"]) => Promise<void>;
 }) {
   const expanded = node.kind === "directory" && expandedPaths.has(node.path);
   const children = docsEntries(entriesByDir[node.path] ?? []);
@@ -609,8 +720,32 @@ function DocsTreeEntry({
         className={`plan-view__item${node.path === selectedPath ? " is-active" : ""}`}
         style={{ paddingLeft: 8 + depth * 14 }}
         onClick={() => {
-          if (node.kind === "directory") onToggleDirectory(node.path);
-          else void onSelectDocument(node.path);
+          if (node.kind === "directory") {
+            onSelectDirectory(node.path);
+            onToggleDirectory(node.path);
+          } else void onSelectDocument(node.path);
+        }}
+        draggable
+        onDragStart={(event) => {
+          event.dataTransfer.setData(DOCS_DRAG_MIME, node.path);
+          event.dataTransfer.setData(DOCS_DRAG_KIND_MIME, node.kind);
+          event.dataTransfer.effectAllowed = "move";
+        }}
+        onDragOver={(event) => {
+          if (node.kind !== "directory" || !event.dataTransfer.types.includes(DOCS_DRAG_MIME))
+            return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "move";
+        }}
+        onDrop={(event) => {
+          if (node.kind !== "directory" || !event.dataTransfer.types.includes(DOCS_DRAG_MIME))
+            return;
+          event.preventDefault();
+          event.stopPropagation();
+          const source = event.dataTransfer.getData(DOCS_DRAG_MIME);
+          const kind = event.dataTransfer.getData(DOCS_DRAG_KIND_MIME);
+          if (source)
+            void onDropMove(source, node.path, kind === "directory" ? "directory" : "file");
         }}
         onContextMenu={(event) => onOpenMenu(event, node)}
         title={node.name}
@@ -652,10 +787,12 @@ function DocsTreeEntry({
                 loadingDirs={loadingDirs}
                 renamingPath={renamingPath}
                 onSelectDocument={onSelectDocument}
+                onSelectDirectory={onSelectDirectory}
                 onToggleDirectory={onToggleDirectory}
                 onOpenMenu={onOpenMenu}
                 onRename={onRename}
                 onCancelRename={onCancelRename}
+                onDropMove={onDropMove}
               />
             ))
           )}

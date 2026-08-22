@@ -321,6 +321,33 @@ test("Codex session usage accumulates cache writes reported per turn", async () 
   }
 });
 
+test("Codex usage falls back to per-turn cache writes when cumulative value is zero", async () => {
+  const fixture = await makeFixture();
+  const id = "51111111-2222-4333-8444-555555555555";
+  const sessionPath = codexSessionPath(fixture.roots, id, "14-00-00");
+  try {
+    await writeLines(sessionPath, [
+      codexMetadata(id, fixture.projectPath),
+      {
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            total_token_usage: { input_tokens: 100, output_tokens: 10, cache_write_input_tokens: 0 },
+            last_token_usage: { cache_write_input_tokens: 42 },
+          },
+        },
+      },
+    ]);
+    assert.equal(
+      (await readAgentSessionUsage("codex", id, fixture.roots)).tokens?.cacheWrite,
+      42,
+    );
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("Claude session deletion removes transcript artifacts and index entries", async () => {
   const fixture = await makeFixture();
   const id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";

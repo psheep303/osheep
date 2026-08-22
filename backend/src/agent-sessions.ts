@@ -212,10 +212,15 @@ export async function readAgentSessionUsage(
         cacheRead = nextCacheRead;
         sawCacheRead = true;
       }
-      if (totalCacheWrite !== undefined) {
+      if (
+        totalCacheWrite !== undefined &&
+        (totalCacheWrite > 0 || (lastCacheWrite === undefined && !sawCacheWrite))
+      ) {
         cacheWrite = totalCacheWrite;
         sawCacheWrite = true;
       } else if (lastCacheWrite !== undefined) {
+        // Some Codex releases keep the cumulative cache-write field at zero
+        // while exposing the per-turn value in last_token_usage.
         cacheWrite += lastCacheWrite;
         sawCacheWrite = true;
       }
@@ -799,11 +804,17 @@ function firstNonEmptyObject(...values: unknown[]): Record<string, unknown> {
 function cacheWriteTokenValue(usage: Record<string, unknown>): number | undefined {
   const direct = numberValue(
     usage.cache_creation_input_tokens ??
+      usage.cache_creation_input_token_count ??
       usage.cacheCreationInputTokens ??
       usage.cache_write_input_tokens ??
+      usage.cache_write_input_token_count ??
       usage.cacheWriteInputTokens ??
       usage.cache_creation_tokens ??
       usage.cache_write_tokens ??
+      usage.cache_write_token_count ??
+      usage.cacheWriteTokens ??
+      usage.cacheWriteTokenCount ??
+      usage.cache_write ??
       usage.cacheWrite,
   );
   if (direct !== undefined) return direct;
@@ -812,7 +823,17 @@ function cacheWriteTokenValue(usage: Record<string, unknown>): number | undefine
     .filter(([key]) => /(?:input_?tokens?|tokens?)$/i.test(key))
     .map(([, value]) => numberValue(value))
     .filter((value): value is number => value !== undefined);
-  return values.length > 0 ? values.reduce((sum, value) => sum + value, 0) : undefined;
+  if (values.length > 0) return values.reduce((sum, value) => sum + value, 0);
+
+  // Providers occasionally wrap usage in a `cache` object. Keep this
+  // deliberately narrow so unrelated token counters are not mistaken for
+  // cache writes.
+  const cache = objectValue(usage.cache);
+  if (cache !== usage) {
+    const nested = numberValue(cache.write ?? cache.write_tokens ?? cache.creation);
+    if (nested !== undefined) return nested;
+  }
+  return undefined;
 }
 
 function parseTimestamp(value: unknown): number | null {

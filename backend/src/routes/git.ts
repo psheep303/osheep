@@ -226,7 +226,7 @@ export async function registerGitRoutes(app: FastifyInstance) {
   }>("/api/workspaces/:id/git/log", async (req) => {
     const ws = await resolveWorkspace(req.params.id);
     if (!(await isRepo(ws.path))) return { commits: [], head: null };
-    const limit = Math.min(1000, Math.max(1, Number.parseInt(req.query.limit ?? "200", 10) || 200));
+    const limit = Math.min(100_000, Math.max(1, Number.parseInt(req.query.limit ?? "200", 10) || 200));
     const offset = Math.max(0, Number.parseInt(req.query.offset ?? "0", 10) || 0);
     const ref = req.query.ref && req.query.ref.length > 0 ? req.query.ref : "HEAD";
     return await getLog(ws.path, limit, offset, ref);

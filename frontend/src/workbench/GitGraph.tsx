@@ -73,7 +73,9 @@ export function GitGraph({ workspaceId, refreshKey, scope, onOpenCommitDiff }: G
     let cancelled = false;
     setLoading(true);
     setError(null);
-    void getGitLog(workspaceId, 200, 0, scope === "all" ? "--all" : "HEAD")
+    // Load the complete commit graph. Commit details remain on-demand below,
+    // so browsing the graph does not retain every diff in memory.
+    void getGitLog(workspaceId, 100_000, 0, scope === "all" ? "--all" : "HEAD")
       .then((result) => {
         if (cancelled) return;
         lastNotifiedErrorRef.current = null;

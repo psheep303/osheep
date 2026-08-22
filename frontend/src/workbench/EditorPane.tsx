@@ -107,7 +107,7 @@ export function EditorPane({
       const hasImageType =
         items.some((item) => item.type.startsWith("image/")) ||
         clipboardTypes.some((type) => type.startsWith("image/"));
-      const useImage = (image: File) => {
+      const insertImage = (image: File) => {
         event.preventDefault();
         event.stopPropagation();
         void onPasteImageRef.current?.(image).then((text) => {
@@ -119,7 +119,7 @@ export function EditorPane({
         });
       };
       if (file) {
-        useImage(file);
+        insertImage(file);
         return;
       }
       if (!hasImageType || !navigator.clipboard?.read) return;
@@ -135,7 +135,7 @@ export function EditorPane({
             const type = item.types.find((value) => value.startsWith("image/"));
             if (!type) continue;
             const blob = await item.getType(type);
-            useImage(new File([blob], `pasted-image.${type.split("/")[1] ?? "png"}`, { type }));
+            insertImage(new File([blob], `pasted-image.${type.split("/")[1] ?? "png"}`, { type }));
             return;
           }
         })
@@ -179,6 +179,12 @@ export function EditorPane({
         tabSize,
         insertSpaces: true,
         detectIndentation: false,
+        // Avoid compositor layer snapping during IME composition. On some
+        // Chromium/Windows combinations it paints a duplicate glyph near the
+        // editor edge and makes CJK input appear bold.
+        disableLayerHinting: true,
+        disableMonospaceOptimizations: true,
+        fontLigatures: false,
         minimap: { enabled: true },
         automaticLayout: true,
         scrollBeyondLastLine: false,

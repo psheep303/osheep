@@ -5,9 +5,13 @@
   position: relative;
 }
 
-.file-tree.is-drop-target-root {
-  outline: 1px dashed var(--accent);
-  outline-offset: -2px;
+/* Drag feedback is rendered on the row itself. Do not leave the native
+   keyboard-focus ring behind after a drop completes. */
+.file-tree.is-drop-target-root:focus,
+.file-tree.is-drop-target-root:focus-visible,
+.tree-row.is-drop-target:focus,
+.tree-row.is-drop-target:focus-visible {
+  outline: none;
 }
 
 .tree-row {
@@ -48,8 +52,7 @@
 
 .tree-row.is-drop-target {
   background: var(--accent-soft);
-  outline: 1px solid var(--accent);
-  outline-offset: -1px;
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 
 .tree-row:hover .tree-row__actions {

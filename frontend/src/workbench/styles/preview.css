@@ -43,6 +43,15 @@
   white-space: nowrap;
 }
 
+.plan-view__sidebar-header > .plan-view__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  overflow: visible;
+  white-space: normal;
+}
+
 .plan-view__new {
   flex: none;
   width: 24px;
