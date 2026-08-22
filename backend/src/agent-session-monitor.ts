@@ -11,7 +11,6 @@ export interface AgentSessionEvent {
 }
 
 const POLL_INTERVAL_MS = 120;
-const CODEX_SILENT_EXEC_WAIT_MS = 5_000;
 const CODEX_ABORT_SETTLE_MS = 250;
 
 export class AgentSessionEventReducer {
@@ -20,9 +19,8 @@ export class AgentSessionEventReducer {
   private readonly pendingClaudePermissionTools = new Set<string>();
   private readonly unresolvedClaudeTools = new Map<string, string>();
   private readonly unboundClaudePermissions: Array<{ key: string; toolName: string }> = [];
-  private readonly pendingCodexSilentExecs = new Set<string>();
+  private readonly pendingCodexPermissions = new Set<string>();
   private readonly unresolvedCodexCalls = new Map<string, string>();
-  private readonly codexSilentExecDeadlines = new Map<string, number>();
   private pendingCodexAbort?: {
     turnId: string;
     error: string;
@@ -84,15 +82,6 @@ export class AgentSessionEventReducer {
   poll(now = Date.now()): AgentSessionEvent[] {
     if (this.app !== "codex") return [];
     const events: AgentSessionEvent[] = [];
-    let waiting = false;
-    for (const [callId, deadline] of this.codexSilentExecDeadlines) {
-      if (now < deadline) continue;
-      this.codexSilentExecDeadlines.delete(callId);
-      if (!this.unresolvedCodexCalls.has(callId)) continue;
-      this.pendingCodexSilentExecs.add(callId);
-      waiting = true;
-    }
-    if (waiting) events.push({ state: "waiting-for-choice" });
     if (this.pendingCodexAbort && now >= this.pendingCodexAbort.deadline) {
       events.push({
         state: "completed",
@@ -268,16 +257,12 @@ export class AgentSessionEventReducer {
       this.activeCodexTurnId = turnId;
       this.codexTurnUserInterrupted = false;
       if (startsDifferentTurn) {
-        this.pendingCodexSilentExecs.clear();
+        this.pendingCodexPermissions.clear();
         this.unresolvedCodexCalls.clear();
-        this.codexSilentExecDeadlines.clear();
         this.pendingCodexAbort = undefined;
         this.codexTurnUserRejected = false;
       }
       const startEvents: AgentSessionEvent[] = previousAbort ? [previousAbort] : [];
-      if (this.pendingCodexSilentExecs.size > 0) {
-        return startEvents;
-      }
       startEvents.push({ state: "running" });
       return startEvents;
     }
@@ -285,20 +270,36 @@ export class AgentSessionEventReducer {
 
     if ((type === "function_call" || type === "custom_tool_call") && callId) {
       this.unresolvedCodexCalls.set(callId, toolName);
-      if (type === "custom_tool_call" && toolName === "exec") {
-        this.codexSilentExecDeadlines.set(callId, now + CODEX_SILENT_EXEC_WAIT_MS);
+      if (
+        type === "custom_tool_call" &&
+        toolName === "exec" &&
+        (codexExecRequestsEscalation(payload.input) || codexExecRequestsEscalation(root.input))
+      ) {
+        if (this.pendingCodexPermissions.has(callId)) return [];
+        this.pendingCodexPermissions.add(callId);
+        return [{ state: "waiting-for-choice" }];
       }
       return [];
     }
     if (type === "function_call_output" || type === "custom_tool_call_output") {
+      const output = payload.output ?? root.output;
+      const approvalWasDenied =
+        codexOutputWasApprovalDenied(output) ||
+        (callId !== "" &&
+          this.pendingCodexPermissions.has(callId) &&
+          codexOutputWasUserAborted(output));
+      if (approvalWasDenied) {
+        this.codexTurnUserRejected = true;
+        this.pendingCodexAbort = undefined;
+        if (callId) this.pendingCodexPermissions.delete(callId);
+        return [{ state: "waiting-for-choice" }];
+      }
+      if (this.codexTurnUserRejected) return [];
       if (callId) {
         this.unresolvedCodexCalls.delete(callId);
-        this.codexSilentExecDeadlines.delete(callId);
       }
-      const resolvedSilentExec = callId
-        ? this.pendingCodexSilentExecs.delete(callId)
-        : this.deleteFirstCodexSilentExec();
-      if (resolvedSilentExec && this.pendingCodexSilentExecs.size === 0) {
+      const resolvedPermission = callId ? this.pendingCodexPermissions.delete(callId) : false;
+      if (resolvedPermission && this.pendingCodexPermissions.size === 0) {
         return [{ state: "running" }];
       }
       return [];
@@ -307,13 +308,20 @@ export class AgentSessionEventReducer {
     if (type === "item_completed") {
       const item = objectValue(payload.item);
       if (stringValue(item.status) !== "declined") return [];
+      const wasAlreadyWaiting = this.codexTurnUserRejected || this.pendingCodexPermissions.size > 0;
       this.codexTurnUserRejected = true;
       this.pendingCodexAbort = undefined;
-      return [];
+      return wasAlreadyWaiting ? [] : [{ state: "waiting-for-choice" }];
     }
 
     if (type === "turn_aborted" || type === "task_aborted") {
       if (this.codexTurnUserRejected) {
+        return [];
+      }
+      if (this.pendingCodexPermissions.size > 0) {
+        this.codexTurnUserRejected = true;
+        this.pendingCodexPermissions.clear();
+        this.pendingCodexAbort = undefined;
         return [];
       }
       const abortError =
@@ -333,15 +341,19 @@ export class AgentSessionEventReducer {
       return [];
     }
     const terminalStreamError = codexTerminalStreamError(type, payload, root);
-    if (terminalStreamError) {
+    if (
+      terminalStreamError &&
+      !this.codexTurnUserRejected &&
+      this.pendingCodexPermissions.size === 0
+    ) {
       return [{ state: "completed", outcome: "error", error: terminalStreamError }];
     }
     const eventError = codexEventApiError(type, payload, root);
-    if (eventError) {
+    if (eventError && !this.codexTurnUserRejected && this.pendingCodexPermissions.size === 0) {
       return [{ state: "completed", outcome: "error", error: eventError }];
     }
     if (type === "task_complete" || type === "turn_complete" || type === "turn_completed") {
-      if (this.codexTurnUserRejected) {
+      if (this.codexTurnUserRejected || this.pendingCodexPermissions.size > 0) {
         this.pendingCodexAbort = undefined;
         return [];
       }
@@ -353,11 +365,6 @@ export class AgentSessionEventReducer {
       ];
     }
     return [];
-  }
-
-  private deleteFirstCodexSilentExec(): boolean {
-    const callId = this.pendingCodexSilentExecs.values().next().value;
-    return typeof callId === "string" && this.pendingCodexSilentExecs.delete(callId);
   }
 
   private takePendingCodexAbort(): AgentSessionEvent | undefined {
@@ -403,6 +410,51 @@ function isCodexUserInterruptMarker(
 
 function claudeToolUseWasRejected(root: Record<string, unknown>): boolean {
   return stringValue(root.toolDenialKind ?? root.tool_denial_kind) === "user-rejected";
+}
+
+function codexExecRequestsEscalation(input: unknown): boolean {
+  if (input && typeof input === "object" && !Array.isArray(input)) {
+    const object = input as Record<string, unknown>;
+    if (object.sandbox_permissions === "require_escalated") return true;
+    return Object.values(object).some((value) => codexExecRequestsEscalation(value));
+  }
+  if (typeof input !== "string") return false;
+
+  try {
+    const parsed: unknown = JSON.parse(input);
+    if (parsed && typeof parsed === "object") {
+      return codexExecRequestsEscalation(parsed);
+    }
+  } catch {
+    // Codex commonly sends the exec arguments as source-like text, not JSON.
+  }
+
+  const normalized = input.replace(/\\(["'])/g, "$1");
+  return /(?:^|[^A-Za-z0-9_])['"]?sandbox_permissions['"]?\s*[:=]\s*['"]require_escalated['"](?:\s|[^A-Za-z0-9_]|$)/.test(
+    normalized,
+  );
+}
+
+function codexOutputWasApprovalDenied(output: unknown): boolean {
+  if (typeof output === "string") return /code-mode host closed its stdout/i.test(output);
+  if (Array.isArray(output)) return output.some((value) => codexOutputWasApprovalDenied(value));
+  if (output && typeof output === "object") {
+    return Object.values(output as Record<string, unknown>).some((value) =>
+      codexOutputWasApprovalDenied(value),
+    );
+  }
+  return false;
+}
+
+function codexOutputWasUserAborted(output: unknown): boolean {
+  if (typeof output === "string") return /aborted by user after\b/i.test(output);
+  if (Array.isArray(output)) return output.some((value) => codexOutputWasUserAborted(value));
+  if (output && typeof output === "object") {
+    return Object.values(output as Record<string, unknown>).some((value) =>
+      codexOutputWasUserAborted(value),
+    );
+  }
+  return false;
 }
 
 export async function watchAgentSession(input: {
