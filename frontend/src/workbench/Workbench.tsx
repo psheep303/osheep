@@ -13,6 +13,7 @@ import {
   getWorkflow,
   getTemplateCapabilities,
   getWorkspace,
+  workspaceImageUrl,
 } from "./api";
 import { DesktopWindowControls } from "./DesktopWindowControls";
 import { isWindowsDesktopShell } from "./desktop-folder-picker";
@@ -21,7 +22,9 @@ import {
   type FsNode,
   loadGlobalOsheepSettings,
   readFileText,
+  findFreeImageName,
   saveGlobalOsheepSettings,
+  writeFileBase64,
   writeFileText,
 } from "./fs";
 import { buildDecorations } from "./git-decorations";
@@ -74,6 +77,7 @@ interface FileTab {
   dirty: boolean;
   deleted: boolean;
   previewMode: boolean;
+  image?: boolean;
   goto?: GotoTarget | null;
 }
 
@@ -258,9 +262,7 @@ export function Workbench() {
     };
   }, [activeView, notify, workspaceId, statusVersion]);
 
-  const [leftWidth, setLeftWidth] = useState(
-    () => readStoredSidebarWidth() ?? DEFAULT_LEFT_WIDTH,
-  );
+  const [leftWidth, setLeftWidth] = useState(() => readStoredSidebarWidth() ?? DEFAULT_LEFT_WIDTH);
   const [bottomHeight, setBottomHeight] = useState(0);
   // BottomPanel keeps mounting across collapse so terminals survive.
   // Toggling visibility or drag-collapse leaves this true; only an explicit
@@ -395,6 +397,23 @@ export function Workbench() {
         setActivePath(node.path);
         return;
       }
+      if (isImagePath(node.path)) {
+        setTabs((prev) => [
+          ...prev,
+          {
+            kind: "file",
+            path: node.path,
+            content: "",
+            savedContent: "",
+            dirty: false,
+            deleted: false,
+            previewMode: true,
+            image: true,
+          },
+        ]);
+        setActivePath(node.path);
+        return;
+      }
       let text: string;
       try {
         text = await readFileText(workspaceId, node.path);
@@ -417,6 +436,29 @@ export function Workbench() {
       setActivePath(node.path);
     },
     [notify, tabs, workspaceId, t],
+  );
+
+  const pasteImageIntoMarkdown = useCallback(
+    async (file: File): Promise<string | null> => {
+      try {
+        const current = tabs.find((tab) => tab.kind === "file" && tab.path === activePath);
+        if (!workspaceId || current?.kind !== "file" || !isMarkdownPath(current.path)) return null;
+        const slash = current.path.lastIndexOf("/");
+        const dir = slash >= 0 ? current.path.slice(0, slash) : "";
+        const extension = imageExtension(file.type);
+        const name = await findFreeImageName(workspaceId, dir, extension);
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        let binary = "";
+        for (const byte of bytes) binary += String.fromCharCode(byte);
+        await writeFileBase64(workspaceId, dir ? `${dir}/${name}` : name, btoa(binary));
+        bumpFileTree();
+        return `\n\n![alt text](${name})`;
+      } catch (reason) {
+        notify.error(t("error.writeFile", { detail: (reason as Error).message }));
+        return null;
+      }
+    },
+    [activePath, bumpFileTree, notify, t, tabs, workspaceId],
   );
 
   const openFileAt = useCallback(
@@ -634,9 +676,7 @@ export function Workbench() {
         const existing = prev.find((tab) => tab.path === path);
         if (existing) {
           return prev.map((tab) =>
-            tab.path === path && tab.kind === "workflow-details"
-              ? { ...tab, ...details }
-              : tab,
+            tab.path === path && tab.kind === "workflow-details" ? { ...tab, ...details } : tab,
           );
         }
         return [...prev, { kind: "workflow-details", path, ...details }];
@@ -913,8 +953,7 @@ export function Workbench() {
   const activeFileTab = activeTab?.kind === "file" ? activeTab : null;
   const activeDiffTab = activeTab?.kind === "diff" ? activeTab : null;
   const activeMultiDiffTab = activeTab?.kind === "multi-diff" ? activeTab : null;
-  const activeWorkflowDetailsTab =
-    activeTab?.kind === "workflow-details" ? activeTab : null;
+  const activeWorkflowDetailsTab = activeTab?.kind === "workflow-details" ? activeTab : null;
   const hasDirtyFiles = tabs.some((tab) => tab.kind === "file" && tab.dirty && !tab.deleted);
   const windowsDesktopShell = isWindowsDesktopShell();
 
@@ -1061,13 +1100,13 @@ export function Workbench() {
                         ? t("nav.workflow")
                         : tab.kind === "workflow-details"
                           ? tab.title
-                        : tab.kind === "template"
-                          ? t("nav.templates")
-                          : tab.kind === "multi-diff"
-                            ? tab.title
-                            : tab.kind === "diff"
-                              ? `${basename(tab.filePath)} (${diffLabel(tab)})`
-                              : tab.path.split("/").pop();
+                          : tab.kind === "template"
+                            ? t("nav.templates")
+                            : tab.kind === "multi-diff"
+                              ? tab.title
+                              : tab.kind === "diff"
+                                ? `${basename(tab.filePath)} (${diffLabel(tab)})`
+                                : tab.path.split("/").pop();
                   const tabTitle =
                     tab.kind === "file"
                       ? isDeleted
@@ -1081,9 +1120,9 @@ export function Workbench() {
                             ? `${t("nav.workflow")} ${tab.workflowId}`
                             : tab.kind === "workflow-details"
                               ? `${tab.title} - ${t("workflow.details.title")}`
-                            : tab.kind === "template"
-                              ? `${t("nav.templates")} ${tab.templateId}`
-                              : t("common.settings");
+                              : tab.kind === "template"
+                                ? `${t("nav.templates")} ${tab.templateId}`
+                                : t("common.settings");
                   return (
                     <div
                       key={tab.path}
@@ -1125,9 +1164,20 @@ export function Workbench() {
             <div className="editor-host">
               <Suspense fallback={<div className="tab-loading-fallback" />}>
                 {activeFileTab ? (
-                  isMarkdownPath(activeFileTab.path) && activeFileTab.previewMode ? (
+                  activeFileTab.image ? (
+                    <div className="image-preview">
+                      <img
+                        src={workspaceImageUrl(workspaceId ?? "", activeFileTab.path)}
+                        alt={activeFileTab.path}
+                      />
+                    </div>
+                  ) : isMarkdownPath(activeFileTab.path) && activeFileTab.previewMode ? (
                     <div className="editor-host__preview">
-                      <MarkdownPreview source={activeFileTab.content} />
+                      <MarkdownPreview
+                        source={activeFileTab.content}
+                        workspaceId={workspaceId}
+                        filePath={activeFileTab.path}
+                      />
                     </div>
                   ) : (
                     <div className="editor-host__source">
@@ -1139,6 +1189,7 @@ export function Workbench() {
                         tabSize={settings.editor.tabSize}
                         onChange={updateActive}
                         onSave={saveActive}
+                        onPasteImage={pasteImageIntoMarkdown}
                         goto={activeFileTab.goto ?? null}
                         onCursorStatus={setCursorStatus}
                       />
@@ -1278,6 +1329,18 @@ export function Workbench() {
 function isMarkdownPath(path: string): boolean {
   const lower = path.toLowerCase();
   return lower.endsWith(".md") || lower.endsWith(".markdown") || lower.endsWith(".mdx");
+}
+
+function isImagePath(path: string): boolean {
+  return /\.(?:png|jpe?g|gif|webp|svg|avif|bmp|ico)$/i.test(path);
+}
+
+function imageExtension(mimeType: string): string {
+  const subtype = mimeType.split("/")[1]?.toLowerCase() ?? "png";
+  return (
+    ({ jpeg: "jpg", "svg+xml": "svg", "x-icon": "ico" } as Record<string, string>)[subtype] ??
+    subtype
+  );
 }
 
 function basename(p: string): string {

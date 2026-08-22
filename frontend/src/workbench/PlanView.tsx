@@ -8,11 +8,13 @@ import {
   DOCS_DIR,
   type FsNode,
   findFreeName,
+  findFreeImageName,
   readDirShallow,
   readFileText,
   removeEntry,
   renameEntry,
   writeFileText,
+  writeFileBase64,
 } from "./fs";
 import { useOsheepOverlay } from "./OsheepOverlay";
 
@@ -230,6 +232,31 @@ export function PlanView({
     }
     setPreviewMode((current) => !current);
   };
+
+  const pasteImageIntoDocument = useCallback(
+    async (file: File): Promise<string | null> => {
+      try {
+        if (!workspaceId || !selectedPath) return null;
+        const slash = selectedPath.lastIndexOf("/");
+        const dir = slash >= 0 ? selectedPath.slice(0, slash) : "";
+        const subtype = file.type.split("/")[1]?.toLowerCase() ?? "png";
+        const extension =
+          ({ jpeg: "jpg", "svg+xml": "svg", "x-icon": "ico" } as Record<string, string>)[subtype] ??
+          subtype;
+        const name = await findFreeImageName(workspaceId, dir, extension);
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        let binary = "";
+        for (const byte of bytes) binary += String.fromCharCode(byte);
+        await writeFileBase64(workspaceId, dir ? `${dir}/${name}` : name, btoa(binary));
+        refreshDocs();
+        return `\n\n![alt text](${name})`;
+      } catch (reason) {
+        notify.error(t("error.writeFile", { detail: (reason as Error).message }));
+        return null;
+      }
+    },
+    [notify, refreshDocs, selectedPath, t, workspaceId],
+  );
 
   const createDocument = async (rawName: string) => {
     setCreating(false);
@@ -505,7 +532,11 @@ export function PlanView({
             <div className="plan-view__document">
               <Suspense fallback={<div className="tab-loading-fallback" />}>
                 {previewMode ? (
-                  <MarkdownPreview source={content} />
+                  <MarkdownPreview
+                    source={content}
+                    workspaceId={workspaceId}
+                    filePath={selectedPath ?? undefined}
+                  />
                 ) : (
                   <EditorPane
                     key={selectedPath}
@@ -515,6 +546,7 @@ export function PlanView({
                     tabSize={editorTabSize}
                     onChange={setContent}
                     onSave={() => void saveDocument()}
+                    onPasteImage={pasteImageIntoDocument}
                   />
                 )}
               </Suspense>

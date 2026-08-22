@@ -270,6 +270,10 @@ export async function readFile(
   return await http.get(wsUrl(workspaceId, "/file", { path }));
 }
 
+export function workspaceImageUrl(workspaceId: string, path: string): string {
+  return wsUrl(workspaceId, "/image", { path });
+}
+
 export async function writeFile(
   workspaceId: string,
   path: string,
@@ -281,6 +285,15 @@ export async function writeFile(
     content,
     createParents,
   });
+}
+
+export async function writeFileBase64(
+  workspaceId: string,
+  path: string,
+  contentBase64: string,
+  createParents = true,
+): Promise<{ size: number; mtime: number }> {
+  return await http.put(wsUrl(workspaceId, "/file"), { path, contentBase64, createParents });
 }
 
 export async function createEntry(
@@ -680,12 +693,18 @@ export async function importSkillApi(input: {
 }
 
 export async function enableSkillApi(name: string, agent: SkillAgent): Promise<SkillsSnapshot> {
-  const result = await http.post<{ snapshot: SkillsSnapshot }>("/api/skills/enable", { name, agent });
+  const result = await http.post<{ snapshot: SkillsSnapshot }>("/api/skills/enable", {
+    name,
+    agent,
+  });
   return result.snapshot;
 }
 
 export async function disableSkillApi(name: string, agent: SkillAgent): Promise<SkillsSnapshot> {
-  const result = await http.post<{ snapshot: SkillsSnapshot }>("/api/skills/disable", { name, agent });
+  const result = await http.post<{ snapshot: SkillsSnapshot }>("/api/skills/disable", {
+    name,
+    agent,
+  });
   return result.snapshot;
 }
 
@@ -701,7 +720,10 @@ export async function applySkillSelectionApi(
 }
 
 export async function deleteSkillApi(name: string, agent: SkillAgent): Promise<SkillsSnapshot> {
-  const result = await http.post<{ snapshot: SkillsSnapshot }>("/api/skills/delete", { name, agent });
+  const result = await http.post<{ snapshot: SkillsSnapshot }>("/api/skills/delete", {
+    name,
+    agent,
+  });
   return result.snapshot;
 }
 
@@ -1209,7 +1231,10 @@ export async function installClaudePluginApi(selector: string): Promise<ClaudePl
   return result.snapshot;
 }
 
-export async function uninstallClaudePluginApi(selector: string, scope?: string): Promise<ClaudePluginSnapshot> {
+export async function uninstallClaudePluginApi(
+  selector: string,
+  scope?: string,
+): Promise<ClaudePluginSnapshot> {
   const result = await http.post<{ snapshot: ClaudePluginSnapshot }>(
     "/api/claude-plugins/uninstall",
     { selector, ...(scope ? { scope } : {}) },

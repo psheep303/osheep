@@ -27,6 +27,7 @@ interface EditorPaneProps {
   onSave: () => void;
   goto?: GotoTarget | null;
   onCursorStatus?: (status: EditorCursorStatus) => void;
+  onPasteImage?: (file: File) => Promise<string | null>;
 }
 
 function defineMonacoTheme(monaco: typeof import("monaco-editor"), theme: "light" | "dark") {
@@ -47,12 +48,15 @@ export function EditorPane({
   onSave,
   goto,
   onCursorStatus,
+  onPasteImage,
 }: EditorPaneProps) {
   const { resolvedTheme } = useUiPreferences();
   const onSaveRef = useRef(onSave);
   onSaveRef.current = onSave;
   const onCursorStatusRef = useRef(onCursorStatus);
   onCursorStatusRef.current = onCursorStatus;
+  const onPasteImageRef = useRef(onPasteImage);
+  onPasteImageRef.current = onPasteImage;
 
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
   const monacoRef = useRef<typeof import("monaco-editor") | null>(null);
@@ -89,11 +93,61 @@ export function EditorPane({
     };
     editor.onDidChangeCursorSelection(reportCursor);
     editor.onDidChangeModel(reportCursor);
+    const domNode = editor.getDomNode();
+    const handlePaste = (event: ClipboardEvent) => {
+      if (!onPasteImageRef.current) return;
+      if (!domNode?.contains(document.activeElement)) return;
+      const items = Array.from(event.clipboardData?.items ?? []);
+      const clipboardTypes = Array.from(event.clipboardData?.types ?? []);
+      const file =
+        items.find((item) => item.kind === "file" && item.type.startsWith("image/"))?.getAsFile() ??
+        Array.from(event.clipboardData?.files ?? []).find((candidate) =>
+          candidate.type.startsWith("image/"),
+        );
+      const hasImageType =
+        items.some((item) => item.type.startsWith("image/")) ||
+        clipboardTypes.some((type) => type.startsWith("image/"));
+      const useImage = (image: File) => {
+        event.preventDefault();
+        event.stopPropagation();
+        void onPasteImageRef.current?.(image).then((text) => {
+          if (!text) return;
+          const selection = editor.getSelection();
+          if (!selection) return;
+          editor.executeEdits("paste-image", [{ range: selection, text, forceMoveMarkers: true }]);
+          editor.focus();
+        });
+      };
+      if (file) {
+        useImage(file);
+        return;
+      }
+      if (!hasImageType || !navigator.clipboard?.read) return;
+      // Some screenshot tools expose only text/html or Files in the paste
+      // event and reveal the actual image only through the async Clipboard API.
+      // Leave ordinary text paste untouched; insert the image if one is found.
+      event.preventDefault();
+      event.stopPropagation();
+      void navigator.clipboard
+        .read()
+        .then(async (clipboardItems) => {
+          for (const item of clipboardItems) {
+            const type = item.types.find((value) => value.startsWith("image/"));
+            if (!type) continue;
+            const blob = await item.getType(type);
+            useImage(new File([blob], `pasted-image.${type.split("/")[1] ?? "png"}`, { type }));
+            return;
+          }
+        })
+        .catch(() => undefined);
+    };
+    document.addEventListener("paste", handlePaste, true);
     reportCursor();
     if (goto && appliedNonceRef.current !== goto.nonce) {
       // Defer until next tick so the model is fully attached.
       window.setTimeout(() => applyGoto(goto), 0);
     }
+    return () => document.removeEventListener("paste", handlePaste, true);
   };
 
   useEffect(() => {

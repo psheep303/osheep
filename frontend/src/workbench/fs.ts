@@ -15,6 +15,7 @@ import {
   putSettings as apiPutSettings,
   readFile as apiReadFile,
   writeFile as apiWriteFile,
+  writeFileBase64 as apiWriteFileBase64,
   type FsEntry,
 } from "./api";
 import { DEFAULT_SETTINGS, mergeSettings, type OsheepSettings } from "./settings";
@@ -45,6 +46,14 @@ export async function writeFileText(
   content: string,
 ): Promise<void> {
   await apiWriteFile(workspaceId, filePath, content);
+}
+
+export async function writeFileBase64(
+  workspaceId: string,
+  filePath: string,
+  contentBase64: string,
+): Promise<void> {
+  await apiWriteFileBase64(workspaceId, filePath, contentBase64);
 }
 
 export async function createFile(workspaceId: string, filePath: string): Promise<void> {
@@ -95,6 +104,22 @@ export async function findFreeName(
   kind: "file" | "directory",
 ): Promise<string> {
   return await apiFindFreeName(workspaceId, dirPath, baseName, kind);
+}
+
+export async function findFreeImageName(
+  workspaceId: string,
+  dirPath: string,
+  extension: string,
+): Promise<string> {
+  const entries = await readDirShallow(workspaceId, dirPath);
+  const taken = new Set(entries.map((entry) => entry.name));
+  const suffix = extension.replace(/^\./, "");
+  const base = `image.${suffix}`;
+  if (!taken.has(base)) return base;
+  for (let index = 1; ; index += 1) {
+    const candidate = `image-${index}.${suffix}`;
+    if (!taken.has(candidate)) return candidate;
+  }
 }
 
 export async function loadOsheepSettings(workspaceId: string): Promise<OsheepSettings> {

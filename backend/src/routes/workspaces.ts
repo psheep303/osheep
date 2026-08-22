@@ -8,7 +8,9 @@ import {
   deleteEntry,
   listTree,
   moveEntry,
+  readFileBinary,
   readFileText,
+  writeFileBase64,
   writeFileText,
 } from "../fs-ops.js";
 import { syncLiteLlmModelPrices } from "../model-pricing.js";
@@ -113,13 +115,46 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
     return await readFileText(ws.path, req.query.path);
   });
 
+  app.get<{
+    Params: { id: string };
+    Querystring: { path?: string };
+  }>("/api/workspaces/:id/fs/image", async (req, reply) => {
+    const ws = await resolveWorkspace(req.params.id);
+    if (req.query.path === undefined) throw errors.invalidPath("缺少 path 参数");
+    const file = await readFileBinary(ws.path, req.query.path);
+    const ext = req.query.path.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ?? "";
+    const mime =
+      (
+        {
+          png: "image/png",
+          jpg: "image/jpeg",
+          jpeg: "image/jpeg",
+          gif: "image/gif",
+          webp: "image/webp",
+          svg: "image/svg+xml",
+          avif: "image/avif",
+          bmp: "image/bmp",
+          ico: "image/x-icon",
+        } as Record<string, string>
+      )[ext] ?? "application/octet-stream";
+    return reply.type(mime).header("cache-control", "no-cache").send(file.content);
+  });
+
   app.put<{
     Params: { id: string };
-    Body: { path?: string; content?: string; createParents?: boolean };
+    Body: { path?: string; content?: string; contentBase64?: string; createParents?: boolean };
   }>("/api/workspaces/:id/fs/file", async (req) => {
     const ws = await resolveWorkspace(req.params.id);
     const body = req.body ?? {};
     if (typeof body.path !== "string") throw errors.invalidPath("缺少 path");
+    if (typeof body.contentBase64 === "string") {
+      return await writeFileBase64(
+        ws.path,
+        body.path,
+        body.contentBase64,
+        body.createParents !== false,
+      );
+    }
     if (typeof body.content !== "string") throw errors.invalidPath("缺少 content");
     return await writeFileText(ws.path, body.path, body.content, body.createParents !== false);
   });
