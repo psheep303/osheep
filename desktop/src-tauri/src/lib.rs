@@ -59,6 +59,39 @@ async fn pick_skill_folder(window: tauri::WebviewWindow) -> Result<Option<String
 }
 
 #[tauri::command]
+fn open_external_url(url: String) -> Result<(), String> {
+    let parsed =
+        tauri::Url::parse(&url).map_err(|error| format!("invalid external URL: {error}"))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("only http and https URLs can be opened externally".into());
+    }
+
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = Command::new("rundll32.exe");
+        command.args(["url.dll,FileProtocolHandler", &url]);
+        command
+    };
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = Command::new("open");
+        command.arg(&url);
+        command
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = {
+        let mut command = Command::new("xdg-open");
+        command.arg(&url);
+        command
+    };
+
+    command
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("failed to open external URL: {error}"))
+}
+
+#[tauri::command]
 async fn save_export_file(
     window: tauri::WebviewWindow,
     suggested_name: String,
@@ -516,6 +549,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             pick_workspace_folder,
             pick_skill_folder,
+            open_external_url,
             save_export_file
         ])
         .setup(|app| {

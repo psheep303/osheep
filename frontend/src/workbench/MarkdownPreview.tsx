@@ -1,7 +1,10 @@
 import DOMPurify from "dompurify";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useUiPreferences } from "../i18n/UiPreferences";
 import { workspaceImageUrl } from "./api";
+import { isDesktopShell, openExternalUrl } from "./desktop-folder-picker";
 import { createMarkdownParser } from "./markdown-parser";
+import { useOsheepOverlay } from "./OsheepOverlay";
 
 interface MarkdownPreviewProps {
   source: string;
@@ -12,7 +15,10 @@ interface MarkdownPreviewProps {
 const markdownParser = createMarkdownParser(false);
 
 export function MarkdownPreview({ source, workspaceId, filePath }: MarkdownPreviewProps) {
+  const { t } = useUiPreferences();
+  const { notify } = useOsheepOverlay();
   const [html, setHtml] = useState("");
+  const previewRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -34,7 +40,39 @@ export function MarkdownPreview({ source, workspaceId, filePath }: MarkdownPrevi
     };
   }, [filePath, source, workspaceId]);
 
-  return <div className="markdown-preview" dangerouslySetInnerHTML={{ __html: html }} />;
+  useEffect(() => {
+    const root = previewRef.current;
+    if (!root) return;
+    const handleClick = (event: MouseEvent) => {
+      const target = event.target instanceof Element ? event.target.closest("a") : null;
+      const href = target?.getAttribute("href") ?? "";
+      if (!target || !isExternalHttpUrl(href)) return;
+      event.preventDefault();
+      if (isDesktopShell()) {
+        void openExternalUrl(href).catch((reason) => {
+          notify.error(t("error.openExternalLink", { detail: (reason as Error).message }));
+        });
+      } else {
+        window.open(href, "_blank", "noopener,noreferrer");
+      }
+    };
+    root.addEventListener("click", handleClick);
+    return () => root.removeEventListener("click", handleClick);
+  }, [notify, t]);
+
+  return (
+    <div ref={previewRef} className="markdown-preview" dangerouslySetInnerHTML={{ __html: html }} />
+  );
+}
+
+function isExternalHttpUrl(value: string): boolean {
+  if (!/^(?:https?:)?\/\//i.test(value)) return false;
+  try {
+    const url = new URL(value, window.location.href);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 function resolveWorkspaceImages(source: string, workspaceId: string, filePath: string): string {
