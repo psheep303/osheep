@@ -616,18 +616,20 @@ async function scheduleWorkflowNodePass(
   const dependencies = new Map<string, Set<string>>();
   const outgoing = new Map<string, WorkflowEdge[]>();
   const incomingCount = new Map<string, number>();
-  const activeIncoming = new Map<string, number>();
+  const activeIncoming = new Map<string, Set<string>>();
   for (const id of scheduledNodeIds) {
     dependencies.set(id, new Set());
     outgoing.set(id, []);
     incomingCount.set(id, 0);
-    activeIncoming.set(id, 0);
+    activeIncoming.set(id, new Set());
   }
   for (const edge of forwardEdges) {
     if (!selected.has(edge.from) || !selected.has(edge.to)) continue;
     dependencies.get(edge.to)?.add(edge.from);
     outgoing.get(edge.from)?.push(edge);
-    incomingCount.set(edge.to, (incomingCount.get(edge.to) ?? 0) + 1);
+  }
+  for (const id of scheduledNodeIds) {
+    incomingCount.set(id, dependencies.get(id)?.size ?? 0);
   }
   const ready = scheduledNodeIds.filter((id) => dependencies.get(id)?.size === 0);
   const completed = new Set<string>();
@@ -685,14 +687,20 @@ async function scheduleWorkflowNodePass(
     ];
     while (propagation.length) {
       const source = propagation.shift()!;
+      // A conditional node can have multiple outlets connected to the same
+      // target. Evaluate all of that source's edges before deciding whether
+      // the target is active; otherwise an unmatched edge encountered first
+      // can mark the target as skipped before a later matching edge is seen.
+      const targetMatches = new Map<string, boolean>();
       for (const edge of outgoing.get(source.nodeId) ?? []) {
-        const next = edge.to;
-        const pending = dependencies.get(next);
         const matches =
           !source.skipped &&
           (!edge.sourceHandle || !source.sourceHandle || edge.sourceHandle === source.sourceHandle);
-        if (matches) activeIncoming.set(next, (activeIncoming.get(next) ?? 0) + 1);
-        pending?.delete(result.nodeId);
+        targetMatches.set(edge.to, (targetMatches.get(edge.to) ?? false) || matches);
+      }
+      for (const [next, matches] of targetMatches) {
+        const pending = dependencies.get(next);
+        if (matches) activeIncoming.get(next)?.add(source.nodeId);
         pending?.delete(source.nodeId);
         if (
           pending?.size === 0 &&
@@ -700,7 +708,7 @@ async function scheduleWorkflowNodePass(
           !running.has(next) &&
           !ready.includes(next)
         ) {
-          if ((incomingCount.get(next) ?? 0) > 0 && (activeIncoming.get(next) ?? 0) === 0) {
+          if ((incomingCount.get(next) ?? 0) > 0 && (activeIncoming.get(next)?.size ?? 0) === 0) {
             completed.add(next);
             propagation.push({ nodeId: next, skipped: true });
           } else {

@@ -688,6 +688,37 @@ test("workflow scheduler follows only the matching conditional output", async ()
   assert.deepEqual(executed, ["if", "false-node"]);
 });
 
+test("workflow scheduler activates a shared target from either conditional output", async () => {
+  for (const selectedHandle of ["true", "false"]) {
+    const executed: string[] = [];
+    await scheduleWorkflowNodes(
+      ["if", "shared-node"],
+      [
+        {
+          id: "edge_if_true_shared",
+          from: "if",
+          to: "shared-node",
+          passSummary: true,
+          sourceHandle: "true",
+        },
+        {
+          id: "edge_if_false_shared",
+          from: "if",
+          to: "shared-node",
+          passSummary: true,
+          sourceHandle: "false",
+        },
+      ],
+      1,
+      async (nodeId) => {
+        executed.push(nodeId);
+        return nodeId === "if" ? selectedHandle : undefined;
+      },
+    );
+    assert.deepEqual(executed, ["if", "shared-node"]);
+  }
+});
+
 test("workflow scheduler repeats a loop body until its exit is selected", async () => {
   const executed: string[] = [];
   let conditionRuns = 0;
