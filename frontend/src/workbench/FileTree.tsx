@@ -14,8 +14,8 @@ import { isWindowsDesktopShell } from "./desktop-folder-picker";
 import { FileIcon } from "./FileIcon";
 import {
   FILE_TREE_DRAG_MIME,
+  readBrowserDropItems,
   hasFileTreeDrag,
-  readFileTreeDragFiles,
   readFileTreeDragPaths,
   writeFileTreeDragData,
 } from "./file-tree-dnd";
@@ -33,6 +33,8 @@ import {
   writeFileBase64,
 } from "./fs";
 import { type FileDecoration, isIgnoredPath, statusColor } from "./git-decorations";
+import { elementsAtDesktopDropPosition, listenDesktopFileDrop } from "./desktop-dnd";
+import type { BrowserDropFile } from "./file-tree-dnd";
 import { useOsheepOverlay } from "./OsheepOverlay";
 
 type DraftKind = "file" | "folder";
@@ -66,7 +68,7 @@ interface TreeContextValue {
   dropTarget: string | null;
   setDropTarget: (path: string | null) => void;
   onDropMove: (srcPaths: string[], destDir: string) => Promise<void>;
-  copyBrowserFiles: (files: File[], destDir: string) => Promise<void>;
+  copyBrowserFiles: (files: BrowserDropFile[], destDir: string) => Promise<void>;
   setRootDropActive: (active: boolean) => void;
   pointerDragFallback: boolean;
   pointerDragPaths: ReadonlySet<string>;
@@ -407,15 +409,15 @@ export function FileTree({
     }
   };
 
-  const copyBrowserFiles = async (files: File[], destDir: string) => {
+  const copyBrowserFiles = async (files: BrowserDropFile[], destDir: string) => {
     let changed = false;
     let firstError: Error | null = null;
     const nextSelection: string[] = [];
-    for (const file of files) {
-      const name = basename(file.name) || "dropped-file";
+    for (const entry of files) {
+      const file = entry.file;
+      const name = entry.relativePath || basename(file.name) || "dropped-file";
       try {
-        const targetName = await findFreeName(workspaceId, destDir, name, "file");
-        const targetPath = joinPath(destDir, targetName);
+        const targetPath = joinPath(destDir, name.replace(/\\/g, "/"));
         await writeFileBase64(workspaceId, targetPath, await fileToBase64(file));
         nextSelection.push(targetPath);
         changed = true;
@@ -430,6 +432,35 @@ export function FileTree({
     if (changed) bumpTree();
     if (firstError) notify.error(t("notification.moveFailed", { detail: firstError.message }));
   };
+
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    void listenDesktopFileDrop((payload) => {
+      const elements = elementsAtDesktopDropPosition(payload.position);
+      const element =
+        elements.find((candidate) => {
+          const row = candidate.closest<HTMLElement>("[data-file-tree-node-kind]");
+          return row?.dataset.fileTreeNodeKind === "directory";
+        }) ?? elements.find((candidate) => candidate.closest("[data-file-tree-root]"));
+      const root = element?.closest<HTMLElement>("[data-file-tree-root]");
+      if (!root) return;
+      const row = element?.closest<HTMLElement>("[data-file-tree-node-kind]");
+      if (row && row.dataset.fileTreeNodeKind !== "directory") return;
+      const targetDir = row?.dataset.fileTreeNodeKind === "directory"
+        ? row.dataset.fileTreeDropPath ?? ""
+        : "";
+      void Promise.all(
+        payload.paths.map(async (sourcePath) => {
+          const name = basename(sourcePath);
+          const targetName = await findFreeName(workspaceId, targetDir, name, "file").catch(() => name);
+          await copyExternalEntryTo(workspaceId, sourcePath, joinPath(targetDir, targetName));
+        }),
+      ).then(() => bumpTree()).catch((error) => notify.error((error as Error).message));
+    }).then((cleanup) => {
+      unlisten = cleanup;
+    });
+    return () => unlisten?.();
+  }, [bumpTree, notify, workspaceId]);
 
   const onDropMove = async (srcPaths: string[], destDir: string) => {
     const sources = topLevelPaths(srcPaths);
@@ -554,10 +585,11 @@ export function FileTree({
       const element = document.elementFromPoint(event.clientX, event.clientY);
       const tab = element?.closest<HTMLElement>("[data-workbench-tab-index]");
       const editor = element?.closest<HTMLElement>("[data-workbench-editor-drop]");
+      const tabStrip = element?.closest<HTMLElement>("[data-workbench-tabs-drop]");
       resetPointerDrag();
-      if ((tab || editor) && onDropFileToTabRef.current) {
+      if ((tab || editor || tabStrip) && onDropFileToTabRef.current) {
         const index = Number(
-          tab?.dataset.workbenchTabIndex ?? editor?.dataset.workbenchDropIndex,
+          tab?.dataset.workbenchTabIndex ?? editor?.dataset.workbenchDropIndex ?? tabStrip?.dataset.workbenchDropIndex,
         );
         const file = drag.entries.find((entry) => entry.kind === "file");
         if (file && Number.isInteger(index)) onDropFileToTabRef.current(file.path, index);
@@ -653,11 +685,12 @@ export function FileTree({
     e.preventDefault();
     setRootDropActive(false);
     setDropTarget(null);
+    if (!e.dataTransfer.getData(FILE_TREE_DRAG_MIME)) {
+      void readBrowserDropItems(e.dataTransfer.items).then((files) => copyBrowserFiles(files, ""));
+      return;
+    }
     const sources = readFileTreeDragPaths(e.dataTransfer);
-    const files = readFileTreeDragFiles(e.dataTransfer);
-    if (!e.dataTransfer.getData(FILE_TREE_DRAG_MIME) && files.length > 0) {
-      void copyBrowserFiles(files, "");
-    } else if (sources.length > 0) void onDropMove(sources, "");
+    if (sources.length > 0) void onDropMove(sources, "");
   };
 
   const ctxValue: TreeContextValue = {
@@ -1015,9 +1048,8 @@ function TreeNode({ node, depth }: TreeNodeProps) {
     const sources = readFileTreeDragPaths(e.dataTransfer);
     ctx.setDropTarget(null);
     ctx.setRootDropActive(false);
-    const files = readFileTreeDragFiles(e.dataTransfer);
-    if (!e.dataTransfer.getData(FILE_TREE_DRAG_MIME) && files.length > 0) {
-      void ctx.copyBrowserFiles(files, node.path);
+    if (!e.dataTransfer.getData(FILE_TREE_DRAG_MIME)) {
+      void readBrowserDropItems(e.dataTransfer.items).then((files) => ctx.copyBrowserFiles(files, node.path));
     } else if (sources.length > 0) void ctx.onDropMove(sources, node.path);
   };
 

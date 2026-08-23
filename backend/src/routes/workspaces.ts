@@ -1,4 +1,5 @@
 import * as path from "node:path";
+import * as fs from "node:fs/promises";
 import type { FastifyInstance } from "fastify";
 import { readAppSettings, writeAppSettings } from "../app-settings.js";
 import { config } from "../config.js";
@@ -138,6 +139,31 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
     }
     await readFileText(ws.path, relative);
     return { path: relative.replace(/\\/g, "/") };
+  });
+
+  app.post<{
+    Params: { id: string };
+    Body: { path?: string };
+  }>("/api/workspaces/:id/fs/external-read", async (req) => {
+    await resolveWorkspace(req.params.id);
+    const externalPath = req.body?.path;
+    if (typeof externalPath !== "string" || !path.isAbsolute(externalPath)) {
+      throw errors.invalidPath("外部文件路径必须是绝对路径");
+    }
+    const absolute = path.resolve(externalPath);
+    const stat = await fs.stat(absolute).catch(() => null);
+    if (!stat || !stat.isFile()) throw errors.notFound();
+    if (stat.size > config.maxFileSizeBytes) throw errors.fileTooLarge(config.maxFileSizeBytes);
+    const bytes = await fs.readFile(absolute);
+    const extension = path.extname(absolute).slice(1).toLowerCase();
+    const image = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "avif", "bmp", "ico"]).has(extension);
+    if (!image && bytes.includes(0)) throw errors.invalidPath("二进制文件无法直接预览");
+    return {
+      name: path.basename(absolute),
+      content: image ? undefined : new TextDecoder("utf-8").decode(bytes),
+      contentBase64: image ? bytes.toString("base64") : undefined,
+      mime: image ? ({ png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", svg: "image/svg+xml", avif: "image/avif", bmp: "image/bmp", ico: "image/x-icon" } as Record<string, string>)[extension] ?? "application/octet-stream" : undefined,
+    };
   });
 
   app.get<{

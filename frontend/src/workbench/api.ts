@@ -275,6 +275,13 @@ export async function resolveExternalFilePath(workspaceId: string, path: string)
   return result.path;
 }
 
+export async function readExternalFile(
+  workspaceId: string,
+  path: string,
+): Promise<{ name: string; content?: string; contentBase64?: string; mime?: string }> {
+  return await http.post(wsUrl(workspaceId, "/external-read"), { path });
+}
+
 export function workspaceImageUrl(workspaceId: string, path: string): string {
   return wsUrl(workspaceId, "/image", { path });
 }

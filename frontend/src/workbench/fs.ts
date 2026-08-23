@@ -15,6 +15,7 @@ import {
   putGlobalSettings as apiPutGlobalSettings,
   putSettings as apiPutSettings,
   readFile as apiReadFile,
+  readExternalFile as apiReadExternalFile,
   writeFile as apiWriteFile,
   writeFileBase64 as apiWriteFileBase64,
   type FsEntry,
@@ -104,6 +105,13 @@ export async function copyExternalEntryTo(
   toPath: string,
 ): Promise<void> {
   await apiCopyExternalEntry(workspaceId, sourcePath, toPath);
+}
+
+export async function readExternalFile(
+  workspaceId: string,
+  path: string,
+): Promise<{ name: string; content?: string; contentBase64?: string; mime?: string }> {
+  return await apiReadExternalFile(workspaceId, path);
 }
 
 export async function findFreeName(

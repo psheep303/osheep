@@ -54,6 +54,25 @@ function externalTextPaths(value: string): string[] {
     .filter((path) => /^[a-zA-Z]:[\\/]/.test(path) || path.startsWith("\\\\") || path.startsWith("/"));
 }
 
+export function readFileTreeDragEntries(data: {
+  files?: ArrayLike<{ path?: string; webkitRelativePath?: string }>;
+}): Array<{ path: string; kind: "file" | "directory" }> {
+  if (!data.files) return [];
+  const out: Array<{ path: string; kind: "file" | "directory" }> = [];
+  for (let index = 0; index < data.files.length; index += 1) {
+    const file = data.files[index];
+    if (!file) continue;
+    const path = file.path;
+    if (!path) continue;
+    if (file.webkitRelativePath && file.webkitRelativePath.endsWith("/")) {
+      out.push({ path, kind: "directory" });
+    } else {
+      out.push({ path, kind: "file" });
+    }
+  }
+  return out;
+}
+
 export function readFileTreeDragPaths(data: {
   getData: (format: string) => string;
   files?: ArrayLike<{ path?: string; webkitRelativePath?: string }>;
@@ -88,6 +107,53 @@ export function readFileTreeDragFiles(data: { files?: ArrayLike<File> }): File[]
     if (file) files.push(file);
   }
   return files;
+}
+
+export interface BrowserDropFile {
+  file: File;
+  relativePath: string;
+}
+
+interface FileSystemEntryLike {
+  isFile: boolean;
+  isDirectory: boolean;
+  name: string;
+  file?: (callback: (file: File) => void, error?: (error: unknown) => void) => void;
+  createReader?: () => { readEntries: (callback: (entries: FileSystemEntryLike[]) => void) => void };
+}
+
+async function readBrowserEntry(entry: FileSystemEntryLike, prefix: string): Promise<BrowserDropFile[]> {
+  if (entry.isFile && entry.file) {
+    const file = await new Promise<File>((resolve, reject) => entry.file?.(resolve, reject));
+    return [{ file, relativePath: `${prefix}${entry.name}` }];
+  }
+  if (!entry.isDirectory || !entry.createReader) return [];
+  const reader = entry.createReader();
+  const children: FileSystemEntryLike[] = [];
+  while (true) {
+    const batch = await new Promise<FileSystemEntryLike[]>((resolve) => reader.readEntries(resolve));
+    if (batch.length === 0) break;
+    children.push(...batch);
+  }
+  const nextPrefix = `${prefix}${entry.name}/`;
+  const nested = await Promise.all(children.map((child) => readBrowserEntry(child, nextPrefix)));
+  return nested.flat();
+}
+
+export async function readBrowserDropItems(items: DataTransferItemList): Promise<BrowserDropFile[]> {
+  const output: BrowserDropFile[] = [];
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index];
+    if (!item) continue;
+    const entry = (item as DataTransferItem & { webkitGetAsEntry?: () => FileSystemEntryLike | null })
+      .webkitGetAsEntry?.();
+    if (entry) output.push(...(await readBrowserEntry(entry, "")));
+    else {
+      const file = item.getAsFile();
+      if (file) output.push({ file, relativePath: file.name });
+    }
+  }
+  return output;
 }
 
 export function writeFileTreeDragData(

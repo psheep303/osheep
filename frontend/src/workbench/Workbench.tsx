@@ -23,6 +23,7 @@ import {
   getWorkflow,
   getTemplateCapabilities,
   getWorkspace,
+  readExternalFile,
   resolveExternalFilePath,
   workspaceImageUrl,
 } from "./api";
@@ -36,6 +37,7 @@ import {
   readFileTreeDragFiles,
   readFileTreeDragPaths,
 } from "./file-tree-dnd";
+import { elementsAtDesktopDropPosition, listenDesktopFileDrop } from "./desktop-dnd";
 import {
   type FsNode,
   loadGlobalOsheepSettings,
@@ -1154,6 +1156,73 @@ export function Workbench() {
     [notify, t],
   );
 
+  const openDroppedDesktopFile = useCallback(
+    async (externalPath: string, insertionIndex: number) => {
+      if (!workspaceId) return;
+      try {
+        const result = await readExternalFile(workspaceId, externalPath);
+        const image = Boolean(result.contentBase64);
+        const path = `__external__:${Date.now()}-${Math.random().toString(36).slice(2)}:${result.name}`;
+        const nextTab: FileTab = {
+          kind: "file",
+          path,
+          content: result.content ?? "",
+          savedContent: result.content ?? "",
+          dirty: false,
+          deleted: false,
+          previewMode: false,
+          image,
+          externalName: result.name,
+          imageDataUrl: image
+            ? `data:${result.mime ?? "application/octet-stream"};base64,${result.contentBase64}`
+            : undefined,
+        };
+        setTabs((current) => {
+          const next = [...current];
+          next.splice(Math.max(0, Math.min(insertionIndex, next.length)), 0, nextTab);
+          return next;
+        });
+        setActivePath(path);
+      } catch (error) {
+        notify.error((error as Error).message);
+      }
+    },
+    [notify, workspaceId],
+  );
+
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    void listenDesktopFileDrop((payload) => {
+      const elements = elementsAtDesktopDropPosition(payload.position);
+      // Coordinate payloads can be reported in physical pixels or window
+      // coordinates. Prefer the explorer whenever any candidate lands there,
+      // otherwise an external file may be opened as a temporary tab instead
+      // of being copied into the dropped directory.
+      if (elements.some((candidate) => candidate.closest("[data-file-tree-root]"))) return;
+      const element = elements.find(
+        (candidate) =>
+          candidate.closest("[data-workbench-tab-index]") ||
+          candidate.closest("[data-workbench-editor-drop]") ||
+          candidate.closest("[data-workbench-tabs-drop]"),
+      );
+      if (!element) return;
+      const tab = element?.closest<HTMLElement>("[data-workbench-tab-index]");
+      const editor = element?.closest<HTMLElement>("[data-workbench-editor-drop]");
+      const tabStrip = element?.closest<HTMLElement>("[data-workbench-tabs-drop]");
+      if (!tab && !editor && !tabStrip) return;
+      const index = Number(
+        tab?.dataset.workbenchTabIndex ??
+          editor?.dataset.workbenchDropIndex ??
+          tabStrip?.dataset.workbenchDropIndex,
+      );
+      const source = payload.paths[0];
+      if (source && Number.isInteger(index)) void openDroppedDesktopFile(source, index);
+    }).then((cleanup) => {
+      unlisten = cleanup;
+    });
+    return () => unlisten?.();
+  }, [openDroppedDesktopFile, tabs.length]);
+
   const openDroppedFile = useCallback(
     async (filePath: string, insertionIndex: number) => {
       let workspacePath = filePath;
@@ -1403,6 +1472,8 @@ export function Workbench() {
           <div className="editor-area">
             <div
               className="tabs"
+              data-workbench-tabs-drop="true"
+              data-workbench-drop-index={tabs.length}
               onDragOverCapture={onTabDragOver}
               onDropCapture={onTabsDropCapture}
             >
