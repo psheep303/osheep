@@ -312,6 +312,37 @@ test("workflow run planning allows a cycle that has an exit", () => {
   });
 });
 
+test("workflow run planning finds the loop edge when edges are persisted out of order", () => {
+  const record = workflowRecord([
+    workflowNode("trigger", "trigger", "Workflow run"),
+    workflowNode("body", "agent", "Codex"),
+    workflowNode("condition", "if", "Condition"),
+    workflowNode("exit", "set", "Exit"),
+  ]);
+  record.edges = [
+    {
+      id: "condition-loop",
+      from: "condition",
+      to: "body",
+      sourceHandle: "true",
+      passSummary: true,
+    },
+    {
+      id: "condition-exit",
+      from: "condition",
+      to: "exit",
+      sourceHandle: "false",
+      passSummary: true,
+    },
+    { id: "body-condition", from: "body", to: "condition", passSummary: true },
+    { id: "trigger-body", from: "trigger", to: "body", passSummary: true },
+  ];
+
+  assert.deepEqual(planWorkflowRunNodeIds(record), {
+    nodeIds: ["trigger", "body", "condition", "exit"],
+  });
+});
+
 test("workflow run planning rejects a cycle without an exit", () => {
   const record = workflowRecord([
     workflowNode("trigger", "trigger", "Workflow run"),
@@ -755,6 +786,48 @@ test("workflow scheduler repeats a loop body until its exit is selected", async 
     "trigger",
     "body",
     "condition",
+    "body",
+    "condition",
+    "body",
+    "condition",
+    "exit",
+  ]);
+});
+
+test("workflow scheduler repeats the intended edge when loop edges were saved first", async () => {
+  const executed: string[] = [];
+  let conditionRuns = 0;
+  await scheduleWorkflowNodes(
+    ["trigger", "body", "condition", "exit"],
+    [
+      {
+        id: "condition-loop",
+        from: "condition",
+        to: "body",
+        sourceHandle: "true",
+        passSummary: true,
+      },
+      {
+        id: "condition-exit",
+        from: "condition",
+        to: "exit",
+        sourceHandle: "false",
+        passSummary: true,
+      },
+      { id: "body-condition", from: "body", to: "condition", passSummary: true },
+      { id: "trigger-body", from: "trigger", to: "body", passSummary: true },
+    ],
+    2,
+    async (nodeId) => {
+      executed.push(nodeId);
+      if (nodeId !== "condition") return undefined;
+      conditionRuns += 1;
+      return conditionRuns < 2 ? "true" : "false";
+    },
+  );
+
+  assert.deepEqual(executed, [
+    "trigger",
     "body",
     "condition",
     "body",

@@ -276,6 +276,19 @@ test("workflow back edges are the edges that close a directed cycle", async () =
   assert.deepEqual([...behavior.findWorkflowBackEdgeIds(edges as never)], ["ca", "self"]);
 });
 
+test("workflow back edge detection follows graph roots instead of persisted edge order", async () => {
+  const behavior = await loadBehavior();
+  assert.ok(behavior, "workflow behavior module should exist");
+  const edges = [
+    { id: "condition-loop", from: "condition", to: "body", passSummary: true },
+    { id: "condition-exit", from: "condition", to: "exit", passSummary: true },
+    { id: "body-condition", from: "body", to: "condition", passSummary: true },
+    { id: "trigger-body", from: "trigger", to: "body", passSummary: true },
+  ];
+
+  assert.deepEqual([...behavior.findWorkflowBackEdgeIds(edges as never)], ["condition-loop"]);
+});
+
 test("workflow layout ranks cyclic graphs after removing their back edges", async () => {
   const behavior = await loadBehavior();
   assert.ok(behavior, "workflow behavior module should exist");

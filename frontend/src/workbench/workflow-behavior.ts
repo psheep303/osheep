@@ -22,17 +22,58 @@ export function isWorkflowSessionId(value: string): boolean {
 }
 
 export function findWorkflowBackEdgeIds(edges: readonly WorkflowEdge[]): Set<string> {
-  const forward = new Map<string, string[]>();
   const backEdgeIds = new Set<string>();
+  const outgoing = new Map<string, WorkflowEdge[]>();
+  const nodeOrder: string[] = [];
+  const nodeIds = new Set<string>();
+  const indegree = new Map<string, number>();
 
   for (const edge of edges) {
-    if (edge.from === edge.to || canReach(edge.to, edge.from, forward)) {
-      backEdgeIds.add(edge.id);
-      continue;
+    if (!nodeIds.has(edge.from)) {
+      nodeIds.add(edge.from);
+      nodeOrder.push(edge.from);
+      indegree.set(edge.from, 0);
     }
-    const targets = forward.get(edge.from) ?? [];
-    targets.push(edge.to);
-    forward.set(edge.from, targets);
+    if (!nodeIds.has(edge.to)) {
+      nodeIds.add(edge.to);
+      nodeOrder.push(edge.to);
+      indegree.set(edge.to, 0);
+    }
+    const targets = outgoing.get(edge.from) ?? [];
+    targets.push(edge);
+    outgoing.set(edge.from, targets);
+    if (edge.from !== edge.to) indegree.set(edge.to, (indegree.get(edge.to) ?? 0) + 1);
+  }
+
+  // A back edge is an edge to a node on the current DFS path. Starting at
+  // graph roots prevents a loop edge saved before its forward path from being
+  // selected as a forward edge just because it appears first in the array.
+  const state = new Map<string, 0 | 1 | 2>();
+  const visit = (id: string): void => {
+    state.set(id, 1);
+    for (const edge of outgoing.get(id) ?? []) {
+      if (edge.from === edge.to) {
+        backEdgeIds.add(edge.id);
+        continue;
+      }
+      const targetState = state.get(edge.to);
+      if (targetState === 1) {
+        backEdgeIds.add(edge.id);
+      } else if (targetState === undefined) {
+        visit(edge.to);
+      }
+    }
+    state.set(id, 2);
+  };
+
+  for (const id of nodeOrder) {
+    if ((indegree.get(id) ?? 0) === 0 && state.get(id) === undefined) visit(id);
+  }
+  // A component made entirely of cycles has no root. It still needs one
+  // deterministic traversal so layout and scheduling can remove its feedback
+  // edges rather than leaving a dependency cycle unresolved.
+  for (const id of nodeOrder) {
+    if (state.get(id) === undefined) visit(id);
   }
   return backEdgeIds;
 }
@@ -155,19 +196,6 @@ function sortLayoutColumn(
     const difference = barycenter(left) - barycenter(right);
     return difference || currentRows.get(left)! - currentRows.get(right)!;
   });
-}
-
-function canReach(from: string, target: string, adjacency: ReadonlyMap<string, string[]>): boolean {
-  const pending = [from];
-  const seen = new Set<string>();
-  while (pending.length > 0) {
-    const current = pending.pop()!;
-    if (current === target) return true;
-    if (seen.has(current)) continue;
-    seen.add(current);
-    pending.push(...(adjacency.get(current) ?? []));
-  }
-  return false;
 }
 
 export function formatWorkflowDuration(ms: number): string {
