@@ -79,6 +79,16 @@
   padding-bottom: 6px;
 }
 
+.plan-view__list.is-pointer-dragging,
+.plan-view__list.is-pointer-dragging .plan-view__item {
+  cursor: grabbing;
+  user-select: none;
+}
+
+.plan-view__list.is-pointer-drop-target {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
 .plan-view__item {
   width: 100%;
   display: flex;
@@ -142,6 +152,15 @@
 .plan-view__item.is-active {
   background: #37373d;
   color: var(--fg-strong);
+}
+
+.plan-view__item.is-pointer-dragging {
+  opacity: 0.55;
+}
+
+.plan-view__item.is-pointer-drop-target {
+  background: var(--accent-soft);
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 
 .plan-view__empty {

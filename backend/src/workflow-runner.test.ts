@@ -268,8 +268,12 @@ test("pause remains resumable when an agent reports an abort error", () => {
     resumable: true,
   });
   assert.deepEqual(workflowStopDisposition(false, true, true, "The operation was aborted."), {
-    stopped: false,
-    resumable: false,
+    stopped: true,
+    resumable: true,
+  });
+  assert.deepEqual(workflowStopDisposition(false, false, true, "Node failed."), {
+    stopped: true,
+    resumable: true,
   });
   assert.deepEqual(workflowStopDisposition(false, true, false, "Stopped"), {
     stopped: true,

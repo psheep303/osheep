@@ -812,7 +812,7 @@ async function runWorkflowInBackground(
       const nodes = activeNodes.length
         ? record.nodes.map((node) =>
             node.status === "running"
-              ? stopped && nodeKind(node) === "agent"
+              ? stopped && checkpointOnStop()
                 ? resetInterruptedNode(node)
                 : {
                     ...node,
@@ -871,7 +871,7 @@ async function executeWorkflowNode(
   const kind = nodeKind(node);
 
   if (isTriggerKind(kind)) {
-    const output = triggerOutput(node, kind);
+    const output = triggerOutput(node, kind, record);
     const outputText = stringifyBlockOutput(output);
     const completedAt = Date.now();
     await patchWorkflowNode(workspace.path, workflowId, nodeId, {
@@ -940,7 +940,7 @@ async function executeWorkflowNode(
             });
   } catch (error) {
     const message = (error as Error).message || `${currentNode.title} failed.`;
-    if (abort.signal.aborted || message === "Stopped" || !nodeFailover(currentNode)) {
+    if (abort.signal.aborted || message === "Stopped" || !nodeFailover(currentNode, record)) {
       throw error;
     }
     const outputText = stringifyBlockOutput({
@@ -1001,7 +1001,7 @@ async function executeWorkflowNode(
         ).catch(() => ({}))
       : {});
   const usage = mergeUsage(terminalUsage, sessionUsage);
-  const usageModel = (usage.model ?? currentNode.model) || "default";
+  const usageModel = (usage.model ?? resolveBlockTemplate(currentNode.model || "default", record)) || "default";
   const modelCost =
     usage.cost === undefined
       ? calculateModelCost(
@@ -1030,7 +1030,7 @@ async function executeWorkflowNode(
       billingMultiplier,
     }),
   );
-  if (result.error && !nodeFailover(currentNode)) throw new Error(result.error);
+  if (result.error && !nodeFailover(currentNode, record)) throw new Error(result.error);
   return sourceHandleForOutput(kind, result.output);
 }
 
@@ -1044,22 +1044,23 @@ async function executeAgentNode(
   retryLanguage: WorkflowRetryLanguage,
 ): Promise<LocalNodeResult> {
   if (!node.prompt.trim()) throw new Error(`${node.title} has no prompt.`);
+  const executionNode = resolveAgentExecutionNode(node, record);
   const logs: RunLogEntry[] = [];
-  const providerRuntime = await prepareAgentProviderRuntime(node);
+  const providerRuntime = await prepareAgentProviderRuntime(executionNode);
   const usageMonitor = await createLiveAgentUsageMonitor({
     workspaceRoot: workspace.path,
     workflowId: record.id,
     runId,
     nodeId: node.id,
     app: providerRuntime.app,
-    model: node.model || "default",
-    inputIncludesCache: node.providerKind !== "claude-cli",
+    model: executionNode.model || "default",
+    inputIncludesCache: executionNode.providerKind !== "claude-cli",
     provider: providerRuntime.current,
     signal: abort.signal,
   });
-  const autoSuccess = agentAutoSuccess(node);
+  const autoSuccess = agentAutoSuccess(executionNode);
   const details = createLiveAgentRunDetails({
-    node,
+    node: executionNode,
     startedAt,
     autoSuccess,
     logs,
@@ -1087,17 +1088,17 @@ async function executeAgentNode(
   let terminalFailure: AgentTerminalFailure | null = null;
   const retryReasons: string[] = [];
   let terminalTranscript = "";
-  const retries = agentRetryCount(node);
-  const retryForever = agentRetryForever(node);
-  const retryDelaySeconds = agentRetryDelaySeconds(node);
+  const retries = agentRetryCount(executionNode);
+  const retryForever = agentRetryForever(executionNode);
+  const retryDelaySeconds = agentRetryDelaySeconds(executionNode);
   const retryPrompt = agentRetryPromptForLanguage(retryLanguage);
-  const configuredSessionId = agentConfiguredSessionId(node);
-  const sessionApp = node.providerKind === "claude-cli" ? "claude" : "codex";
+  const configuredSessionId = agentConfiguredSessionId(executionNode);
+  const sessionApp = executionNode.providerKind === "claude-cli" ? "claude" : "codex";
   const resumeConfiguredSession = configuredSessionId
     ? Boolean(await findAgentSessionFilePath(sessionApp, configuredSessionId))
     : false;
   let conversationSessionId: string | undefined =
-    node.providerKind === "claude-cli"
+    executionNode.providerKind === "claude-cli"
       ? configuredSessionId || randomUUID()
       : resumeConfiguredSession
         ? configuredSessionId
@@ -1114,17 +1115,17 @@ async function executeAgentNode(
     try {
       result = await runAgentTerminal({
         workspace,
-        kind: node.providerKind,
-        model: node.model || "default",
+        kind: executionNode.providerKind,
+        model: executionNode.model || "default",
         prompt: currentPrompt,
         autoSuccess,
-        claudePermissionMode: agentClaudePermissionMode(node),
-        mode: agentMode(node),
-        codexApproval: agentCodexApproval(node),
-        codexSandbox: agentCodexSandbox(node),
-        effort: agentEffort(node),
-        alwaysEnter: agentAlwaysEnter(node),
-        keepRunningOnInterrupt: agentKeepRunningOnInterrupt(node),
+        claudePermissionMode: agentClaudePermissionMode(executionNode),
+        mode: agentMode(executionNode),
+        codexApproval: agentCodexApproval(executionNode),
+        codexSandbox: agentCodexSandbox(executionNode),
+        effort: agentEffort(executionNode),
+        alwaysEnter: agentAlwaysEnter(executionNode),
+        keepRunningOnInterrupt: agentKeepRunningOnInterrupt(executionNode),
         conversationSessionId,
         requestedConversationSessionId: configuredSessionId || undefined,
         resumeConversation: resumeConfiguredSession || attempt > 0,
@@ -1174,7 +1175,7 @@ async function executeAgentNode(
       result.content && !/completed without text output/i.test(result.content)
         ? result.content
         : result.transcript ||
-          `${node.providerKind === "codex-cli" ? "Codex CLI" : "Claude Code CLI"} completed without text output.`;
+          `${executionNode.providerKind === "codex-cli" ? "Codex CLI" : "Claude Code CLI"} completed without text output.`;
     terminalFailure = classifyAgentTerminalResultFailure(result, currentPrompt);
     if (!terminalFailure.failed) break;
     if (!shouldRetryAgentTerminalFailure(terminalFailure, attempt, retries, retryForever)) break;
@@ -1206,7 +1207,7 @@ async function executeAgentNode(
   if (!result) throw new Error(`${node.title} did not start.`);
   const finalUsage = await usageMonitor.finalize();
   if (terminalFailure?.failed) {
-    const agentLabel = node.providerKind === "codex-cli" ? "Codex CLI" : "Claude Code CLI";
+    const agentLabel = executionNode.providerKind === "codex-cli" ? "Codex CLI" : "Claude Code CLI";
     const errorMessage =
       attempt > 0
         ? `${agentLabel} failed after ${attempt + 1} attempt${attempt === 0 ? "" : "s"}: ${terminalFailure.message}`
@@ -1225,7 +1226,7 @@ async function executeAgentNode(
     if (retryReasons.length) errorDetails.retryReasons = retryReasons;
     return {
       output: {
-        type: node.providerKind === "claude-cli" ? "claude" : "codex",
+        type: executionNode.providerKind === "claude-cli" ? "claude" : "codex",
         status: "failed",
         text: raw.trim(),
         error: errorMessage,
@@ -1244,14 +1245,14 @@ async function executeAgentNode(
   }
   const toolRun = await maybeRunAgentMcpToolCalls(
     record,
-    node,
+    executionNode,
     mcpTools,
     raw,
     abort.signal,
     (entry) => appendRunLog(logs, entry),
   );
   if (toolRun) raw = toolRun.raw;
-  const output = agentOutput(node, raw);
+  const output = agentOutput(executionNode, raw);
   const finalDetails = details.snapshot("success", Date.now());
   finalDetails.terminalSessionId = finalDetails.terminalSessionId ?? result.sessionId;
   finalDetails.conversationSessionId =
@@ -1274,6 +1275,53 @@ async function executeAgentNode(
     },
     conversationSessionId,
     usage: finalUsage,
+  };
+}
+
+function resolveAgentExecutionNode(node: WorkflowNode, record: WorkflowRecord): WorkflowNode {
+  const config = { ...(node.config ?? {}) };
+  const stringKeys = [
+    "sessionId",
+    "effort",
+    "claudeMode",
+    "mode",
+    "claudePermissionMode",
+    "codexApproval",
+    "codexSandbox",
+    "retryStrategy",
+  ];
+  for (const key of stringKeys) {
+    const value = config[key];
+    if (typeof value === "string") config[key] = resolveBlockTemplate(value, record);
+  }
+  for (const key of ["retries", "retryDelaySeconds"]) {
+    const value = config[key];
+    if (typeof value === "string") {
+      const resolved = resolveTemplateValue(value, record);
+      const number = typeof resolved === "number" ? resolved : Number(resolved);
+      if (Number.isFinite(number)) config[key] = number;
+    }
+  }
+  for (const key of ["autoSuccess", "retryForever", "alwaysEnter", "keepRunningOnInterrupt"]) {
+    const value = config[key];
+    if (typeof value === "string") {
+      const resolved = resolveTemplateValue(value, record);
+      if (typeof resolved === "boolean") config[key] = resolved;
+      else if (typeof resolved === "string") {
+        const normalized = resolved.trim().toLowerCase();
+        if (normalized === "true" || normalized === "false") config[key] = normalized === "true";
+      }
+    }
+  }
+  if (Array.isArray(config.retryProviderIds)) {
+    config.retryProviderIds = config.retryProviderIds.map((value) =>
+      typeof value === "string" ? resolveBlockTemplate(value, record) : value,
+    );
+  }
+  return {
+    ...node,
+    model: resolveBlockTemplate(node.model || "default", record),
+    config,
   };
 }
 
@@ -1557,8 +1605,8 @@ async function executeLocalNode(
   const kind = nodeKind(node);
   if (kind === "input") {
     const inputTitle = Object.prototype.hasOwnProperty.call(node.config ?? {}, "inputTitle")
-      ? configString(node, "inputTitle").trim()
-      : configString(node, "inputTitle", node.prompt || node.title).trim();
+      ? configString(node, "inputTitle", "", record).trim()
+      : configString(node, "inputTitle", node.prompt || node.title, record).trim();
     const waitingOutput = {
       type: "input",
       status: "waiting",
@@ -1673,7 +1721,7 @@ async function executeLocalNode(
         url,
         headers: stringRecord(headersObject),
         body,
-        responseType: config.responseType,
+        responseType: resolveBlockTemplate(config.responseType, record),
       }),
       "",
       120_000,
@@ -1815,7 +1863,7 @@ async function executeLocalNode(
     if (!(await isRepo(workspaceRoot))) throw new Error(`${node.title} requires a Git repository.`);
     const message = resolveBlockTemplate(configString(node, "message"), record).trim();
     if (!message) throw new Error(`${node.title} requires a commit message.`);
-    if (node.config?.stageAll === true) {
+    if (configBoolean(node, "stageAll", record)) {
       await stageAllChanges(workspaceRoot);
     }
     const head = await gitCommit(workspaceRoot, message);
@@ -1829,7 +1877,7 @@ async function executeLocalNode(
     if (!(await isRepo(workspaceRoot))) throw new Error(`${node.title} requires a Git repository.`);
     const branch = resolveBlockTemplate(configString(node, "branch"), record).trim();
     if (!branch) throw new Error(`${node.title} requires a branch name.`);
-    const createIfMissing = node.config?.createIfMissing === true;
+    const createIfMissing = configBoolean(node, "createIfMissing", record);
     const branches = await listBranches(workspaceRoot);
     const exists = branches.branches.some((item) => item.name === branch);
     if (exists) {
@@ -1850,12 +1898,12 @@ async function executeLocalNode(
     const branch = resolveBlockTemplate(configString(node, "branch"), record).trim();
     if (!branch) throw new Error(`${node.title} requires a branch name.`);
     const remote =
-      node.config?.remote === true
+      configBoolean(node, "remote", record)
         ? resolveBlockTemplate(configString(node, "remoteName", "origin"), record).trim() ||
           "origin"
         : null;
     await deleteBranch(workspaceRoot, branch, {
-      force: node.config?.force === true,
+      force: configBoolean(node, "force", record),
       remote,
     });
     return {
@@ -1864,7 +1912,7 @@ async function executeLocalNode(
         status: "success",
         branch,
         remote,
-        force: node.config?.force === true,
+        force: configBoolean(node, "force", record),
         text: branch,
       },
       changedFiles: true,
@@ -1877,7 +1925,7 @@ async function executeLocalNode(
     const body = resolveBlockTemplate(configString(node, "body"), record);
     const base = resolveBlockTemplate(configString(node, "base"), record).trim();
     const head = resolveBlockTemplate(configString(node, "compare"), record).trim();
-    if (node.config?.push !== false) {
+    if (configBoolean(node, "push", record, true)) {
       const info = await getRepoInfo(workspaceRoot);
       if (!info.upstream) {
         const remotes = await listRemotes(workspaceRoot);
@@ -1899,7 +1947,7 @@ async function executeLocalNode(
       body,
       base: base || undefined,
       head: head || undefined,
-      draft: node.config?.draft === true,
+      draft: configBoolean(node, "draft", record),
     });
     return {
       output: {
@@ -1913,7 +1961,7 @@ async function executeLocalNode(
   }
 
   if (kind === "merge") {
-    const mode = mergeNodeConfig(node).mode === "array" ? "array" : "object";
+    const mode = mergeNodeConfig(node, record).mode === "array" ? "array" : "object";
     const items = incomingOutputs(record, node);
     const data =
       mode === "array"
@@ -1940,28 +1988,34 @@ async function executeLocalNode(
 
   if (kind === "loop-items") {
     const config = loopItemsConfig(node);
+    const resolvedMode = resolveBlockTemplate(config.mode, record);
+    const batchSizeValue =
+      typeof node.config?.batchSize === "string"
+        ? Number(resolveBlockTemplate(node.config.batchSize, record))
+        : config.batchSize;
+    const batchSize = Number.isFinite(batchSizeValue) ? clamp(batchSizeValue, 1, 1000) : 1;
     const source = config.source.trim()
       ? resolveTemplateValue(config.source, record)
       : (incomingOutputs(record, node)[0]?.data ?? incomingOutputs(record, node)[0] ?? []);
     const items = Array.isArray(source) ? source : [source].filter((item) => item !== undefined);
-    const batches = chunk(items, Math.max(1, config.batchSize));
+    const batches = chunk(items, Math.max(1, batchSize));
     return {
       output: {
         type: "loop-items",
         status: "success",
-        mode: config.mode,
-        batchSize: config.batchSize,
+        mode: resolvedMode,
+        batchSize,
         items,
         batches,
-        data: config.mode === "batches" ? batches : items,
+        data: resolvedMode === "batches" ? batches : items,
         count: items.length,
-        text: jsonPreview(config.mode === "batches" ? batches : items),
+        text: jsonPreview(resolvedMode === "batches" ? batches : items),
       },
     };
   }
 
   if (kind === "wait") {
-    const seconds = Math.max(0, waitNodeConfig(node).seconds);
+    const seconds = Math.max(0, waitNodeConfig(node, record).seconds);
     const startedAt = Date.now();
     await sleep(seconds * 1000, options.signal);
     const durationMs = Date.now() - startedAt;
@@ -1983,12 +2037,13 @@ async function executeLocalNode(
       ? resolveTemplateValue(config.source, record)
       : (incoming[0] ?? "");
     const parsedSource = parseMaybeJson(source);
-    const value = config.path.trim() ? getLoosePathValue(parsedSource, config.path) : parsedSource;
+    const resolvedPath = resolveBlockTemplate(config.path, record).trim();
+    const value = resolvedPath ? getLoosePathValue(parsedSource, resolvedPath) : parsedSource;
     return {
       output: {
         type: "json",
         status: "success",
-        path: config.path,
+        path: resolvedPath,
         source: parsedSource,
         value,
         data: value,
@@ -1998,7 +2053,7 @@ async function executeLocalNode(
   }
 
   if (kind === "codex-plugin") {
-    const selected = pluginSelectors(node);
+    const selected = pluginSelectors(node, record);
     const snapshot = await applyCodexPluginSelection(selected);
     const enabled = snapshot.plugins
       .filter((plugin) => plugin.status.enabled)
@@ -2015,7 +2070,7 @@ async function executeLocalNode(
   }
 
   if (kind === "claude-plugin") {
-    const selected = pluginSelectors(node);
+    const selected = pluginSelectors(node, record);
     const snapshot = await applyClaudePluginSelection(selected);
     const enabled = snapshot.plugins
       .filter((plugin) => plugin.status.installed && plugin.status.enabled)
@@ -2032,7 +2087,7 @@ async function executeLocalNode(
   }
 
   if (kind === "codex-skill" || kind === "claude-skill") {
-    const selected = skillNames(node);
+    const selected = skillNames(node, record);
     const agent = kind === "codex-skill" ? "codex" : "claude";
     const snapshot = await applySkillSelection({ agent, selectedNames: selected });
     const enabled = snapshot.enabled
@@ -2072,12 +2127,12 @@ async function executeLocalNode(
     if (!options.allowMcpToolCall) {
       const discovery = await discoverRemoteMcp({
         remoteLink,
-        postUrl: config.postUrl || undefined,
+        postUrl: resolveBlockTemplate(config.postUrl, record).trim() || undefined,
         headers: stringRecord(headers),
-        apiKey: config.apiKey || undefined,
+        apiKey: resolveBlockTemplate(config.apiKey, record).trim() || undefined,
       });
       const firstTool = discovery.tools[0]?.name ?? "";
-      const nextToolName = config.toolName || firstTool;
+      const nextToolName = toolName || firstTool;
       const nextTool = discovery.tools.find((tool) => tool.name === nextToolName);
       return {
         output: {
@@ -2095,13 +2150,13 @@ async function executeLocalNode(
         nodePatch: {
           config: {
             ...(node.config ?? {}),
-            remoteLink: discovery.remoteLink,
-            postUrl: discovery.postUrl,
+            remoteLink: preserveMcpTemplate(node, "remoteLink", discovery.remoteLink),
+            postUrl: preserveMcpTemplate(node, "postUrl", discovery.postUrl),
             tools: discovery.tools,
             connectedAt: discovery.connectedAt,
             connectionStatus: "connected",
             connectionError: "",
-            toolName: nextToolName,
+            toolName: preserveMcpTemplate(node, "toolName", nextToolName),
             arguments: shouldReplaceMcpArguments(config.arguments)
               ? argumentsTemplateFromTool(nextTool)
               : config.arguments,
@@ -2112,9 +2167,9 @@ async function executeLocalNode(
     if (!toolName) throw new Error(`${node.title} has no tool selected.`);
     const result = await callRemoteMcp({
       remoteLink,
-      postUrl: config.postUrl || undefined,
+      postUrl: resolveBlockTemplate(config.postUrl, record).trim() || undefined,
       headers: stringRecord(headers),
-      apiKey: config.apiKey || undefined,
+      apiKey: resolveBlockTemplate(config.apiKey, record).trim() || undefined,
       name: toolName,
       arguments: args,
     });
@@ -2134,8 +2189,8 @@ async function executeLocalNode(
       nodePatch: {
         config: {
           ...(node.config ?? {}),
-          remoteLink: result.remoteLink,
-          postUrl: result.postUrl,
+          remoteLink: preserveMcpTemplate(node, "remoteLink", result.remoteLink),
+          postUrl: preserveMcpTemplate(node, "postUrl", result.postUrl),
           connectionStatus: result.ok ? "connected" : "error",
           connectionError: result.ok ? "" : stringifyTemplateValue(result.error),
         },
@@ -2696,8 +2751,10 @@ export function workflowStopDisposition(
   message: string,
 ): { stopped: boolean; resumable: boolean } {
   const stopped =
-    (pauseRequested && aborted) || (!hasFatalError && (aborted || message === "Stopped"));
-  return { stopped, resumable: pauseRequested && stopped };
+    (pauseRequested && aborted) ||
+    hasFatalError ||
+    (!hasFatalError && (aborted || message === "Stopped"));
+  return { stopped, resumable: stopped && (pauseRequested || hasFatalError) };
 }
 
 function workflowDefinitionFingerprint(record: WorkflowRecord): string {
@@ -2750,14 +2807,22 @@ function isTriggerKind(kind: WorkflowNodeKind): boolean {
   );
 }
 
-function triggerOutput(node: WorkflowNode, kind: WorkflowNodeKind): WorkflowBlockOutput {
+function triggerOutput(
+  node: WorkflowNode,
+  kind: WorkflowNodeKind,
+  record?: WorkflowRecord,
+): WorkflowBlockOutput {
   const config = node.config ?? {};
+  const resolve = (value: unknown): string | undefined =>
+    typeof value === "string" ? (record ? resolveBlockTemplate(value, record) : value) : undefined;
   return {
     type: kind,
     status: "success",
     id: displayBlockId(node),
-    schedule: typeof config.cron === "string" ? config.cron : undefined,
-    webhookPath: typeof config.path === "string" ? config.path : undefined,
+    schedule: resolve(config.cron),
+    timezone: resolve(config.timezone),
+    method: resolve(config.method),
+    webhookPath: resolve(config.path),
     text:
       kind === "cron"
         ? "Cron trigger evaluated for manual run."
@@ -2851,11 +2916,11 @@ async function maybeRunAgentMcpToolCalls(
     }
     const result = await callRemoteMcp({
       remoteLink: resolveBlockTemplate(runtimeTool.config.remoteLink, record).trim(),
-      postUrl: runtimeTool.config.postUrl || undefined,
+      postUrl: resolveBlockTemplate(runtimeTool.config.postUrl, record).trim() || undefined,
       headers: stringRecord(
         parseJsonObject(resolveBlockTemplate(runtimeTool.config.headers, record)) ?? {},
       ),
-      apiKey: runtimeTool.config.apiKey || undefined,
+      apiKey: resolveBlockTemplate(runtimeTool.config.apiKey, record).trim() || undefined,
       name: call.name,
       arguments: call.arguments,
     });
@@ -3485,9 +3550,16 @@ function ifNodeConfig(node: WorkflowNode): { expression: string } {
   };
 }
 
-function mergeNodeConfig(node: WorkflowNode): { mode: string } {
+function mergeNodeConfig(node: WorkflowNode, record?: WorkflowRecord): { mode: string } {
   const config = node.config ?? {};
-  return { mode: typeof config.mode === "string" ? config.mode : "object" };
+  return {
+    mode:
+      typeof config.mode === "string"
+        ? record
+          ? resolveBlockTemplate(config.mode, record)
+          : config.mode
+        : "object",
+  };
 }
 
 function codeNodeConfig(node: WorkflowNode): { code: string } {
@@ -3510,9 +3582,13 @@ function loopItemsConfig(node: WorkflowNode): { source: string; batchSize: numbe
   };
 }
 
-function waitNodeConfig(node: WorkflowNode): { seconds: number } {
+function waitNodeConfig(node: WorkflowNode, record?: WorkflowRecord): { seconds: number } {
   const config = node.config ?? {};
-  const seconds = Number(config.seconds);
+  const seconds = Number(
+    typeof config.seconds === "string" && record
+      ? resolveBlockTemplate(config.seconds, record)
+      : config.seconds,
+  );
   return { seconds: Number.isFinite(seconds) ? clamp(seconds, 0, 86_400) : 1 };
 }
 
@@ -3524,17 +3600,21 @@ function jsonNodeConfig(node: WorkflowNode): { source: string; path: string } {
   };
 }
 
-function pluginSelectors(node: WorkflowNode): string[] {
+function pluginSelectors(node: WorkflowNode, record?: WorkflowRecord): string[] {
   const value = node.config?.pluginSelectors;
   return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === "string")
+    ? value
+        .filter((item): item is string => typeof item === "string")
+        .map((item) => (record ? resolveBlockTemplate(item, record) : item))
     : [];
 }
 
-function skillNames(node: WorkflowNode): string[] {
+function skillNames(node: WorkflowNode, record?: WorkflowRecord): string[] {
   const value = node.config?.skillNames;
   return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === "string")
+    ? value
+        .filter((item): item is string => typeof item === "string")
+        .map((item) => (record ? resolveBlockTemplate(item, record) : item))
     : [];
 }
 
@@ -3555,6 +3635,13 @@ function mcpNodeConfig(node: WorkflowNode): McpNodeConfig {
     arguments: typeof config.arguments === "string" ? config.arguments : "{}",
     tools,
   };
+}
+
+function preserveMcpTemplate(node: WorkflowNode, key: string, resolved: string): string {
+  const original =
+    node.config?.[key] ??
+    (key === "remoteLink" ? node.config?.server : key === "toolName" ? node.config?.tool : undefined);
+  return typeof original === "string" && original.includes("{{") ? original : resolved;
 }
 
 function variableNodeConfig(
@@ -4003,9 +4090,34 @@ function nodeKind(node: WorkflowNode): WorkflowNodeKind {
   return node.kind ?? "agent";
 }
 
-function configString(node: WorkflowNode, key: string, fallback = ""): string {
+function configString(
+  node: WorkflowNode,
+  key: string,
+  fallback = "",
+  record?: WorkflowRecord,
+): string {
   const value = node.config?.[key];
-  return typeof value === "string" ? value : fallback;
+  return typeof value === "string"
+    ? record
+      ? resolveBlockTemplate(value, record)
+      : value
+    : fallback;
+}
+
+function configBoolean(
+  node: WorkflowNode,
+  key: string,
+  record?: WorkflowRecord,
+  fallback = false,
+): boolean {
+  const value = node.config?.[key];
+  if (typeof value === "boolean") return value;
+  if (typeof value !== "string" || !record) return fallback;
+  const resolved = resolveTemplateValue(value, record);
+  if (typeof resolved === "boolean") return resolved;
+  if (typeof resolved !== "string") return fallback;
+  const normalized = resolved.trim().toLowerCase();
+  return normalized === "true" ? true : normalized === "false" ? false : fallback;
 }
 
 function sourceHandleForOutput(
@@ -4144,8 +4256,8 @@ export async function retryWorkflowNodeNow(
   return true;
 }
 
-function nodeFailover(node: WorkflowNode): boolean {
-  return supportsFailover(nodeKind(node)) && node.config?.failover === true;
+function nodeFailover(node: WorkflowNode, record?: WorkflowRecord): boolean {
+  return supportsFailover(nodeKind(node)) && configBoolean(node, "failover", record);
 }
 
 function supportsFailover(kind: WorkflowNodeKind): boolean {

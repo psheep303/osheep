@@ -106,7 +106,6 @@ import {
   formatCompactTokenCount,
   formatWorkflowDuration,
   isWorkflowSessionId,
-  WORKFLOW_SESSION_ID_PATTERN,
   type WorkflowBlockOutput,
   withWorkflowTitle,
   workflowLayoutColumns,
@@ -1456,27 +1455,27 @@ export function WorkflowTab({
           connectionError: "",
         },
       });
-      const headers = parseJsonObject(config.headers) ?? {};
+      const headers = parseJsonObject(resolveBlockTemplate(config.headers, record)) ?? {};
       const discovery = await discoverRemoteMcp(workspaceId, {
         remoteLink,
-        postUrl: config.postUrl || undefined,
+        postUrl: resolveBlockTemplate(config.postUrl, record).trim() || undefined,
         headers: stringRecord(headers),
-        apiKey: config.apiKey || undefined,
+        apiKey: resolveBlockTemplate(config.apiKey, record).trim() || undefined,
       });
       const currentNode = workflowRef.current?.nodes.find((item) => item.id === nodeId) ?? node;
       const firstTool = discovery.tools[0]?.name ?? "";
-      const nextToolName = config.toolName || firstTool;
+      const nextToolName = resolveBlockTemplate(config.toolName, record).trim() || firstTool;
       const nextTool = discovery.tools.find((tool) => tool.name === nextToolName);
       updateNode(nodeId, {
         config: {
           ...(currentNode.config ?? {}),
-          remoteLink: discovery.remoteLink,
-          postUrl: discovery.postUrl,
+          remoteLink: preserveMcpTemplate(currentNode, "remoteLink", discovery.remoteLink),
+          postUrl: preserveMcpTemplate(currentNode, "postUrl", discovery.postUrl),
           tools: discovery.tools,
           connectedAt: discovery.connectedAt,
           connectionStatus: "connected",
           connectionError: "",
-          toolName: nextToolName,
+          toolName: preserveMcpTemplate(currentNode, "toolName", nextToolName),
           arguments: shouldReplaceMcpArguments(config.arguments)
             ? argumentsTemplateFromTool(nextTool)
             : config.arguments,
@@ -2282,7 +2281,7 @@ export function WorkflowTab({
         const startedAt = Date.now();
         const kind = nodeKind(node);
         if (isTriggerNodeKind(kind)) {
-          const output = triggerOutput(node);
+          const output = triggerOutput(node, current);
           const outputText = stringifyBlockOutput(output);
           current = patchNode(current, nodeId, {
             status: "success",
@@ -2390,6 +2389,7 @@ export function WorkflowTab({
         if (!node.prompt.trim()) {
           throw new Error(`${node.title} has no prompt.`);
         }
+        const executionNode = resolveAgentExecutionNode(node, current);
         const ac = new AbortController();
         abortRef.current = ac;
         let lastDetailsAt = 0;
@@ -2398,8 +2398,8 @@ export function WorkflowTab({
         let conversationSessionId = "";
         let terminalStatus = "";
         const agentSessionApp: AgentSessionApp =
-          node.providerKind === "claude-cli" ? "claude" : "codex";
-        const configuredSessionId = workflowSessionId(node);
+          executionNode.providerKind === "claude-cli" ? "claude" : "codex";
+        const configuredSessionId = workflowSessionId(executionNode);
         if (configuredSessionId && !isWorkflowSessionId(configuredSessionId)) {
           throw new Error(`${node.title} session ID must be a valid UUID.`);
         }
@@ -2408,12 +2408,12 @@ export function WorkflowTab({
           configuredSessionId !== "" && existingAgentSessionIds.has(configuredSessionId);
         const requestedConversationSessionId =
           configuredSessionId ||
-          (node.providerKind === "claude-cli" ? generateWorkflowSessionId() : undefined);
+          (executionNode.providerKind === "claude-cli" ? generateWorkflowSessionId() : undefined);
         const commandConversationSessionId =
-          node.providerKind === "claude-cli" || resumeConfiguredSession
+          executionNode.providerKind === "claude-cli" || resumeConfiguredSession
             ? requestedConversationSessionId
             : undefined;
-        const autoSuccess = agentAutoSuccess(node);
+        const autoSuccess = agentAutoSuccess(executionNode);
         const updateAgentDetails = (
           status: WorkflowRunDetailSnapshot["status"],
           completedAt?: number,
@@ -2423,7 +2423,7 @@ export function WorkflowTab({
             config: {
               ...(node.config ?? {}),
               runDetails: agentRunSnapshot(
-                node,
+                executionNode,
                 status,
                 startedAt,
                 completedAt,
@@ -2454,18 +2454,18 @@ export function WorkflowTab({
           result = await runAiTerminalWithRetries(
             workspaceId,
             {
-              model: node.model || "default",
-              kind: node.providerKind,
+              model: executionNode.model || "default",
+              kind: executionNode.providerKind,
               messages: [{ role: "user", content: prompt }],
               terminalPrompt,
               autoSuccess,
-              claudePermissionMode: agentClaudePermissionMode(node),
-              mode: agentMode(node),
-              codexApproval: agentCodexApproval(node),
-              codexSandbox: agentCodexSandbox(node),
-              effort: agentEffort(node),
-              alwaysEnter: agentAlwaysEnter(node),
-              keepRunningOnInterrupt: agentKeepRunningOnInterrupt(node),
+              claudePermissionMode: agentClaudePermissionMode(executionNode),
+              mode: agentMode(executionNode),
+              codexApproval: agentCodexApproval(executionNode),
+              codexSandbox: agentCodexSandbox(executionNode),
+              effort: agentEffort(executionNode),
+              alwaysEnter: agentAlwaysEnter(executionNode),
+              keepRunningOnInterrupt: agentKeepRunningOnInterrupt(executionNode),
               conversationSessionId: commandConversationSessionId,
               requestedConversationSessionId: configuredSessionId || undefined,
               resumeConversation: resumeConfiguredSession,
@@ -2483,9 +2483,9 @@ export function WorkflowTab({
               }
             },
             ac.signal,
-            agentRetryCount(node),
-            agentRetryForever(node),
-            agentRetryDelaySeconds(node),
+            agentRetryCount(executionNode),
+            agentRetryForever(executionNode),
+            agentRetryDelaySeconds(executionNode),
             resolvedLanguage,
             appendLog,
           );
@@ -2511,11 +2511,11 @@ export function WorkflowTab({
             startedAt,
             expectedId: requestedConversationSessionId,
           }));
-        const fallbackRaw = `${node.providerKind === "codex-cli" ? "Codex CLI" : "Claude Code CLI"} completed without text output.`;
+        const fallbackRaw = `${executionNode.providerKind === "codex-cli" ? "Codex CLI" : "Claude Code CLI"} completed without text output.`;
         const transcriptRaw = result.result?.transcript
           ? cleanAgentTerminalConversation(
               result.result.transcript,
-              node.providerKind === "claude-cli" ? "claude-cli" : "codex-cli",
+              executionNode.providerKind === "claude-cli" ? "claude-cli" : "codex-cli",
             )
           : "";
         let raw =
@@ -2527,7 +2527,7 @@ export function WorkflowTab({
           : await maybeRunAgentMcpToolCalls(
               workspaceId,
               current,
-              node,
+              executionNode,
               mcpTools,
               raw,
               ac.signal,
@@ -2536,12 +2536,12 @@ export function WorkflowTab({
         if (toolRun) {
           raw = toolRun.raw;
         }
-        const output = agentOutput(node, raw);
+        const output = agentOutput(executionNode, raw);
         const outputText = stringifyBlockOutput(output);
         current = workflowRef.current ?? current;
         if (result.aborted) {
           const stoppedDetails = agentRunSnapshot(
-            node,
+            executionNode,
             "stopped",
             startedAt,
             Date.now(),
@@ -2575,7 +2575,7 @@ export function WorkflowTab({
           return;
         }
         const successDetails = agentRunSnapshot(
-          node,
+          executionNode,
           "success",
           startedAt,
           Date.now(),
@@ -2881,7 +2881,7 @@ export function WorkflowTab({
           <button
             className="workflow-toolbar__btn workflow-toolbar__btn--icon"
             onClick={() => void runSelected()}
-            disabled={running || hasCheckpoint || !selectedNode}
+            disabled={running || !selectedNode}
             title="Run selected block"
             aria-label="Run block"
           >
@@ -5441,9 +5441,9 @@ function WorkflowNodeInspector({
 
       <label className="workflow-inspector__field">
         <span>Name</span>
-        <TemplateInput
+        <input
           value={node.title}
-          onChange={(value) => onUpdate({ title: value })}
+          onChange={(event) => onUpdate({ title: event.target.value })}
           disabled={running}
           autoFocus={autoFocusName}
         />
@@ -5467,18 +5467,10 @@ function WorkflowNodeInspector({
           <div className="workflow-inspector__field">
             <span id={`workflow-session-id-${node.id}`}>{t("workflow.agent.sessionId")}</span>
             <div className="workflow-inspector__input-action">
-              <input
+              <TemplateInput
                 value={workflowSessionId(node)}
-                onChange={(event) => updateConfig({ sessionId: event.target.value })}
-                placeholder={t("workflow.agent.sessionIdPlaceholder")}
-                pattern={WORKFLOW_SESSION_ID_PATTERN}
-                aria-labelledby={`workflow-session-id-${node.id}`}
-                aria-invalid={
-                  workflowSessionId(node) !== "" && !isWorkflowSessionId(workflowSessionId(node))
-                }
+                onChange={(value) => updateConfig({ sessionId: value })}
                 disabled={running}
-                autoComplete="off"
-                spellCheck={false}
               />
               <button
                 type="button"
@@ -5884,12 +5876,10 @@ function WorkflowNodeInspector({
       ) : isIf ? (
         <label className="workflow-inspector__field">
           <span>Condition</span>
-          <input
-            className="workflow-inspector__condition-input"
+          <TemplateInput
             value={ifConfig.expression}
-            onChange={(event) => updateConfig({ expression: event.target.value })}
+            onChange={(value) => updateConfig({ expression: value })}
             disabled={running}
-            spellCheck={false}
           />
         </label>
       ) : isDiffApproval ? (
@@ -6241,11 +6231,10 @@ function WorkflowNodeInspector({
       ) : isInput ? (
         <label className="workflow-inspector__field">
           <span>Input title</span>
-          <input
+          <TemplateInput
             value={workflowInputTitle(node)}
-            onChange={(event) => updateConfig({ inputTitle: event.target.value })}
+            onChange={(value) => updateConfig({ inputTitle: value })}
             disabled={running}
-            spellCheck={false}
           />
         </label>
       ) : isVariable ? (
@@ -6966,10 +6955,11 @@ async function executeLocalNode(
     const method = resolveBlockTemplate(config.method, record).trim().toUpperCase() || "GET";
     const url = resolveBlockTemplate(config.url, record).trim();
     const body = resolveBlockTemplate(config.body, record);
+    const responseTypeValue = resolveBlockTemplate(config.responseType, record);
     const responseType = HTTP_RESPONSE_TYPES.includes(
-      config.responseType as (typeof HTTP_RESPONSE_TYPES)[number],
+      responseTypeValue as (typeof HTTP_RESPONSE_TYPES)[number],
     )
-      ? config.responseType
+      ? responseTypeValue
       : "auto";
     if (!url) throw new Error(`${node.title} has no URL.`);
     const headersParsed = parseTemplatedJsonValue(config.headers, record);
@@ -7094,7 +7084,8 @@ async function executeLocalNode(
   if (kind === "merge") {
     const config = mergeNodeConfig(node);
     const items = incomingOutputs(record, node);
-    const mode = config.mode === "array" ? "array" : "object";
+    const modeValue = resolveBlockTemplate(config.mode, record);
+    const mode = modeValue === "array" ? "array" : "object";
     const data =
       mode === "array"
         ? items.map((item) => item.data ?? item)
@@ -7128,14 +7119,20 @@ async function executeLocalNode(
       ? resolveTemplateValue(config.source, record)
       : (incomingOutputs(record, node)[0]?.data ?? incomingOutputs(record, node)[0] ?? []);
     const items = Array.isArray(source) ? source : [source].filter((item) => item !== undefined);
-    const batches = chunk(items, Math.max(1, config.batchSize));
-    const data = config.mode === "batches" ? batches : items;
+    const batchSizeValue =
+      typeof node.config?.batchSize === "string"
+        ? Number(resolveBlockTemplate(node.config.batchSize, record))
+        : config.batchSize;
+    const batchSize = Number.isFinite(batchSizeValue) ? clamp(batchSizeValue, 1, 1000) : 1;
+    const mode = resolveBlockTemplate(config.mode, record);
+    const batches = chunk(items, Math.max(1, batchSize));
+    const data = mode === "batches" ? batches : items;
     return {
       output: {
         type: "loop-items",
         status: "success",
-        mode: config.mode,
-        batchSize: config.batchSize,
+        mode,
+        batchSize,
         items,
         batches,
         data,
@@ -7147,7 +7144,11 @@ async function executeLocalNode(
 
   if (kind === "wait") {
     const config = waitNodeConfig(node);
-    const seconds = Math.max(0, config.seconds);
+    const resolvedSeconds =
+      typeof node.config?.seconds === "string"
+        ? Number(resolveBlockTemplate(node.config.seconds, record))
+        : config.seconds;
+    const seconds = Number.isFinite(resolvedSeconds) ? Math.max(0, resolvedSeconds) : 1;
     const startedAt = Date.now();
     await waitMs(seconds * 1000);
     const durationMs = Date.now() - startedAt;
@@ -7169,12 +7170,13 @@ async function executeLocalNode(
       ? resolveTemplateValue(config.source, record)
       : (incoming[0] ?? "");
     const parsedSource = parseMaybeJson(source);
-    const value = config.path.trim() ? getLoosePathValue(parsedSource, config.path) : parsedSource;
+    const path = resolveBlockTemplate(config.path, record).trim();
+    const value = path ? getLoosePathValue(parsedSource, path) : parsedSource;
     return {
       output: {
         type: "json",
         status: "success",
-        path: config.path,
+        path,
         source: parsedSource,
         value,
         data: value,
@@ -7227,7 +7229,7 @@ async function executeLocalNode(
             type: "mcp",
             status: "connected",
             remoteLink: redactUrl(remoteLink),
-            postUrl: redactUrl(config.postUrl),
+            postUrl: redactUrl(resolveBlockTemplate(config.postUrl, record)),
             tools: config.tools.map((tool) => ({
               name: tool.name,
               description: tool.description ?? "",
@@ -7240,12 +7242,12 @@ async function executeLocalNode(
       const headers = parseJsonObject(resolveBlockTemplate(config.headers, record)) ?? {};
       const discovery = await discoverRemoteMcp(workspaceId, {
         remoteLink,
-        postUrl: config.postUrl || undefined,
+        postUrl: resolveBlockTemplate(config.postUrl, record).trim() || undefined,
         headers: stringRecord(headers),
-        apiKey: config.apiKey || undefined,
+        apiKey: resolveBlockTemplate(config.apiKey, record).trim() || undefined,
       });
       const firstTool = discovery.tools[0]?.name ?? "";
-      const nextToolName = config.toolName || firstTool;
+      const nextToolName = toolName || firstTool;
       const nextTool = discovery.tools.find((tool) => tool.name === nextToolName);
       return {
         output: {
@@ -7263,13 +7265,13 @@ async function executeLocalNode(
         nodePatch: {
           config: {
             ...(node.config ?? {}),
-            remoteLink: discovery.remoteLink,
-            postUrl: discovery.postUrl,
+            remoteLink: preserveMcpTemplate(node, "remoteLink", discovery.remoteLink),
+            postUrl: preserveMcpTemplate(node, "postUrl", discovery.postUrl),
             tools: discovery.tools,
             connectedAt: discovery.connectedAt,
             connectionStatus: "connected",
             connectionError: "",
-            toolName: nextToolName,
+            toolName: preserveMcpTemplate(node, "toolName", nextToolName),
             arguments: shouldReplaceMcpArguments(config.arguments)
               ? argumentsTemplateFromTool(nextTool)
               : config.arguments,
@@ -7281,9 +7283,9 @@ async function executeLocalNode(
     const headers = parseJsonObject(resolveBlockTemplate(config.headers, record)) ?? {};
     const result = await callRemoteMcp(workspaceId, {
       remoteLink,
-      postUrl: config.postUrl || undefined,
+      postUrl: resolveBlockTemplate(config.postUrl, record).trim() || undefined,
       headers: stringRecord(headers),
-      apiKey: config.apiKey || undefined,
+      apiKey: resolveBlockTemplate(config.apiKey, record).trim() || undefined,
       name: toolName,
       arguments: args,
     });
@@ -7304,8 +7306,8 @@ async function executeLocalNode(
       nodePatch: {
         config: {
           ...(node.config ?? {}),
-          remoteLink: result.remoteLink,
-          postUrl: result.postUrl,
+          remoteLink: preserveMcpTemplate(node, "remoteLink", result.remoteLink),
+          postUrl: preserveMcpTemplate(node, "postUrl", result.postUrl),
           connectionStatus: result.ok ? "connected" : "error",
           connectionError: result.ok ? "" : stringifyTemplateValue(result.error),
         },
@@ -7520,9 +7522,9 @@ async function maybeRunAgentMcpToolCalls(
     const headers = parseJsonObject(resolveBlockTemplate(runtimeTool.config.headers, record)) ?? {};
     const result = await callRemoteMcp(workspaceId, {
       remoteLink: resolvedRemoteLink,
-      postUrl: runtimeTool.config.postUrl || undefined,
-      headers: stringRecord(headers),
-      apiKey: runtimeTool.config.apiKey || undefined,
+            postUrl: resolveBlockTemplate(runtimeTool.config.postUrl, record).trim() || undefined,
+            headers: stringRecord(headers),
+            apiKey: resolveBlockTemplate(runtimeTool.config.apiKey, record).trim() || undefined,
       name: call.name,
       arguments: call.arguments,
     });
@@ -7676,6 +7678,49 @@ function continueOnlyTerminalInput<
     ...input,
     messages: [{ role: "user", content: prompt }],
     terminalPrompt: prompt,
+  };
+}
+
+function resolveAgentExecutionNode(node: WorkflowNode, record: WorkflowRecord): WorkflowNode {
+  const config = { ...(node.config ?? {}) };
+  for (const key of [
+    "sessionId",
+    "effort",
+    "claudeMode",
+    "mode",
+    "claudePermissionMode",
+    "codexApproval",
+    "codexSandbox",
+    "retryStrategy",
+  ]) {
+    if (typeof config[key] === "string") config[key] = resolveBlockTemplate(config[key] as string, record);
+  }
+  for (const key of ["retries", "retryDelaySeconds"]) {
+    if (typeof config[key] === "string") {
+      const value = resolveTemplateValue(config[key] as string, record);
+      const number = typeof value === "number" ? value : Number(value);
+      if (Number.isFinite(number)) config[key] = number;
+    }
+  }
+  for (const key of ["autoSuccess", "retryForever", "alwaysEnter", "keepRunningOnInterrupt"]) {
+    if (typeof config[key] === "string") {
+      const value = resolveTemplateValue(config[key] as string, record);
+      if (typeof value === "boolean") config[key] = value;
+      else if (typeof value === "string") {
+        const normalized = value.trim().toLowerCase();
+        if (normalized === "true" || normalized === "false") config[key] = normalized === "true";
+      }
+    }
+  }
+  if (Array.isArray(config.retryProviderIds)) {
+    config.retryProviderIds = config.retryProviderIds.map((value) =>
+      typeof value === "string" ? resolveBlockTemplate(value, record) : value,
+    );
+  }
+  return {
+    ...node,
+    model: resolveBlockTemplate(node.model || "default", record),
+    config,
   };
 }
 
@@ -8071,15 +8116,19 @@ function extractMcpToolCalls(raw: string): Array<{
   return calls;
 }
 
-function triggerOutput(node: WorkflowNode): WorkflowBlockOutput {
+function triggerOutput(node: WorkflowNode, record?: WorkflowRecord): WorkflowBlockOutput {
   const kind = nodeKind(node);
   const config = node.config ?? {};
+  const resolve = (value: unknown): string | undefined =>
+    typeof value === "string" ? (record ? resolveBlockTemplate(value, record) : value) : undefined;
   return {
     type: kind,
     status: "success",
     id: displayBlockId(node),
-    schedule: typeof config.cron === "string" ? config.cron : undefined,
-    webhookPath: typeof config.path === "string" ? config.path : undefined,
+    schedule: resolve(config.cron),
+    timezone: resolve(config.timezone),
+    method: resolve(config.method),
+    webhookPath: resolve(config.path),
     text:
       kind === "cron"
         ? "Cron trigger evaluated for manual run."
@@ -9407,6 +9456,13 @@ function runDetailsSnapshot(node: WorkflowNode): WorkflowRunDetailSnapshot | nul
     retryAttempt: typeof raw.retryAttempt === "number" ? raw.retryAttempt : undefined,
     retryReason: typeof raw.retryReason === "string" ? raw.retryReason : undefined,
   };
+}
+
+function preserveMcpTemplate(node: WorkflowNode, key: string, resolved: string): string {
+  const original =
+    node.config?.[key] ??
+    (key === "remoteLink" ? node.config?.server : key === "toolName" ? node.config?.tool : undefined);
+  return typeof original === "string" && original.includes("{{") ? original : resolved;
 }
 
 function skillNamesForNode(node: WorkflowNode): string[] {

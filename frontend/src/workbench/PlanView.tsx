@@ -1,6 +1,8 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useUiPreferences } from "../i18n/UiPreferences";
 import { ContextMenu, type CtxMenuSection } from "./ContextMenu";
+import { isWindowsDesktopShell } from "./desktop-folder-picker";
 import { FileIcon } from "./FileIcon";
 import {
   copyEntryTo,
@@ -36,19 +38,82 @@ interface PlanViewProps {
   onDocsChanged?: () => void;
 }
 
-interface DocsClipboard {
+interface DocsClipboardEntry {
   path: string;
   name: string;
   kind: FsNode["kind"];
 }
 
+interface DocsClipboard {
+  entries: DocsClipboardEntry[];
+}
+
 const DOCS_DRAG_MIME = "application/x-osheep-doc-path";
 const DOCS_DRAG_KIND_MIME = "application/x-osheep-doc-kind";
+const DOCS_DRAG_TEXT_PREFIX = "osheep-doc-path:";
+const DOCS_DRAG_KIND_PREFIX = "osheep-doc-kind:";
+
+function hasDocsDrag(event: React.DragEvent): boolean {
+  return (
+    event.dataTransfer.types.includes(DOCS_DRAG_MIME) ||
+    event.dataTransfer.types.includes("text/plain")
+  );
+}
+
+function encodeDocsDrag(entries: FsNode[]): string {
+  return JSON.stringify(entries.map(({ path, name, kind }) => ({ path, name, kind })));
+}
+
+function decodeDocsDrag(value: string, kind = "file"): FsNode[] {
+  if (!value) return [];
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (Array.isArray(parsed)) {
+      return parsed.filter(
+        (entry): entry is FsNode =>
+          !!entry &&
+          typeof entry === "object" &&
+          "path" in entry &&
+          typeof entry.path === "string" &&
+          "name" in entry &&
+          typeof entry.name === "string" &&
+          "kind" in entry &&
+          (entry.kind === "file" || entry.kind === "directory"),
+      );
+    }
+  } catch {
+    // Accept drag data written by older single-path clients.
+  }
+  return [
+    { path: value, name: basename(value), kind: kind === "directory" ? "directory" : "file" },
+  ];
+}
+
+function readDocsDrag(event: React.DragEvent): FsNode[] {
+  const text = event.dataTransfer.getData("text/plain");
+  const uri = event.dataTransfer.getData("text/uri-list");
+  const encoded =
+    event.dataTransfer.getData(DOCS_DRAG_MIME) ||
+    (text.startsWith(DOCS_DRAG_TEXT_PREFIX) ? text.slice(DOCS_DRAG_TEXT_PREFIX.length) : "");
+  const kind =
+    event.dataTransfer.getData(DOCS_DRAG_KIND_MIME) ||
+    (uri.startsWith(DOCS_DRAG_KIND_PREFIX) ? uri.slice(DOCS_DRAG_KIND_PREFIX.length) : "");
+  return decodeDocsDrag(encoded, kind);
+}
 
 interface DocsMenu {
   x: number;
   y: number;
   node: FsNode | null;
+}
+
+interface DocsPointerDragController {
+  enabled: boolean;
+  sourcePaths: ReadonlySet<string>;
+  targetPath: string | null;
+  entriesFor: (node: FsNode) => FsNode[];
+  begin: (event: React.PointerEvent, node: FsNode) => void;
+  consumeClick: () => boolean;
 }
 
 function isPathWithin(path: string, parent: string): boolean {
@@ -78,6 +143,21 @@ function basename(path: string): string {
   return path.slice(path.lastIndexOf("/") + 1);
 }
 
+function parentOf(path: string): string {
+  const index = path.lastIndexOf("/");
+  return index >= 0 ? path.slice(0, index) : "";
+}
+
+function topLevelDocsEntries(entries: FsNode[]): FsNode[] {
+  const unique = new Map(entries.map((entry) => [entry.path, entry]));
+  return [...unique.values()].filter(
+    (entry) =>
+      ![...unique.keys()].some(
+        (parent) => parent !== entry.path && isPathWithin(entry.path, parent),
+      ),
+  );
+}
+
 export function PlanView({
   workspaceId,
   refreshSignal = 0,
@@ -93,6 +173,10 @@ export function PlanView({
   const [loadingDirs, setLoadingDirs] = useState<Set<string>>(new Set());
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [selectedDirectory, setSelectedDirectory] = useState<string | null>(null);
+  const [selectedTreePaths, setSelectedTreePaths] = useState<Set<string>>(new Set());
+  const docsNodesRef = useRef(new Map<string, FsNode>());
+  const docsTreeRef = useRef<HTMLDivElement>(null);
+  const docsKeyboardActiveRef = useRef(false);
   const [content, setContent] = useState("");
   const [savedContent, setSavedContent] = useState("");
   const [previewMode, setPreviewMode] = useState(true);
@@ -104,6 +188,23 @@ export function PlanView({
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const pointerDragFallback = isWindowsDesktopShell();
+  const pointerDragRef = useRef<{
+    entries: FsNode[];
+    pointerId: number;
+    captureElement: HTMLElement;
+    startX: number;
+    startY: number;
+    active: boolean;
+  } | null>(null);
+  const [pointerDragPaths, setPointerDragPaths] = useState<Set<string>>(new Set());
+  const [pointerDropTarget, setPointerDropTarget] = useState<string | null>(null);
+  const [pointerDragPreview, setPointerDragPreview] = useState<{
+    x: number;
+    y: number;
+    entries: FsNode[];
+  } | null>(null);
+  const suppressPointerClickRef = useRef(false);
   const dirty = content !== savedContent;
   const startCreating = (kind: "file" | "directory") => {
     setCreatingKind(kind);
@@ -115,11 +216,18 @@ export function PlanView({
     setExpandedPaths(new Set());
     setSelectedPath(null);
     setSelectedDirectory(null);
+    setSelectedTreePaths(new Set());
+    docsNodesRef.current.clear();
     setContent("");
     setSavedContent("");
     setMenu(null);
     setRenamingPath(null);
   }, [workspaceId]);
+
+  useEffect(() => {
+    if (!selectedPath) return;
+    setSelectedTreePaths((current) => (current.size === 0 ? new Set([selectedPath]) : current));
+  }, [selectedPath]);
 
   const refreshDocs = useCallback(() => {
     setRefreshVersion((version) => version + 1);
@@ -235,6 +343,42 @@ export function PlanView({
     setSelectedPath(path);
   };
 
+  const registerDocsNode = useCallback((node: FsNode) => {
+    docsNodesRef.current.set(node.path, node);
+  }, []);
+  const selectedEntriesFor = (node: FsNode): FsNode[] => {
+    if (!selectedTreePaths.has(node.path)) return [node];
+    return topLevelDocsEntries(
+      [...selectedTreePaths]
+        .map((path) => docsNodesRef.current.get(path))
+        .filter((entry): entry is FsNode => !!entry),
+    );
+  };
+  const currentSelectedEntries = (): FsNode[] =>
+    topLevelDocsEntries(
+      [...selectedTreePaths]
+        .map((path) => docsNodesRef.current.get(path))
+        .filter((entry): entry is FsNode => !!entry),
+    );
+  const selectTreeNode = (node: FsNode, additive: boolean) => {
+    registerDocsNode(node);
+    if (additive) {
+      const next = new Set(selectedTreePaths);
+      if (next.has(node.path)) next.delete(node.path);
+      else next.add(node.path);
+      setSelectedTreePaths(next);
+      return;
+    }
+    setSelectedTreePaths(new Set([node.path]));
+    if (node.kind === "directory") {
+      setSelectedDirectory(node.path);
+      toggleDirectory(node.path);
+    } else {
+      setSelectedDirectory(parentOf(node.path));
+      void selectDocument(node.path);
+    }
+  };
+
   const togglePreview = async () => {
     if (!previewMode && dirty) {
       try {
@@ -283,6 +427,7 @@ export function PlanView({
       await createFile(workspaceId, path);
       setPreviewMode(false);
       setSelectedPath(path);
+      setSelectedTreePaths(new Set([path]));
       refreshDocs();
     } catch (reason) {
       notify.error((reason as Error).message);
@@ -304,40 +449,174 @@ export function PlanView({
     }
   };
 
-  const moveDocument = async (
-    sourcePath: string,
-    targetDir: string,
-    sourceKind: FsNode["kind"] = "file",
-  ) => {
-    if (!workspaceId || sourcePath === targetDir || targetDir.startsWith(`${sourcePath}/`)) {
+  const moveDocuments = async (sourceEntries: FsNode[], targetDir: string) => {
+    if (!workspaceId) return;
+    const entries = topLevelDocsEntries(sourceEntries);
+    if (
+      entries.some(
+        (entry) =>
+          entry.kind === "directory" &&
+          (entry.path === targetDir || targetDir.startsWith(`${entry.path}/`)),
+      )
+    ) {
       notify.error(t("notification.invalidMove"));
       return;
     }
-    const sourceName = basename(sourcePath);
-    if (sourcePath.slice(0, sourcePath.lastIndexOf("/")) === targetDir) return;
-    try {
-      const name = await findFreeName(workspaceId, targetDir, sourceName, sourceKind);
-      const nextPath = `${targetDir}/${name}`;
-      await moveEntryTo(workspaceId, sourcePath, nextPath);
-      if (selectedPath && isPathWithin(selectedPath, sourcePath)) {
-        setSelectedPath(remapPath(selectedPath, sourcePath, nextPath));
+    if (dirty && selectedPath && entries.some((entry) => isPathWithin(selectedPath, entry.path))) {
+      try {
+        await saveDocument();
+      } catch {
+        return;
       }
-      if (selectedDirectory && isPathWithin(selectedDirectory, sourcePath)) {
-        setSelectedDirectory(remapPath(selectedDirectory, sourcePath, nextPath));
+    }
+    const moved: Array<{ oldPath: string; newPath: string }> = [];
+    const nextSelection: string[] = [];
+    let firstError: Error | null = null;
+    for (const entry of entries) {
+      if (parentOf(entry.path) === targetDir) {
+        nextSelection.push(entry.path);
+        continue;
+      }
+      try {
+        const name = await findFreeName(workspaceId, targetDir, entry.name, entry.kind);
+        const nextPath = `${targetDir}/${name}`;
+        await moveEntryTo(workspaceId, entry.path, nextPath);
+        moved.push({ oldPath: entry.path, newPath: nextPath });
+        nextSelection.push(nextPath);
+      } catch (reason) {
+        firstError ??= reason as Error;
+        nextSelection.push(entry.path);
+      }
+    }
+    if (moved.length > 0) {
+      const remapMovedPath = (path: string): string => {
+        const match = moved.find(({ oldPath }) => isPathWithin(path, oldPath));
+        return match ? remapPath(path, match.oldPath, match.newPath) : path;
+      };
+      setSelectedPath((current) => (current ? remapMovedPath(current) : null));
+      setSelectedDirectory((current) => (current ? remapMovedPath(current) : null));
+      if (clipboard) {
+        setClipboard({
+          entries: clipboard.entries.map((entry) => ({
+            ...entry,
+            path: remapMovedPath(entry.path),
+            name: basename(remapMovedPath(entry.path)),
+          })),
+        });
       }
       setExpandedPaths((current) => {
-        const next = new Set(current);
+        const next = new Set<string>([targetDir]);
+        for (const path of current) next.add(remapMovedPath(path));
         next.add(targetDir);
-        for (const path of current) {
-          if (isPathWithin(path, sourcePath)) next.delete(path);
-        }
         return next;
       });
       setEntriesByDir({});
       refreshDocs();
-    } catch (reason) {
-      notify.error(t("notification.moveFailed", { detail: (reason as Error).message }));
     }
+    setSelectedTreePaths(new Set(nextSelection));
+    if (firstError) notify.error(t("notification.moveFailed", { detail: firstError.message }));
+  };
+
+  const moveDocumentsRef = useRef(moveDocuments);
+  moveDocumentsRef.current = moveDocuments;
+
+  useEffect(() => {
+    if (!pointerDragFallback) return;
+
+    const targetAtPoint = (x: number, y: number): string | null => {
+      const element = document.elementFromPoint(x, y);
+      if (!(element instanceof Element)) return null;
+      const row = element.closest<HTMLElement>("[data-docs-node-kind]");
+      if (row) {
+        return row.dataset.docsNodeKind === "directory" ? (row.dataset.docsDropPath ?? null) : null;
+      }
+      return element.closest("[data-docs-tree-root]") ? DOCS_DIR : null;
+    };
+    const reset = () => {
+      const drag = pointerDragRef.current;
+      if (drag?.captureElement.hasPointerCapture(drag.pointerId)) {
+        drag.captureElement.releasePointerCapture(drag.pointerId);
+      }
+      if (drag?.active && document.activeElement === drag.captureElement) {
+        drag.captureElement.blur();
+      }
+      pointerDragRef.current = null;
+      setPointerDragPaths(new Set());
+      setPointerDropTarget(null);
+      setPointerDragPreview(null);
+    };
+    const onPointerMove = (event: PointerEvent) => {
+      const drag = pointerDragRef.current;
+      if (!drag || event.pointerId !== drag.pointerId) return;
+      if (!drag.active) {
+        if (Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 6) return;
+        drag.active = true;
+        suppressPointerClickRef.current = true;
+        setPointerDragPaths(new Set(drag.entries.map((entry) => entry.path)));
+        setSelectedTreePaths(new Set(drag.entries.map((entry) => entry.path)));
+      }
+      event.preventDefault();
+      setPointerDragPreview({
+        x: event.clientX,
+        y: event.clientY,
+        entries: drag.entries,
+      });
+      const target = targetAtPoint(event.clientX, event.clientY);
+      setPointerDropTarget((current) => (current === target ? current : target));
+    };
+    const onPointerUp = (event: PointerEvent) => {
+      const drag = pointerDragRef.current;
+      if (!drag || event.pointerId !== drag.pointerId) return;
+      if (!drag.active) {
+        reset();
+        return;
+      }
+      const target = targetAtPoint(event.clientX, event.clientY);
+      reset();
+      if (target !== null) void moveDocumentsRef.current(drag.entries, target);
+      window.setTimeout(() => {
+        suppressPointerClickRef.current = false;
+      }, 0);
+    };
+    const onPointerCancel = (event: PointerEvent) => {
+      const drag = pointerDragRef.current;
+      if (!drag || event.pointerId !== drag.pointerId) return;
+      suppressPointerClickRef.current = false;
+      reset();
+    };
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+    window.addEventListener("pointercancel", onPointerCancel);
+    return () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("pointercancel", onPointerCancel);
+    };
+  }, [pointerDragFallback]);
+
+  const docsPointerDrag: DocsPointerDragController = {
+    enabled: pointerDragFallback,
+    sourcePaths: pointerDragPaths,
+    targetPath: pointerDropTarget,
+    entriesFor: selectedEntriesFor,
+    begin: (event, node) => {
+      if (!pointerDragFallback || event.button !== 0) return;
+      const captureElement = event.currentTarget as HTMLElement;
+      captureElement.setPointerCapture(event.pointerId);
+      pointerDragRef.current = {
+        entries: selectedEntriesFor(node),
+        pointerId: event.pointerId,
+        captureElement,
+        startX: event.clientX,
+        startY: event.clientY,
+        active: false,
+      };
+    },
+    consumeClick: () => {
+      if (!suppressPointerClickRef.current) return false;
+      suppressPointerClickRef.current = false;
+      return true;
+    },
   };
 
   const renameDocument = async (node: FsNode, rawName: string) => {
@@ -354,13 +633,26 @@ export function PlanView({
       if (selectedDirectory && isPathWithin(selectedDirectory, node.path)) {
         setSelectedDirectory(remapPath(selectedDirectory, node.path, newPath));
       }
-      if (clipboard && isPathWithin(clipboard.path, node.path)) {
+      if (clipboard) {
         setClipboard({
-          ...clipboard,
-          path: remapPath(clipboard.path, node.path, newPath),
-          name: clipboard.path === node.path ? name : clipboard.name,
+          entries: clipboard.entries.map((entry) =>
+            isPathWithin(entry.path, node.path)
+              ? {
+                  ...entry,
+                  path: remapPath(entry.path, node.path, newPath),
+                  name: entry.path === node.path ? name : entry.name,
+                }
+              : entry,
+          ),
         });
       }
+      setSelectedTreePaths((current) => {
+        const next = new Set<string>();
+        for (const path of current) {
+          next.add(isPathWithin(path, node.path) ? remapPath(path, node.path, newPath) : path);
+        }
+        return next;
+      });
       setExpandedPaths((current) => {
         const next = new Set<string>();
         for (const path of current) {
@@ -375,69 +667,122 @@ export function PlanView({
     }
   };
 
-  const deleteDocument = async (node: FsNode) => {
+  const deleteDocuments = async (nodes: FsNode[]) => {
     if (!workspaceId) return;
+    const entries = topLevelDocsEntries(nodes);
+    if (entries.length === 0) return;
     const accepted = await confirm({
-      message: t("confirm.deleteFile", { name: node.name }),
+      message:
+        entries.length === 1
+          ? t("confirm.deleteFile", { name: entries[0].name })
+          : t("confirm.deleteItems", { count: entries.length }),
       confirmLabel: t("confirm.delete"),
       reminderKey: "delete-doc-file",
     });
     if (!accepted) return;
-    try {
-      await removeEntry(workspaceId, node.path);
-      if (selectedPath && isPathWithin(selectedPath, node.path)) setSelectedPath(null);
-      if (selectedDirectory && isPathWithin(selectedDirectory, node.path)) {
-        setSelectedDirectory(null);
-      }
-      if (clipboard && isPathWithin(clipboard.path, node.path)) setClipboard(null);
-      setExpandedPaths(
-        (current) => new Set([...current].filter((path) => !isPathWithin(path, node.path))),
-      );
-      setEntriesByDir({});
-      refreshDocs();
-    } catch (reason) {
-      notify.error((reason as Error).message);
-    }
-  };
-
-  const pasteDocument = async (targetDir = DOCS_DIR) => {
-    if (!workspaceId || !clipboard) return;
-    try {
-      if (dirty) await saveDocument();
-      const name = await findFreeName(workspaceId, targetDir, clipboard.name, clipboard.kind);
-      const path = `${targetDir}/${name}`;
-      await copyEntryTo(workspaceId, clipboard.path, path);
-      if (clipboard.kind === "file") {
-        setSelectedPath(path);
-        setPreviewMode(true);
-      }
-      refreshDocs();
-    } catch (reason) {
-      notify.error(t("notification.pasteFailed", { detail: (reason as Error).message }));
-    }
-  };
-
-  const openFileMenu = (event: React.MouseEvent, node: FsNode) => {
-    event.preventDefault();
-    event.stopPropagation();
-    if (node.kind === "directory") setSelectedDirectory(node.path);
-    setMenu({ x: event.clientX, y: event.clientY, node });
-  };
-
-  const copyDocument = async (node: FsNode) => {
-    if (selectedPath && isPathWithin(selectedPath, node.path) && dirty) {
+    if (dirty && selectedPath && entries.some((entry) => isPathWithin(selectedPath, entry.path))) {
       try {
         await saveDocument();
       } catch {
         return;
       }
     }
-    setClipboard({ path: node.path, name: node.name, kind: node.kind });
+    const removed: string[] = [];
+    const failed: FsNode[] = [];
+    let firstError: Error | null = null;
+    for (const entry of entries) {
+      try {
+        await removeEntry(workspaceId, entry.path);
+        removed.push(entry.path);
+      } catch (reason) {
+        firstError ??= reason as Error;
+        failed.push(entry);
+      }
+    }
+    if (removed.length > 0) {
+      const wasRemoved = (path: string) => removed.some((entry) => isPathWithin(path, entry));
+      if (selectedPath && wasRemoved(selectedPath)) setSelectedPath(null);
+      if (selectedDirectory && wasRemoved(selectedDirectory)) setSelectedDirectory(null);
+      if (clipboard) {
+        const remaining = clipboard.entries.filter((entry) => !wasRemoved(entry.path));
+        setClipboard(remaining.length > 0 ? { entries: remaining } : null);
+      }
+      setExpandedPaths((current) => new Set([...current].filter((path) => !wasRemoved(path))));
+      setEntriesByDir({});
+      refreshDocs();
+    }
+    setSelectedTreePaths(new Set(failed.map((entry) => entry.path)));
+    if (firstError) notify.error(firstError.message);
+  };
+
+  const pasteDocument = async (targetDir = DOCS_DIR) => {
+    if (!workspaceId || !clipboard) return;
+    if (
+      clipboard.entries.some(
+        (entry) => entry.kind === "directory" && isPathWithin(targetDir, entry.path),
+      )
+    ) {
+      notify.error(t("notification.invalidMove"));
+      return;
+    }
+    if (dirty) {
+      try {
+        await saveDocument();
+      } catch {
+        return;
+      }
+    }
+    const pasted: FsNode[] = [];
+    let firstError: Error | null = null;
+    for (const entry of clipboard.entries) {
+      try {
+        const name = await findFreeName(workspaceId, targetDir, entry.name, entry.kind);
+        const path = `${targetDir}/${name}`;
+        await copyEntryTo(workspaceId, entry.path, path);
+        pasted.push({ path, name, kind: entry.kind });
+      } catch (reason) {
+        firstError ??= reason as Error;
+      }
+    }
+    if (pasted.length > 0) {
+      setSelectedTreePaths(new Set(pasted.map((entry) => entry.path)));
+      const firstFile = pasted.find((entry) => entry.kind === "file");
+      if (firstFile) {
+        setSelectedPath(firstFile.path);
+        setPreviewMode(true);
+      }
+      refreshDocs();
+    }
+    if (firstError) notify.error(t("notification.pasteFailed", { detail: firstError.message }));
+  };
+
+  const openFileMenu = (event: React.MouseEvent, node: FsNode) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!selectedTreePaths.has(node.path)) {
+      setSelectedTreePaths(new Set([node.path]));
+    }
+    setSelectedDirectory(node.kind === "directory" ? node.path : parentOf(node.path));
+    setMenu({ x: event.clientX, y: event.clientY, node });
+  };
+
+  const copyDocuments = async (nodes: FsNode[]) => {
+    const entries = topLevelDocsEntries(nodes);
+    if (selectedPath && entries.some((entry) => isPathWithin(selectedPath, entry.path)) && dirty) {
+      try {
+        await saveDocument();
+      } catch {
+        return;
+      }
+    }
+    setClipboard({ entries: entries.map(({ path, name, kind }) => ({ path, name, kind })) });
   };
 
   const openBlankMenu = (event: React.MouseEvent) => {
     if (event.defaultPrevented) return;
     event.preventDefault();
+    setSelectedTreePaths(new Set());
+    setSelectedDirectory(null);
     setMenu({ x: event.clientX, y: event.clientY, node: null });
   };
 
@@ -452,6 +797,49 @@ export function PlanView({
     });
   };
 
+  useEffect(() => {
+    const onPointerDown = (event: PointerEvent) => {
+      docsKeyboardActiveRef.current = !!docsTreeRef.current?.contains(event.target as Node);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!docsKeyboardActiveRef.current || !(event.target instanceof HTMLElement)) return;
+      if (event.target !== document.body && !docsTreeRef.current?.contains(event.target)) return;
+      if (event.target.closest("input, textarea, select, [contenteditable]")) return;
+      const entries = currentSelectedEntries();
+      const modifier = event.ctrlKey || event.metaKey;
+      if (modifier && event.key.toLowerCase() === "c" && entries.length > 0) {
+        event.preventDefault();
+        void copyDocuments(entries);
+      } else if (modifier && event.key.toLowerCase() === "v" && clipboard) {
+        event.preventDefault();
+        const target =
+          entries.length === 1
+            ? entries[0].kind === "directory"
+              ? entries[0].path
+              : parentOf(entries[0].path)
+            : DOCS_DIR;
+        void pasteDocument(target);
+      } else if (event.key === "Delete" && entries.length > 0) {
+        event.preventDefault();
+        void deleteDocuments(entries);
+      }
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown, true);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [clipboard, saveDocument, selectedTreePaths]);
+
+  const menuEntries = menu?.node ? selectedEntriesFor(menu.node) : [];
+  const menuSelectionCount =
+    menu?.node && selectedTreePaths.has(menu.node.path)
+      ? selectedTreePaths.size
+      : menu?.node
+        ? 1
+        : 0;
+
   const menuSections: CtxMenuSection[] = menu?.node
     ? [
         {
@@ -459,11 +847,12 @@ export function PlanView({
             {
               label: t("docs.copy"),
               shortcut: "Ctrl+C",
-              onSelect: () => void copyDocument(menu.node!),
+              onSelect: () => void copyDocuments(menuEntries),
             },
             {
               label: t("docs.rename"),
               shortcut: "F2",
+              disabled: menuSelectionCount > 1,
               onSelect: () => setRenamingPath(menu.node!.path),
             },
             ...(menu.node.kind === "directory"
@@ -484,7 +873,7 @@ export function PlanView({
               label: t("docs.delete"),
               shortcut: "Delete",
               danger: true,
-              onSelect: () => void deleteDocument(menu.node!),
+              onSelect: () => void deleteDocuments(menuEntries),
             },
             {
               label: t("docs.newFolder"),
@@ -542,20 +931,31 @@ export function PlanView({
           </span>
         </div>
         <div
-          className="plan-view__list"
+          ref={docsTreeRef}
+          className={`plan-view__list${pointerDragPaths.size > 0 ? " is-pointer-dragging" : ""}${pointerDropTarget === DOCS_DIR ? " is-pointer-drop-target" : ""}`}
+          data-docs-tree-root
+          role="tree"
+          aria-multiselectable="true"
+          onClick={(event) => {
+            if (
+              event.target === event.currentTarget ||
+              (event.target as Element).closest(".plan-view__empty")
+            ) {
+              setSelectedTreePaths(new Set());
+              setSelectedDirectory(null);
+            }
+          }}
           onContextMenu={openBlankMenu}
           onDragOver={(event) => {
-            if (!event.dataTransfer.types.includes(DOCS_DRAG_MIME)) return;
+            if (!hasDocsDrag(event)) return;
             event.preventDefault();
             event.dataTransfer.dropEffect = "move";
           }}
           onDrop={(event) => {
-            if (!event.dataTransfer.types.includes(DOCS_DRAG_MIME)) return;
+            if (!hasDocsDrag(event)) return;
             event.preventDefault();
-            const source = event.dataTransfer.getData(DOCS_DRAG_MIME);
-            const kind = event.dataTransfer.getData(DOCS_DRAG_KIND_MIME);
-            if (source)
-              void moveDocument(source, DOCS_DIR, kind === "directory" ? "directory" : "file");
+            const entries = readDocsDrag(event);
+            if (entries.length > 0) void moveDocuments(entries, DOCS_DIR);
           }}
         >
           {creating && (
@@ -577,18 +977,18 @@ export function PlanView({
                 key={node.path}
                 node={node}
                 depth={0}
-                selectedPath={selectedPath}
+                selectedPaths={selectedTreePaths}
                 expandedPaths={expandedPaths}
                 entriesByDir={entriesByDir}
                 loadingDirs={loadingDirs}
                 renamingPath={renamingPath}
-                onSelectDocument={selectDocument}
-                onSelectDirectory={setSelectedDirectory}
-                onToggleDirectory={toggleDirectory}
+                onSelectNode={selectTreeNode}
+                onRegisterNode={registerDocsNode}
                 onOpenMenu={openFileMenu}
                 onRename={renameDocument}
                 onCancelRename={() => setRenamingPath(null)}
-                onDropMove={moveDocument}
+                onDropMove={moveDocuments}
+                pointerDrag={docsPointerDrag}
               />
             ))
           )}
@@ -601,6 +1001,8 @@ export function PlanView({
             onClose={() => setMenu(null)}
           />
         )}
+        {pointerDragPreview &&
+          createPortal(<DocsDragPreview {...pointerDragPreview} />, document.body)}
       </div>
       <div className="plan-view__main">
         {error ? <div className="plan-view__error">{error}</div> : null}
@@ -667,39 +1069,72 @@ export function PlanView({
   );
 }
 
+function DocsDragPreview({ x, y, entries }: { x: number; y: number; entries: FsNode[] }) {
+  const width = 240;
+  const left = Math.max(8, Math.min(x + 14, window.innerWidth - width - 8));
+  const visibleEntries = entries.slice(0, 3);
+  const height = visibleEntries.length * 22 + 10;
+  const top = Math.max(8, Math.min(y + 16, window.innerHeight - height - 8));
+  return (
+    <div
+      className="file-tree-drag-preview"
+      style={{ transform: `translate3d(${left}px, ${top}px, 0)` }}
+      aria-hidden="true"
+    >
+      {visibleEntries.map((node) => (
+        <div className="file-tree-drag-preview__item" key={node.path}>
+          {node.kind === "directory" ? (
+            <i className="codicon codicon-folder" />
+          ) : (
+            <FileIcon name={node.name} />
+          )}
+          <span>{node.name}</span>
+        </div>
+      ))}
+      {entries.length > 1 && (
+        <span className="file-tree-drag-preview__count">{entries.length}</span>
+      )}
+    </div>
+  );
+}
+
 function DocsTreeEntry({
   node,
   depth,
-  selectedPath,
+  selectedPaths,
   expandedPaths,
   entriesByDir,
   loadingDirs,
   renamingPath,
-  onSelectDocument,
-  onSelectDirectory,
-  onToggleDirectory,
+  onSelectNode,
+  onRegisterNode,
   onOpenMenu,
   onRename,
   onCancelRename,
   onDropMove,
+  pointerDrag,
 }: {
   node: FsNode;
   depth: number;
-  selectedPath: string | null;
+  selectedPaths: ReadonlySet<string>;
   expandedPaths: Set<string>;
   entriesByDir: Record<string, FsNode[]>;
   loadingDirs: Set<string>;
   renamingPath: string | null;
-  onSelectDocument: (path: string) => Promise<void>;
-  onSelectDirectory: (path: string) => void;
-  onToggleDirectory: (path: string) => void;
+  onSelectNode: (node: FsNode, additive: boolean) => void;
+  onRegisterNode: (node: FsNode) => void;
   onOpenMenu: (event: React.MouseEvent, node: FsNode) => void;
   onRename: (node: FsNode, name: string) => Promise<void>;
   onCancelRename: () => void;
-  onDropMove: (sourcePath: string, targetDir: string, sourceKind?: FsNode["kind"]) => Promise<void>;
+  onDropMove: (entries: FsNode[], targetDir: string) => Promise<void>;
+  pointerDrag: DocsPointerDragController;
 }) {
   const expanded = node.kind === "directory" && expandedPaths.has(node.path);
   const children = docsEntries(entriesByDir[node.path] ?? []);
+
+  useEffect(() => {
+    onRegisterNode(node);
+  }, [node, onRegisterNode]);
 
   if (renamingPath === node.path) {
     return (
@@ -717,38 +1152,39 @@ function DocsTreeEntry({
     <div className="plan-view__tree-entry">
       <button
         type="button"
-        className={`plan-view__item${node.path === selectedPath ? " is-active" : ""}`}
+        className={`plan-view__item${selectedPaths.has(node.path) ? " is-active" : ""}${pointerDrag.sourcePaths.has(node.path) ? " is-pointer-dragging" : ""}${pointerDrag.targetPath === node.path ? " is-pointer-drop-target" : ""}`}
         style={{ paddingLeft: 8 + depth * 14 }}
-        onClick={() => {
-          if (node.kind === "directory") {
-            onSelectDirectory(node.path);
-            onToggleDirectory(node.path);
-          } else void onSelectDocument(node.path);
+        data-docs-node-kind={node.kind}
+        data-docs-drop-path={node.kind === "directory" ? node.path : undefined}
+        onClick={(event) => {
+          if (pointerDrag.consumeClick()) return;
+          onSelectNode(node, event.ctrlKey || event.metaKey);
         }}
-        draggable
+        onPointerDown={(event) => pointerDrag.begin(event, node)}
+        draggable={!pointerDrag.enabled}
         onDragStart={(event) => {
-          event.dataTransfer.setData(DOCS_DRAG_MIME, node.path);
-          event.dataTransfer.setData(DOCS_DRAG_KIND_MIME, node.kind);
+          const entries = pointerDrag.entriesFor(node);
+          const encoded = encodeDocsDrag(entries);
+          event.dataTransfer.setData(DOCS_DRAG_MIME, encoded);
+          event.dataTransfer.setData("text/plain", `${DOCS_DRAG_TEXT_PREFIX}${encoded}`);
           event.dataTransfer.effectAllowed = "move";
         }}
         onDragOver={(event) => {
-          if (node.kind !== "directory" || !event.dataTransfer.types.includes(DOCS_DRAG_MIME))
-            return;
+          if (node.kind !== "directory" || !hasDocsDrag(event)) return;
           event.preventDefault();
           event.dataTransfer.dropEffect = "move";
         }}
         onDrop={(event) => {
-          if (node.kind !== "directory" || !event.dataTransfer.types.includes(DOCS_DRAG_MIME))
-            return;
+          if (node.kind !== "directory" || !hasDocsDrag(event)) return;
           event.preventDefault();
           event.stopPropagation();
-          const source = event.dataTransfer.getData(DOCS_DRAG_MIME);
-          const kind = event.dataTransfer.getData(DOCS_DRAG_KIND_MIME);
-          if (source)
-            void onDropMove(source, node.path, kind === "directory" ? "directory" : "file");
+          const entries = readDocsDrag(event);
+          if (entries.length > 0) void onDropMove(entries, node.path);
         }}
         onContextMenu={(event) => onOpenMenu(event, node)}
         title={node.name}
+        role="treeitem"
+        aria-selected={selectedPaths.has(node.path)}
         aria-expanded={node.kind === "directory" ? expanded : undefined}
       >
         <span
@@ -781,18 +1217,18 @@ function DocsTreeEntry({
                 key={child.path}
                 node={child}
                 depth={depth + 1}
-                selectedPath={selectedPath}
+                selectedPaths={selectedPaths}
                 expandedPaths={expandedPaths}
                 entriesByDir={entriesByDir}
                 loadingDirs={loadingDirs}
                 renamingPath={renamingPath}
-                onSelectDocument={onSelectDocument}
-                onSelectDirectory={onSelectDirectory}
-                onToggleDirectory={onToggleDirectory}
+                onSelectNode={onSelectNode}
+                onRegisterNode={onRegisterNode}
                 onOpenMenu={onOpenMenu}
                 onRename={onRename}
                 onCancelRename={onCancelRename}
                 onDropMove={onDropMove}
+                pointerDrag={pointerDrag}
               />
             ))
           )}
