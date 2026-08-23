@@ -25,6 +25,7 @@ interface EditorPaneProps {
   tabSize: number;
   onChange: (value: string) => void;
   onSave: () => void;
+  readOnly?: boolean;
   goto?: GotoTarget | null;
   onCursorStatus?: (status: EditorCursorStatus) => void;
   onPasteImage?: (file: File) => Promise<string | null>;
@@ -46,6 +47,7 @@ export function EditorPane({
   tabSize,
   onChange,
   onSave,
+  readOnly = false,
   goto,
   onCursorStatus,
   onPasteImage,
@@ -187,6 +189,7 @@ export function EditorPane({
         fontLigatures: false,
         minimap: { enabled: true },
         automaticLayout: true,
+        readOnly,
         scrollBeyondLastLine: false,
         wordWrap: "off",
         scrollBeyondLastColumn: 5,

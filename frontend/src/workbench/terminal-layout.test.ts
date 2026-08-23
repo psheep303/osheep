@@ -2,9 +2,50 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   createTerminalUserInputGate,
+  resizeTerminalPreservingViewport,
   WORKFLOW_AGENT_TERMINAL_SAFE_ROWS,
   workflowAgentTerminalDimensions,
 } from "./terminal-layout";
+
+function fakeTerminal(viewportY: number, baseY: number) {
+  const calls: string[] = [];
+  let active = { viewportY, baseY };
+  return {
+    terminal: {
+      buffer: {
+        get active() {
+          return active;
+        },
+      },
+      scrollToBottom() {
+        calls.push("bottom");
+      },
+      scrollToLine(line: number) {
+        calls.push(`line:${line}`);
+      },
+    },
+    calls,
+    setActive(next: { viewportY: number; baseY: number }) {
+      active = next;
+    },
+  };
+}
+
+test("terminal resize keeps a scrolled-up viewport at its original line", () => {
+  const fake = fakeTerminal(42, 100);
+  resizeTerminalPreservingViewport(fake.terminal, () =>
+    fake.setActive({ viewportY: 42, baseY: 120 }),
+  );
+  assert.deepEqual(fake.calls, ["line:42"]);
+});
+
+test("terminal resize keeps a bottom-pinned viewport at the bottom", () => {
+  const fake = fakeTerminal(100, 100);
+  resizeTerminalPreservingViewport(fake.terminal, () =>
+    fake.setActive({ viewportY: 100, baseY: 80 }),
+  );
+  assert.deepEqual(fake.calls, ["bottom"]);
+});
 
 test("workflow agent terminals reserve a row below full-screen TUI input", () => {
   assert.equal(WORKFLOW_AGENT_TERMINAL_SAFE_ROWS, 1);

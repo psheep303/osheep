@@ -290,6 +290,36 @@ export async function copyEntry(
   return { from: toPosix(fromRel), to: toPosix(toRel) };
 }
 
+export async function copyExternalEntry(
+  workspaceRoot: string,
+  sourcePath: string,
+  toRel: string,
+): Promise<{ from: string; to: string }> {
+  if (!path.isAbsolute(sourcePath)) throw errors.invalidPath("外部文件路径必须是绝对路径");
+  const fromAbs = path.resolve(sourcePath);
+  const toAbs = resolveWorkspacePath(workspaceRoot, toRel);
+  let st: Awaited<ReturnType<typeof fs.stat>>;
+  try {
+    st = await fs.stat(fromAbs);
+  } catch {
+    throw errors.notFound();
+  }
+  try {
+    await fs.access(toAbs);
+    throw errors.entryExists();
+  } catch (e) {
+    if (e instanceof Error && (e as NodeJS.ErrnoException).code === "ENOENT") {
+      // good
+    } else if ((e as { statusCode?: number }).statusCode === 409) {
+      throw e;
+    }
+  }
+  await fs.mkdir(path.dirname(toAbs), { recursive: true });
+  if (st.isDirectory()) await fs.cp(fromAbs, toAbs, { recursive: true });
+  else await fs.copyFile(fromAbs, toAbs);
+  return { from: fromAbs, to: toPosix(toRel) };
+}
+
 export async function deleteEntry(
   workspaceRoot: string,
   relPath: string,

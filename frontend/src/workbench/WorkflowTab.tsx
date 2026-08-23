@@ -85,6 +85,7 @@ import { cleanAgentTerminalConversation } from "./terminal-conversation";
 import { createShiftEnterInput, isShiftEnterEvent } from "./terminal-keyboard";
 import {
   createTerminalUserInputGate,
+  resizeTerminalPreservingViewport,
   workflowAgentTerminalDimensions,
 } from "./terminal-layout";
 import {
@@ -4607,10 +4608,11 @@ function WorkflowAgentTerminalInner({
     const fitToUsableDimensions = () => {
       const dimensions = workflowAgentTerminalDimensions(fit.proposeDimensions());
       if (!dimensions) return null;
-      if (term.cols !== dimensions.cols || term.rows !== dimensions.rows) {
-        term.resize(dimensions.cols, dimensions.rows);
-      }
-      term.scrollToBottom();
+      resizeTerminalPreservingViewport(term, () => {
+        if (term.cols !== dimensions.cols || term.rows !== dimensions.rows) {
+          term.resize(dimensions.cols, dimensions.rows);
+        }
+      });
       return dimensions;
     };
     try {

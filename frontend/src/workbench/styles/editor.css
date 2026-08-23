@@ -33,10 +33,47 @@
   overflow-x: auto;
   overflow-y: hidden;
   min-width: 0;
+  scrollbar-width: none;
 }
 
 .tabs__list::-webkit-scrollbar {
-  height: 3px;
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+
+.tabs__viewport {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+.tabs__scrollbar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  z-index: 2;
+  opacity: 0;
+  pointer-events: none;
+  background: var(--border-edge);
+}
+
+.tabs__scrollbar.is-visible {
+  opacity: 1;
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.tabs__scrollbar-thumb {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: var(--fg-muted);
+  border-radius: 1px;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--bg-shell) 70%, transparent);
 }
 
 .tabs__trailing {
@@ -54,11 +91,31 @@
   padding: 0 10px 0 12px;
   background: var(--bg-shell);
   font-size: 12px;
-  cursor: pointer;
+  cursor: default;
   white-space: nowrap;
   color: rgba(255, 255, 255, 0.5);
   height: 35px;
   border-right: 1px solid var(--border-faint);
+  user-select: none;
+}
+
+.tab.is-dragging {
+  cursor: grabbing;
+  opacity: 0.45;
+}
+
+.tab__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  color: var(--fg-muted);
+}
+
+.tab.is-active .tab__icon {
+  color: var(--fg-default);
 }
 
 .tab.is-active {
@@ -299,7 +356,7 @@
   gap: 10px;
   min-height: 28px;
   padding: 0 16px;
-  cursor: pointer;
+  cursor: default;
   list-style: none;
 }
 

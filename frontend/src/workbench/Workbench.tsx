@@ -1,4 +1,14 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  type DragEvent,
+  type PointerEvent as ReactPointerEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useUiPreferences } from "../i18n/UiPreferences";
 import { ActivityBar, type ViewId } from "./ActivityBar";
 import { ClaudeCodeAgentView, CodexAgentView } from "./AgentSettingsView";
@@ -13,11 +23,19 @@ import {
   getWorkflow,
   getTemplateCapabilities,
   getWorkspace,
+  resolveExternalFilePath,
   workspaceImageUrl,
 } from "./api";
 import { DesktopWindowControls } from "./DesktopWindowControls";
 import { isWindowsDesktopShell } from "./desktop-folder-picker";
 import type { EditorCursorStatus, GotoTarget } from "./EditorPane";
+import { FileIcon } from "./FileIcon";
+import {
+  FILE_TREE_DRAG_MIME,
+  hasFileTreeDrag,
+  readFileTreeDragFiles,
+  readFileTreeDragPaths,
+} from "./file-tree-dnd";
 import {
   type FsNode,
   loadGlobalOsheepSettings,
@@ -78,6 +96,8 @@ interface FileTab {
   deleted: boolean;
   previewMode: boolean;
   image?: boolean;
+  externalName?: string;
+  imageDataUrl?: string;
   goto?: GotoTarget | null;
 }
 
@@ -95,6 +115,7 @@ interface WorkflowTabState {
   kind: "workflow";
   path: string; // __workflow__:<workflowId>
   workflowId: string;
+  title?: string;
   templateBinding?: {
     source: "system" | "user";
     id: string;
@@ -160,6 +181,7 @@ const workflowDetailsPath = (workflowId: string, nodeId: string) =>
 const TEMPLATE_PREFIX = "__template__:";
 const templatePath = (source: "system" | "user", templateId: string) =>
   `${TEMPLATE_PREFIX}${source}:${templateId}`;
+const TAB_DRAG_MIME = "application/x-osheep-tab-path";
 
 const DEFAULT_LEFT_WIDTH = 250;
 const SIDE_THRESHOLD = 80;
@@ -194,6 +216,14 @@ export function Workbench() {
   const [picking, setPicking] = useState(false);
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [activePath, setActivePath] = useState<string | null>(null);
+  const tabsListRef = useRef<HTMLDivElement>(null);
+  const tabScrollDragRef = useRef<{
+    startX: number;
+    startScrollLeft: number;
+    travel: number;
+    maxScroll: number;
+  } | null>(null);
+  const [tabScroll, setTabScroll] = useState({ thumbPercent: 100, offsetPercent: 0 });
   const [cursorStatus, setCursorStatus] = useState<EditorCursorStatus | null>(null);
   const [selectedTreePath, setSelectedTreePath] = useState<string | null>(null);
   const [settings, setSettings] = useState<OsheepSettings>(DEFAULT_SETTINGS);
@@ -389,53 +419,70 @@ export function Workbench() {
     [leftWidth, notify],
   );
 
-  const openFile = useCallback(
-    async (node: FsNode) => {
-      if (node.kind !== "file" || !workspaceId) return;
-      const existing = tabs.find((t) => t.kind === "file" && t.path === node.path);
+  const openFilePath = useCallback(
+    async (filePath: string, goto?: GotoTarget, insertionIndex?: number) => {
+      if (!workspaceId) return;
+      const existing = tabs.find((tab) => tab.kind === "file" && tab.path === filePath);
       if (existing) {
-        setActivePath(node.path);
+        if (goto) {
+          setTabs((prev) =>
+            prev.map((tab) =>
+              tab.kind === "file" && tab.path === filePath ? { ...tab, goto } : tab,
+            ),
+          );
+        }
+        setActivePath(filePath);
         return;
       }
-      if (isImagePath(node.path)) {
-        setTabs((prev) => [
-          ...prev,
-          {
-            kind: "file",
-            path: node.path,
-            content: "",
-            savedContent: "",
-            dirty: false,
-            deleted: false,
-            previewMode: true,
-            image: true,
-          },
-        ]);
-        setActivePath(node.path);
-        return;
-      }
-      let text: string;
-      try {
-        text = await readFileText(workspaceId, node.path);
-      } catch (e) {
-        notify.error(t("error.readFile", { detail: (e as Error).message }));
-        return;
-      }
-      setTabs((prev) => [
-        ...prev,
-        {
+      let nextTab: FileTab;
+      if (isImagePath(filePath)) {
+        nextTab = {
           kind: "file",
-          path: node.path,
+          path: filePath,
+          content: "",
+          savedContent: "",
+          dirty: false,
+          deleted: false,
+          previewMode: true,
+          image: true,
+          goto,
+        };
+      } else {
+        let text: string;
+        try {
+          text = await readFileText(workspaceId, filePath);
+        } catch (e) {
+          notify.error(t("error.readFile", { detail: (e as Error).message }));
+          return;
+        }
+        nextTab = {
+          kind: "file",
+          path: filePath,
           content: text,
           savedContent: text,
           dirty: false,
           deleted: false,
           previewMode: false,
-        },
-      ]);
-      setActivePath(node.path);
+          goto,
+        };
+      }
+      setTabs((prev) => {
+        if (prev.some((tab) => tab.path === filePath)) return prev;
+        if (insertionIndex === undefined) return [...prev, nextTab];
+        const next = [...prev];
+        next.splice(Math.max(0, Math.min(insertionIndex, next.length)), 0, nextTab);
+        return next;
+      });
+      setActivePath(filePath);
     },
     [notify, tabs, workspaceId, t],
+  );
+
+  const openFile = useCallback(
+    (node: FsNode) => {
+      if (node.kind === "file") void openFilePath(node.path);
+    },
+    [openFilePath],
   );
 
   const pasteImageIntoMarkdown = useCallback(
@@ -462,44 +509,15 @@ export function Workbench() {
   );
 
   const openFileAt = useCallback(
-    async (filePath: string, line: number, column: number) => {
-      if (!workspaceId) return;
+    (filePath: string, line: number, column: number) => {
       const target: GotoTarget = {
         line,
         column,
         nonce: Date.now() + Math.random(),
       };
-      const existing = tabs.find((t) => t.kind === "file" && t.path === filePath);
-      if (existing) {
-        setTabs((prev) =>
-          prev.map((t) => (t.kind === "file" && t.path === filePath ? { ...t, goto: target } : t)),
-        );
-        setActivePath(filePath);
-        return;
-      }
-      let text: string;
-      try {
-        text = await readFileText(workspaceId, filePath);
-      } catch (e) {
-        notify.error(t("error.readFile", { detail: (e as Error).message }));
-        return;
-      }
-      setTabs((prev) => [
-        ...prev,
-        {
-          kind: "file",
-          path: filePath,
-          content: text,
-          savedContent: text,
-          dirty: false,
-          deleted: false,
-          previewMode: false,
-          goto: target,
-        },
-      ]);
-      setActivePath(filePath);
+      void openFilePath(filePath, target);
     },
-    [notify, tabs, workspaceId, t],
+    [openFilePath],
   );
 
   const openDiffTab = useCallback(
@@ -648,6 +666,11 @@ export function Workbench() {
       title,
       revision: (current?.revision ?? 0) + 1,
     }));
+    setTabs((current) =>
+      current.map((tab) =>
+        tab.kind === "workflow" && tab.workflowId === workflowId ? { ...tab, title } : tab,
+      ),
+    );
     setAiRefreshSignal((value) => value + 1);
   }, []);
 
@@ -662,11 +685,24 @@ export function Workbench() {
               )
             : prev;
         }
-        return [...prev, { kind: "workflow", path, workflowId, templateBinding }];
+        return [...prev, { kind: "workflow", path, workflowId, templateBinding, title: workflowId }];
       });
       setActivePath(path);
+      if (workspaceId) {
+        void getWorkflow(workspaceId, workflowId)
+          .then((workflow) => {
+            setTabs((current) =>
+              current.map((tab) =>
+                tab.kind === "workflow" && tab.workflowId === workflowId
+                  ? { ...tab, title: workflow.title }
+                  : tab,
+              ),
+            );
+          })
+          .catch(() => undefined);
+      }
     },
-    [],
+    [workspaceId],
   );
 
   const openWorkflowDetailsTab = useCallback(
@@ -789,13 +825,16 @@ export function Workbench() {
   const saveActive = useCallback(async () => {
     if (!activePath) return;
     const tab = tabs.find((candidate) => candidate.path === activePath);
-    if (tab?.kind !== "file" || tab.deleted) return;
+    if (tab?.kind !== "file" || tab.deleted || tab.externalName) return;
     await saveFiles([{ path: tab.path, content: tab.content }]);
   }, [activePath, saveFiles, tabs]);
 
   const saveAll = useCallback(async () => {
     const files = tabs
-      .filter((tab): tab is FileTab => tab.kind === "file" && tab.dirty && !tab.deleted)
+      .filter(
+        (tab): tab is FileTab =>
+          tab.kind === "file" && tab.dirty && !tab.deleted && !tab.externalName,
+      )
       .map(({ path, content }) => ({ path, content }));
     await saveFiles(files);
   }, [saveFiles, tabs]);
@@ -803,7 +842,10 @@ export function Workbench() {
   useEffect(() => {
     if (!settings.editor.autoSave) return;
     const files = tabs
-      .filter((tab): tab is FileTab => tab.kind === "file" && tab.dirty && !tab.deleted)
+      .filter(
+        (tab): tab is FileTab =>
+          tab.kind === "file" && tab.dirty && !tab.deleted && !tab.externalName,
+      )
       .map(({ path, content }) => ({ path, content }));
     if (files.length === 0) return;
     const timer = window.setTimeout(() => void saveFiles(files), 750);
@@ -814,9 +856,14 @@ export function Workbench() {
     (path: string) => {
       setTabs((prev) => {
         const idx = prev.findIndex((t) => t.path === path);
+        const removed = idx >= 0 ? prev[idx] : undefined;
         const next = prev.filter((t) => t.path !== path);
         if (activePath === path) {
-          const fallback = next[idx] ?? next[idx - 1] ?? next[next.length - 1] ?? null;
+          const owner =
+            removed?.kind === "workflow-details"
+              ? next.find((tab) => tab.kind === "workflow" && tab.workflowId === removed.workflowId)
+              : undefined;
+          const fallback = owner ?? next[idx] ?? next[idx - 1] ?? next[next.length - 1] ?? null;
           setActivePath(fallback ? fallback.path : null);
         }
         return next;
@@ -824,6 +871,30 @@ export function Workbench() {
     },
     [activePath],
   );
+
+  const reorderTabs = useCallback((fromPath: string, toPath: string) => {
+    setTabs((current) => {
+      const from = current.findIndex((tab) => tab.path === fromPath);
+      const to = current.findIndex((tab) => tab.path === toPath);
+      if (from < 0 || to < 0 || from === to) return current;
+      const next = [...current];
+      const [moved] = next.splice(from, 1);
+      if (!moved) return current;
+      next.splice(from < to ? to - 1 : to, 0, moved);
+      return next;
+    });
+  }, []);
+
+  const moveTabToEnd = useCallback((path: string) => {
+    setTabs((current) => {
+      const index = current.findIndex((tab) => tab.path === path);
+      if (index < 0 || index === current.length - 1) return current;
+      const next = [...current];
+      const [moved] = next.splice(index, 1);
+      if (moved) next.push(moved);
+      return next;
+    });
+  }, []);
 
   const closeWorkflowArtifacts = useCallback(
     (workflowId: string) => {
@@ -957,6 +1028,246 @@ export function Workbench() {
   const hasDirtyFiles = tabs.some((tab) => tab.kind === "file" && tab.dirty && !tab.deleted);
   const windowsDesktopShell = isWindowsDesktopShell();
 
+  const updateTabScroll = useCallback(() => {
+    const list = tabsListRef.current;
+    if (!list) return;
+    const maxScroll = Math.max(0, list.scrollWidth - list.clientWidth);
+    if (maxScroll <= 0) {
+      setTabScroll((current) =>
+        current.thumbPercent === 100 && current.offsetPercent === 0
+          ? current
+          : { thumbPercent: 100, offsetPercent: 0 },
+      );
+      return;
+    }
+    const thumbPercent = Math.max(12, Math.min(100, (list.clientWidth / list.scrollWidth) * 100));
+    const offsetPercent = (list.scrollLeft / maxScroll) * (100 - thumbPercent);
+    setTabScroll({ thumbPercent, offsetPercent });
+  }, []);
+
+  useEffect(() => {
+    const list = tabsListRef.current;
+    if (!list) return;
+    updateTabScroll();
+    list.addEventListener("scroll", updateTabScroll, { passive: true });
+    const resizeObserver =
+      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(updateTabScroll);
+    resizeObserver?.observe(list);
+    const mutationObserver =
+      typeof MutationObserver === "undefined" ? null : new MutationObserver(updateTabScroll);
+    mutationObserver?.observe(list, { childList: true, subtree: true, characterData: true });
+    return () => {
+      list.removeEventListener("scroll", updateTabScroll);
+      resizeObserver?.disconnect();
+      mutationObserver?.disconnect();
+    };
+  }, [tabs, updateTabScroll]);
+
+  const onTabScrollbarPointerDown = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      const list = tabsListRef.current;
+      const track = event.currentTarget;
+      if (!list || list.scrollWidth <= list.clientWidth) return;
+      const rect = track.getBoundingClientRect();
+      const thumbWidth = (track.clientWidth * tabScroll.thumbPercent) / 100;
+      const travel = Math.max(1, track.clientWidth - thumbWidth);
+      const maxScroll = list.scrollWidth - list.clientWidth;
+      const target = event.target as HTMLElement;
+      if (!target.closest("[data-tab-scroll-thumb]")) {
+        const targetLeft = Math.max(
+          0,
+          Math.min(travel, event.clientX - rect.left - thumbWidth / 2),
+        );
+        list.scrollLeft = (targetLeft / travel) * maxScroll;
+        updateTabScroll();
+      } else {
+        tabScrollDragRef.current = {
+          startX: event.clientX,
+          startScrollLeft: list.scrollLeft,
+          travel,
+          maxScroll,
+        };
+        track.setPointerCapture(event.pointerId);
+      }
+      event.preventDefault();
+    },
+    [tabScroll.thumbPercent, updateTabScroll],
+  );
+
+  const onTabScrollbarPointerMove = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      const drag = tabScrollDragRef.current;
+      const list = tabsListRef.current;
+      if (!drag || !list) return;
+      list.scrollLeft =
+        drag.startScrollLeft + ((event.clientX - drag.startX) / drag.travel) * drag.maxScroll;
+      updateTabScroll();
+    },
+    [updateTabScroll],
+  );
+
+  const stopTabScrollbarDrag = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    tabScrollDragRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  }, []);
+
+  const openDroppedBrowserFile = useCallback(
+    async (file: File, insertionIndex: number) => {
+      const name = file.name.trim() || "dropped-file";
+      const safeName = name.replace(/[\\/]/g, "_");
+      const path = `__external__:${Date.now()}-${Math.random().toString(36).slice(2)}:${safeName}`;
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const image = isImagePath(name);
+      let content = "";
+      let imageDataUrl: string | undefined;
+      if (image) {
+        imageDataUrl = fileDataUrl(file, bytes);
+      } else {
+        try {
+          content = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+        } catch {
+          notify.error(t("error.readFile", { detail: "binary file" }));
+          return;
+        }
+      }
+      const nextTab: FileTab = {
+        kind: "file",
+        path,
+        content,
+        savedContent: content,
+        dirty: false,
+        deleted: false,
+        previewMode: false,
+        image,
+        externalName: name,
+        imageDataUrl,
+      };
+      setTabs((current) => {
+        const next = [...current];
+        next.splice(Math.max(0, Math.min(insertionIndex, next.length)), 0, nextTab);
+        return next;
+      });
+      setActivePath(path);
+    },
+    [notify, t],
+  );
+
+  const openDroppedFile = useCallback(
+    async (filePath: string, insertionIndex: number) => {
+      let workspacePath = filePath;
+      if (isExternalAbsolutePath(filePath)) {
+        if (!workspaceId) return;
+        try {
+          workspacePath = await resolveExternalFilePath(workspaceId, filePath);
+        } catch (error) {
+          notify.error((error as Error).message);
+          return;
+        }
+      }
+      await openFilePath(workspacePath, undefined, insertionIndex);
+    },
+    [notify, openFilePath, workspaceId],
+  );
+
+  const onTabDragStart = useCallback((event: DragEvent, path: string) => {
+    event.stopPropagation();
+    event.currentTarget.classList.add("is-dragging");
+    event.dataTransfer.setData(TAB_DRAG_MIME, path);
+    event.dataTransfer.effectAllowed = "move";
+  }, []);
+
+  const onTabDragOver = useCallback((event: DragEvent) => {
+    const isTabDrag = event.dataTransfer.types.includes(TAB_DRAG_MIME);
+    const isFileDrag = hasFileTreeDrag(event.dataTransfer.types);
+    if (!isTabDrag && !isFileDrag) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = isTabDrag ? "move" : "copy";
+  }, []);
+
+  const onTabDrop = useCallback(
+    (event: DragEvent, targetPath: string, targetIndex: number) => {
+      const tabPath = event.dataTransfer.getData(TAB_DRAG_MIME);
+      if (tabPath) {
+        event.preventDefault();
+        event.stopPropagation();
+        reorderTabs(tabPath, targetPath);
+        return;
+      }
+      if (!hasFileTreeDrag(event.dataTransfer.types)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const filePath = readFileTreeDragPaths(event.dataTransfer)[0];
+      const file = readFileTreeDragFiles(event.dataTransfer)[0];
+      if (!event.dataTransfer.getData(FILE_TREE_DRAG_MIME) && file) {
+        void openDroppedBrowserFile(file, targetIndex);
+      } else if (filePath) openDroppedFile(filePath, targetIndex);
+    },
+    [openDroppedBrowserFile, openDroppedFile, reorderTabs],
+  );
+
+  const onTabStripDrop = useCallback(
+    (event: DragEvent) => {
+      const tabPath = event.dataTransfer.getData(TAB_DRAG_MIME);
+      if (tabPath) {
+        event.preventDefault();
+        event.stopPropagation();
+        moveTabToEnd(tabPath);
+        return;
+      }
+      if (!hasFileTreeDrag(event.dataTransfer.types)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const filePath = readFileTreeDragPaths(event.dataTransfer)[0];
+      const file = readFileTreeDragFiles(event.dataTransfer)[0];
+      if (!event.dataTransfer.getData(FILE_TREE_DRAG_MIME) && file) {
+        void openDroppedBrowserFile(file, tabs.length);
+      } else if (filePath) openDroppedFile(filePath, tabs.length);
+    },
+    [moveTabToEnd, openDroppedBrowserFile, openDroppedFile, tabs],
+  );
+
+  const onTabsDropCapture = useCallback(
+    (event: DragEvent) => {
+      if (event.isPropagationStopped()) return;
+      const target = event.target instanceof Element
+        ? event.target.closest<HTMLElement>("[data-workbench-tab-index]")
+        : null;
+      const index = target ? Number(target.dataset.workbenchTabIndex) : -1;
+      const tab = Number.isInteger(index) && index >= 0 ? tabs[index] : null;
+      if (tab) onTabDrop(event, tab.path, index);
+      else onTabStripDrop(event);
+    },
+    [onTabDrop, onTabStripDrop, tabs],
+  );
+
+  const onWorkspaceDragOver = useCallback((event: DragEvent) => {
+    if (event.isPropagationStopped()) return;
+    if (!hasFileTreeDrag(event.dataTransfer.types)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = "copy";
+  }, []);
+
+  const onWorkspaceDrop = useCallback(
+    (event: DragEvent) => {
+      if (event.isPropagationStopped()) return;
+      if (!hasFileTreeDrag(event.dataTransfer.types)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const filePath = readFileTreeDragPaths(event.dataTransfer)[0];
+      const file = readFileTreeDragFiles(event.dataTransfer)[0];
+      const activeIndex = activePath ? tabs.findIndex((tab) => tab.path === activePath) : -1;
+      const insertionIndex = activeIndex >= 0 ? activeIndex : tabs.length;
+      if (!event.dataTransfer.getData(FILE_TREE_DRAG_MIME) && file) {
+        void openDroppedBrowserFile(file, insertionIndex);
+      } else if (filePath) openDroppedFile(filePath, insertionIndex);
+    },
+    [activePath, openDroppedBrowserFile, openDroppedFile, tabs],
+  );
+
   useEffect(() => {
     setCursorStatus(activeFileTab ? { line: 1, column: 1, selectedCharacters: 0 } : null);
   }, [activeFileTab?.path]);
@@ -1041,6 +1352,7 @@ export function Workbench() {
                     decorations={decorations}
                     onFsChange={refreshGitStatus}
                     refreshSignal={fileTreeVersion}
+                    onDropFileToTab={openDroppedFile}
                   />
                 ) : (
                   <div className="side-view">
@@ -1089,15 +1401,25 @@ export function Workbench() {
 
         <div className="workbench-main">
           <div className="editor-area">
-            <div className="tabs">
-              <div className="tabs__list">
+            <div
+              className="tabs"
+              onDragOverCapture={onTabDragOver}
+              onDropCapture={onTabsDropCapture}
+            >
+              <div className="tabs__viewport">
+                <div
+                  ref={tabsListRef}
+                  className="tabs__list"
+                  onDragOver={onTabDragOver}
+                  onDrop={onTabStripDrop}
+                >
                 {tabs.map((tab) => {
                   const isDeleted = tab.kind === "file" && tab.deleted;
                   const label =
                     tab.kind === "settings"
                       ? t("common.settings")
                       : tab.kind === "workflow"
-                        ? t("nav.workflow")
+                        ? tab.title ?? tab.workflowId
                         : tab.kind === "workflow-details"
                           ? tab.title
                           : tab.kind === "template"
@@ -1106,18 +1428,18 @@ export function Workbench() {
                               ? tab.title
                               : tab.kind === "diff"
                                 ? `${basename(tab.filePath)} (${diffLabel(tab)})`
-                                : tab.path.split("/").pop();
+                                : tab.externalName ?? tab.path.split("/").pop();
                   const tabTitle =
                     tab.kind === "file"
                       ? isDeleted
                         ? `${tab.path}${t("editor.deleted")}`
-                        : tab.path
+                        : tab.externalName ?? tab.path
                       : tab.kind === "diff"
                         ? `${tab.filePath} · ${diffLabel(tab)}`
                         : tab.kind === "multi-diff"
                           ? tab.title
                           : tab.kind === "workflow"
-                            ? `${t("nav.workflow")} ${tab.workflowId}`
+                            ? tab.title ?? tab.workflowId
                             : tab.kind === "workflow-details"
                               ? `${tab.title} - ${t("workflow.details.title")}`
                               : tab.kind === "template"
@@ -1132,9 +1454,19 @@ export function Workbench() {
                         (isDeleted ? " is-deleted" : "") +
                         (tab.kind === "diff" || tab.kind === "multi-diff" ? " is-diff" : "")
                       }
+                      draggable
+                      data-workbench-tab-index={tabs.indexOf(tab)}
+                      data-workbench-tab-file={tab.kind === "file" ? "true" : undefined}
                       onClick={() => setActivePath(tab.path)}
+                      onDragStart={(event) => onTabDragStart(event, tab.path)}
+                      onDragOver={onTabDragOver}
+                      onDrop={(event) => onTabDrop(event, tab.path, tabs.indexOf(tab))}
+                      onDragEnd={(event) => event.currentTarget.classList.remove("is-dragging")}
                       title={tabTitle}
                     >
+                      <span className="tab__icon" aria-hidden="true">
+                        <TabIcon tab={tab} />
+                      </span>
                       <span className="tab__name">
                         {label}
                         {tab.kind === "file" && tab.dirty ? " *" : ""}
@@ -1151,6 +1483,30 @@ export function Workbench() {
                     </div>
                   );
                 })}
+                </div>
+                <div
+                  className={"tabs__scrollbar" + (tabScroll.thumbPercent < 100 ? " is-visible" : "")}
+                  role="scrollbar"
+                  aria-orientation="horizontal"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={Math.round(
+                    (tabScroll.offsetPercent / Math.max(1, 100 - tabScroll.thumbPercent)) * 100,
+                  )}
+                  onPointerDown={onTabScrollbarPointerDown}
+                  onPointerMove={onTabScrollbarPointerMove}
+                  onPointerUp={stopTabScrollbarDrag}
+                  onPointerCancel={stopTabScrollbarDrag}
+                >
+                  <div
+                    className="tabs__scrollbar-thumb"
+                    data-tab-scroll-thumb="true"
+                    style={{
+                      width: `${tabScroll.thumbPercent}%`,
+                      left: `${tabScroll.offsetPercent}%`,
+                    }}
+                  />
+                </div>
               </div>
               {activeFileTab && isMarkdownPath(activeFileTab.path) && (
                 <div className="tabs__trailing">
@@ -1161,14 +1517,27 @@ export function Workbench() {
                 </div>
               )}
             </div>
-            <div className="editor-host">
+            <div
+              className="editor-host"
+              data-workbench-editor-drop="true"
+              data-workbench-drop-index={
+                activePath ? Math.max(0, tabs.findIndex((tab) => tab.path === activePath)) : tabs.length
+              }
+              onDragOver={onWorkspaceDragOver}
+              onDragOverCapture={onWorkspaceDragOver}
+              onDrop={onWorkspaceDrop}
+              onDropCapture={onWorkspaceDrop}
+            >
               <Suspense fallback={<div className="tab-loading-fallback" />}>
                 {activeFileTab ? (
                   activeFileTab.image ? (
                     <div className="image-preview">
                       <img
-                        src={workspaceImageUrl(workspaceId ?? "", activeFileTab.path)}
-                        alt={activeFileTab.path}
+                        src={
+                          activeFileTab.imageDataUrl ??
+                          workspaceImageUrl(workspaceId ?? "", activeFileTab.path)
+                        }
+                        alt={activeFileTab.externalName ?? activeFileTab.path}
                       />
                     </div>
                   ) : isMarkdownPath(activeFileTab.path) && activeFileTab.previewMode ? (
@@ -1185,6 +1554,7 @@ export function Workbench() {
                         key={activeFileTab.path}
                         path={activeFileTab.path}
                         value={activeFileTab.content}
+                        readOnly={Boolean(activeFileTab.externalName)}
                         fontSize={settings.editor.fontSize}
                         tabSize={settings.editor.tabSize}
                         onChange={updateActive}
@@ -1335,6 +1705,15 @@ function isImagePath(path: string): boolean {
   return /\.(?:png|jpe?g|gif|webp|svg|avif|bmp|ico)$/i.test(path);
 }
 
+function fileDataUrl(file: File, bytes: Uint8Array): string {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return `data:${file.type || "application/octet-stream"};base64,${btoa(binary)}`;
+}
+
 function imageExtension(mimeType: string): string {
   const subtype = mimeType.split("/")[1]?.toLowerCase() ?? "png";
   return (
@@ -1348,10 +1727,51 @@ function basename(p: string): string {
   return i >= 0 ? p.slice(i + 1) : p;
 }
 
+function isExternalAbsolutePath(value: string): boolean {
+  return /^[a-zA-Z]:[\\/]/.test(value) || value.startsWith("\\\\") || value.startsWith("/");
+}
+
 function diffLabel(t: DiffTab): string {
   if (t.base === "HEAD" && t.head === "INDEX") return "Staged";
   if (t.base === "INDEX" && t.head === "WORKTREE") return "Working Tree";
   return `${t.base} → ${t.head}`;
+}
+
+function TabIcon({ tab }: { tab: Tab }) {
+  if (tab.kind === "file") return <FileIcon name={tab.path} />;
+  if (tab.kind === "workflow") {
+    return (
+      <svg
+        viewBox="0 0 16 16"
+        width="16"
+        height="16"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.15"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+      >
+        <circle cx="4" cy="4.7" r="1.45" />
+        <circle cx="12" cy="4.7" r="1.45" />
+        <circle cx="8" cy="11.5" r="1.45" />
+        <path d="M5.35 5.5 7.15 10.2M10.65 5.5 8.85 10.2M5.6 4.7h4.8" />
+      </svg>
+    );
+  }
+  const paths =
+    tab.kind === "workflow-details"
+        ? "M3 2.5h7l3 3V13.5H3zM10 2.5v3h3M5 8h6M5 10.5h4"
+        : tab.kind === "template"
+          ? "M3 3h8.5v10H3zM5 5.5h4.5M5 8h4.5M5 10.5h3"
+          : tab.kind === "diff" || tab.kind === "multi-diff"
+            ? "M3 3h4v4H3zM9 9h4v4H9zM7 5h2v6M9 7h2"
+            : "M8 2.5a2 2 0 0 1 2 2v.5h.5a2 2 0 0 1 2 2v.5a2 2 0 0 1 0 4v.5a2 2 0 0 1-2 2H5.5a2 2 0 0 1-2-2v-.5a2 2 0 0 1 0-4v-.5a2 2 0 0 1 2-2H6v-.5a2 2 0 0 1 2-2zM6 8h4M8 6v4";
+  return (
+    <svg viewBox="0 0 16 16" width="16" height="16" fill="none" aria-hidden="true">
+      <path d={paths} stroke="currentColor" strokeWidth="1.15" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
 }
 
 function PreviewToggle({ previewMode, onToggle }: { previewMode: boolean; onToggle: () => void }) {

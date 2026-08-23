@@ -305,6 +305,23 @@ body.is-resizing-y * {
   width: 10px;
   height: 10px;
 }
+::-webkit-scrollbar-button {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+::-webkit-scrollbar-button:single-button,
+::-webkit-scrollbar-button:start:decrement,
+::-webkit-scrollbar-button:end:increment,
+::-webkit-scrollbar-button:vertical:decrement,
+::-webkit-scrollbar-button:vertical:increment,
+::-webkit-scrollbar-button:horizontal:decrement,
+::-webkit-scrollbar-button:horizontal:increment {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+  background: transparent !important;
+}
 ::-webkit-scrollbar-track {
   background: var(--surface-1);
 }
@@ -320,4 +337,8 @@ body.is-resizing-y * {
 }
 ::-webkit-scrollbar-corner {
   background: transparent;
+}
+
+* {
+  scrollbar-width: thin;
 }

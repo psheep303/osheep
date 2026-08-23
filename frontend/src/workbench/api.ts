@@ -270,6 +270,11 @@ export async function readFile(
   return await http.get(wsUrl(workspaceId, "/file", { path }));
 }
 
+export async function resolveExternalFilePath(workspaceId: string, path: string): Promise<string> {
+  const result = await http.post<{ path: string }>(wsUrl(workspaceId, "/external"), { path });
+  return result.path;
+}
+
 export function workspaceImageUrl(workspaceId: string, path: string): string {
   return wsUrl(workspaceId, "/image", { path });
 }
@@ -310,6 +315,17 @@ export async function moveEntry(workspaceId: string, from: string, to: string): 
 
 export async function copyEntry(workspaceId: string, from: string, to: string): Promise<void> {
   await http.post(wsUrl(workspaceId, "/copy"), { from, to });
+}
+
+export async function copyExternalEntry(
+  workspaceId: string,
+  sourcePath: string,
+  targetPath: string,
+): Promise<void> {
+  await http.post(wsUrl(workspaceId, "/copy-external"), {
+    sourcePath,
+    targetPath,
+  });
 }
 
 export async function deleteEntry(

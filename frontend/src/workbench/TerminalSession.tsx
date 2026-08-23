@@ -13,6 +13,7 @@ import {
   type TerminalCreateResp,
 } from "./api";
 import { createShiftEnterInput, isShiftEnterEvent } from "./terminal-keyboard";
+import { resizeTerminalPreservingViewport } from "./terminal-layout";
 import { normalizeLightTerminalAnsi, xtermAnsiTheme, xtermTheme } from "./theme";
 
 interface TerminalSessionProps {
@@ -220,7 +221,7 @@ export function TerminalSession({
 
       const resizeObs = new ResizeObserver(() => {
         try {
-          fit.fit();
+          resizeTerminalPreservingViewport(term, () => fit.fit());
           const live = wsRef.current;
           if (live && live.readyState === WebSocket.OPEN) {
             live.send(
@@ -288,7 +289,7 @@ export function TerminalSession({
     // Defer to next frame so layout settles before measuring.
     const raf = requestAnimationFrame(() => {
       try {
-        fit.fit();
+        resizeTerminalPreservingViewport(term, () => fit.fit());
         term.focus();
         const live = wsRef.current;
         if (live && live.readyState === WebSocket.OPEN) {

@@ -3,6 +3,33 @@ export interface TerminalDimensions {
   rows: number;
 }
 
+export interface TerminalViewportState {
+  buffer: {
+    active: {
+      viewportY: number;
+      baseY: number;
+    };
+  };
+  scrollToBottom: () => void;
+  scrollToLine: (line: number) => void;
+}
+
+/** Resize a terminal without losing the user's current scroll position. */
+export function resizeTerminalPreservingViewport(
+  terminal: TerminalViewportState,
+  resize: () => void,
+): void {
+  const active = terminal.buffer.active;
+  const viewportY = active.viewportY;
+  const wasAtBottom = viewportY >= active.baseY;
+  resize();
+  if (wasAtBottom) {
+    terminal.scrollToBottom();
+  } else {
+    terminal.scrollToLine(Math.min(viewportY, terminal.buffer.active.baseY));
+  }
+}
+
 export const WORKFLOW_AGENT_TERMINAL_SAFE_ROWS = 1;
 
 export interface TerminalUserInputGate {

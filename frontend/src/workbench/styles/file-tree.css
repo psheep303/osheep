@@ -14,10 +14,6 @@
   outline: none;
 }
 
-.file-tree.is-drop-target-root {
-  box-shadow: inset 2px 0 0 var(--accent);
-}
-
 .tree-row {
   display: flex;
   align-items: center;

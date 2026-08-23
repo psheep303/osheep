@@ -1,9 +1,11 @@
+import * as path from "node:path";
 import type { FastifyInstance } from "fastify";
 import { readAppSettings, writeAppSettings } from "../app-settings.js";
 import { config } from "../config.js";
 import { errors } from "../errors.js";
 import {
   copyEntry,
+  copyExternalEntry,
   createEntry,
   deleteEntry,
   listTree,
@@ -115,6 +117,29 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
     return await readFileText(ws.path, req.query.path);
   });
 
+  app.post<{
+    Params: { id: string };
+    Body: { path?: string };
+  }>("/api/workspaces/:id/fs/external", async (req) => {
+    const ws = await resolveWorkspace(req.params.id);
+    const externalPath = req.body?.path;
+    if (typeof externalPath !== "string" || !externalPath.trim()) {
+      throw errors.invalidPath("缺少外部文件路径");
+    }
+    const candidate = path.resolve(externalPath);
+    const relative = path.relative(ws.path, candidate);
+    if (
+      relative === "" ||
+      relative.startsWith(`..${path.sep}`) ||
+      relative === ".." ||
+      path.isAbsolute(relative)
+    ) {
+      throw errors.invalidPath("只能打开当前工作区内的文件");
+    }
+    await readFileText(ws.path, relative);
+    return { path: relative.replace(/\\/g, "/") };
+  });
+
   app.get<{
     Params: { id: string };
     Querystring: { path?: string };
@@ -191,6 +216,18 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
     if (typeof body.from !== "string" || typeof body.to !== "string")
       throw errors.invalidPath("缺少 from 或 to");
     return await copyEntry(ws.path, body.from, body.to);
+  });
+
+  app.post<{
+    Params: { id: string };
+    Body: { sourcePath?: string; targetPath?: string };
+  }>("/api/workspaces/:id/fs/copy-external", async (req) => {
+    const ws = await resolveWorkspace(req.params.id);
+    const body = req.body ?? {};
+    if (typeof body.sourcePath !== "string" || typeof body.targetPath !== "string") {
+      throw errors.invalidPath("缺少外部源路径或目标路径");
+    }
+    return await copyExternalEntry(ws.path, body.sourcePath, body.targetPath);
   });
 
   app.delete<{

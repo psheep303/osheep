@@ -4,6 +4,7 @@
 
 import {
   copyEntry as apiCopyEntry,
+  copyExternalEntry as apiCopyExternalEntry,
   createEntry as apiCreateEntry,
   deleteEntry as apiDeleteEntry,
   findFreeName as apiFindFreeName,
@@ -95,6 +96,14 @@ export async function copyEntryTo(
   toPath: string,
 ): Promise<void> {
   await apiCopyEntry(workspaceId, fromPath, toPath);
+}
+
+export async function copyExternalEntryTo(
+  workspaceId: string,
+  sourcePath: string,
+  toPath: string,
+): Promise<void> {
+  await apiCopyExternalEntry(workspaceId, sourcePath, toPath);
 }
 
 export async function findFreeName(

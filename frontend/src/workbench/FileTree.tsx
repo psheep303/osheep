@@ -12,8 +12,16 @@ import { useUiPreferences } from "../i18n/UiPreferences";
 import { ContextMenu, type CtxMenuSection } from "./ContextMenu";
 import { isWindowsDesktopShell } from "./desktop-folder-picker";
 import { FileIcon } from "./FileIcon";
+import {
+  FILE_TREE_DRAG_MIME,
+  hasFileTreeDrag,
+  readFileTreeDragFiles,
+  readFileTreeDragPaths,
+  writeFileTreeDragData,
+} from "./file-tree-dnd";
 import type { FsNode } from "./fs";
 import {
+  copyExternalEntryTo,
   copyEntryTo,
   createDirectory,
   createFile,
@@ -22,6 +30,7 @@ import {
   readDirShallow,
   removeEntry,
   renameEntry,
+  writeFileBase64,
 } from "./fs";
 import { type FileDecoration, isIgnoredPath, statusColor } from "./git-decorations";
 import { useOsheepOverlay } from "./OsheepOverlay";
@@ -57,6 +66,8 @@ interface TreeContextValue {
   dropTarget: string | null;
   setDropTarget: (path: string | null) => void;
   onDropMove: (srcPaths: string[], destDir: string) => Promise<void>;
+  copyBrowserFiles: (files: File[], destDir: string) => Promise<void>;
+  setRootDropActive: (active: boolean) => void;
   pointerDragFallback: boolean;
   pointerDragPaths: ReadonlySet<string>;
   beginPointerDrag: (node: FsNode, event: React.PointerEvent) => void;
@@ -71,54 +82,13 @@ const useTreeCtx = () => {
   return v;
 };
 
-const DRAG_MIME = "application/x-osheep-path";
-const DRAG_TEXT_PREFIX = "osheep-path:";
-const DRAG_URI_PREFIX = "osheep-path-uri:";
-
-function hasTreeDrag(e: React.DragEvent): boolean {
-  return (
-    e.dataTransfer.types.includes(DRAG_MIME) ||
-    e.dataTransfer.types.includes("text/plain") ||
-    e.dataTransfer.types.includes("text/uri-list")
-  );
-}
-
-function encodeTreeDragPaths(paths: string[]): string {
-  return JSON.stringify(paths);
-}
-
-function decodeTreeDragPaths(value: string): string[] {
-  if (!value) return [];
-  try {
-    const parsed: unknown = JSON.parse(value);
-    if (Array.isArray(parsed)) {
-      return parsed.filter((path): path is string => typeof path === "string" && path.length > 0);
-    }
-  } catch {
-    // Accept drag data written by older single-path clients.
-  }
-  return [value];
-}
-
-function readTreeDragPaths(e: React.DragEvent): string[] {
-  const custom = e.dataTransfer.getData(DRAG_MIME);
-  if (custom) return decodeTreeDragPaths(custom);
-  const text = e.dataTransfer.getData("text/plain");
-  if (text.startsWith(DRAG_TEXT_PREFIX)) {
-    return decodeTreeDragPaths(text.slice(DRAG_TEXT_PREFIX.length));
-  }
-  const uri = e.dataTransfer.getData("text/uri-list");
-  return uri.startsWith(DRAG_URI_PREFIX)
-    ? decodeTreeDragPaths(uri.slice(DRAG_URI_PREFIX.length))
-    : [];
-}
-
 interface FileTreeProps {
   workspaceId: string;
   workspaceName: string;
   selectedPath: string | null;
   onSelect: (path: string | null) => void;
   onOpenFile: (node: FsNode) => void;
+  onDropFileToTab?: (path: string, index: number) => void;
   onPathRenamed: (oldPath: string, newPath: string) => void;
   onPathDeleted: (path: string) => void;
   decorations: Map<string, FileDecoration>;
@@ -142,8 +112,23 @@ function parentOf(p: string): string {
 }
 
 function basename(p: string): string {
-  const i = p.lastIndexOf("/");
-  return i >= 0 ? p.slice(i + 1) : p;
+  const normalized = p.replace(/\\/g, "/");
+  const i = normalized.lastIndexOf("/");
+  return i >= 0 ? normalized.slice(i + 1) : normalized;
+}
+
+function isExternalAbsolutePath(value: string): boolean {
+  return /^[a-zA-Z]:[\\/]/.test(value) || value.startsWith("\\\\") || value.startsWith("/");
+}
+
+async function fileToBase64(file: File): Promise<string> {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return btoa(binary);
 }
 
 function isAncestorOrSelf(maybeAncestor: string, descendant: string): boolean {
@@ -170,6 +155,7 @@ export function FileTree({
   selectedPath,
   onSelect,
   onOpenFile,
+  onDropFileToTab,
   onPathRenamed,
   onPathDeleted,
   decorations,
@@ -421,6 +407,30 @@ export function FileTree({
     }
   };
 
+  const copyBrowserFiles = async (files: File[], destDir: string) => {
+    let changed = false;
+    let firstError: Error | null = null;
+    const nextSelection: string[] = [];
+    for (const file of files) {
+      const name = basename(file.name) || "dropped-file";
+      try {
+        const targetName = await findFreeName(workspaceId, destDir, name, "file");
+        const targetPath = joinPath(destDir, targetName);
+        await writeFileBase64(workspaceId, targetPath, await fileToBase64(file));
+        nextSelection.push(targetPath);
+        changed = true;
+      } catch (error) {
+        firstError ??= error as Error;
+      }
+    }
+    if (nextSelection.length > 0) {
+      setSelectedPaths(new Set(nextSelection));
+      onSelect(nextSelection[0]);
+    }
+    if (changed) bumpTree();
+    if (firstError) notify.error(t("notification.moveFailed", { detail: firstError.message }));
+  };
+
   const onDropMove = async (srcPaths: string[], destDir: string) => {
     const sources = topLevelPaths(srcPaths);
     if (sources.some((srcPath) => isAncestorOrSelf(srcPath, destDir))) {
@@ -437,8 +447,12 @@ export function FileTree({
       }
       const dest = joinPath(destDir, basename(srcPath));
       try {
-        await moveEntryTo(workspaceId, srcPath, dest);
-        onPathRenamed(srcPath, dest);
+        if (isExternalAbsolutePath(srcPath)) {
+          await copyExternalEntryTo(workspaceId, srcPath, dest);
+        } else {
+          await moveEntryTo(workspaceId, srcPath, dest);
+          onPathRenamed(srcPath, dest);
+        }
         nextSelection.push(dest);
         changed = true;
       } catch (error) {
@@ -456,6 +470,8 @@ export function FileTree({
 
   const onDropMoveRef = useRef(onDropMove);
   onDropMoveRef.current = onDropMove;
+  const onDropFileToTabRef = useRef(onDropFileToTab);
+  onDropFileToTabRef.current = onDropFileToTab;
 
   useEffect(() => {
     const onPointerDown = (event: PointerEvent) => {
@@ -535,8 +551,17 @@ export function FileTree({
         return;
       }
       const target = targetAtPoint(event.clientX, event.clientY);
+      const element = document.elementFromPoint(event.clientX, event.clientY);
+      const tab = element?.closest<HTMLElement>("[data-workbench-tab-index]");
+      const editor = element?.closest<HTMLElement>("[data-workbench-editor-drop]");
       resetPointerDrag();
-      if (target !== null) {
+      if ((tab || editor) && onDropFileToTabRef.current) {
+        const index = Number(
+          tab?.dataset.workbenchTabIndex ?? editor?.dataset.workbenchDropIndex,
+        );
+        const file = drag.entries.find((entry) => entry.kind === "file");
+        if (file && Number.isInteger(index)) onDropFileToTabRef.current(file.path, index);
+      } else if (target !== null) {
         void onDropMoveRef.current(
           drag.entries.map((entry) => entry.path),
           target,
@@ -610,24 +635,29 @@ export function FileTree({
   };
 
   const onRootDragOver = (e: React.DragEvent) => {
-    if (!hasTreeDrag(e)) return;
+    if (!hasFileTreeDrag(e.dataTransfer.types)) return;
     e.preventDefault();
-    e.dataTransfer.dropEffect = "move";
+    e.dataTransfer.dropEffect = e.dataTransfer.getData(FILE_TREE_DRAG_MIME) ? "move" : "copy";
     setRootDropActive(true);
   };
 
   const onRootDragLeave = (e: React.DragEvent) => {
-    if (e.currentTarget === e.target) setRootDropActive(false);
+    const nextTarget = e.relatedTarget;
+    if (!(nextTarget instanceof Node) || !e.currentTarget.contains(nextTarget)) {
+      setRootDropActive(false);
+    }
   };
 
   const onRootDrop = (e: React.DragEvent) => {
-    if (!hasTreeDrag(e)) return;
+    if (!hasFileTreeDrag(e.dataTransfer.types)) return;
     e.preventDefault();
     setRootDropActive(false);
     setDropTarget(null);
-    const sources = readTreeDragPaths(e);
-    if (sources.length === 0) return;
-    void onDropMove(sources, "");
+    const sources = readFileTreeDragPaths(e.dataTransfer);
+    const files = readFileTreeDragFiles(e.dataTransfer);
+    if (!e.dataTransfer.getData(FILE_TREE_DRAG_MIME) && files.length > 0) {
+      void copyBrowserFiles(files, "");
+    } else if (sources.length > 0) void onDropMove(sources, "");
   };
 
   const ctxValue: TreeContextValue = {
@@ -648,6 +678,8 @@ export function FileTree({
     dropTarget,
     setDropTarget,
     onDropMove,
+    copyBrowserFiles,
+    setRootDropActive,
     pointerDragFallback,
     pointerDragPaths,
     beginPointerDrag,
@@ -952,19 +984,17 @@ function TreeNode({ node, depth }: TreeNodeProps) {
   const onDragStart = (e: React.DragEvent) => {
     e.stopPropagation();
     const paths = actionNodes().map((entry) => entry.path);
-    const encoded = encodeTreeDragPaths(paths);
-    e.dataTransfer.setData(DRAG_MIME, encoded);
-    e.dataTransfer.setData("text/plain", `${DRAG_TEXT_PREFIX}${encoded}`);
-    e.dataTransfer.setData("text/uri-list", `${DRAG_URI_PREFIX}${encoded}`);
-    e.dataTransfer.effectAllowed = "move";
+    writeFileTreeDragData(e.dataTransfer, paths);
+    e.dataTransfer.effectAllowed = "copyMove";
   };
 
   const onDragOver = (e: React.DragEvent) => {
-    if (!hasTreeDrag(e)) return;
+    if (!hasFileTreeDrag(e.dataTransfer.types)) return;
     if (node.kind !== "directory") return;
     e.preventDefault();
     e.stopPropagation();
-    e.dataTransfer.dropEffect = "move";
+    e.dataTransfer.dropEffect = e.dataTransfer.getData(FILE_TREE_DRAG_MIME) ? "move" : "copy";
+    ctx.setRootDropActive(false);
     if (ctx.dropTarget !== node.path) ctx.setDropTarget(node.path);
   };
 
@@ -974,14 +1004,21 @@ function TreeNode({ node, depth }: TreeNodeProps) {
   };
 
   const onDrop = (e: React.DragEvent) => {
-    if (!hasTreeDrag(e)) return;
-    if (node.kind !== "directory") return;
+    if (!hasFileTreeDrag(e.dataTransfer.types)) return;
+    if (node.kind !== "directory") {
+      ctx.setRootDropActive(false);
+      ctx.setDropTarget(null);
+      return;
+    }
     e.preventDefault();
     e.stopPropagation();
-    const sources = readTreeDragPaths(e);
+    const sources = readFileTreeDragPaths(e.dataTransfer);
     ctx.setDropTarget(null);
-    if (sources.length === 0) return;
-    void ctx.onDropMove(sources, node.path);
+    ctx.setRootDropActive(false);
+    const files = readFileTreeDragFiles(e.dataTransfer);
+    if (!e.dataTransfer.getData(FILE_TREE_DRAG_MIME) && files.length > 0) {
+      void ctx.copyBrowserFiles(files, node.path);
+    } else if (sources.length > 0) void ctx.onDropMove(sources, node.path);
   };
 
   const onPointerDown = (event: React.PointerEvent) => {
