@@ -7,6 +7,7 @@ import {
   agentAutoFinishPausedAfterEventForTest,
   agentCompletionDecisionForTest,
   buildAgentTerminalCommand,
+  buildAgentTerminalInvocation,
   createAgentTerminalControlForTest,
   createClaudePermissionHookRuntimeForTest,
   finishAgentTerminalSuccess,
@@ -175,6 +176,21 @@ test("Codex TUI command preserves approval, sandbox, resume, effort and prompt",
     }).command,
     `codex resume --ask-for-approval never --sandbox workspace-write -c 'model_reasoning_effort="xhigh"' --model gpt-5.4 ${id} 'continue work'`,
   );
+});
+
+test("agent invocation keeps JSON prompt as one raw argv value", () => {
+  const prompt = JSON.stringify({
+    id: "task-001",
+    task: '检查 README.md，并保留 "quoted" 文本',
+    nested: { line: "first\nsecond" },
+  });
+  const invocation = buildAgentTerminalInvocation("codex-cli", "default", { prompt });
+  assert.equal(invocation.args.at(-1), prompt);
+  assert.equal(JSON.parse(invocation.args.at(-1) ?? "").id, "task-001");
+
+  const claudeInvocation = buildAgentTerminalInvocation("claude-cli", "default", { prompt });
+  assert.equal(claudeInvocation.args.at(-1), prompt);
+  assert.equal(JSON.parse(claudeInvocation.args.at(-1) ?? "").nested.line, "first\nsecond");
 });
 
 test("unsupported effort values are normalized per provider", () => {

@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify, stripVTControlCharacters } from "node:util";
 import { APP_SETTINGS_DIR } from "./app-settings.js";
 import { toWindowsCmdCommandLine } from "./codex-plugins.js";
@@ -18,6 +19,7 @@ export interface InstalledSkill {
   path: string;
   agents: SkillAgent[];
   source: "local" | "skills.sh";
+  builtIn?: boolean;
 }
 
 export type SkillOrigin = "skills.sh" | "manual";
@@ -25,6 +27,7 @@ export type SkillOrigin = "skills.sh" | "manual";
 export interface SkillManifestEntry {
   origin: SkillOrigin;
   source?: string;
+  builtIn?: boolean;
 }
 
 export type SkillsManifest = Record<string, SkillManifestEntry>;
@@ -36,6 +39,7 @@ export interface StagedSkill {
   agent: SkillAgent;
   origin: SkillOrigin;
   source?: string;
+  builtIn?: boolean;
 }
 
 export interface SkillsSnapshot {
@@ -47,6 +51,7 @@ export interface SkillsSnapshot {
 export interface SkillsServiceOptions {
   paths?: Record<SkillAgent, string[]>;
   stagingRoots?: Partial<Record<SkillAgent, string>>;
+  userSkillsRoot?: string;
 }
 
 export interface SkillImportFile {
@@ -68,7 +73,8 @@ export function parseSkillsManifest(text: string): SkillsManifest {
     const entry = value as Record<string, unknown>;
     const origin: SkillOrigin = entry.origin === "skills.sh" ? "skills.sh" : "manual";
     const source = typeof entry.source === "string" ? entry.source : undefined;
-    result[name] = source ? { origin, source } : { origin };
+    const builtIn = entry.builtIn === true;
+    result[name] = source ? { origin, source, ...(builtIn ? { builtIn } : {}) } : { origin, ...(builtIn ? { builtIn } : {}) };
   }
   return result;
 }
@@ -123,14 +129,16 @@ function skillPaths(options: SkillsServiceOptions = {}): Record<SkillAgent, stri
 
 async function readSkill(name: string, directory: string, agents: SkillAgent[]): Promise<InstalledSkill> {
   let description: string | undefined;
+  let builtIn = false;
   try {
     const text = await fs.readFile(path.join(directory, "SKILL.md"), "utf8");
     const match = text.match(/^description:\s*["']?(.+?)["']?\s*$/im);
     description = match?.[1]?.trim();
+    builtIn = await fs.access(path.join(directory, ".osheep-built-in")).then(() => true, () => false);
   } catch {
     // A skill directory may be valid without a frontmatter description.
   }
-  return { name, description, path: directory, agents, source: "local" };
+  return { name, description, path: directory, agents, source: "local", ...(builtIn ? { builtIn } : {}) };
 }
 
 async function listDirectory(root: string, agent: SkillAgent): Promise<InstalledSkill[]> {
@@ -157,6 +165,62 @@ function stagingRoot(agent: SkillAgent, options: SkillsServiceOptions = {}): str
   // Production callers use the shared backend/.osheep store on desktop and web;
   // the override exists so filesystem behavior can be tested in isolation.
   return options.stagingRoots?.[agent] ?? path.join(APP_SETTINGS_DIR, "skills", agent);
+}
+
+function builtInUserSkillsRoot(options: SkillsServiceOptions = {}): string {
+  return options.userSkillsRoot ??
+    path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "template-library", "user-skills");
+}
+
+/** Seed repository-provided skills into Osheep's user group without overwriting user changes. */
+export async function syncBuiltInUserSkills(options: SkillsServiceOptions = {}): Promise<void> {
+  const sourceRoot = builtInUserSkillsRoot(options);
+  const enabledRoots = skillPaths(options);
+  const entries = await fs.readdir(sourceRoot, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !SAFE_NAME.test(entry.name)) continue;
+    const source = path.join(sourceRoot, entry.name);
+    try {
+      await fs.access(path.join(source, "SKILL.md"));
+    } catch {
+      continue;
+    }
+    for (const agent of ["claude", "codex"] as const) {
+      const manifest = await readManifest(agent, options);
+      const enabled = await Promise.all(
+        enabledRoots[agent].map((root) =>
+          fs.access(path.join(root, entry.name, "SKILL.md")).then(
+            () => true,
+            () => false,
+          ),
+        ),
+      );
+      if (enabled.some(Boolean)) {
+        const enabledBuiltIn = await Promise.all(
+          enabledRoots[agent].map((root) => fs.access(path.join(root, entry.name, ".osheep-built-in")).then(() => true, () => false)),
+        );
+        if (enabledBuiltIn.some(Boolean) && manifest[entry.name]?.builtIn !== true) {
+          manifest[entry.name] = { ...(manifest[entry.name] ?? { origin: "manual" }), builtIn: true };
+          await writeManifest(agent, manifest, options);
+        }
+        continue;
+      }
+      const destination = path.join(stagingRoot(agent, options), entry.name);
+      let copied = false;
+      try {
+        await fs.access(path.join(destination, "SKILL.md"));
+      } catch {
+        await fs.mkdir(path.dirname(destination), { recursive: true });
+        await fs.cp(source, destination, { recursive: true });
+        copied = true;
+      }
+      const destinationBuiltIn = await fs.access(path.join(destination, ".osheep-built-in")).then(() => true, () => false);
+      if ((copied || destinationBuiltIn) && manifest[entry.name]?.builtIn !== true) {
+        manifest[entry.name] = { ...(manifest[entry.name] ?? { origin: "manual" }), builtIn: true };
+        await writeManifest(agent, manifest, options);
+      }
+    }
+  }
 }
 
 function manifestPath(agent: SkillAgent, options: SkillsServiceOptions = {}): string {
@@ -212,6 +276,7 @@ async function listStaged(
       agent,
       origin: record?.origin ?? "manual",
       source: record?.source,
+      builtIn: record?.builtIn ?? base.builtIn,
     });
   }
   return result;
@@ -220,6 +285,7 @@ async function listStaged(
 export async function getSkillsSnapshot(
   options: SkillsServiceOptions = {},
 ): Promise<SkillsSnapshot> {
+  await syncBuiltInUserSkills(options);
   const paths = skillPaths(options);
   const byPath = new Map<string, InstalledSkill>();
   for (const agent of ["claude", "codex"] as const) {
@@ -587,8 +653,13 @@ export async function disableSkill(input: { name: string; agent: SkillAgent }) {
 /** Delete a staged skill and forget its provenance. */
 export async function deleteSkill(input: { name: string; agent: SkillAgent }) {
   if (!SAFE_NAME.test(input.name)) throw new ApiError(400, "INVALID_SKILL_NAME", "Skill name contains unsupported characters");
-  await fs.rm(path.join(stagingRoot(input.agent), input.name), { recursive: true, force: true });
   const manifest = await readManifest(input.agent);
+  const stagedPath = path.join(stagingRoot(input.agent), input.name);
+  const stagedBuiltIn = await fs.access(path.join(stagedPath, ".osheep-built-in")).then(() => true, () => false);
+  if (manifest[input.name]?.builtIn === true || stagedBuiltIn) {
+    throw new ApiError(409, "BUILT_IN_SKILL", "Built-in skills cannot be deleted");
+  }
+  await fs.rm(stagedPath, { recursive: true, force: true });
   if (manifest[input.name]) {
     delete manifest[input.name];
     await writeManifest(input.agent, manifest);

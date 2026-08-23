@@ -1,3 +1,4 @@
+import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -19,6 +20,7 @@ import {
   type TerminalSession,
   writeRawInput,
 } from "./pty.js";
+import { detectAiCli } from "./runtime-tools.js";
 import {
   extractAgentRunMetadata,
   extractLastStructuredClaudeAnswer,
@@ -155,7 +157,7 @@ export async function runAgentTerminal(opts: AgentTerminalOptions): Promise<Agen
   );
   const permissionHook =
     opts.kind === "claude-cli" ? await createClaudePermissionHookRuntime() : undefined;
-  const command = buildAgentTerminalCommand(opts.kind, opts.model, {
+  const invocation = buildAgentTerminalInvocation(opts.kind, opts.model, {
     claudePermissionMode: opts.claudePermissionMode,
     mode: opts.mode,
     codexApproval: opts.codexApproval,
@@ -165,7 +167,7 @@ export async function runAgentTerminal(opts: AgentTerminalOptions): Promise<Agen
     resumeConversation: opts.resumeConversation,
     prompt: opts.prompt,
     settingsPath: permissionHook?.settingsPath,
-  }).command;
+  });
   let session: TerminalSession;
   try {
     session = createSession({
@@ -174,7 +176,8 @@ export async function runAgentTerminal(opts: AgentTerminalOptions): Promise<Agen
       cols: DEFAULT_COLS,
       rows: DEFAULT_ROWS,
       killOnDetach: false,
-      initialCommand: command,
+      initialExecutable: invocation.executable,
+      initialArgs: invocation.args,
       // Advertise a native CSI-u terminal so Codex and Claude Code enable
       // their enhanced keyboard protocol.
       terminalProgram: "WezTerm",
@@ -637,6 +640,77 @@ export function buildAgentTerminalCommand(
   if (codexResumeSessionId) args.push(quoteShell(codexResumeSessionId));
   if (options.prompt) args.push(quoteShell(options.prompt));
   return { command: [base, ...args].join(" ") };
+}
+
+/** Build an agent invocation as raw argv, avoiding shell quoting entirely. */
+export function buildAgentTerminalInvocation(
+  kind: CliProviderKind,
+  model: string,
+  options: {
+    claudePermissionMode?: ClaudePermissionMode;
+    mode?: AgentMode;
+    codexApproval?: CodexApproval;
+    codexSandbox?: CodexSandbox;
+    effort?: AgentEffort;
+    conversationSessionId?: string;
+    resumeConversation?: boolean;
+    prompt?: string;
+    settingsPath?: string;
+  } = {},
+): { executable: string; args: string[] } {
+  const args: string[] = [];
+  let codexResumeSessionId = "";
+  if (kind === "claude-cli") {
+    args.push(
+      "--permission-mode",
+      options.mode === "plan"
+        ? "plan"
+        : normalizeClaudePermissionMode(options.claudePermissionMode),
+    );
+    if (options.resumeConversation && options.conversationSessionId) {
+      args.push("--resume", options.conversationSessionId);
+    } else if (options.conversationSessionId) {
+      args.push("--session-id", options.conversationSessionId);
+    }
+    const effort = agentEffortCliValue(kind, options.effort);
+    if (effort) args.push("--effort", effort);
+    if (options.settingsPath) args.push("--settings", options.settingsPath);
+  } else {
+    if (options.resumeConversation && options.conversationSessionId) {
+      args.push("resume");
+      codexResumeSessionId = options.conversationSessionId;
+    }
+    args.push(...codexPermissionArgs(options.codexApproval, options.codexSandbox));
+    const effort = agentEffortCliValue(kind, options.effort);
+    if (effort) args.push("-c", `model_reasoning_effort="${effort}"`);
+  }
+  if (model && model !== "default") args.push("--model", model);
+  if (codexResumeSessionId) args.push(codexResumeSessionId);
+  if (options.prompt) args.push(options.prompt);
+  const executable = resolveAgentExecutable(kind);
+  return { executable: executable.executable, args: [...executable.prefixArgs, ...args] };
+}
+
+function resolveAgentExecutable(kind: CliProviderKind): { executable: string; prefixArgs: string[] } {
+  const name = kind === "codex-cli" ? "codex" : "claude";
+  const detected = detectAiCli(name);
+  if (kind === "codex-cli" && platform === "windows" && detected.path) {
+    // npm installs Codex as a .cmd/.ps1 shim. Launch its JS entrypoint with
+    // Node so argv is forwarded without another shell parsing JSON.
+    const script = path.join(
+      path.dirname(detected.path),
+      "node_modules",
+      "@openai",
+      "codex",
+      "bin",
+      "codex.js",
+    );
+    if (fsSync.existsSync(script)) return { executable: process.execPath, prefixArgs: [script] };
+  }
+  return {
+    executable: detected.path ?? (platform === "windows" ? `${name}.exe` : name),
+    prefixArgs: [],
+  };
 }
 
 function normalizeClaudePermissionMode(mode: ClaudePermissionMode | undefined): string {

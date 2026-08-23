@@ -168,6 +168,7 @@ export interface InstalledSkill {
   path: string;
   agents: SkillAgent[];
   source: "local" | "skills.sh";
+  builtIn?: boolean;
 }
 
 export interface StagedSkill {
@@ -177,6 +178,7 @@ export interface StagedSkill {
   agent: SkillAgent;
   origin: SkillOrigin;
   source?: string;
+  builtIn?: boolean;
 }
 
 export interface SkillsSnapshot {

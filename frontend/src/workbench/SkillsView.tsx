@@ -243,7 +243,7 @@ export function SkillsView({ agent }: SkillsViewProps) {
                   {item.description && <div className="skills-view__description">{item.description}</div>}
                   <div className="skills-view__actions">
                     <button className="tb-btn" type="button" onClick={() => void enable(item)} disabled={busy !== null}>{busy === `enable:${item.name}` ? t("skills.enabling") : t("skills.enable")}</button>
-                    <button className="tb-btn skills-view__remove" type="button" onClick={() => void remove(item)} disabled={busy !== null}>{busy === `delete:${item.name}` ? t("skills.deleting") : t("skills.delete")}</button>
+                    {!item.builtIn && <button className="tb-btn skills-view__remove" type="button" onClick={() => void remove(item)} disabled={busy !== null}>{busy === `delete:${item.name}` ? t("skills.deleting") : t("skills.delete")}</button>}
                   </div>
                 </div>
               ))}

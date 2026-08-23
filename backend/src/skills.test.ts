@@ -15,6 +15,7 @@ import {
   parseSkillsSitemap,
   skillCommandErrorMessage,
   stagingInstallEnv,
+  syncBuiltInUserSkills,
   toSkillsWindowsCommandLine,
 } from "./skills.js";
 
@@ -178,6 +179,31 @@ test("stagingInstallEnv redirects each agent's global skills directory", () => {
   });
 });
 
+test("syncBuiltInUserSkills seeds both agents without overwriting user skills", async () => {
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-built-in-skill-"));
+  try {
+    const sourceRoot = path.join(base, "built-ins");
+    const paths = { claude: [path.join(base, "claude-live")], codex: [path.join(base, "codex-live")] };
+    const stagingRoots = { claude: path.join(base, "claude-user"), codex: path.join(base, "codex-user") };
+    const source = path.join(sourceRoot, "osheep-json");
+    await fs.mkdir(source, { recursive: true });
+    await fs.writeFile(path.join(source, "SKILL.md"), "description: built-in\n", "utf8");
+    const existing = path.join(stagingRoots.codex, "osheep-json");
+    await fs.mkdir(existing, { recursive: true });
+    await fs.writeFile(path.join(existing, "SKILL.md"), "description: user version\n", "utf8");
+    const enabled = path.join(paths.claude[0], "osheep-json");
+    await fs.mkdir(enabled, { recursive: true });
+    await fs.writeFile(path.join(enabled, "SKILL.md"), "description: enabled\n", "utf8");
+
+    await syncBuiltInUserSkills({ paths, stagingRoots, userSkillsRoot: sourceRoot });
+
+    await assert.rejects(fs.access(path.join(stagingRoots.claude, "osheep-json", "SKILL.md")));
+    assert.equal(await fs.readFile(path.join(existing, "SKILL.md"), "utf8"), "description: user version\n");
+  } finally {
+    await fs.rm(base, { recursive: true, force: true });
+  }
+});
+
 test("moveSkillDir relocates a skill folder across directories and removes the source", async () => {
   const base = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-skill-move-"));
   try {
@@ -233,7 +259,7 @@ test("applySkillSelection only moves skills between user and enabled groups", as
 
     const snapshot = await applySkillSelection(
       { agent: "codex", selectedNames: ["enable-me", "unknown-skill"] },
-      { paths, stagingRoots },
+      { paths, stagingRoots, userSkillsRoot: path.join(base, "no-built-ins") },
     );
 
     assert.deepEqual(
