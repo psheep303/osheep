@@ -1310,7 +1310,13 @@ function resolveAgentExecutionNode(node: WorkflowNode, record: WorkflowRecord): 
       if (Number.isFinite(number)) config[key] = number;
     }
   }
-  for (const key of ["autoSuccess", "retryForever", "alwaysEnter", "keepRunningOnInterrupt"]) {
+  for (const key of [
+    "autoSuccess",
+    "retryForever",
+    "alwaysEnter",
+    "keepRunningOnInterrupt",
+    "parseOutputJson",
+  ]) {
     const value = config[key];
     if (typeof value === "string") {
       const resolved = resolveTemplateValue(value, record);
@@ -2114,6 +2120,73 @@ async function executeLocalNode(
 
   if (kind === "markdown") {
     const markdown = resolveBlockTemplate(node.prompt, record);
+    const action = markdownAction(node);
+    if (action === "approval") {
+      const waitingOutput = {
+        type: "markdown",
+        status: "waiting",
+        action,
+        approved: null,
+        markdown,
+        text: markdown,
+      };
+      const approval = waitForDiffApproval(workspaceRoot, record.id, node.id, options.signal);
+      try {
+        await patchWorkflowNode(workspaceRoot, record.id, node.id, {
+          rawOutput: stringifyBlockOutput(waitingOutput),
+          summary: stringifyBlockOutput(waitingOutput),
+          config: { ...(node.config ?? {}), waitingForApproval: true },
+        });
+      } catch (error) {
+        pendingDiffApprovals.get(interactionKey(workspaceRoot, record.id, node.id))?.dispose();
+        throw error;
+      }
+      const approved = await approval;
+      return {
+        output: {
+          ...waitingOutput,
+          status: approved ? "approved" : "rejected",
+          approved,
+          text: markdown,
+        },
+        nodePatch: {
+          config: { ...(node.config ?? {}), waitingForApproval: false },
+        },
+      };
+    }
+    if (action === "message") {
+      const waitingOutput = {
+        type: "markdown",
+        status: "waiting",
+        action,
+        markdown,
+        text: markdown,
+      };
+      const inputValue = waitForWorkflowInput(workspaceRoot, record.id, node.id, options.signal);
+      try {
+        await patchWorkflowNode(workspaceRoot, record.id, node.id, {
+          rawOutput: stringifyBlockOutput(waitingOutput),
+          summary: stringifyBlockOutput(waitingOutput),
+          config: { ...(node.config ?? {}), waitingForInput: true },
+        });
+      } catch (error) {
+        pendingWorkflowInputs.get(interactionKey(workspaceRoot, record.id, node.id))?.dispose();
+        throw error;
+      }
+      const message = await inputValue;
+      return {
+        output: {
+          ...waitingOutput,
+          status: "success",
+          message,
+          text: message,
+          markdown,
+        },
+        nodePatch: {
+          config: { ...(node.config ?? {}), waitingForInput: false },
+        },
+      };
+    }
     return {
       output: {
         type: "markdown",
@@ -3011,11 +3084,29 @@ function extractMcpToolCalls(
 function agentOutput(node: WorkflowNode, raw: string): WorkflowBlockOutput {
   const parsed = parseJsonObject(raw);
   if (parsed) {
+    if (node.config?.parseOutputJson === true && typeof parsed.text === "string") {
+      try {
+        parsed.text = JSON.parse(parsed.text) as unknown;
+      } catch (error) {
+        throw new Error(`${node.title} output text is not valid JSON: ${(error as Error).message}`);
+      }
+    }
     return normalizeOutputObject(parsed, {
       type: node.providerKind === "claude-cli" ? "claude" : "codex",
       status: "success",
       text: textFromOutput(parsed) || raw.trim(),
     });
+  }
+  if (node.config?.parseOutputJson === true) {
+    try {
+      return {
+        type: node.providerKind === "claude-cli" ? "claude" : "codex",
+        status: "success",
+        text: JSON.parse(raw.trim()) as unknown,
+      };
+    } catch (error) {
+      throw new Error(`${node.title} output text is not valid JSON: ${(error as Error).message}`);
+    }
   }
   return {
     type: node.providerKind === "claude-cli" ? "claude" : "codex",
@@ -4134,7 +4225,15 @@ function sourceHandleForOutput(
 ): string | undefined {
   if (kind === "if") return output.result === true ? "true" : "false";
   if (kind === "diff-approval") return output.approved === true ? "success" : "failure";
+  if (kind === "markdown" && output.action === "approval") {
+    return output.approved === true ? "success" : "failure";
+  }
   return undefined;
+}
+
+function markdownAction(node: WorkflowNode): "none" | "approval" | "message" {
+  const value = node.config?.action ?? node.config?.markdownAction;
+  return value === "approval" || value === "message" ? value : "none";
 }
 
 function interactionKey(workspaceRoot: string, workflowId: string, nodeId: string): string {

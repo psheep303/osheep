@@ -2569,6 +2569,100 @@
   overflow-wrap: anywhere;
 }
 
+.workflow-mpe-panel__decision {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid var(--surface-4);
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+}
+
+.workflow-mpe-panel__decision textarea {
+  min-height: 72px;
+  resize: vertical;
+}
+
+.workflow-mpe-panel__decision strong {
+  color: var(--wf-text);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.workflow-mpe-panel__decision .workflow-inspector__approval-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.workflow-mpe-panel__decision .workflow-inspector__approval-actions button,
+.workflow-mpe-panel__send {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--surface-4);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 600;
+  transition: background-color 120ms ease, border-color 120ms ease, transform 120ms ease;
+}
+
+.workflow-mpe-panel__decision .workflow-inspector__approval-actions button:hover:not(:disabled),
+.workflow-mpe-panel__send:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.workflow-mpe-panel__message-control {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.workflow-mpe-panel__message-control textarea {
+  flex: 1;
+  min-width: 0;
+  min-height: 74px;
+  padding: 9px 10px;
+  border: 1px solid var(--wf-border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-0);
+  color: var(--wf-text);
+  font: 12px var(--wf-font-mono);
+  line-height: 1.5;
+  outline: none;
+}
+
+.workflow-mpe-panel__message-control textarea::placeholder {
+  color: var(--fg-muted);
+}
+
+.workflow-mpe-panel__message-control textarea:focus {
+  border-color: rgba(96, 165, 250, 0.8);
+  box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.14);
+}
+
+.workflow-mpe-panel__send {
+  min-height: 36px;
+  border-color: rgba(96, 165, 250, 0.58);
+  background: #2563eb;
+  color: #fff;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.workflow-mpe-panel__send:hover:not(:disabled) {
+  background: #1d4ed8;
+}
+
+.workflow-mpe-panel__send:disabled,
+.workflow-mpe-panel__decision button:disabled {
+  cursor: wait;
+  opacity: 0.58;
+}
+
 .workflow-input-dialog__control textarea {
   flex: 1;
   min-width: 0;

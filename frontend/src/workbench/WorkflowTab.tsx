@@ -893,6 +893,17 @@ export function WorkflowTab({
 
   const showCompletedMarkdown = useCallback(
     (previous: WorkflowRecord | null, next: WorkflowRecord) => {
+      const waitingMarkdown = next.nodes.find(
+        (node) =>
+          node.kind === "markdown" &&
+          node.status === "running" &&
+          (node.config?.waitingForApproval === true || node.config?.waitingForInput === true) &&
+          markdownAutoSeeResult(node),
+      );
+      if (waitingMarkdown) {
+        setMpeNodeId(waitingMarkdown.id);
+        return;
+      }
       const completedMarkdown = findMarkdownAutoPreviewNode(
         previous?.nodes,
         next.nodes,
@@ -903,6 +914,7 @@ export function WorkflowTab({
       autoSeenMarkdownRef.current.add(
         `${completedMarkdown.id}:${completedMarkdown.completedAt ?? 0}`,
       );
+      if (markdownActionValue(completedMarkdown) !== "none") return;
       setMpeNodeId(completedMarkdown.id);
     },
     [],
@@ -1240,6 +1252,13 @@ export function WorkflowTab({
     workflow?.nodes.find(
       (node) =>
         node.kind === "input" && node.status === "running" && node.config?.waitingForInput === true,
+    ) ?? null;
+  const waitingForMarkdownNode =
+    workflow?.nodes.find(
+      (node) =>
+        node.kind === "markdown" &&
+        node.status === "running" &&
+        (node.config?.waitingForApproval === true || node.config?.waitingForInput === true),
     ) ?? null;
   const canvasSize = useMemo(() => {
     const nodes = workflow?.nodes ?? [];
@@ -2962,6 +2981,28 @@ export function WorkflowTab({
         </div>
       )}
 
+      {waitingForMarkdownNode && (
+        <div className="workflow-waiting-choice" role="alert" aria-live="assertive">
+          <span className="workflow-waiting-choice__signal" aria-hidden="true">
+            !
+          </span>
+          <div className="workflow-waiting-choice__message">
+            <strong>{t("workflow.markdown.waiting")}</strong>
+            <span>{waitingForMarkdownNode.title}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setBlockPickerOpen(false);
+              setNodeSelection([waitingForMarkdownNode.id], waitingForMarkdownNode.id);
+              setMpeNodeId(waitingForMarkdownNode.id);
+            }}
+          >
+            {t("workflow.markdown.seeResult")}
+          </button>
+        </div>
+      )}
+
       {waitingForInputNode && workflow && (
         <WorkflowInputDialog
           key={waitingForInputNode.id}
@@ -3199,7 +3240,15 @@ export function WorkflowTab({
               onShowDetails={() => showNodeDetails(selectedNode)}
               onShowMpe={() => setMpeNodeId(selectedNode.id)}
               onResolveApproval={(approved) =>
-                resolveWorkflowApproval(workspaceId, workflow.id, selectedNode.id, approved)
+                resolveWorkflowApproval(workspaceId, workflow.id, selectedNode.id, approved).then(
+                  (result) => {
+                    if (result.ok) {
+                      setNodeSelection([]);
+                      setMpeNodeId(null);
+                    }
+                    return result;
+                  },
+                )
               }
               onOpenDiff={onOpenDiff}
               onClose={() => setNodeSelection([])}
@@ -3293,11 +3342,18 @@ export function WorkflowTab({
         <div className="workflow-panel-shell">
           <WorkflowMpePanel
             key={mpeNode.id}
+            workspaceId={workspaceId}
+            workflowId={workflow.id}
+            node={mpeNode}
             markdown={markdownResultText(mpeNode, workflow)}
             onExport={exportMarkdownResult}
             onSaveToDocs={saveMarkdownResultToDocs}
             onError={(message) => setError(message)}
             onClose={() => setMpeNodeId(null)}
+            onResolved={() => {
+              setMpeNodeId(null);
+              setNodeSelection([]);
+            }}
           />
         </div>
       )}
@@ -3817,7 +3873,7 @@ function WorkflowNodeBlock({
     ` is-${nodeKind(node)}` +
     ` is-${node.status}`;
   const hasInputHandle = !isTriggerNodeKind(nodeKind(node));
-  const outputHandles = workflowOutputHandles(nodeKind(node));
+  const outputHandles = workflowOutputHandles(node);
 
   return (
     <div
@@ -4472,6 +4528,11 @@ function markdownAutoSeeResult(node: WorkflowNode): boolean {
   return node.config?.autoSeeResult === true;
 }
 
+function markdownActionValue(node: WorkflowNode): "none" | "approval" | "message" {
+  const value = node.config?.action ?? node.config?.markdownAction;
+  return value === "approval" || value === "message" ? value : "none";
+}
+
 function markdownResultText(node: WorkflowNode, workflow: WorkflowRecord): string {
   if (node.rawOutput) {
     try {
@@ -4992,21 +5053,60 @@ function WorkflowAgentTerminalInner({
 const WorkflowAgentTerminal = memo(WorkflowAgentTerminalInner);
 
 function WorkflowMpePanel({
+  workspaceId,
+  workflowId,
+  node,
   markdown,
   onExport,
   onSaveToDocs,
   onError,
   onClose,
+  onResolved,
 }: {
+  workspaceId: string;
+  workflowId: string;
+  node: WorkflowNode;
   markdown: string;
   onExport: () => Promise<void>;
   onSaveToDocs: () => Promise<string>;
   onError: (message: string) => void;
   onClose: () => void;
+  onResolved: () => void;
 }) {
   const { t } = useUiPreferences();
   const [pendingAction, setPendingAction] = useState<"export" | "save" | null>(null);
   const [savedDocument, setSavedDocument] = useState("");
+  const [message, setMessage] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const action = markdownActionValue(node);
+  const waitingForApproval = node.status === "running" && node.config?.waitingForApproval === true;
+  const waitingForInput = node.status === "running" && node.config?.waitingForInput === true;
+
+  const resolveApproval = async (approved: boolean) => {
+    if (submitting) return;
+    setSubmitting(true);
+    try {
+      const result = await resolveWorkflowApproval(workspaceId, workflowId, node.id, approved);
+      if (!result.ok) throw new Error("This approval is no longer pending.");
+      onResolved();
+    } catch (error) {
+      onError((error as Error).message);
+      setSubmitting(false);
+    }
+  };
+
+  const submitMessage = async () => {
+    if (submitting) return;
+    setSubmitting(true);
+    try {
+      const result = await resolveWorkflowInput(workspaceId, workflowId, node.id, message);
+      if (!result.ok) throw new Error("This message is no longer pending.");
+      onResolved();
+    } catch (error) {
+      onError((error as Error).message);
+      setSubmitting(false);
+    }
+  };
 
   const exportMarkdown = async () => {
     setPendingAction("export");
@@ -5086,6 +5186,46 @@ function WorkflowMpePanel({
           <MarkdownPreview source={markdown} />
         </Suspense>
       </div>
+      {action === "approval" && waitingForApproval && (
+        <div className="workflow-mpe-panel__decision" role="alert">
+          <strong>{t("workflow.markdown.waitingApproval")}</strong>
+          <div className="workflow-inspector__approval-actions">
+            <button type="button" className="is-primary" disabled={submitting} onClick={() => void resolveApproval(true)}>
+              <i className="codicon codicon-check" aria-hidden="true" />
+              {t("workflow.markdown.approve")}
+            </button>
+            <button type="button" className="is-danger" disabled={submitting} onClick={() => void resolveApproval(false)}>
+              <i className="codicon codicon-close" aria-hidden="true" />
+              {t("workflow.markdown.reject")}
+            </button>
+          </div>
+        </div>
+      )}
+      {action === "message" && waitingForInput && (
+        <div className="workflow-mpe-panel__decision" role="alert">
+          <strong>{t("workflow.markdown.waitingMessage")}</strong>
+          <div className="workflow-mpe-panel__message-control">
+            <textarea
+              value={message}
+              onChange={(event) => setMessage(event.target.value)}
+              disabled={submitting}
+              autoFocus
+              placeholder={t("workflow.markdown.messagePlaceholder")}
+              aria-label={t("workflow.markdown.messagePlaceholder")}
+            />
+            <button
+              type="button"
+              className="workflow-mpe-panel__send"
+              disabled={submitting}
+              onClick={() => void submitMessage()}
+              title={t("workflow.markdown.send")}
+            >
+              <i className="codicon codicon-send" aria-hidden="true" />
+              <span>{t("workflow.markdown.send")}</span>
+            </button>
+          </div>
+        </div>
+      )}
     </aside>
   );
 }
@@ -5244,7 +5384,7 @@ function WorkflowNodeInspector({
   const [collapsedVariableRows, setCollapsedVariableRows] = useState<Set<number>>(
     () => new Set(variableConfig.map((_, index) => index)),
   );
-  const showOutput = kind !== "markdown";
+  const showOutput = true;
   const runDetails = runDetailsSnapshot(node);
   const waitingForChoice =
     isAgent && node.status === "running" && runDetails?.terminalStatus === "waiting-for-choice";
@@ -5637,6 +5777,15 @@ function WorkflowNodeInspector({
               disabled={running}
             />
             <span>Auto success</span>
+          </label>
+          <label className="workflow-inspector__check">
+            <input
+              type="checkbox"
+              checked={node.config?.parseOutputJson === true}
+              onChange={(event) => updateConfig({ parseOutputJson: event.target.checked })}
+              disabled={running}
+            />
+            <span>{t("workflow.agent.parseOutputJson")}</span>
           </label>
           <label className="workflow-inspector__check workflow-inspector__check--danger">
             <input
@@ -6373,6 +6522,25 @@ function WorkflowNodeInspector({
       )}
 
       {isMarkdown && (
+        <>
+        <div className="workflow-inspector__field">
+          <span>{t("workflow.markdown.action")}</span>
+          <SegmentedControl
+            value={markdownActionValue(node)}
+            options={["none", "approval", "message"] as const}
+            onChange={(value) => updateConfig({ action: value })}
+            getLabel={(value) =>
+              t(
+                value === "none"
+                  ? "workflow.markdown.actionNone"
+                  : value === "approval"
+                    ? "workflow.markdown.actionApproval"
+                    : "workflow.markdown.actionMessage",
+              )
+            }
+            disabled={running}
+          />
+        </div>
         <div className="workflow-inspector__mpe-link-row">
           <label className="workflow-inspector__check">
             <input
@@ -6387,6 +6555,7 @@ function WorkflowNodeInspector({
             {t("workflow.markdown.seeResult")}
           </button>
         </div>
+        </>
       )}
 
       {incoming.length > 0 && (
@@ -6528,11 +6697,13 @@ function SegmentedControl<T extends string>({
   value,
   options,
   onChange,
+  getLabel,
   disabled,
 }: {
   value: string;
   options: readonly T[];
   onChange: (value: T) => void;
+  getLabel?: (value: T) => string;
   disabled?: boolean;
 }) {
   return (
@@ -6545,7 +6716,7 @@ function SegmentedControl<T extends string>({
           onClick={() => onChange(option)}
           disabled={disabled}
         >
-          {option}
+          {getLabel ? getLabel(option) : option}
         </button>
       ))}
     </div>
@@ -8780,7 +8951,7 @@ function inputPoint(node: WorkflowNode): CanvasPoint {
 }
 
 function outputPoint(node: WorkflowNode, sourceHandle?: string): CanvasPoint {
-  const handles = workflowOutputHandles(nodeKind(node));
+  const handles = workflowOutputHandles(node);
   const index = sourceHandle ? handles.indexOf(sourceHandle) : -1;
   const ratio = index >= 0 ? (index + 1) / (handles.length + 1) : 0.5;
   return {
@@ -8789,9 +8960,13 @@ function outputPoint(node: WorkflowNode, sourceHandle?: string): CanvasPoint {
   };
 }
 
-function workflowOutputHandles(kind: WorkflowNodeKind): string[] {
+function workflowOutputHandles(node: WorkflowNode): string[] {
+  const kind = nodeKind(node);
   if (kind === "if") return ["true", "false"];
   if (kind === "diff-approval") return ["success", "failure"];
+  if (kind === "markdown" && markdownActionValue(node) === "approval") {
+    return ["success", "failure"];
+  }
   return [];
 }
 
