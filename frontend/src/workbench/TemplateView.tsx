@@ -372,7 +372,7 @@ export function TemplateDetail({
           <p>{template.description}</p>
           <div className="template-detail__meta">
             <span>{template.nodes.length} blocks</span>
-            {template.version && <span>v{template.version}</span>}
+            {template.version && <span>{template.version}</span>}
             <span>Reusable across workspaces</span>
           </div>
           <button
