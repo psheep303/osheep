@@ -5,62 +5,45 @@
 
 English | [简体中文](README.zh-CN.md)
 
-Osheep is a local development workbench built around AI workflows. It brings code editing, terminals, search, Git, workflow templates, and Codex / Claude Code integration into a single interface. The web app runs on Linux and Windows, while the desktop app currently targets Windows.
+**Turn a growing Agent / Harness ecosystem into a simple visual workspace.**
 
-> The project is still in early development; APIs, configuration formats, and interactions may change in incompatible ways. Single-machine, single-user scenarios are the current priority — do not expose the backend directly to untrusted networks.
+Osheep is a lightweight, local-first workbench for composing AI-assisted work. Put agents,
+commands, Git operations, files, APIs, and MCP tools on one canvas; connect their outputs; review
+the result; and keep the project in your own machine and repository.
 
-## Features
-
-- File browsing and code editing powered by Monaco Editor
-- Integrated terminal based on xterm.js and node-pty
-- In-project search, Git status, diffs, and commit history
-- Composable, reusable AI workflows and a template library
-- Configuration, session, and plugin management for Codex and Claude Code
-- Linux/Windows web development with a Tauri 2 Windows desktop shell
-- Local-first: workspaces, AI CLI configuration, and credentials stay on the machine running Osheep
-
-## Architecture
+It is deliberately not another chat window. A workflow makes each step visible, reusable, and
+controllable without making you learn a new automation platform.
 
 ```text
-React + Vite
-     |
-     | HTTP / WebSocket
-     v
-Fastify + node-pty  ----> File system / Git / AI CLI
-     ^
-     |
-Tauri 2 + WebView2 (Windows desktop)
+Trigger -> Agent -> Review -> Commit -> Markdown result
+             |          |
+        Skills / MCP   approve or stop
 ```
 
-The desktop app launches the Node.js backend as a sidecar, and the backend serves the built frontend assets. The Rust process is only responsible for the desktop window and the lifecycle of the backend child process.
+Codex CLI and Claude Code are the built-in adapters today. Osheep's adapter boundary is designed
+for more agents and harnesses, whether they run through a CLI, HTTP, or an SDK.
 
-## Requirements
+## Why Osheep
 
-For web development you need:
+- **Visual, without the ceremony**: build workflows by connecting blocks and pass data with simple
+  `{{blocks[2].text}}` references.
+- **Agent-agnostic by design**: adapters normalize sessions, streaming events, approvals, tools,
+  usage, and capabilities instead of coupling the canvas to one CLI.
+- **Keep control**: select permissions, inspect live sessions and terminal output, pause at a diff
+  or Markdown approval, retry or stop a run, and export a run report.
+- **Useful around agents**: work with files, shell commands, HTTP, Remote MCP, JavaScript, Git,
+  pull requests, plugins, and skills in the same flow.
+- **A real project workbench**: browse and edit code, use an integrated terminal, search the
+  workspace, and inspect Git status, diffs, and history without leaving the project context.
+- **Local first**: workspaces, workflow files, credentials, and CLI configuration remain on the
+  machine running Osheep.
+- **Start small, reuse often**: begin with a three-block workflow, save it as a template, or
+  install one from the [template marketspace](https://github.com/psheep303/osheep-template-registry).
 
-- Node.js 20 or later (the current LTS is recommended)
-- npm
-- Git
-- `build-essential` and Python 3 to compile `node-pty` on Linux
-- The C++ build tools required to compile `node-pty` on Windows
-- Optional: Codex CLI or Claude Code CLI, installed and signed in
+## In Two Minutes
 
-Building the Windows desktop app additionally requires:
-
-- Rust stable and Cargo
-- Visual Studio 2022 Build Tools with the "Desktop development with C++" workload
-- Microsoft Edge WebView2 Runtime
-
-## Quick start
-
-On Ubuntu 22.04/24.04, install the system dependencies first:
-
-```bash
-sudo apt-get update
-sudo apt-get install -y build-essential python3 git
-```
-
-After installing Node.js 20+, clone the project and install dependencies:
+Install Node.js 20+, npm, and Git. An installed and signed-in agent CLI is optional, but needed to
+run its blocks.
 
 ```bash
 git clone https://github.com/psheep303/osheep.git
@@ -69,143 +52,112 @@ npm --prefix backend ci
 npm --prefix frontend ci
 ```
 
-Start both web development processes from the repository root on Linux:
+Start Osheep:
 
 ```bash
+# Linux
 chmod +x ./dev.sh
 ./dev.sh
 ```
 
-The script manages both processes in one terminal. Use `--backend-only`, `--frontend-only`, `--developer`, or `--install` as needed; `Ctrl+C` stops both processes.
-
-On Windows, install and start with PowerShell:
-
 ```powershell
-git clone https://github.com/psheep303/osheep.git
-cd osheep
-
-cd backend
-npm ci
-cd ..\frontend
-npm ci
-cd ..
-```
-
-```powershell
+# Windows
 .\dev.ps1
 ```
 
-After startup, open:
+Open <http://127.0.0.1:5173>, choose a workspace, then open **Templates** and run a template or
+create a workflow from **Workflow**. The concise [getting started guide](docs/getting-started.md)
+and [first workflow tutorial](docs/first-workflow.md) cover the rest.
 
-- Frontend: <http://127.0.0.1:5173>
-- Backend: <http://127.0.0.1:4178>
-- Health check: <http://127.0.0.1:4178/api/health>
+## Screenshots
 
-On either platform, you can also start them separately:
+The workflow canvas and run details view:
 
-```bash
-cd backend
-npm run dev
-```
+![Workflow canvas](assets/screenshots/workflow-en.png)
 
-```bash
-cd frontend
-npm run dev
-```
+![Run details](assets/screenshots/run-details-en.png)
 
-For author mode of the built-in workflow templates, use:
+## What You Can Build
 
-```powershell
-.\dev-developer.cmd
-```
+- A coding loop: prompt an agent, inspect the diff, approve it, commit, and export the result.
+- A research flow: fetch a page or API, extract JSON, send the useful context to an agent, then
+  render Markdown.
+- A controlled automation: call Remote MCP tools, branch on conditions, transform data, and keep
+  a trace of every block.
+- A reusable team recipe: save a working graph as a personal template or install a curated
+  template from the marketspace.
 
-## Windows desktop app
+See [workflow blocks](docs/workflow-blocks.md) for the full reference, and
+[agents, skills, templates, and adapters](docs/agents-and-adapters.md) for the surrounding tools.
+The [template registry](https://github.com/psheep303/osheep-template-registry) powers the
+marketspace; [osheep-template](https://github.com/psheep303/osheep-template) contains examples.
 
-Check the Tauri environment:
-
-```powershell
-cd desktop
-npm ci
-npx tauri info
-```
-
-Start the desktop dev build or build the NSIS installer from the repository root:
-
-```powershell
-.\desktop-dev.cmd
-.\desktop-build.cmd
-```
-
-The installer is written to `desktop/src-tauri/target/release/bundle/nsis/`. See [desktop/README.md](desktop/README.md) for full packaging, logging, and remote-mode instructions.
-
-## Configuration
-
-The backend reads its runtime configuration from environment variables. You can copy [backend/.env.example](backend/.env.example) as a reference, but the app does not load `.env` files automatically; inject variables via your shell, process manager, or deployment platform.
-
-| Variable | Default | Description |
-| --- | --- | --- |
-| `OSHEEP_HOST` | `127.0.0.1` | Backend listen address |
-| `OSHEEP_PORT` | `4178` | Backend listen port |
-| `WORKSPACES_ROOT` | `backend/workspaces` | Parent directory for workspaces |
-| `MAX_FILE_SIZE_BYTES` | `5242880` | Per-file read/write size limit |
-| `MAX_TERMINAL_SESSIONS` | `16` | Maximum concurrent terminals |
-| `TERMINAL_IDLE_TIMEOUT_MS` | `0` | Terminal idle timeout, `0` disables it |
-| `AGENT_STALL_TIMEOUT_MS` | `1800000` | AI CLI no-output timeout, `0` disables it |
-| `CORS_ORIGIN` | Loopback origins | Comma-separated additional trusted frontend origins |
-| `OSHEEP_AUTH_TOKEN` | Random local value | Shared access token required for non-loopback listening |
-| `OSHEEP_TEMPLATES_ROOT` | `backend/.osheep/templates` | Runtime template directory |
-| `OSHEEP_CLAUDE_CONFIG_DIR` | `~/.claude` | Claude Code configuration directory |
-| `OSHEEP_CODEX_CONFIG_DIR` | `~/.codex` | Codex configuration directory |
-
-Local mode automatically establishes an Origin-restricted `HttpOnly` session; APIs and terminal WebSockets reject unauthorized pages. Non-loopback listening requires both a random `OSHEEP_AUTH_TOKEN` of at least 32 characters and explicit `CORS_ORIGIN` values, and must use HTTPS. Open `https://host/#osheep-token=TOKEN` once to exchange the token for a session; the token is then removed from the address bar. This shared token is intended for controlled single-user deployments and does not replace multi-user authentication, reverse-proxy access control, or firewall rules.
-
-## Data and secrets
-
-- Never commit `.env`, `backend/.osheep/`, `.codex/`, `.claude/`, private keys, certificate keys, or cloud credentials.
-- Osheep's AI settings may contain plaintext API keys. Use them only on a trusted local machine and keep the permissions of the configuration directories sensible.
-- `.gitignore` only prevents new accidental commits; it cannot remove secrets already committed to Git history. If a secret leaks, revoke the key immediately, then clean up the history.
-- Before committing, run `node scripts/check-public-repo.mjs`; before making the repository public, also scan the complete Git history with Gitleaks.
-
-See [SECURITY.md](SECURITY.md) for how to report security issues privately.
-
-## Project structure
+## How It Fits Together
 
 ```text
-backend/                 Fastify API, PTY, Git, and AI CLI integration
-frontend/                React/Vite workbench
-desktop/                 Tauri 2 desktop shell and release scripts
-backend/template-library Built-in workflow templates
-.osheep/                 Local runtime state and development context (ignored by Git)
-docs/                    Public user, contributor, and maintainer documentation
+React + Vite workbench
+        |
+        | HTTP / WebSocket
+        v
+Fastify runtime ----> files, Git, PTY, MCP, adapters
+        ^
+        |
+Tauri 2 + WebView2 (Windows desktop)
 ```
 
-See the [documentation index](docs/README.md) for the public guides and documentation boundary.
+The Windows desktop application starts the local backend as a sidecar. The web app runs on Linux
+and Windows; the desktop shell currently targets Windows.
 
-## Verification
+## Requirements
 
-On Linux, run the same clean installation, Bash/Git/node-pty/AI CLI detection, test, and build flow used by CI:
+- Node.js 20 or later and npm
+- Git
+- Linux: Python 3 and `build-essential` to compile `node-pty`
+- Windows: the C++ build tools needed by `node-pty`
+- Optional: one or more supported agent CLIs, installed and signed in
 
-```bash
-bash scripts/verify-linux.sh
-```
+For the Windows desktop application, also install Rust stable, Visual Studio 2022 Build Tools with
+the "Desktop development with C++" workload, and Microsoft Edge WebView2 Runtime. See
+[desktop/README.md](desktop/README.md).
 
-Platform-neutral local verification commands are:
+## Configuration And Safety
+
+Osheep listens on loopback by default. Its local APIs and terminal WebSockets use an Origin-restricted
+`HttpOnly` session. Keep it local unless you deliberately operate a protected single-user deployment.
+
+For non-loopback listening, use HTTPS, set an explicit `CORS_ORIGIN`, and set a random
+`OSHEEP_AUTH_TOKEN` with at least 32 characters. The shared token is not multi-user authentication;
+put remote deployments behind appropriate network and access controls.
+
+Runtime configuration is environment based. [backend/.env.example](backend/.env.example) lists the
+available variables. Do not commit `.env`, `backend/.osheep/`, `.codex/`, `.claude/`, private keys,
+or cloud credentials. See [SECURITY.md](SECURITY.md) to report a vulnerability privately.
+
+## Documentation
+
+- [Documentation index](docs/README.md)
+- [Getting started](docs/getting-started.md)
+- [First workflow](docs/first-workflow.md)
+- [Workflow block reference](docs/workflow-blocks.md)
+- [Agents, skills, templates, and adapters](docs/agents-and-adapters.md)
+- [Build an Osheep Adapter](docs/adapter-development.md)
+
+## Development And Contribution
+
+Run the normal checks before opening a pull request:
 
 ```bash
 npm --prefix backend run lint
 npm --prefix backend run typecheck
 npm --prefix backend test
-npm --prefix backend run build
 npm --prefix frontend run lint
 npm --prefix frontend run typecheck
 npm --prefix frontend test
-npm --prefix frontend run build
 ```
 
-## Contributing
-
-Issues and pull requests are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) before you start, and do not report security vulnerabilities in public issues.
+For Linux, `bash scripts/verify-linux.sh` reproduces the CI path. Read
+[CONTRIBUTING.md](CONTRIBUTING.md) for workflow, documentation, template, and Adapter guidance.
 
 ## License
 
-This project is open-sourced under the [MIT License](LICENSE).
+Osheep is open source under the [MIT License](LICENSE).

@@ -8,8 +8,7 @@
 
 - **运行时开头，Markdown 结尾**：每条链路由“工作流运行时”启动，紧接一个 Input，最终结果统一在 Markdown 块中查看。
 - **短链路优先**：能用一次代理完成的任务，不增加额外代理和中间步骤。
-- **Claude Code 做高价值思考**：用于项目规划、疑难根因分析和最终审查。
-- **Codex 做快速执行**：用于代码检索、实现、测试和明确问题的批量修正。
+- **为步骤选择合适的 Adapter**：根据规划、执行、审查或领域任务选择合适的 Agent 或 Harness。当前模板使用 Codex CLI 与 Claude Code，但工作流模型不受它们限制。
 - **提示词显式传递上下文**：代理块直接引用必要的上游输出，避免依赖隐式会话状态。
 - **复杂度分级**：小任务使用 Codex 单代理；普通功能使用 Claude 规划 + Codex 实现；高风险任务才启用审查修正闭环。
 
@@ -34,3 +33,7 @@
 
 - `OSHEEP_TEMPLATES_ROOT`：运行时模板库根目录。
 - `OSHEEP_SYSTEM_TEMPLATES_ROOT`：内置模板源码目录。
+
+## 公开模板生态
+
+[模板市场注册表](https://github.com/psheep303/osheep-template-registry) 负责提供模板目录。[osheep-template](https://github.com/psheep303/osheep-template) 提供公开模板示例与贡献结构。

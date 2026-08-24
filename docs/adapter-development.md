@@ -1,6 +1,6 @@
-# Adapter Development Guide
+# Build An Osheep Adapter
 
-This guide explains how to connect an agent or harness to OSheep with the smallest possible
+This guide explains how to connect an agent or harness to Osheep with the smallest possible
 implementation. It describes the adapter APIs currently available in this repository. An adapter
 owns the agent-specific process or API details; Workflow Engine only sees an `AgentAdapter`, an
 `AdapterSession`, and normalized `AdapterEvent` values.
@@ -9,7 +9,7 @@ owns the agent-specific process or API details; Workflow Engine only sees an `Ag
 
 For a JSONL command-line agent, the minimum is:
 
-1. An `AdapterEventMapper` that converts the agent's native JSONL messages into OSheep events.
+1. An `AdapterEventMapper` that converts the agent's native JSONL messages into Osheep events.
 2. An adapter class extending `JsonlAgentAdapter`.
 3. A registry entry in `backend/src/adapters/default-registry.ts`.
 
@@ -34,7 +34,7 @@ CLI / HTTP / SDK        native events -> AdapterEvent
 ```
 
 `AgentTransport` starts and controls the underlying process or stream. `AdapterEventMapper` parses
-native chunks and emits OSheep events. Unknown native messages should become diagnostics or be
+native chunks and emits Osheep events. Unknown native messages should become diagnostics or be
 ignored; they must not crash a session.
 
 ## Imports
@@ -330,7 +330,7 @@ export class AcmeUsageProvider implements AdapterUsageProvider {
 }
 ```
 
-Adapters without usage support return `{}` and leave cost calculation to OSheep.
+Adapters without usage support return `{}` and leave cost calculation to Osheep.
 
 ## Contract Tests
 
@@ -352,7 +352,7 @@ unknown event types, and secret/error redaction. Add a process test proving that
 
 Recommended acceptance checks:
 
-- `start()` creates one OSheep session with a stable `sessionId`.
+- `start()` creates one Osheep session with a stable `sessionId`.
 - The first turn emits `session.started` and then `agent.completed` or `agent.failed`.
 - Unsupported resume returns `AdapterError` with code `UNSUPPORTED`.
 - Every event has a monotonically increasing sequence number and the same session envelope.

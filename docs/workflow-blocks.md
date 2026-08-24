@@ -1,505 +1,75 @@
-# Workflow Blocks Guide
+# Workflow Blocks
 
-This document describes every workflow block currently available in osheep.
+Build a workflow by adding blocks, connecting their handles, and pressing **Run**. A block runs only when it is reachable from a trigger. Independent ready blocks may run in parallel; configure the workspace limit in Settings when a flow needs less concurrency.
 
-Related reference:
-
-- `docs/workflow-block-output.md`
-
-## Template Basics
-
-Most block inputs support templates like:
+Use a block's visible number to pass an earlier output into a later field:
 
 ```text
 {{blocks[2].text}}
-{{blocks[5].result}}
-{{blocks[3].data[0]}}
+{{blocks[3].data.items[0]}}
 ```
 
-`blocks[n]` uses the visible block id shown on the block itself.
+Use `{{variables.name}}` for a value created by **Environment variable**. Invalid references stop the relevant block with an error. See [the output contract](workflow-block-output.md) for field shapes.
 
-Invalid template syntax, missing block ids, and missing output fields stop the block with a descriptive error.
+## Start And Input
 
-## Triggers
+| Block | Use it for | Key behavior |
+| --- | --- | --- |
+| Workflow run | Start a flow from the canvas | Main manual trigger. |
+| Schedule (Cron) | Document a scheduled intent | It runs when you click **Run**; it does not register a persistent scheduler yet. |
+| Webhook trigger | Configure an intended HTTP entry point | It runs when you click **Run**; it does not expose a persistent webhook endpoint yet. |
+| Input | Supply task text | Exposes `value`, `data`, and `text`. |
+| Environment variable | Define named workflow values | Supports text, JSON, number, and boolean values; reference them as `{{variables.name}}`. |
 
-### Workflow run
+## Agent And Workspace Blocks
 
-Kind: `trigger`
+| Block | Use it for | Key behavior |
+| --- | --- | --- |
+| Agent | Ask an installed Agent / Harness to work in the workspace | Current built-in adapters are Codex CLI and Claude Code. Select model, permission/sandbox, effort, retries, and optional session ID in the inspector. |
+| Codex plugins / Claude plugins | Enable selected CLI plugins for the next step | Changes the underlying CLI selection. Enable only trusted plugins. |
+| Codex skills / Claude skills | Enable selected skills for the next step | Choose local or enabled skills; manage and import personal skills in Settings. |
+| Run command | Run a shell command in the workspace | Output contains command, stdout, stderr, exit code, and signal. |
+| Read file / Write file | Read or change a workspace-relative file | Write file overwrites its destination and records it in `CHANGED_FILES`. |
 
-Use this as the default starting point for a workflow you manually run from the UI.
+Agent output is available as `text`. Turn on **Parse output JSON** when an agent deliberately returns one JSON object and later blocks need its fields. Agent runs expose live terminal/session details and support configured retries, provider rotation, interruption handling, and cost tracking.
 
-Output:
+## Control And Review
 
-```json
-{
-  "type": "trigger",
-  "status": "success",
-  "id": 1,
-  "text": "Workflow run trigger fired.",
-  "CHANGED_FILES": []
-}
-```
+| Block | Use it for | Key behavior |
+| --- | --- | --- |
+| Condition (IF) | Branch on an expression | Connect its `true` and `false` handles separately. |
+| Diff approval | Review workspace changes before proceeding | Pauses the flow; its `success` handle is approval and `failure` is rejection. Requires a Git repository. |
+| Markdown render | Show a final result, message, or approval | Render Markdown normally, or choose a message/approval action to pause for user input or a decision. |
+| Wait | Delay a flow | Pauses for the configured seconds. |
+| Loop over items | Normalize an array into items or batches | Emits `items`, `batches`, `data`, and `count`. |
 
-### Manual Trigger
+## Data And Network
 
-Kind: `manual-trigger`
+| Block | Use it for | Key behavior |
+| --- | --- | --- |
+| Fetch page text | Read the visible text from a page | Returns extracted `text`. |
+| HTTP request | Call an API | Configure method, URL, JSON headers/body, and JSON/text response handling. |
+| JSON extract | Parse data and read a path | Reads a source value and optional path such as `data.items[0].name`. |
+| Set data | Create structured JSON | Templates inside JSON are resolved before execution. |
+| Merge | Join several incoming outputs | `object` shallow-merges; `array` collects values. |
+| JavaScript code | Transform inputs | Receives `input`, `items`, `helpers.jsonPreview`, and `helpers.textFromAny`; return an object or primitive. |
+| Remote MCP | Discover and call an MCP tool | Enter server URL and optional auth, click **Connect**, select a tool, then supply JSON arguments. |
 
-This is another manual start block. It behaves like `Workflow run`, but is useful when you want a more explicit trigger label in the graph.
+Remote MCP uses SSE when available and falls back to Streamable HTTP. Its arguments can use workflow references. Treat the endpoint, credentials, and tool arguments as trusted integration configuration.
 
-Output is similar to `trigger`, with `type: "manual-trigger"`.
+## Git
 
-### Cron
+| Block | Use it for | Key behavior |
+| --- | --- | --- |
+| Switch branch | Check out or create a branch | Enable creation only when the branch may not exist. |
+| Delete branch | Delete a local or remote branch | Force and remote deletion are explicit options. |
+| Commit | Commit workspace changes | Provide a message; optionally stage all changes first. |
+| Pull request | Push and open a GitHub pull request | Can push the current branch, then creates the PR through the available GitHub CLI integration. |
 
-Kind: `cron`
+Git blocks require the workspace to be a Git repository. Place **Diff approval** immediately before destructive Git steps when a human checkpoint matters.
 
-Fields:
+## Run Settings And History
 
-- `cron`: cron expression, for example `0 9 * * 1-5`
-- `timezone`: for example `local`
+Each workflow has settings for per-run cost and duration limits, optional unbilled runs, alert sounds, and run history. Run observability shows block input/output, retries, terminal logs, token usage, and cost; export a run report when you need a portable record.
 
-Current behavior:
-
-- The block can be configured now.
-- When you click Run in the UI, it evaluates as a trigger for that run.
-- It does not yet register a long-lived scheduler by itself.
-
-Example output:
-
-```json
-{
-  "type": "cron",
-  "status": "success",
-  "schedule": "0 9 * * 1-5",
-  "text": "Cron trigger evaluated for manual run.",
-  "CHANGED_FILES": []
-}
-```
-
-### Webhook Trigger
-
-Kind: `webhook-trigger`
-
-Fields:
-
-- `method`: HTTP method
-- `path`: webhook path, for example `/workflow-hook`
-
-Current behavior:
-
-- The block can be configured now.
-- When you click Run in the UI, it evaluates as a trigger for that run.
-- It does not yet expose a persistent incoming webhook endpoint by itself.
-
-## Input
-
-### Input
-
-Kind: `input`
-
-Field:
-
-- input text
-
-Connect it after a trigger or another block, then enter text for downstream blocks. It exposes the entered value through `value`, `data`, and `text`.
-
-Example downstream reference:
-
-```text
-{{blocks[2].text}}
-```
-
-Output:
-
-```json
-{
-  "type": "input",
-  "status": "success",
-  "value": "hello",
-  "data": "hello",
-  "text": "hello",
-  "CHANGED_FILES": []
-}
-```
-
-## Command and AI
-
-### Run command
-
-Kind: `command`
-
-Input:
-
-- command line text
-
-Use it for shell commands such as:
-
-```text
-npm test
-git status
-node scripts/build.js
-```
-
-Output includes:
-
-- `command`
-- `stdout`
-- `stderr`
-- `exitCode`
-- `signal`
-
-### Codex
-
-Kind: `agent` with provider `codex-cli`
-
-Fields:
-
-- `model`
-- `retries`
-- `auto success`
-- prompt
-
-Use it when you want Codex CLI to inspect, edit, or reason inside the project.
-
-The block writes one JSON object. If the model returns plain text, osheep wraps it into JSON under `text`.
-
-### Claude Code
-
-Kind: `agent` with provider `claude-cli`
-
-Same usage pattern as Codex, but routed to Claude Code CLI.
-
-Additional field:
-
-- `Claude permissions`: `acceptEdits` adds `--permission-mode acceptEdits`; `bypassPermissions` adds `--permission-mode bypassPermissions`.
-
-## Network
-
-### Fetch page text
-
-Kind: `web`
-
-Input:
-
-- URL
-
-Use this when you only want the readable text extracted from a webpage.
-
-Example:
-
-```text
-https://example.com
-```
-
-Output includes:
-
-- `url`
-- `text`
-- `stderr`
-- `exitCode`
-
-### HTTP Request
-
-Kind: `http-request`
-
-Fields:
-
-- `method`
-- `url`
-- `headers` as JSON
-- `body`
-- `responseType`: `auto`, `json`, or `text`
-
-Use this for direct API calls.
-
-Example headers:
-
-```json
-{
-  "accept": "application/json",
-  "authorization": "Bearer {{blocks[2].token}}"
-}
-```
-
-Example output:
-
-```json
-{
-  "type": "http-request",
-  "status": "success",
-  "statusCode": 200,
-  "headers": {},
-  "body": {},
-  "text": "...",
-  "CHANGED_FILES": []
-}
-```
-
-## Logic
-
-### IF
-
-Kind: `if`
-
-Fields:
-
-- `left`
-- `operator`
-- `right`
-
-Supported operators:
-
-- `equals`
-- `notEquals`
-- `contains`
-- `greaterThan`
-- `lessThan`
-- `exists`
-- `isEmpty`
-
-Example:
-
-```text
-left: {{blocks[2].status}}
-operator: equals
-right: success
-```
-
-Output includes:
-
-- `result` as boolean
-- `left`
-- `right`
-- `operator`
-
-### Wait
-
-Kind: `wait`
-
-Fields:
-
-- `seconds`
-
-Use it to pause execution for a fixed amount of time.
-
-### Loop Over Items
-
-Kind: `loop-items`
-
-Fields:
-
-- `source`
-- `mode`: `items` or `batches`
-- `batchSize`
-
-Use it to normalize an upstream array into:
-
-- `items`: the flat item list
-- `batches`: grouped arrays when `batchSize > 1`
-
-Example source:
-
-```text
-{{blocks[3].data}}
-```
-
-Example output:
-
-```json
-{
-  "type": "loop-items",
-  "status": "success",
-  "mode": "batches",
-  "batchSize": 2,
-  "items": [1, 2, 3, 4],
-  "batches": [[1, 2], [3, 4]],
-  "data": [[1, 2], [3, 4]],
-  "count": 4,
-  "CHANGED_FILES": []
-}
-```
-
-## Data
-
-### Set Data
-
-Kind: `set`
-
-Field:
-
-- `data` as JSON
-
-Use it to build structured data for downstream blocks.
-
-Example:
-
-```json
-{
-  "title": "{{blocks[2].text}}",
-  "ok": true
-}
-```
-
-### Merge
-
-Kind: `merge`
-
-Field:
-
-- `mode`: `object` or `array`
-
-Use it when several upstream blocks flow into one block.
-
-- `object`: shallow-merges object-like outputs
-- `array`: collects upstream outputs into an array
-
-### JSON Extract
-
-Kind: `json`
-
-Fields:
-
-- `source`
-- `path`
-
-Use it to parse JSON and pull out a nested value.
-
-Example:
-
-```text
-source: {{blocks[4].text}}
-path: data.items[0].name
-```
-
-### Markdown
-
-Kind: `markdown`
-
-Input:
-
-- markdown text
-
-Use it to generate a final formatted markdown output. In the inspector, use `See result` to preview it.
-
-This block has no outgoing connector.
-
-## Code
-
-### Code in JavaScript
-
-Kind: `code`
-
-Field:
-
-- `code`
-
-The block executes JavaScript and receives:
-
-- `input`: first upstream block output
-- `items`: all upstream block outputs
-- `helpers.jsonPreview`
-- `helpers.textFromAny`
-
-Example:
-
-```js
-return {
-  text: input.text || "",
-  length: (input.text || "").length
-};
-```
-
-Return value rules:
-
-- returning an object merges it into the block output
-- returning a primitive stores it in `data` and `text`
-
-## File
-
-### Read file
-
-Kind: `file-read`
-
-Input:
-
-- relative file path
-
-Example:
-
-```text
-README.md
-```
-
-Output includes:
-
-- `path`
-- `content`
-- `size`
-- `mtime`
-
-### Write file
-
-Kind: `file-write`
-
-Fields:
-
-- `path`
-- `content`
-
-Use it to write or overwrite a file inside the workspace.
-
-Output includes:
-
-- `path`
-- `bytes`
-- `content`
-- `CHANGED_FILES`
-
-## MCP
-
-### MCP
-
-Kind: `mcp`
-
-Fields:
-
-- `Remote MCP Link`
-- `Headers JSON`
-- `API Key`
-- discovered `Tool`
-- `Arguments JSON`
-
-Use this block to connect to a Remote MCP server and then call one of its tools.
-
-Typical flow:
-
-1. Fill in `Remote MCP Link`
-2. Optionally add headers or API key
-3. Click `Connect`
-4. Pick a discovered tool
-5. Adjust `Arguments JSON`
-6. Run the block
-
-Behavior notes:
-
-- osheep sends `tools/list` during connect
-- discovered tools are cached in the node config
-- `Arguments JSON` can use templates
-- default MCP headers include `MCP-Protocol-Version: 2025-03-26`
-
-## Practical Patterns
-
-### API workflow
-
-`Manual Trigger -> HTTP Request -> JSON Extract -> Markdown`
-
-### Guarded command workflow
-
-`Workflow run -> Run command -> IF -> Codex`
-
-### Data shaping workflow
-
-`HTTP Request -> JSON Extract -> Set Data -> Merge`
-
-### Multi-item workflow
-
-`HTTP Request -> JSON Extract -> Loop Over Items -> Code in JavaScript`
+Save a useful graph as a personal template. The **Template marketspace** reads the [Osheep template registry](https://github.com/psheep303/osheep-template-registry); example public templates live in [osheep-template](https://github.com/psheep303/osheep-template).

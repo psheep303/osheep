@@ -53,6 +53,28 @@ Input blocks have both incoming and outgoing connectors. Their entered text is a
 }
 ```
 
+## Environment Variable Block
+
+The block exposes each configured entry both as a named value in the workflow and as structured
+output. Use `{{variables.name}}` in a later field. Text, JSON, number, and boolean entries retain
+their selected value type.
+
+```json
+{
+  "type": "variable",
+  "status": "success",
+  "variables": {
+    "branch": "feature/docs",
+    "dryRun": true
+  },
+  "data": {
+    "branch": "feature/docs",
+    "dryRun": true
+  },
+  "text": "{\"branch\":\"feature/docs\",\"dryRun\":true}"
+}
+```
+
 ## Command Block
 
 ```json
@@ -113,6 +135,34 @@ The editor exposes `path` and `content` as separate fields.
   "CHANGED_FILES": ["notes.txt"]
 }
 ```
+
+## Control And Git Blocks
+
+`if` returns `result` and routes execution through its `true` or `false` handle. `diff-approval`
+and Markdown approval return `approved`; their `success` and `failure` handles represent approval
+and rejection. Markdown message returns the submitted `message`.
+
+```json
+{
+  "type": "diff-approval",
+  "status": "approved",
+  "approved": true,
+  "text": "Diff approved."
+}
+```
+
+Git blocks return the useful identifier for the action: `git-commit` returns `head`,
+`git-checkout` and `git-delete-branch` return `branch`, and `github-pr` returns `url` and `number`.
+
+## Data Blocks
+
+`set` returns its parsed JSON as `data`. `merge` returns `mode`, `items`, and `data`. `json` returns
+`source`, `path`, `value`, and `data`. `loop-items` returns `items`, `batches`, `data`, and `count`.
+The JavaScript block returns an object merged into the output, or stores a primitive in `data` and
+`text`.
+
+When an Agent block has **Parse output JSON** enabled and returns one JSON object, its properties
+are exposed beside the normalized Agent fields. Plain text is always available as `text`.
 
 ## Markdown Output Block
 
