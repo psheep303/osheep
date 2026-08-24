@@ -333,11 +333,7 @@ export async function registerWorkflowRoutes(app: FastifyInstance) {
   app.post<{ Params: { id: string; wid: string; nodeId: string } }>(
     "/api/workspaces/:id/workflows/:wid/nodes/:nodeId/retry-now",
     async (req) => {
-      const retried = await retryWorkflowNodeNow(
-        req.params.id,
-        req.params.wid,
-        req.params.nodeId,
-      );
+      const retried = await retryWorkflowNodeNow(req.params.id, req.params.wid, req.params.nodeId);
       if (!retried) throw errors.invalidPath("agent retry is no longer pending");
       return { ok: true };
     },

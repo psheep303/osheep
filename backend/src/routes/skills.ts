@@ -70,12 +70,18 @@ export async function registerSkillsRoutes(app: FastifyInstance) {
     };
   });
   app.post<{ Body: unknown }>("/api/skills/import", async (req) => {
-    const body = req.body && typeof req.body === "object" && !Array.isArray(req.body)
-      ? (req.body as Record<string, unknown>)
-      : {};
+    const body =
+      req.body && typeof req.body === "object" && !Array.isArray(req.body)
+        ? (req.body as Record<string, unknown>)
+        : {};
     const files = Array.isArray(body.files)
       ? body.files.filter((item): item is { path: string; data: string } =>
-          Boolean(item && typeof item === "object" && typeof (item as Record<string, unknown>).path === "string" && typeof (item as Record<string, unknown>).data === "string"),
+          Boolean(
+            item &&
+              typeof item === "object" &&
+              typeof (item as Record<string, unknown>).path === "string" &&
+              typeof (item as Record<string, unknown>).data === "string",
+          ),
         )
       : undefined;
     const sourcePath = typeof body.sourcePath === "string" ? body.sourcePath.trim() : undefined;

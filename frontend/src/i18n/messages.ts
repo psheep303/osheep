@@ -17,8 +17,10 @@ export const en = {
   "notification.success": "Success",
   "notification.error": "Error",
   "notification.warning": "Warning",
-  "notification.claudePluginChanged": "Claude plugin change applied. Restart Claude sessions to take effect.",
-  "notification.codexPluginChanged": "Codex plugin change applied. Restart Codex sessions to take effect.",
+  "notification.claudePluginChanged":
+    "Claude plugin change applied. Restart Claude sessions to take effect.",
+  "notification.codexPluginChanged":
+    "Codex plugin change applied. Restart Codex sessions to take effect.",
   "notification.waitingForChoice": "{name} is waiting for your choice.",
   "notification.providerCreated": "Provider created successfully.",
   "notification.providerSaved": "Provider saved successfully.",
@@ -70,7 +72,8 @@ export const en = {
   "skills.install": "Install",
   "skills.installing": "Installing...",
   "skills.installSuccess": '"{name}" installed successfully.',
-  "skills.invalidYaml": "This skill has invalid YAML frontmatter and was rejected by the skills CLI: {detail}",
+  "skills.invalidYaml":
+    "This skill has invalid YAML frontmatter and was rejected by the skills CLI: {detail}",
   "skills.uninstall": "Uninstall",
   "skills.uninstalling": "Uninstalling...",
   "skills.uninstallSuccess": '"{name}" uninstalled successfully.',
@@ -528,7 +531,8 @@ export const en = {
   "workflow.skills.loading": "Loading skills...",
   "workflow.skills.empty": "No user or enabled skills found.",
   "workflow.skills.noMatches": "No matching skills.",
-  "workflow.skills.description": "Selected skills move to Enabled; all other enabled skills move to user.",
+  "workflow.skills.description":
+    "Selected skills move to Enabled; all other enabled skills move to user.",
   "workflow.blocks.fetchPageText": "Fetch page text",
   "workflow.blocks.httpRequest": "HTTP request",
   "workflow.blocks.if": "Condition (IF)",
@@ -1020,7 +1024,8 @@ export const zhCN: Record<MessageKey, string> = {
   "workflow.skills.loading": "正在加载 Skills...",
   "workflow.skills.empty": "user 和已启用分组中没有 Skills。",
   "workflow.skills.noMatches": "没有匹配的 Skills。",
-  "workflow.skills.description": "选中的 Skill 会移至已启用分组；其他已启用 Skill 会移回 user 分组。",
+  "workflow.skills.description":
+    "选中的 Skill 会移至已启用分组；其他已启用 Skill 会移回 user 分组。",
   "workflow.blocks.fetchPageText": "获取网页文本",
   "workflow.blocks.httpRequest": "HTTP 请求",
   "workflow.blocks.if": "条件判断（IF）",

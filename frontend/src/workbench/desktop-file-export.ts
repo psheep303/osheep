@@ -13,9 +13,7 @@ interface BrowserSaveFileHandle {
   }>;
 }
 
-type BrowserSaveFilePicker = (options: {
-  suggestedName: string;
-}) => Promise<BrowserSaveFileHandle>;
+type BrowserSaveFilePicker = (options: { suggestedName: string }) => Promise<BrowserSaveFileHandle>;
 
 export async function exportTextFile({
   suggestedName,

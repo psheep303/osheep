@@ -51,7 +51,9 @@ function externalTextPaths(value: string): string[] {
     .map((line) => line.trim())
     .filter((line) => line && !line.startsWith("#"))
     .map(externalUriPath)
-    .filter((path) => /^[a-zA-Z]:[\\/]/.test(path) || path.startsWith("\\\\") || path.startsWith("/"));
+    .filter(
+      (path) => /^[a-zA-Z]:[\\/]/.test(path) || path.startsWith("\\\\") || path.startsWith("/"),
+    );
 }
 
 export function readFileTreeDragEntries(data: {
@@ -64,7 +66,7 @@ export function readFileTreeDragEntries(data: {
     if (!file) continue;
     const path = file.path;
     if (!path) continue;
-    if (file.webkitRelativePath && file.webkitRelativePath.endsWith("/")) {
+    if (file.webkitRelativePath?.endsWith("/")) {
       out.push({ path, kind: "directory" });
     } else {
       out.push({ path, kind: "file" });
@@ -84,7 +86,8 @@ export function readFileTreeDragPaths(data: {
     return decodeFileTreeDragPaths(text.slice(DRAG_TEXT_PREFIX.length));
   }
   const uri = data.getData("text/uri-list");
-  if (uri.startsWith(DRAG_URI_PREFIX)) return decodeFileTreeDragPaths(uri.slice(DRAG_URI_PREFIX.length));
+  if (uri.startsWith(DRAG_URI_PREFIX))
+    return decodeFileTreeDragPaths(uri.slice(DRAG_URI_PREFIX.length));
   const uriPaths = externalTextPaths(uri);
   if (uriPaths.length > 0) return uriPaths;
   const textPaths = externalTextPaths(text);
@@ -119,10 +122,15 @@ interface FileSystemEntryLike {
   isDirectory: boolean;
   name: string;
   file?: (callback: (file: File) => void, error?: (error: unknown) => void) => void;
-  createReader?: () => { readEntries: (callback: (entries: FileSystemEntryLike[]) => void) => void };
+  createReader?: () => {
+    readEntries: (callback: (entries: FileSystemEntryLike[]) => void) => void;
+  };
 }
 
-async function readBrowserEntry(entry: FileSystemEntryLike, prefix: string): Promise<BrowserDropFile[]> {
+async function readBrowserEntry(
+  entry: FileSystemEntryLike,
+  prefix: string,
+): Promise<BrowserDropFile[]> {
   if (entry.isFile && entry.file) {
     const file = await new Promise<File>((resolve, reject) => entry.file?.(resolve, reject));
     return [{ file, relativePath: `${prefix}${entry.name}` }];
@@ -131,7 +139,9 @@ async function readBrowserEntry(entry: FileSystemEntryLike, prefix: string): Pro
   const reader = entry.createReader();
   const children: FileSystemEntryLike[] = [];
   while (true) {
-    const batch = await new Promise<FileSystemEntryLike[]>((resolve) => reader.readEntries(resolve));
+    const batch = await new Promise<FileSystemEntryLike[]>((resolve) =>
+      reader.readEntries(resolve),
+    );
     if (batch.length === 0) break;
     children.push(...batch);
   }
@@ -140,13 +150,16 @@ async function readBrowserEntry(entry: FileSystemEntryLike, prefix: string): Pro
   return nested.flat();
 }
 
-export async function readBrowserDropItems(items: DataTransferItemList): Promise<BrowserDropFile[]> {
+export async function readBrowserDropItems(
+  items: DataTransferItemList,
+): Promise<BrowserDropFile[]> {
   const output: BrowserDropFile[] = [];
   for (let index = 0; index < items.length; index += 1) {
     const item = items[index];
     if (!item) continue;
-    const entry = (item as DataTransferItem & { webkitGetAsEntry?: () => FileSystemEntryLike | null })
-      .webkitGetAsEntry?.();
+    const entry = (
+      item as DataTransferItem & { webkitGetAsEntry?: () => FileSystemEntryLike | null }
+    ).webkitGetAsEntry?.();
     if (entry) output.push(...(await readBrowserEntry(entry, "")));
     else {
       const file = item.getAsFile();

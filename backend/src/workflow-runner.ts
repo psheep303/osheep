@@ -255,9 +255,7 @@ export function createLiveAgentRunDetails(
   let terminalSessionId = "";
   let conversationSessionId = "";
   let terminalStatus = "";
-  let retryWait:
-    | { retryAt: number; retryAttempt: number; retryReason: string }
-    | undefined;
+  let retryWait: { retryAt: number; retryAttempt: number; retryReason: string } | undefined;
   let queue = Promise.resolve();
 
   const buildSnapshot = (
@@ -687,9 +685,7 @@ async function scheduleWorkflowNodePass(
     for (const edge of backEdges) {
       if (edge.from !== result.nodeId || !selected.has(edge.from)) continue;
       const matches =
-        !edge.sourceHandle ||
-        !result.sourceHandle ||
-        edge.sourceHandle === result.sourceHandle;
+        !edge.sourceHandle || !result.sourceHandle || edge.sourceHandle === result.sourceHandle;
       if (matches) loopTargets.add(edge.to);
     }
     const propagation: Array<{ nodeId: string; sourceHandle?: string; skipped?: boolean }> = [
@@ -1061,7 +1057,8 @@ async function executeWorkflowNode(
         ).catch(() => ({}))
       : {});
   const usage = mergeUsage(terminalUsage, sessionUsage);
-  const usageModel = (usage.model ?? resolveBlockTemplate(currentNode.model || "default", record)) || "default";
+  const usageModel =
+    (usage.model ?? resolveBlockTemplate(currentNode.model || "default", record)) || "default";
   const modelCost =
     usage.cost === undefined
       ? calculateModelCost(
@@ -1294,13 +1291,7 @@ async function executeAgentNode(
       retryReason: terminalFailure.message,
     });
     try {
-      await waitForAgentRetry(
-        workspace.path,
-        record.id,
-        node.id,
-        retryDelaySeconds,
-        abort.signal,
-      );
+      await waitForAgentRetry(workspace.path, record.id, node.id, retryDelaySeconds, abort.signal);
     } finally {
       await details.setRetryWait();
     }
@@ -1480,7 +1471,12 @@ async function prepareAgentProviderRuntime(node: WorkflowNode): Promise<{
   const retryEnabled = agentRetryForever(node) || agentRetryCount(node) > 0;
   const strategy = retryEnabled ? agentRetryStrategy(node) : "none";
   const plan = manager
-    ? buildAgentProviderPlan(strategy, agentRetryProviderIds(node), manager.providers, manager.current)
+    ? buildAgentProviderPlan(
+        strategy,
+        agentRetryProviderIds(node),
+        manager.providers,
+        manager.current,
+      )
     : [];
   if (plan.length === 0) {
     const fallback = { id: manager?.current ?? "", multiplier: 1 };
@@ -1569,7 +1565,7 @@ async function createLiveAgentUsageMonitor(options: LiveAgentUsageMonitorOptions
   const refresh = async () => {
     if (!sessionId) return;
     const usage = await readAgentSessionUsage(options.app, sessionId).catch(
-      () => ({} as AgentSessionUsage),
+      () => ({}) as AgentSessionUsage,
     );
     if (!usage.model && !usage.tokens && usage.cost === undefined) return;
     latestUsage = usage;
@@ -1623,8 +1619,7 @@ async function createLiveAgentUsageMonitor(options: LiveAgentUsageMonitorOptions
       await enqueue(async () => {
         await refresh();
         if (latestBaseCost !== undefined) {
-          settledCost +=
-            Math.max(0, latestBaseCost - segmentBaseCost) * currentProvider.multiplier;
+          settledCost += Math.max(0, latestBaseCost - segmentBaseCost) * currentProvider.multiplier;
           segmentBaseCost = latestBaseCost;
         }
         currentProvider = provider;
@@ -2021,11 +2016,9 @@ async function executeLocalNode(
     if (!(await isRepo(workspaceRoot))) throw new Error(`${node.title} requires a Git repository.`);
     const branch = resolveBlockTemplate(configString(node, "branch"), record).trim();
     if (!branch) throw new Error(`${node.title} requires a branch name.`);
-    const remote =
-      configBoolean(node, "remote", record)
-        ? resolveBlockTemplate(configString(node, "remoteName", "origin"), record).trim() ||
-          "origin"
-        : null;
+    const remote = configBoolean(node, "remote", record)
+      ? resolveBlockTemplate(configString(node, "remoteName", "origin"), record).trim() || "origin"
+      : null;
     await deleteBranch(workspaceRoot, branch, {
       force: configBoolean(node, "force", record),
       remote,
@@ -2553,12 +2546,9 @@ function hasClosedWorkflowCycle(
       component.add(member);
       if (member === id) break;
     }
-    const cyclic =
-      component.size > 1 || edges.some((edge) => edge.from === id && edge.to === id);
+    const cyclic = component.size > 1 || edges.some((edge) => edge.from === id && edge.to === id);
     if (!cyclic) return;
-    const hasExit = edges.some(
-      (edge) => component.has(edge.from) && !component.has(edge.to),
-    );
+    const hasExit = edges.some((edge) => component.has(edge.from) && !component.has(edge.to));
     if (!hasExit) closedCycle = true;
   };
 
@@ -3432,9 +3422,9 @@ function resolveVariableReference(
   }
   const node =
     executedNode ??
-    [...variableNodes].reverse().find((item) =>
-      variableNodeConfig(item).some((entry) => entry.name.trim() === name),
-    );
+    [...variableNodes]
+      .reverse()
+      .find((item) => variableNodeConfig(item).some((entry) => entry.name.trim() === name));
   if (!node) {
     throw new Error(`Workflow variable ${reference} references missing variable ${name}.`);
   }
@@ -3489,7 +3479,11 @@ function inheritedWorkflowVariables(
     if (nodeKind(preceding) !== "variable") continue;
     const output = parseBlockOutput(preceding);
     if (!output) continue;
-    if (output.variables && typeof output.variables === "object" && !Array.isArray(output.variables)) {
+    if (
+      output.variables &&
+      typeof output.variables === "object" &&
+      !Array.isArray(output.variables)
+    ) {
       Object.assign(variables, output.variables);
     } else if (
       typeof output.name === "string" &&
@@ -3863,7 +3857,11 @@ function mcpNodeConfig(node: WorkflowNode): McpNodeConfig {
 function preserveMcpTemplate(node: WorkflowNode, key: string, resolved: string): string {
   const original =
     node.config?.[key] ??
-    (key === "remoteLink" ? node.config?.server : key === "toolName" ? node.config?.tool : undefined);
+    (key === "remoteLink"
+      ? node.config?.server
+      : key === "toolName"
+        ? node.config?.tool
+        : undefined);
   return typeof original === "string" && original.includes("{{") ? original : resolved;
 }
 
@@ -3909,7 +3907,9 @@ function parseVariableValue(
     try {
       return parseJsonValue(rawValue);
     } catch (error) {
-      throw new Error(`${nodeTitle} variable ${name} has invalid JSON: ${(error as Error).message}`);
+      throw new Error(
+        `${nodeTitle} variable ${name} has invalid JSON: ${(error as Error).message}`,
+      );
     }
   }
   if (type === "number") {

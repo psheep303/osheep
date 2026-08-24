@@ -1,11 +1,11 @@
 import { lazy, type ReactNode, Suspense, useState } from "react";
+import { useUiPreferences } from "../i18n/UiPreferences";
 import { AgentAdvancedSettingsView } from "./AgentAdvancedSettingsView";
 import { AgentSessionsView } from "./AgentSessionsView";
 import type { AgentSessionSummary } from "./api";
 import { ClaudePluginsView } from "./ClaudePluginsView";
 import { CodexPluginsView } from "./CodexPluginsView";
 import { SkillsView } from "./SkillsView";
-import { useUiPreferences } from "../i18n/UiPreferences";
 
 const AiSettingsView = lazy(() =>
   import("./AiSettingsView").then((module) => ({ default: module.AiSettingsView })),
@@ -17,7 +17,14 @@ interface AgentSection<T extends string> {
   hidden?: boolean;
 }
 
-type ClaudeCodeSection = "api-model" | "sessions" | "plugins" | "skills" | "hooks" | "mcp" | "environment";
+type ClaudeCodeSection =
+  | "api-model"
+  | "sessions"
+  | "plugins"
+  | "skills"
+  | "hooks"
+  | "mcp"
+  | "environment";
 type CodexSection = "api-model" | "sessions" | "plugins" | "skills" | "permissions" | "environment";
 
 const CLAUDE_CODE_SECTIONS: AgentSection<ClaudeCodeSection>[] = [

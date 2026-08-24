@@ -888,14 +888,7 @@ test("workflow scheduler repeats the intended edge when loop edges were saved fi
     },
   );
 
-  assert.deepEqual(executed, [
-    "trigger",
-    "body",
-    "condition",
-    "body",
-    "condition",
-    "exit",
-  ]);
+  assert.deepEqual(executed, ["trigger", "body", "condition", "body", "condition", "exit"]);
 });
 
 test("workflow scheduler rejoins after an unselected branch without duplicating the join", async () => {

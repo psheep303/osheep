@@ -217,8 +217,7 @@ export function TemplateView({
             {
               items: [
                 {
-                  label:
-                    menu.source === "system" ? t("template.deleteMarketspace") : "删除模板",
+                  label: menu.source === "system" ? t("template.deleteMarketspace") : "删除模板",
                   danger: true,
                   onSelect: () => void deleteTemplate(menu.source, menu.templateId, menu.title),
                 },
@@ -364,9 +363,7 @@ export function TemplateDetail({
         />
         <div className="template-detail__identity">
           <span className="template-detail__eyebrow">
-            {template.source === "system"
-              ? t("template.eyebrow.marketspace")
-              : "USER TEMPLATE"}
+            {template.source === "system" ? t("template.eyebrow.marketspace") : "USER TEMPLATE"}
           </span>
           <h1>{template.title}</h1>
           <p>{template.description}</p>

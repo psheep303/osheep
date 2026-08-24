@@ -74,7 +74,9 @@ export function parseSkillsManifest(text: string): SkillsManifest {
     const origin: SkillOrigin = entry.origin === "skills.sh" ? "skills.sh" : "manual";
     const source = typeof entry.source === "string" ? entry.source : undefined;
     const builtIn = entry.builtIn === true;
-    result[name] = source ? { origin, source, ...(builtIn ? { builtIn } : {}) } : { origin, ...(builtIn ? { builtIn } : {}) };
+    result[name] = source
+      ? { origin, source, ...(builtIn ? { builtIn } : {}) }
+      : { origin, ...(builtIn ? { builtIn } : {}) };
   }
   return result;
 }
@@ -118,27 +120,49 @@ function home(): string {
 
 function skillPaths(options: SkillsServiceOptions = {}): Record<SkillAgent, string[]> {
   if (options.paths) return options.paths;
-  const shared = path.resolve(process.env.OSHEEP_AGENTS_SKILLS_DIR || path.join(home(), ".agents", "skills"));
-  const claudeDir = path.resolve(process.env.CLAUDE_CONFIG_DIR || process.env.OSHEEP_CLAUDE_CONFIG_DIR || path.join(home(), ".claude"));
-  const codexDir = path.resolve(process.env.CODEX_HOME || process.env.OSHEEP_CODEX_CONFIG_DIR || path.join(home(), ".codex"));
+  const shared = path.resolve(
+    process.env.OSHEEP_AGENTS_SKILLS_DIR || path.join(home(), ".agents", "skills"),
+  );
+  const claudeDir = path.resolve(
+    process.env.CLAUDE_CONFIG_DIR ||
+      process.env.OSHEEP_CLAUDE_CONFIG_DIR ||
+      path.join(home(), ".claude"),
+  );
+  const codexDir = path.resolve(
+    process.env.CODEX_HOME || process.env.OSHEEP_CODEX_CONFIG_DIR || path.join(home(), ".codex"),
+  );
   return {
     claude: [path.join(claudeDir, "skills"), shared],
     codex: [path.join(codexDir, "skills"), shared],
   };
 }
 
-async function readSkill(name: string, directory: string, agents: SkillAgent[]): Promise<InstalledSkill> {
+async function readSkill(
+  name: string,
+  directory: string,
+  agents: SkillAgent[],
+): Promise<InstalledSkill> {
   let description: string | undefined;
   let builtIn = false;
   try {
     const text = await fs.readFile(path.join(directory, "SKILL.md"), "utf8");
     const match = text.match(/^description:\s*["']?(.+?)["']?\s*$/im);
     description = match?.[1]?.trim();
-    builtIn = await fs.access(path.join(directory, ".osheep-built-in")).then(() => true, () => false);
+    builtIn = await fs.access(path.join(directory, ".osheep-built-in")).then(
+      () => true,
+      () => false,
+    );
   } catch {
     // A skill directory may be valid without a frontmatter description.
   }
-  return { name, description, path: directory, agents, source: "local", ...(builtIn ? { builtIn } : {}) };
+  return {
+    name,
+    description,
+    path: directory,
+    agents,
+    source: "local",
+    ...(builtIn ? { builtIn } : {}),
+  };
 }
 
 async function listDirectory(root: string, agent: SkillAgent): Promise<InstalledSkill[]> {
@@ -168,8 +192,15 @@ function stagingRoot(agent: SkillAgent, options: SkillsServiceOptions = {}): str
 }
 
 function builtInUserSkillsRoot(options: SkillsServiceOptions = {}): string {
-  return options.userSkillsRoot ??
-    path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "template-library", "user-skills");
+  return (
+    options.userSkillsRoot ??
+    path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      "..",
+      "template-library",
+      "user-skills",
+    )
+  );
 }
 
 /** Seed repository-provided skills into Osheep's user group without overwriting user changes. */
@@ -197,10 +228,18 @@ export async function syncBuiltInUserSkills(options: SkillsServiceOptions = {}):
       );
       if (enabled.some(Boolean)) {
         const enabledBuiltIn = await Promise.all(
-          enabledRoots[agent].map((root) => fs.access(path.join(root, entry.name, ".osheep-built-in")).then(() => true, () => false)),
+          enabledRoots[agent].map((root) =>
+            fs.access(path.join(root, entry.name, ".osheep-built-in")).then(
+              () => true,
+              () => false,
+            ),
+          ),
         );
         if (enabledBuiltIn.some(Boolean) && manifest[entry.name]?.builtIn !== true) {
-          manifest[entry.name] = { ...(manifest[entry.name] ?? { origin: "manual" }), builtIn: true };
+          manifest[entry.name] = {
+            ...(manifest[entry.name] ?? { origin: "manual" }),
+            builtIn: true,
+          };
           await writeManifest(agent, manifest, options);
         }
         continue;
@@ -214,7 +253,10 @@ export async function syncBuiltInUserSkills(options: SkillsServiceOptions = {}):
         await fs.cp(source, destination, { recursive: true });
         copied = true;
       }
-      const destinationBuiltIn = await fs.access(path.join(destination, ".osheep-built-in")).then(() => true, () => false);
+      const destinationBuiltIn = await fs.access(path.join(destination, ".osheep-built-in")).then(
+        () => true,
+        () => false,
+      );
       if ((copied || destinationBuiltIn) && manifest[entry.name]?.builtIn !== true) {
         manifest[entry.name] = { ...(manifest[entry.name] ?? { origin: "manual" }), builtIn: true };
         await writeManifest(agent, manifest, options);
@@ -321,9 +363,7 @@ export async function applySkillSelection(
     before.user.filter((item) => item.agent === input.agent).map((item) => item.name),
   );
   const enabledNames = new Set(
-    before.enabled
-      .filter((item) => item.agents.includes(input.agent))
-      .map((item) => item.name),
+    before.enabled.filter((item) => item.agents.includes(input.agent)).map((item) => item.name),
   );
   const knownNames = new Set([...stagedNames, ...enabledNames]);
   const selected = new Set(
@@ -397,12 +437,12 @@ export function skillCommandErrorMessage(
     .map((line) => line.trim())
     .filter(
       (line) =>
-        line.length > 0 &&
-        !/[█]{3,}|[╔╗╚╝║═]{3,}/u.test(line) &&
-        !/^Active code page:/i.test(line),
+        line.length > 0 && !/[█]{3,}|[╔╗╚╝║═]{3,}/u.test(line) && !/^Active code page:/i.test(line),
     );
   const meaningful = lines.find((line) =>
-    /YAML parse error|\b(?:error|failed|invalid|skipped|not found|timed out|cancelled)\b/i.test(line),
+    /YAML parse error|\b(?:error|failed|invalid|skipped|not found|timed out|cancelled)\b/i.test(
+      line,
+    ),
   );
   return (meaningful ?? lines.at(-1) ?? stripVTControlCharacters(fallback)).slice(0, 1200);
 }
@@ -416,15 +456,22 @@ function parseError(error: unknown): string {
 }
 
 async function runNpx(args: string[], extraEnv?: Record<string, string>): Promise<string> {
-  const command = findExecutable(platform === "windows" ? "npx.cmd" : "npx") ?? findExecutable("npx");
-  if (!command) throw new ApiError(409, "NPX_NOT_FOUND", "Node.js/npx is required to manage skills");
+  const command =
+    findExecutable(platform === "windows" ? "npx.cmd" : "npx") ?? findExecutable("npx");
+  if (!command)
+    throw new ApiError(409, "NPX_NOT_FOUND", "Node.js/npx is required to manage skills");
   try {
     const result = await execFileAsync(
       platform === "windows" ? (process.env.ComSpec ?? "cmd.exe") : command,
-      platform === "windows"
-        ? ["/d", "/s", "/c", toSkillsWindowsCommandLine(command, args)]
-        : args,
-      { encoding: "utf8", windowsHide: true, windowsVerbatimArguments: platform === "windows", maxBuffer: 8 * 1024 * 1024, timeout: ACTION_TIMEOUT_MS, env: extraEnv ? { ...process.env, ...extraEnv } : process.env },
+      platform === "windows" ? ["/d", "/s", "/c", toSkillsWindowsCommandLine(command, args)] : args,
+      {
+        encoding: "utf8",
+        windowsHide: true,
+        windowsVerbatimArguments: platform === "windows",
+        maxBuffer: 8 * 1024 * 1024,
+        timeout: ACTION_TIMEOUT_MS,
+        env: extraEnv ? { ...process.env, ...extraEnv } : process.env,
+      },
     );
     return `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
   } catch (error) {
@@ -515,13 +562,19 @@ export async function installSkill(input: {
   agent: SkillAgent;
   origin?: SkillOrigin;
 }) {
-  if (!SAFE_SOURCE.test(input.source.trim())) throw new ApiError(400, "INVALID_SKILL_SOURCE", "Skill source must be a URL or GitHub source");
-  if (input.skill && !SAFE_NAME.test(input.skill)) throw new ApiError(400, "INVALID_SKILL_NAME", "Skill name contains unsupported characters");
+  if (!SAFE_SOURCE.test(input.source.trim()))
+    throw new ApiError(400, "INVALID_SKILL_SOURCE", "Skill source must be a URL or GitHub source");
+  if (input.skill && !SAFE_NAME.test(input.skill))
+    throw new ApiError(400, "INVALID_SKILL_NAME", "Skill name contains unsupported characters");
   const origin: SkillOrigin = input.origin === "skills.sh" ? "skills.sh" : "manual";
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-skill-install-"));
   const liveBefore = await skillDirsInRoots(skillPaths()[input.agent]);
   try {
-    const args = buildInstallSkillArgs({ source: input.source, skill: input.skill, agents: [input.agent] });
+    const args = buildInstallSkillArgs({
+      source: input.source,
+      skill: input.skill,
+      agents: [input.agent],
+    });
     if (!args.includes("--copy")) args.push("--copy");
     let commandError: unknown;
     try {
@@ -544,7 +597,8 @@ export async function installSkill(input: {
       }
     }
     if (produced.length === 0 && commandError) throw commandError;
-    if (produced.length === 0) throw new ApiError(502, "SKILL_INSTALL_EMPTY", "The installer produced no skill to stage");
+    if (produced.length === 0)
+      throw new ApiError(502, "SKILL_INSTALL_EMPTY", "The installer produced no skill to stage");
     const manifest = await readManifest(input.agent);
     for (const sourceDirectory of produced) {
       const name = path.basename(sourceDirectory);
@@ -573,7 +627,8 @@ export async function importSkill(input: {
     if (input.sourcePath) {
       const source = path.resolve(input.sourcePath);
       const stat = await fs.stat(source).catch(() => null);
-      if (!stat?.isDirectory()) throw new ApiError(400, "INVALID_SKILL_FOLDER", "Selected item is not a folder");
+      if (!stat?.isDirectory())
+        throw new ApiError(400, "INVALID_SKILL_FOLDER", "Selected item is not a folder");
       sourceDirectory = source;
     } else if (input.files?.length) {
       const normalizedFiles = input.files.map((file) => ({
@@ -581,11 +636,20 @@ export async function importSkill(input: {
         parts: file.path.replaceAll("\\", "/").replace(/^\/+/, "").split("/").filter(Boolean),
       }));
       const firstParts = new Set(normalizedFiles.map((file) => file.parts[0]).filter(Boolean));
-      const stripDirectory = !normalizedFiles.some((file) => file.parts.length === 1 && file.parts[0] === "SKILL.md") && firstParts.size === 1;
+      const stripDirectory =
+        !normalizedFiles.some((file) => file.parts.length === 1 && file.parts[0] === "SKILL.md") &&
+        firstParts.size === 1;
       for (const file of normalizedFiles) {
         const parts = stripDirectory ? file.parts.slice(1) : file.parts;
-        if (parts.length < 1 || parts.some((part) => part === "." || part === ".." || !SAFE_NAME.test(part))) {
-          throw new ApiError(400, "INVALID_SKILL_FOLDER", "Selected folder contains an invalid file path");
+        if (
+          parts.length < 1 ||
+          parts.some((part) => part === "." || part === ".." || !SAFE_NAME.test(part))
+        ) {
+          throw new ApiError(
+            400,
+            "INVALID_SKILL_FOLDER",
+            "Selected folder contains an invalid file path",
+          );
         }
         const destination = path.join(temp, ...parts);
         await fs.mkdir(path.dirname(destination), { recursive: true });
@@ -594,7 +658,11 @@ export async function importSkill(input: {
           if (!/^[A-Za-z0-9+/]*={0,2}$/.test(file.data)) throw new Error("invalid base64");
           content = Buffer.from(file.data, "base64");
         } catch {
-          throw new ApiError(400, "INVALID_SKILL_FOLDER", "Selected folder contains an unreadable file");
+          throw new ApiError(
+            400,
+            "INVALID_SKILL_FOLDER",
+            "Selected folder contains an unreadable file",
+          );
         }
         await fs.writeFile(destination, content);
       }
@@ -608,8 +676,15 @@ export async function importSkill(input: {
     });
     const name = input.sourcePath
       ? path.basename(sourceDirectory)
-      : path.basename(input.files?.[0]?.path.replaceAll("\\", "/").split("/").filter(Boolean)[0] ?? "");
-    if (!SAFE_NAME.test(name)) throw new ApiError(400, "INVALID_SKILL_NAME", "Skill folder name contains unsupported characters");
+      : path.basename(
+          input.files?.[0]?.path.replaceAll("\\", "/").split("/").filter(Boolean)[0] ?? "",
+        );
+    if (!SAFE_NAME.test(name))
+      throw new ApiError(
+        400,
+        "INVALID_SKILL_NAME",
+        "Skill folder name contains unsupported characters",
+      );
     const destination = path.join(stagingRoot(input.agent), name);
     await fs.mkdir(path.dirname(destination), { recursive: true });
     await fs.rm(destination, { recursive: true, force: true });
@@ -625,7 +700,8 @@ export async function importSkill(input: {
 
 /** Move a staged skill into the agent's live skills directory. */
 export async function enableSkill(input: { name: string; agent: SkillAgent }) {
-  if (!SAFE_NAME.test(input.name)) throw new ApiError(400, "INVALID_SKILL_NAME", "Skill name contains unsupported characters");
+  if (!SAFE_NAME.test(input.name))
+    throw new ApiError(400, "INVALID_SKILL_NAME", "Skill name contains unsupported characters");
   const from = path.join(stagingRoot(input.agent), input.name);
   try {
     await fs.access(path.join(from, "SKILL.md"));
@@ -638,7 +714,8 @@ export async function enableSkill(input: { name: string; agent: SkillAgent }) {
 
 /** Move an enabled skill out of the agent's live directory back into staging. */
 export async function disableSkill(input: { name: string; agent: SkillAgent }) {
-  if (!SAFE_NAME.test(input.name)) throw new ApiError(400, "INVALID_SKILL_NAME", "Skill name contains unsupported characters");
+  if (!SAFE_NAME.test(input.name))
+    throw new ApiError(400, "INVALID_SKILL_NAME", "Skill name contains unsupported characters");
   const from = await findEnabledSkillDir(input.name, input.agent);
   if (!from) throw new ApiError(404, "SKILL_NOT_FOUND", "This skill is not enabled");
   await moveSkillDir(from, path.join(stagingRoot(input.agent), input.name));
@@ -652,10 +729,14 @@ export async function disableSkill(input: { name: string; agent: SkillAgent }) {
 
 /** Delete a staged skill and forget its provenance. */
 export async function deleteSkill(input: { name: string; agent: SkillAgent }) {
-  if (!SAFE_NAME.test(input.name)) throw new ApiError(400, "INVALID_SKILL_NAME", "Skill name contains unsupported characters");
+  if (!SAFE_NAME.test(input.name))
+    throw new ApiError(400, "INVALID_SKILL_NAME", "Skill name contains unsupported characters");
   const manifest = await readManifest(input.agent);
   const stagedPath = path.join(stagingRoot(input.agent), input.name);
-  const stagedBuiltIn = await fs.access(path.join(stagedPath, ".osheep-built-in")).then(() => true, () => false);
+  const stagedBuiltIn = await fs.access(path.join(stagedPath, ".osheep-built-in")).then(
+    () => true,
+    () => false,
+  );
   if (manifest[input.name]?.builtIn === true || stagedBuiltIn) {
     throw new ApiError(409, "BUILT_IN_SKILL", "Built-in skills cannot be deleted");
   }
@@ -670,19 +751,39 @@ export async function deleteSkill(input: { name: string; agent: SkillAgent }) {
 function normalizeLibraryItem(value: unknown): SkillsLibraryItem | null {
   if (!value || typeof value !== "object") return null;
   const item = value as Record<string, unknown>;
-  const name = typeof item.name === "string" ? item.name : typeof item.skill === "string" ? item.skill : "";
+  const name =
+    typeof item.name === "string" ? item.name : typeof item.skill === "string" ? item.skill : "";
   if (!name) return null;
   const count = item.installCount ?? item.installs ?? item.downloads ?? item.install_count;
   const source = typeof item.source === "string" ? item.source : undefined;
   const sourceParts = source?.split("/") ?? [];
   return {
     name,
-    owner: typeof item.owner === "string" ? item.owner : sourceParts.length > 1 ? sourceParts[0] : undefined,
-    repo: typeof item.repo === "string" ? item.repo : sourceParts.length > 1 ? sourceParts[1] : undefined,
+    owner:
+      typeof item.owner === "string"
+        ? item.owner
+        : sourceParts.length > 1
+          ? sourceParts[0]
+          : undefined,
+    repo:
+      typeof item.repo === "string"
+        ? item.repo
+        : sourceParts.length > 1
+          ? sourceParts[1]
+          : undefined,
     description: typeof item.description === "string" ? item.description : undefined,
     installCount: typeof count === "number" ? count : Number(count) || 0,
     source,
-    url: typeof item.installUrl === "string" ? item.installUrl : typeof item.url === "string" ? item.url : typeof item.sourceUrl === "string" ? item.sourceUrl : source ? `https://github.com/${source}` : undefined,
+    url:
+      typeof item.installUrl === "string"
+        ? item.installUrl
+        : typeof item.url === "string"
+          ? item.url
+          : typeof item.sourceUrl === "string"
+            ? item.sourceUrl
+            : source
+              ? `https://github.com/${source}`
+              : undefined,
   };
 }
 
@@ -696,9 +797,13 @@ function decodeHtml(value: string): string {
 }
 
 function parseCompactCount(value: string): number {
-  const match = value.trim().replaceAll(",", "").match(/^(\d+(?:\.\d+)?)([KMB])?$/i);
+  const match = value
+    .trim()
+    .replaceAll(",", "")
+    .match(/^(\d+(?:\.\d+)?)([KMB])?$/i);
   if (!match) return 0;
-  const multiplier = { K: 1_000, M: 1_000_000, B: 1_000_000_000 }[match[2]?.toUpperCase() ?? ""] ?? 1;
+  const multiplier =
+    { K: 1_000, M: 1_000_000, B: 1_000_000_000 }[match[2]?.toUpperCase() ?? ""] ?? 1;
   return Math.round(Number(match[1]) * multiplier);
 }
 
@@ -793,7 +898,9 @@ async function getPublicSkillsLibrary(): Promise<SkillsLibraryItem[]> {
       indexed = parseSkillsSitemap(sitemapText);
       // Some deployments publish a sitemap index instead of skill URLs.
       if (indexed.length === 0) {
-        const childUrls = [...sitemapText.matchAll(/<loc>\s*(https?:\/\/[^<]*sitemap[^<]*)\s*<\/loc>/gi)]
+        const childUrls = [
+          ...sitemapText.matchAll(/<loc>\s*(https?:\/\/[^<]*sitemap[^<]*)\s*<\/loc>/gi),
+        ]
           .map((match) => match[1])
           .filter((url): url is string => Boolean(url))
           .slice(0, 50);
@@ -806,7 +913,9 @@ async function getPublicSkillsLibrary(): Promise<SkillsLibraryItem[]> {
             return child.ok ? parseSkillsSitemap(await child.text()) : [];
           }),
         );
-        indexed = childResults.flatMap((result) => (result.status === "fulfilled" ? result.value : []));
+        indexed = childResults.flatMap((result) =>
+          result.status === "fulfilled" ? result.value : [],
+        );
       }
     }
   } catch {
@@ -842,7 +951,8 @@ async function searchPublicSkillsLibrary(query: string): Promise<SkillsLibraryRe
     : skills;
   // Homepage order is the official ranking. For search results, known counts
   // are sorted first while sitemap-only matches remain searchable at count 0.
-  if (normalizedQuery) filtered.sort((a, b) => b.installCount - a.installCount || a.name.localeCompare(b.name));
+  if (normalizedQuery)
+    filtered.sort((a, b) => b.installCount - a.installCount || a.name.localeCompare(b.name));
   return { skills: filtered.slice(0, 50), total: filtered.length, next: null };
 }
 
@@ -861,11 +971,20 @@ export async function searchSkillsLibrary(query: string): Promise<SkillsLibraryR
   if (response.status === 401 || response.status === 403) {
     return await searchPublicSkillsLibrary(query);
   }
-  if (!response.ok) throw new ApiError(502, "SKILLS_LIBRARY_FAILED", `skills.sh returned HTTP ${response.status}`);
+  if (!response.ok)
+    throw new ApiError(502, "SKILLS_LIBRARY_FAILED", `skills.sh returned HTTP ${response.status}`);
   const body = (await response.json()) as unknown;
   const object = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
-  const raw = Array.isArray(body) ? body : Array.isArray(object.skills) ? object.skills : Array.isArray(object.data) ? object.data : [];
-  const skills = raw.map(normalizeLibraryItem).filter((item): item is SkillsLibraryItem => item !== null);
+  const raw = Array.isArray(body)
+    ? body
+    : Array.isArray(object.skills)
+      ? object.skills
+      : Array.isArray(object.data)
+        ? object.data
+        : [];
+  const skills = raw
+    .map(normalizeLibraryItem)
+    .filter((item): item is SkillsLibraryItem => item !== null);
   return {
     skills: skills.slice(0, 50),
     total: typeof object.total === "number" ? object.total : skills.length,

@@ -1,23 +1,23 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useUiPreferences } from "../i18n/UiPreferences";
 import {
   ApiClientError,
   deleteSkillApi,
   disableSkillApi,
   enableSkillApi,
   getSkills,
+  type InstalledSkill,
   importSkillApi,
   installSkillApi,
-  searchSkillsLibrary,
-  type InstalledSkill,
   type SkillAgent,
   type SkillsLibraryItem,
   type SkillsSnapshot,
   type StagedSkill,
+  searchSkillsLibrary,
 } from "./api";
-import { hideInstalledFromLibrary, nextOpenGroup, type SkillGroup } from "./skills-view-behavior";
-import { useUiPreferences } from "../i18n/UiPreferences";
-import { useOsheepOverlay } from "./OsheepOverlay";
 import { isDesktopShell, pickSkillFolder } from "./desktop-folder-picker";
+import { useOsheepOverlay } from "./OsheepOverlay";
+import { hideInstalledFromLibrary, nextOpenGroup, type SkillGroup } from "./skills-view-behavior";
 
 interface SkillsViewProps {
   agent: SkillAgent;
@@ -44,7 +44,7 @@ export function SkillsView({ agent }: SkillsViewProps) {
         ? t("skills.invalidYaml", { detail: yamlDetail })
         : reason instanceof ApiClientError && reason.code === "INVALID_SKILL_FOLDER"
           ? t("skills.invalidFolder")
-        : rawMessage;
+          : rawMessage;
     if (lastNotifiedError.current !== message) {
       lastNotifiedError.current = message;
       notify.error(message);
@@ -80,7 +80,8 @@ export function SkillsView({ agent }: SkillsViewProps) {
     [snapshot, agent],
   );
   const installedNames = useMemo(
-    () => new Set<string>([...enabled.map((item) => item.name), ...staged.map((item) => item.name)]),
+    () =>
+      new Set<string>([...enabled.map((item) => item.name), ...staged.map((item) => item.name)]),
     [enabled, staged],
   );
   const availableLibrary = useMemo(
@@ -88,7 +89,8 @@ export function SkillsView({ agent }: SkillsViewProps) {
     [library, installedNames],
   );
 
-  const toggleGroup = (group: SkillGroup) => setOpenGroup((current) => nextOpenGroup(current, group));
+  const toggleGroup = (group: SkillGroup) =>
+    setOpenGroup((current) => nextOpenGroup(current, group));
 
   const run = async (key: string, action: () => Promise<SkillsSnapshot>, success: string) => {
     setBusy(key);
@@ -156,7 +158,11 @@ export function SkillsView({ agent }: SkillsViewProps) {
   };
 
   const enable = (item: StagedSkill) =>
-    run(`enable:${item.name}`, () => enableSkillApi(item.name, agent), t("skills.enableSuccess", { name: item.name }));
+    run(
+      `enable:${item.name}`,
+      () => enableSkillApi(item.name, agent),
+      t("skills.enableSuccess", { name: item.name }),
+    );
 
   const remove = async (item: StagedSkill) => {
     const confirmed = await confirm({
@@ -165,7 +171,11 @@ export function SkillsView({ agent }: SkillsViewProps) {
       destructive: true,
     });
     if (!confirmed) return;
-    await run(`delete:${item.name}`, () => deleteSkillApi(item.name, agent), t("skills.deleteSuccess", { name: item.name }));
+    await run(
+      `delete:${item.name}`,
+      () => deleteSkillApi(item.name, agent),
+      t("skills.deleteSuccess", { name: item.name }),
+    );
   };
 
   const disable = async (item: InstalledSkill) => {
@@ -174,7 +184,11 @@ export function SkillsView({ agent }: SkillsViewProps) {
       confirmLabel: t("skills.disable"),
     });
     if (!confirmed) return;
-    await run(`disable:${item.name}`, () => disableSkillApi(item.name, agent), t("skills.disableSuccess", { name: item.name }));
+    await run(
+      `disable:${item.name}`,
+      () => disableSkillApi(item.name, agent),
+      t("skills.disableSuccess", { name: item.name }),
+    );
   };
   const groupHeader = (group: SkillGroup, label: string, count: number) => (
     <button
@@ -193,82 +207,188 @@ export function SkillsView({ agent }: SkillsViewProps) {
     <div className="skills-view side-view">
       <div className="side-view__header skills-view__header">
         <span className="side-view__title">{t("skills.title")}</span>
-        <button className="settings-view__icon-button" type="button" onClick={() => void load()} disabled={loading} title={t("common.refresh")} aria-label={t("common.refresh")}>
+        <button
+          className="settings-view__icon-button"
+          type="button"
+          onClick={() => void load()}
+          disabled={loading}
+          title={t("common.refresh")}
+          aria-label={t("common.refresh")}
+        >
           <span className={`codicon codicon-refresh${loading ? " skills-view__spin" : ""}`} />
         </button>
       </div>
       <div className="skills-view__intro">{t("skills.description")}</div>
 
       <div className="skills-view__scroll">
-      <section className="skills-view__group">
-        {groupHeader("skills.sh", t("skills.groupLibrary"), availableLibrary.length)}
-        {openGroup === "skills.sh" && (
-          <div className="skills-view__group-body">
-            <div className="codex-plugins__search"><span className="codicon codicon-search" /><input className="codex-plugins__search-input" value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("skills.searchPlaceholder")} /></div>
-            <div className="skills-view__list">
-              {availableLibrary.length === 0 ? <div className="skills-view__empty">{t("skills.libraryEmpty")}</div> : availableLibrary.map((item) => (
-                <div className="skills-view__card" key={`${item.owner ?? ""}/${item.repo ?? ""}/${item.name}`}>
-                  <div className="skills-view__card-main"><div className="skills-view__name">{item.name}</div><div className="skills-view__installs">{t("skills.installCount", { count: item.installCount.toLocaleString() })}</div></div>
-                  {(item.owner || item.repo) && <div className="skills-view__repo">{item.owner}{item.owner && item.repo ? "/" : ""}{item.repo}</div>}
-                  {item.description && <div className="skills-view__description">{item.description}</div>}
-                  <button className="tb-btn" type="button" onClick={() => void install(item)} disabled={busy !== null || (!item.url && !item.source)}>{busy === `install:${item.name}` ? t("skills.installing") : t("skills.install")}</button>
-                </div>
-              ))}
+        <section className="skills-view__group">
+          {groupHeader("skills.sh", t("skills.groupLibrary"), availableLibrary.length)}
+          {openGroup === "skills.sh" && (
+            <div className="skills-view__group-body">
+              <div className="codex-plugins__search">
+                <span className="codicon codicon-search" />
+                <input
+                  className="codex-plugins__search-input"
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  placeholder={t("skills.searchPlaceholder")}
+                />
+              </div>
+              <div className="skills-view__list">
+                {availableLibrary.length === 0 ? (
+                  <div className="skills-view__empty">{t("skills.libraryEmpty")}</div>
+                ) : (
+                  availableLibrary.map((item) => (
+                    <div
+                      className="skills-view__card"
+                      key={`${item.owner ?? ""}/${item.repo ?? ""}/${item.name}`}
+                    >
+                      <div className="skills-view__card-main">
+                        <div className="skills-view__name">{item.name}</div>
+                        <div className="skills-view__installs">
+                          {t("skills.installCount", { count: item.installCount.toLocaleString() })}
+                        </div>
+                      </div>
+                      {(item.owner || item.repo) && (
+                        <div className="skills-view__repo">
+                          {item.owner}
+                          {item.owner && item.repo ? "/" : ""}
+                          {item.repo}
+                        </div>
+                      )}
+                      {item.description && (
+                        <div className="skills-view__description">{item.description}</div>
+                      )}
+                      <button
+                        className="tb-btn"
+                        type="button"
+                        onClick={() => void install(item)}
+                        disabled={busy !== null || (!item.url && !item.source)}
+                      >
+                        {busy === `install:${item.name}`
+                          ? t("skills.installing")
+                          : t("skills.install")}
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
             </div>
-          </div>
-        )}
-      </section>
+          )}
+        </section>
 
-      <section className="skills-view__group">
-        {groupHeader("user", t("skills.groupUser"), staged.length)}
-        {openGroup === "user" && (
-          <div className="skills-view__group-body">
-            <div className="skills-view__manual" title={t("skills.importFolderTitle")}>
-              <button className="tb-btn" type="button" onClick={() => void chooseImportFolder()} disabled={busy !== null || importing}>
-                {importing ? t("skills.importing") : t("skills.importFolder")}
-              </button>
-              <input
-                ref={importInputRef}
-                className="skills-view__folder-input"
-                type="file"
-                multiple
-                onChange={(event) => void importFolder(event.currentTarget.files)}
-                {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
-              />
+        <section className="skills-view__group">
+          {groupHeader("user", t("skills.groupUser"), staged.length)}
+          {openGroup === "user" && (
+            <div className="skills-view__group-body">
+              <div className="skills-view__manual" title={t("skills.importFolderTitle")}>
+                <button
+                  className="tb-btn"
+                  type="button"
+                  onClick={() => void chooseImportFolder()}
+                  disabled={busy !== null || importing}
+                >
+                  {importing ? t("skills.importing") : t("skills.importFolder")}
+                </button>
+                <input
+                  ref={importInputRef}
+                  className="skills-view__folder-input"
+                  type="file"
+                  multiple
+                  onChange={(event) => void importFolder(event.currentTarget.files)}
+                  {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
+                />
+              </div>
+              <div className="skills-view__list">
+                {loading && !snapshot ? (
+                  <div className="skills-view__empty">{t("common.loading")}</div>
+                ) : staged.length === 0 ? (
+                  <div className="skills-view__empty">{t("skills.emptyUser")}</div>
+                ) : (
+                  staged.map((item) => (
+                    <div className="skills-view__card" key={`${item.path}:${item.name}`}>
+                      <div className="skills-view__card-main">
+                        <div className="skills-view__name">{item.name}</div>
+                        <div className="skills-view__installs">
+                          {item.origin === "skills.sh"
+                            ? t("skills.originLibrary")
+                            : t("skills.originManual")}
+                        </div>
+                      </div>
+                      {item.description && (
+                        <div className="skills-view__description">{item.description}</div>
+                      )}
+                      <div className="skills-view__actions">
+                        <button
+                          className="tb-btn"
+                          type="button"
+                          onClick={() => void enable(item)}
+                          disabled={busy !== null}
+                        >
+                          {busy === `enable:${item.name}`
+                            ? t("skills.enabling")
+                            : t("skills.enable")}
+                        </button>
+                        {!item.builtIn && (
+                          <button
+                            className="tb-btn skills-view__remove"
+                            type="button"
+                            onClick={() => void remove(item)}
+                            disabled={busy !== null}
+                          >
+                            {busy === `delete:${item.name}`
+                              ? t("skills.deleting")
+                              : t("skills.delete")}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
             </div>
-            <div className="skills-view__list">
-              {loading && !snapshot ? <div className="skills-view__empty">{t("common.loading")}</div> : staged.length === 0 ? <div className="skills-view__empty">{t("skills.emptyUser")}</div> : staged.map((item) => (
-                <div className="skills-view__card" key={`${item.path}:${item.name}`}>
-                  <div className="skills-view__card-main"><div className="skills-view__name">{item.name}</div><div className="skills-view__installs">{item.origin === "skills.sh" ? t("skills.originLibrary") : t("skills.originManual")}</div></div>
-                  {item.description && <div className="skills-view__description">{item.description}</div>}
-                  <div className="skills-view__actions">
-                    <button className="tb-btn" type="button" onClick={() => void enable(item)} disabled={busy !== null}>{busy === `enable:${item.name}` ? t("skills.enabling") : t("skills.enable")}</button>
-                    {!item.builtIn && <button className="tb-btn skills-view__remove" type="button" onClick={() => void remove(item)} disabled={busy !== null}>{busy === `delete:${item.name}` ? t("skills.deleting") : t("skills.delete")}</button>}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-      </section>
+          )}
+        </section>
 
-      <section className="skills-view__group">
-        {groupHeader("enabled", t("skills.groupEnabled"), enabled.length)}
-        {openGroup === "enabled" && (
-          <div className="skills-view__group-body">
-            <div className="skills-view__list">
-              {loading && !snapshot ? <div className="skills-view__empty">{t("common.loading")}</div> : enabled.length === 0 ? <div className="skills-view__empty">{t("skills.emptyEnabled")}</div> : enabled.map((item) => (
-                <div className="skills-view__card" key={`${item.path}:${item.name}`}>
-                  <div className="skills-view__card-main"><div className="skills-view__name">{item.name}</div><div className="skills-view__agents-label">{item.agents.join(" / ")}</div></div>
-                  {item.description && <div className="skills-view__description">{item.description}</div>}
-                  <div className="skills-view__path" title={item.path}>{item.path}</div>
-                  <button className="tb-btn skills-view__remove" type="button" onClick={() => void disable(item)} disabled={busy !== null}>{busy === `disable:${item.name}` ? t("skills.disabling") : t("skills.disable")}</button>
-                </div>
-              ))}
+        <section className="skills-view__group">
+          {groupHeader("enabled", t("skills.groupEnabled"), enabled.length)}
+          {openGroup === "enabled" && (
+            <div className="skills-view__group-body">
+              <div className="skills-view__list">
+                {loading && !snapshot ? (
+                  <div className="skills-view__empty">{t("common.loading")}</div>
+                ) : enabled.length === 0 ? (
+                  <div className="skills-view__empty">{t("skills.emptyEnabled")}</div>
+                ) : (
+                  enabled.map((item) => (
+                    <div className="skills-view__card" key={`${item.path}:${item.name}`}>
+                      <div className="skills-view__card-main">
+                        <div className="skills-view__name">{item.name}</div>
+                        <div className="skills-view__agents-label">{item.agents.join(" / ")}</div>
+                      </div>
+                      {item.description && (
+                        <div className="skills-view__description">{item.description}</div>
+                      )}
+                      <div className="skills-view__path" title={item.path}>
+                        {item.path}
+                      </div>
+                      <button
+                        className="tb-btn skills-view__remove"
+                        type="button"
+                        onClick={() => void disable(item)}
+                        disabled={busy !== null}
+                      >
+                        {busy === `disable:${item.name}`
+                          ? t("skills.disabling")
+                          : t("skills.disable")}
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
             </div>
-          </div>
-        )}
-      </section>
+          )}
+        </section>
       </div>
     </div>
   );

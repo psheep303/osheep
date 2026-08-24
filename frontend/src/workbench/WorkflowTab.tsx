@@ -91,8 +91,8 @@ import { createShiftEnterInput, isShiftEnterEvent } from "./terminal-keyboard";
 import {
   createTerminalUserInputGate,
   resizeTerminalPreservingViewport,
-  writeTerminalPreservingViewport,
   workflowAgentTerminalDimensions,
+  writeTerminalPreservingViewport,
 } from "./terminal-layout";
 import {
   compactSupersededClaudeStartup,
@@ -1831,9 +1831,7 @@ export function WorkflowTab({
       nodeId: node.id,
       startX: point.x,
       startY: point.y,
-      nodes: dragNodes.length
-        ? dragNodes
-        : [{ nodeId: node.id, originX: node.x, originY: node.y }],
+      nodes: dragNodes.length ? dragNodes : [{ nodeId: node.id, originX: node.x, originY: node.y }],
       moved: false,
     };
     setDraggingNodeId(node.id);
@@ -1849,14 +1847,8 @@ export function WorkflowTab({
     const dx = point.x - drag.startX;
     const dy = point.y - drag.startY;
     if (Math.abs(dx) > 1 || Math.abs(dy) > 1) drag.moved = true;
-    const safeDx = Math.max(
-      WORLD_MIN_X - Math.min(...drag.nodes.map((item) => item.originX)),
-      dx,
-    );
-    const safeDy = Math.max(
-      WORLD_MIN_Y - Math.min(...drag.nodes.map((item) => item.originY)),
-      dy,
-    );
+    const safeDx = Math.max(WORLD_MIN_X - Math.min(...drag.nodes.map((item) => item.originX)), dx);
+    const safeDy = Math.max(WORLD_MIN_Y - Math.min(...drag.nodes.map((item) => item.originY)), dy);
     moveNodesLive(
       drag.nodes.map((item) => ({
         nodeId: item.nodeId,
@@ -2106,10 +2098,7 @@ export function WorkflowTab({
         const hitIds = (workflowRef.current?.nodes ?? [])
           .filter(
             (node) =>
-              node.x < right &&
-              node.x + NODE_W > left &&
-              node.y < bottom &&
-              node.y + NODE_H > top,
+              node.x < right && node.x + NODE_W > left && node.y < bottom && node.y + NODE_H > top,
           )
           .map((node) => node.id);
         setNodeSelection([...new Set([...selection.baseIds, ...hitIds])], null);
@@ -2707,46 +2696,48 @@ export function WorkflowTab({
     ? {
         label: multiNodeMenu ? t("workflow.menu.copySelectedBlocks") : t("workflow.menu.copyBlock"),
         shortcut: "Ctrl+C",
-        onSelect: () =>
-          copyNodes(multiNodeMenu ? selectedIds : [menuNode.id]),
+        onSelect: () => copyNodes(multiNodeMenu ? selectedIds : [menuNode.id]),
       }
     : null;
   const deleteNodeMenuItem = menuNode
     ? {
-        label: multiNodeMenu ? t("workflow.menu.deleteSelectedBlocks") : t("workflow.menu.deleteBlock"),
+        label: multiNodeMenu
+          ? t("workflow.menu.deleteSelectedBlocks")
+          : t("workflow.menu.deleteBlock"),
         shortcut: "Del",
         danger: true,
         disabled: running,
         onSelect: () => deleteNodes(multiNodeMenu ? selectedIds : [menuNode.id]),
       }
     : null;
-  const nodeMenuSections: CtxMenuSection[] = menuNode && copyNodeMenuItem && deleteNodeMenuItem
-    ? multiNodeMenu
-      ? [{ items: [copyNodeMenuItem] }, { items: [deleteNodeMenuItem] }]
-      : [
-          {
-            items: [
-              {
-                label: t("workflow.menu.rename"),
-                onSelect: () => {
-                  setBlockPickerOpen(false);
-                  setNodeSelection([menuNode.id], menuNode.id);
-                  setRenameTarget(menuNode.id);
-                  setRenameSeq((seq) => seq + 1);
+  const nodeMenuSections: CtxMenuSection[] =
+    menuNode && copyNodeMenuItem && deleteNodeMenuItem
+      ? multiNodeMenu
+        ? [{ items: [copyNodeMenuItem] }, { items: [deleteNodeMenuItem] }]
+        : [
+            {
+              items: [
+                {
+                  label: t("workflow.menu.rename"),
+                  onSelect: () => {
+                    setBlockPickerOpen(false);
+                    setNodeSelection([menuNode.id], menuNode.id);
+                    setRenameTarget(menuNode.id);
+                    setRenameSeq((seq) => seq + 1);
+                  },
                 },
-              },
-              copyNodeMenuItem,
-              {
-                label: t("workflow.menu.pasteBlock"),
-                shortcut: "Ctrl+V",
-                disabled: running || !copiedGraph,
-                onSelect: () => pasteNodes(menuNode.id),
-              },
-            ],
-          },
-          { items: [deleteNodeMenuItem] },
-        ]
-    : [];
+                copyNodeMenuItem,
+                {
+                  label: t("workflow.menu.pasteBlock"),
+                  shortcut: "Ctrl+V",
+                  disabled: running || !copiedGraph,
+                  onSelect: () => pasteNodes(menuNode.id),
+                },
+              ],
+            },
+            { items: [deleteNodeMenuItem] },
+          ]
+      : [];
   const canvasMenuSections: CtxMenuSection[] = canvasMenu
     ? [
         {
@@ -3132,10 +3123,7 @@ export function WorkflowTab({
                   ? backEdgePath(from, to, workflow.nodes, loopIndex, edge.sourceHandle)
                   : edgePath(from, to, edge.sourceHandle);
                 return (
-                  <g
-                    key={edge.id}
-                    className={`workflow-edge-group${isBackEdge ? " is-back" : ""}`}
-                  >
+                  <g key={edge.id} className={`workflow-edge-group${isBackEdge ? " is-back" : ""}`}>
                     <path
                       className="workflow-edge-hit"
                       d={path}
@@ -4386,7 +4374,11 @@ function WorkflowDetailsPanel({
             <strong>{t("workflow.details.retryWaiting", { seconds: retrySeconds })}</strong>
             {snapshot.retryReason && <span>{snapshot.retryReason}</span>}
           </div>
-          <button type="button" onClick={() => void retryNow()} disabled={!workflowId || retryingNow}>
+          <button
+            type="button"
+            onClick={() => void retryNow()}
+            disabled={!workflowId || retryingNow}
+          >
             <i className="codicon codicon-debug-restart" aria-hidden="true" />
             {retryingNow ? t("workflow.details.retrying") : t("workflow.details.retryNow")}
           </button>
@@ -4684,9 +4676,7 @@ function WorkflowTraceUsageStats({
       formatWorkflowTokenCount(tokens?.cacheWrite, resolvedLanguage, t),
     ],
     [t("workflow.observability.totalTokens"), formatWorkflowTokenCount(total, resolvedLanguage, t)],
-    ...(hideCost
-      ? []
-      : [[t("workflow.observability.cost"), formatWorkflowCost(trace?.cost, t)]]),
+    ...(hideCost ? [] : [[t("workflow.observability.cost"), formatWorkflowCost(trace?.cost, t)]]),
   ];
 
   return (
@@ -5439,11 +5429,21 @@ function WorkflowMpePanel({
         <div className="workflow-mpe-panel__decision" role="alert">
           <strong>{t("workflow.markdown.waitingApproval")}</strong>
           <div className="workflow-inspector__approval-actions">
-            <button type="button" className="is-primary" disabled={submitting} onClick={() => void resolveApproval(true)}>
+            <button
+              type="button"
+              className="is-primary"
+              disabled={submitting}
+              onClick={() => void resolveApproval(true)}
+            >
               <i className="codicon codicon-check" aria-hidden="true" />
               {t("workflow.markdown.approve")}
             </button>
-            <button type="button" className="is-danger" disabled={submitting} onClick={() => void resolveApproval(false)}>
+            <button
+              type="button"
+              className="is-danger"
+              disabled={submitting}
+              onClick={() => void resolveApproval(false)}
+            >
               <i className="codicon codicon-close" aria-hidden="true" />
               {t("workflow.markdown.reject")}
             </button>
@@ -5742,8 +5742,7 @@ function WorkflowNodeInspector({
   }, [isAgent, node.providerKind]);
 
   const selectedPluginSelectors = pluginSelectorsForNode(node);
-  const pluginOptions =
-    pluginSnapshot?.plugins.filter((plugin) => plugin.status.installed) ?? [];
+  const pluginOptions = pluginSnapshot?.plugins.filter((plugin) => plugin.status.installed) ?? [];
   const normalizedPluginSearch = pluginSearch.trim().toLowerCase();
   const visiblePluginOptions = normalizedPluginSearch
     ? pluginOptions.filter((plugin) =>
@@ -5754,9 +5753,7 @@ function WorkflowNodeInspector({
     : pluginOptions;
   const skillAgent: SkillAgent = isClaudeSkill ? "claude" : "codex";
   const selectedSkillNames = skillNamesForNode(node);
-  const skillOptions = skillsSnapshot
-    ? skillOptionsForAgent(skillsSnapshot, skillAgent)
-    : [];
+  const skillOptions = skillsSnapshot ? skillOptionsForAgent(skillsSnapshot, skillAgent) : [];
   const normalizedSkillSearch = skillSearch.trim().toLowerCase();
   const visibleSkillOptions = normalizedSkillSearch
     ? skillOptions.filter((skill) =>
@@ -5772,11 +5769,9 @@ function WorkflowNodeInspector({
   ];
   const retryProviderIds = agentRetryProviderIdsValue(node);
   const retryApp = node.providerKind === "claude-cli" ? "claude" : "codex";
-  const retryProviders = Object.values(aiSettingsSnapshot?.state.apps[retryApp].providers ?? {}).sort(
-    (a, b) =>
-      (a.sortIndex ?? 0) - (b.sortIndex ?? 0) ||
-      a.name.localeCompare(b.name),
-  );
+  const retryProviders = Object.values(
+    aiSettingsSnapshot?.state.apps[retryApp].providers ?? {},
+  ).sort((a, b) => (a.sortIndex ?? 0) - (b.sortIndex ?? 0) || a.name.localeCompare(b.name));
   const toggleRetryProvider = (providerId: string) => {
     const next = retryProviderIds.includes(providerId)
       ? retryProviderIds.filter((id) => id !== providerId)
@@ -5970,9 +5965,7 @@ function WorkflowNodeInspector({
               min={0}
               max={86_400}
               onCommit={(value) => updateConfig({ retryDelaySeconds: value })}
-              disabled={
-                running || (!agentRetryForever(node) && agentRetryCount(node) === 0)
-              }
+              disabled={running || (!agentRetryForever(node) && agentRetryCount(node) === 0)}
             />
           </label>
           <div className="workflow-inspector__field">
@@ -6012,9 +6005,7 @@ function WorkflowNodeInspector({
             <input
               type="checkbox"
               checked={agentKeepRunningOnInterrupt(node)}
-              onChange={(event) =>
-                updateConfig({ keepRunningOnInterrupt: event.target.checked })
-              }
+              onChange={(event) => updateConfig({ keepRunningOnInterrupt: event.target.checked })}
               disabled={running}
             />
             <span>{t("workflow.agent.keepRunningOnInterrupt")}</span>
@@ -6656,10 +6647,7 @@ function WorkflowNodeInspector({
         <div className="workflow-variable-list">
           {variableConfig.map((entry, index) => (
             <div
-              className={
-                "workflow-variable-row" +
-                (collapsedVariableRows.has(index) ? " is-collapsed" : "")
-              }
+              className={`workflow-variable-row${collapsedVariableRows.has(index) ? " is-collapsed" : ""}`}
               key={index}
             >
               <div className="workflow-variable-row__head">
@@ -6789,38 +6777,38 @@ function WorkflowNodeInspector({
 
       {isMarkdown && (
         <>
-        <div className="workflow-inspector__field">
-          <span>{t("workflow.markdown.action")}</span>
-          <SegmentedControl
-            value={markdownActionValue(node)}
-            options={["none", "approval", "message"] as const}
-            onChange={(value) => updateConfig({ action: value })}
-            getLabel={(value) =>
-              t(
-                value === "none"
-                  ? "workflow.markdown.actionNone"
-                  : value === "approval"
-                    ? "workflow.markdown.actionApproval"
-                    : "workflow.markdown.actionMessage",
-              )
-            }
-            disabled={running}
-          />
-        </div>
-        <div className="workflow-inspector__mpe-link-row">
-          <label className="workflow-inspector__check">
-            <input
-              type="checkbox"
-              checked={markdownAutoSeeResult(node)}
-              onChange={(event) => updateConfig({ autoSeeResult: event.target.checked })}
+          <div className="workflow-inspector__field">
+            <span>{t("workflow.markdown.action")}</span>
+            <SegmentedControl
+              value={markdownActionValue(node)}
+              options={["none", "approval", "message"] as const}
+              onChange={(value) => updateConfig({ action: value })}
+              getLabel={(value) =>
+                t(
+                  value === "none"
+                    ? "workflow.markdown.actionNone"
+                    : value === "approval"
+                      ? "workflow.markdown.actionApproval"
+                      : "workflow.markdown.actionMessage",
+                )
+              }
               disabled={running}
             />
-            <span>{t("workflow.markdown.autoSeeResult")}</span>
-          </label>
-          <button type="button" onClick={onShowMpe}>
-            {t("workflow.markdown.seeResult")}
-          </button>
-        </div>
+          </div>
+          <div className="workflow-inspector__mpe-link-row">
+            <label className="workflow-inspector__check">
+              <input
+                type="checkbox"
+                checked={markdownAutoSeeResult(node)}
+                onChange={(event) => updateConfig({ autoSeeResult: event.target.checked })}
+                disabled={running}
+              />
+              <span>{t("workflow.markdown.autoSeeResult")}</span>
+            </label>
+            <button type="button" onClick={onShowMpe}>
+              {t("workflow.markdown.seeResult")}
+            </button>
+          </div>
         </>
       )}
 
@@ -7978,9 +7966,9 @@ async function maybeRunAgentMcpToolCalls(
     const headers = parseJsonObject(resolveBlockTemplate(runtimeTool.config.headers, record)) ?? {};
     const result = await callRemoteMcp(workspaceId, {
       remoteLink: resolvedRemoteLink,
-            postUrl: resolveBlockTemplate(runtimeTool.config.postUrl, record).trim() || undefined,
-            headers: stringRecord(headers),
-            apiKey: resolveBlockTemplate(runtimeTool.config.apiKey, record).trim() || undefined,
+      postUrl: resolveBlockTemplate(runtimeTool.config.postUrl, record).trim() || undefined,
+      headers: stringRecord(headers),
+      apiKey: resolveBlockTemplate(runtimeTool.config.apiKey, record).trim() || undefined,
       name: call.name,
       arguments: call.arguments,
     });
@@ -8149,7 +8137,8 @@ function resolveAgentExecutionNode(node: WorkflowNode, record: WorkflowRecord): 
     "codexSandbox",
     "retryStrategy",
   ]) {
-    if (typeof config[key] === "string") config[key] = resolveBlockTemplate(config[key] as string, record);
+    if (typeof config[key] === "string")
+      config[key] = resolveBlockTemplate(config[key] as string, record);
   }
   for (const key of ["retries", "retryDelaySeconds"]) {
     if (typeof config[key] === "string") {
@@ -8211,9 +8200,7 @@ function agentRetryForever(node: WorkflowNode): boolean {
   return node.config?.retryForever === true;
 }
 
-function agentRetryStrategyValue(
-  node: WorkflowNode,
-): RetryStrategyValue {
+function agentRetryStrategyValue(node: WorkflowNode): RetryStrategyValue {
   const value = node.config?.retryStrategy;
   return value === "lowest-multiplier" || value === "round-robin" ? value : "none";
 }
@@ -8801,9 +8788,9 @@ function resolveVariableReference(
   }
   const node =
     executedNode ??
-    [...variableNodes].reverse().find((item) =>
-      variableNodeConfig(item).some((entry) => entry.name.trim() === name),
-    );
+    [...variableNodes]
+      .reverse()
+      .find((item) => variableNodeConfig(item).some((entry) => entry.name.trim() === name));
   if (!node) {
     throw new Error(`Workflow variable ${reference} references missing variable ${name}.`);
   }
@@ -8858,7 +8845,11 @@ function inheritedWorkflowVariables(
     if (nodeKind(preceding) !== "variable") continue;
     const output = parseBlockOutput(preceding);
     if (!output) continue;
-    if (output.variables && typeof output.variables === "object" && !Array.isArray(output.variables)) {
+    if (
+      output.variables &&
+      typeof output.variables === "object" &&
+      !Array.isArray(output.variables)
+    ) {
       Object.assign(variables, output.variables);
     } else if (
       typeof output.name === "string" &&
@@ -9908,7 +9899,11 @@ function runDetailsSnapshot(node: WorkflowNode): WorkflowRunDetailSnapshot | nul
 function preserveMcpTemplate(node: WorkflowNode, key: string, resolved: string): string {
   const original =
     node.config?.[key] ??
-    (key === "remoteLink" ? node.config?.server : key === "toolName" ? node.config?.tool : undefined);
+    (key === "remoteLink"
+      ? node.config?.server
+      : key === "toolName"
+        ? node.config?.tool
+        : undefined);
   return typeof original === "string" && original.includes("{{") ? original : resolved;
 }
 
@@ -10255,7 +10250,9 @@ function parseVariableValue(
     try {
       return parseJsonValue(rawValue);
     } catch (error) {
-      throw new Error(`${nodeTitle} variable ${name} has invalid JSON: ${(error as Error).message}`);
+      throw new Error(
+        `${nodeTitle} variable ${name} has invalid JSON: ${(error as Error).message}`,
+      );
     }
   }
   if (type === "number") {

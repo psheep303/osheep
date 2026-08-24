@@ -103,10 +103,7 @@ test("explicit light palettes stay readable without a DOM", () => {
   assert.equal(monacoEditorColors("light")["editor.background"], "#ffffff");
   assert.equal(monacoEditorColors("light")["editor.foreground"], "#26313d");
   assert.equal(monacoEditorColors("light")["editorSuggestWidget.foreground"], "#26313d");
-  assert.equal(
-    monacoEditorColors("light")["editorSuggestWidget.selectedForeground"],
-    "#17212b",
-  );
+  assert.equal(monacoEditorColors("light")["editorSuggestWidget.selectedForeground"], "#17212b");
   assert.deepEqual(xtermTheme("light"), {
     background: "#ffffff",
     foreground: "#26313d",

@@ -1,5 +1,5 @@
-import * as path from "node:path";
 import * as fs from "node:fs/promises";
+import * as path from "node:path";
 import type { FastifyInstance } from "fastify";
 import { readAppSettings, updateAppSettings } from "../app-settings.js";
 import { config } from "../config.js";
@@ -182,17 +182,33 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
     }
     const absolute = path.resolve(externalPath);
     const stat = await fs.stat(absolute).catch(() => null);
-    if (!stat || !stat.isFile()) throw errors.notFound();
+    if (!stat?.isFile()) throw errors.notFound();
     if (stat.size > config.maxFileSizeBytes) throw errors.fileTooLarge(config.maxFileSizeBytes);
     const bytes = await fs.readFile(absolute);
     const extension = path.extname(absolute).slice(1).toLowerCase();
-    const image = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "avif", "bmp", "ico"]).has(extension);
+    const image = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "avif", "bmp", "ico"]).has(
+      extension,
+    );
     if (!image && bytes.includes(0)) throw errors.invalidPath("二进制文件无法直接预览");
     return {
       name: path.basename(absolute),
       content: image ? undefined : new TextDecoder("utf-8").decode(bytes),
       contentBase64: image ? bytes.toString("base64") : undefined,
-      mime: image ? ({ png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", svg: "image/svg+xml", avif: "image/avif", bmp: "image/bmp", ico: "image/x-icon" } as Record<string, string>)[extension] ?? "application/octet-stream" : undefined,
+      mime: image
+        ? ((
+            {
+              png: "image/png",
+              jpg: "image/jpeg",
+              jpeg: "image/jpeg",
+              gif: "image/gif",
+              webp: "image/webp",
+              svg: "image/svg+xml",
+              avif: "image/avif",
+              bmp: "image/bmp",
+              ico: "image/x-icon",
+            } as Record<string, string>
+          )[extension] ?? "application/octet-stream")
+        : undefined,
     };
   });
 

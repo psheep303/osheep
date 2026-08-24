@@ -691,7 +691,10 @@ export function buildAgentTerminalInvocation(
   return { executable: executable.executable, args: [...executable.prefixArgs, ...args] };
 }
 
-function resolveAgentExecutable(kind: CliProviderKind): { executable: string; prefixArgs: string[] } {
+function resolveAgentExecutable(kind: CliProviderKind): {
+  executable: string;
+  prefixArgs: string[];
+} {
   const name = kind === "codex-cli" ? "codex" : "claude";
   const detected = detectAiCli(name);
   if (kind === "codex-cli" && platform === "windows" && detected.path) {

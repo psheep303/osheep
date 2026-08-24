@@ -98,7 +98,9 @@ export async function reassignCodexSessionId(
     throw error;
   }
   // The title index is a cache and can be held briefly by Codex on Windows.
-  await reassignCodexTitleIndexEntry(roots.codexHome, currentId, requestedId).catch(() => undefined);
+  await reassignCodexTitleIndexEntry(roots.codexHome, currentId, requestedId).catch(
+    () => undefined,
+  );
 }
 
 async function unlinkCodexSessionAfterExit(filePath: string): Promise<void> {

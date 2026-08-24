@@ -20,10 +20,9 @@ const checks = [
   },
   {
     name: "agent inspectors delegate details navigation to Workbench",
-    pass:
-      /onOpenDetails\(\{ workspaceId, workflowId, nodeId: node\.id, title: node\.title \}\)/.test(
-        workflowTab,
-      ),
+    pass: /onOpenDetails\(\{ workspaceId, workflowId, nodeId: node\.id, title: node\.title \}\)/.test(
+      workflowTab,
+    ),
   },
   {
     name: "workflow details do not open a browser or Tauri window",

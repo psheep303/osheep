@@ -10,19 +10,21 @@ import {
 import { createPortal } from "react-dom";
 import { useUiPreferences } from "../i18n/UiPreferences";
 import { ContextMenu, type CtxMenuSection } from "./ContextMenu";
+import { elementsAtDesktopDropPosition, listenDesktopFileDrop } from "./desktop-dnd";
 import { isWindowsDesktopShell } from "./desktop-folder-picker";
 import { FileIcon } from "./FileIcon";
+import type { BrowserDropFile } from "./file-tree-dnd";
 import {
   FILE_TREE_DRAG_MIME,
-  readBrowserDropItems,
   hasFileTreeDrag,
+  readBrowserDropItems,
   readFileTreeDragPaths,
   writeFileTreeDragData,
 } from "./file-tree-dnd";
 import type { FsNode } from "./fs";
 import {
-  copyExternalEntryTo,
   copyEntryTo,
+  copyExternalEntryTo,
   createDirectory,
   createFile,
   findFreeName,
@@ -33,8 +35,6 @@ import {
   writeFileBase64,
 } from "./fs";
 import { type FileDecoration, isIgnoredPath, statusColor } from "./git-decorations";
-import { elementsAtDesktopDropPosition, listenDesktopFileDrop } from "./desktop-dnd";
-import type { BrowserDropFile } from "./file-tree-dnd";
 import { useOsheepOverlay } from "./OsheepOverlay";
 
 type DraftKind = "file" | "folder";
@@ -363,8 +363,7 @@ export function FileTree({
     if (!clipboard) return;
     if (
       clipboard.entries.some(
-        (entry) =>
-          entry.entryKind === "directory" && isAncestorOrSelf(entry.path, targetDir),
+        (entry) => entry.entryKind === "directory" && isAncestorOrSelf(entry.path, targetDir),
       )
     ) {
       notify.error(t("notification.invalidMove"));
@@ -399,9 +398,7 @@ export function FileTree({
     setSelectedPaths(new Set(nextSelection));
     onSelect(nextSelection[0] ?? null);
     if (clipboard.kind === "cut") {
-      setClipboard(
-        failedCutEntries.length > 0 ? { kind: "cut", entries: failedCutEntries } : null,
-      );
+      setClipboard(failedCutEntries.length > 0 ? { kind: "cut", entries: failedCutEntries } : null);
     }
     if (changed) bumpTree();
     if (firstError) {
@@ -446,16 +443,19 @@ export function FileTree({
       if (!root) return;
       const row = element?.closest<HTMLElement>("[data-file-tree-node-kind]");
       if (row && row.dataset.fileTreeNodeKind !== "directory") return;
-      const targetDir = row?.dataset.fileTreeNodeKind === "directory"
-        ? row.dataset.fileTreeDropPath ?? ""
-        : "";
+      const targetDir =
+        row?.dataset.fileTreeNodeKind === "directory" ? (row.dataset.fileTreeDropPath ?? "") : "";
       void Promise.all(
         payload.paths.map(async (sourcePath) => {
           const name = basename(sourcePath);
-          const targetName = await findFreeName(workspaceId, targetDir, name, "file").catch(() => name);
+          const targetName = await findFreeName(workspaceId, targetDir, name, "file").catch(
+            () => name,
+          );
           await copyExternalEntryTo(workspaceId, sourcePath, joinPath(targetDir, targetName));
         }),
-      ).then(() => bumpTree()).catch((error) => notify.error((error as Error).message));
+      )
+        .then(() => bumpTree())
+        .catch((error) => notify.error((error as Error).message));
     }).then((cleanup) => {
       unlisten = cleanup;
     });
@@ -511,11 +511,7 @@ export function FileTree({
     const onKeyDown = (event: KeyboardEvent) => {
       if (!treeKeyboardActiveRef.current) return;
       if (!(event.target instanceof HTMLElement)) return;
-      if (
-        event.target !== document.body &&
-        !treeRootRef.current?.contains(event.target)
-      )
-        return;
+      if (event.target !== document.body && !treeRootRef.current?.contains(event.target)) return;
       if (event.target.closest("input, textarea, select, [contenteditable]")) return;
       const entries = topLevelPaths(selectedPaths)
         .map((path) => nodesByPathRef.current.get(path))
@@ -589,7 +585,9 @@ export function FileTree({
       resetPointerDrag();
       if ((tab || editor || tabStrip) && onDropFileToTabRef.current) {
         const index = Number(
-          tab?.dataset.workbenchTabIndex ?? editor?.dataset.workbenchDropIndex ?? tabStrip?.dataset.workbenchDropIndex,
+          tab?.dataset.workbenchTabIndex ??
+            editor?.dataset.workbenchDropIndex ??
+            tabStrip?.dataset.workbenchDropIndex,
         );
         const file = drag.entries.find((entry) => entry.kind === "file");
         if (file && Number.isInteger(index)) onDropFileToTabRef.current(file.path, index);
@@ -777,10 +775,7 @@ export function FileTree({
           />
         )}
         {pointerDragPreview &&
-          createPortal(
-            <FileTreeDragPreview {...pointerDragPreview} />,
-            document.body,
-          )}
+          createPortal(<FileTreeDragPreview {...pointerDragPreview} />, document.body)}
       </div>
     </TreeCtx.Provider>
   );
@@ -820,7 +815,9 @@ function FileTreeDragPreview({ x, y, entries }: { x: number; y: number; entries:
           <span>{entry.name}</span>
         </div>
       ))}
-      {entries.length > 1 && <span className="file-tree-drag-preview__count">{entries.length}</span>}
+      {entries.length > 1 && (
+        <span className="file-tree-drag-preview__count">{entries.length}</span>
+      )}
     </div>
   );
 }
@@ -1049,7 +1046,9 @@ function TreeNode({ node, depth }: TreeNodeProps) {
     ctx.setDropTarget(null);
     ctx.setRootDropActive(false);
     if (!e.dataTransfer.getData(FILE_TREE_DRAG_MIME)) {
-      void readBrowserDropItems(e.dataTransfer.items).then((files) => ctx.copyBrowserFiles(files, node.path));
+      void readBrowserDropItems(e.dataTransfer.items).then((files) =>
+        ctx.copyBrowserFiles(files, node.path),
+      );
     } else if (sources.length > 0) void ctx.onDropMove(sources, node.path);
   };
 

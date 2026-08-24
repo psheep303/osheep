@@ -14,10 +14,26 @@ test("legacy global templates are verified, merged, and removed", async () => {
   await fs.mkdir(path.join(target, "templates", "user", "same"), { recursive: true });
   await fs.mkdir(path.join(target, "templates", "user", "conflict"), { recursive: true });
   await fs.writeFile(path.join(legacy, "templates", "user", "new.json"), "new", "utf8");
-  await fs.writeFile(path.join(legacy, "templates", "user", "same", "template.json"), "same", "utf8");
-  await fs.writeFile(path.join(target, "templates", "user", "same", "template.json"), "same", "utf8");
-  await fs.writeFile(path.join(legacy, "templates", "user", "conflict", "template.json"), "legacy", "utf8");
-  await fs.writeFile(path.join(target, "templates", "user", "conflict", "template.json"), "current", "utf8");
+  await fs.writeFile(
+    path.join(legacy, "templates", "user", "same", "template.json"),
+    "same",
+    "utf8",
+  );
+  await fs.writeFile(
+    path.join(target, "templates", "user", "same", "template.json"),
+    "same",
+    "utf8",
+  );
+  await fs.writeFile(
+    path.join(legacy, "templates", "user", "conflict", "template.json"),
+    "legacy",
+    "utf8",
+  );
+  await fs.writeFile(
+    path.join(target, "templates", "user", "conflict", "template.json"),
+    "current",
+    "utf8",
+  );
 
   const result = await migrateLegacyGlobalData({
     legacyRoot: legacy,
@@ -31,14 +47,25 @@ test("legacy global templates are verified, merged, and removed", async () => {
     conflicts: 1,
     removedLegacyRoot: true,
   });
-  assert.equal(await fs.readFile(path.join(target, "templates", "user", "new.json"), "utf8"), "new");
+  assert.equal(
+    await fs.readFile(path.join(target, "templates", "user", "new.json"), "utf8"),
+    "new",
+  );
   assert.equal(
     await fs.readFile(path.join(target, "templates", "user", "conflict", "template.json"), "utf8"),
     "current",
   );
   assert.equal(
     await fs.readFile(
-      path.join(target, "migration-conflicts", "legacy-home-test", "templates", "user", "conflict", "template.json"),
+      path.join(
+        target,
+        "migration-conflicts",
+        "legacy-home-test",
+        "templates",
+        "user",
+        "conflict",
+        "template.json",
+      ),
       "utf8",
     ),
     "legacy",

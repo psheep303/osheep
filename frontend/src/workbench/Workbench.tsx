@@ -1,8 +1,8 @@
 import {
-  lazy,
-  Suspense,
   type DragEvent,
+  lazy,
   type PointerEvent as ReactPointerEvent,
+  Suspense,
   useCallback,
   useEffect,
   useMemo,
@@ -20,14 +20,15 @@ import {
   getGitCommitDiff,
   getGitDiff,
   getGitStatus,
-  getWorkflow,
   getTemplateCapabilities,
+  getWorkflow,
   getWorkspace,
   readExternalFile,
   resolveExternalFilePath,
   workspaceImageUrl,
 } from "./api";
 import { DesktopWindowControls } from "./DesktopWindowControls";
+import { elementsAtDesktopDropPosition, listenDesktopFileDrop } from "./desktop-dnd";
 import { isWindowsDesktopShell } from "./desktop-folder-picker";
 import type { EditorCursorStatus, GotoTarget } from "./EditorPane";
 import { FileIcon } from "./FileIcon";
@@ -37,12 +38,11 @@ import {
   readFileTreeDragFiles,
   readFileTreeDragPaths,
 } from "./file-tree-dnd";
-import { elementsAtDesktopDropPosition, listenDesktopFileDrop } from "./desktop-dnd";
 import {
   type FsNode,
+  findFreeImageName,
   loadGlobalOsheepSettings,
   readFileText,
-  findFreeImageName,
   saveGlobalOsheepSettings,
   writeFileBase64,
   writeFileText,
@@ -52,10 +52,10 @@ import { useOsheepOverlay } from "./OsheepOverlay";
 import { Resizer } from "./Resizer";
 import { SettingsView } from "./SettingsView";
 import { StatusBar } from "./StatusBar";
-import { playWorkflowAlertSound } from "./workflow-alert-sound";
 import { DEFAULT_SETTINGS, type OsheepSettings } from "./settings";
 import type { AgentTerminalLaunchRequest } from "./Terminal";
 import { WorkspacePicker } from "./WorkspacePicker";
+import { playWorkflowAlertSound } from "./workflow-alert-sound";
 import "./workbench.css";
 
 const BottomPanel = lazy(() =>
@@ -722,7 +722,10 @@ export function Workbench() {
               )
             : prev;
         }
-        return [...prev, { kind: "workflow", path, workflowId, templateBinding, title: workflowId }];
+        return [
+          ...prev,
+          { kind: "workflow", path, workflowId, templateBinding, title: workflowId },
+        ];
       });
       setActivePath(path);
       if (workspaceId) {
@@ -1336,9 +1339,10 @@ export function Workbench() {
   const onTabsDropCapture = useCallback(
     (event: DragEvent) => {
       if (event.isPropagationStopped()) return;
-      const target = event.target instanceof Element
-        ? event.target.closest<HTMLElement>("[data-workbench-tab-index]")
-        : null;
+      const target =
+        event.target instanceof Element
+          ? event.target.closest<HTMLElement>("[data-workbench-tab-index]")
+          : null;
       const index = target ? Number(target.dataset.workbenchTabIndex) : -1;
       const tab = Number.isInteger(index) && index >= 0 ? tabs[index] : null;
       if (tab) onTabDrop(event, tab.path, index);
@@ -1519,79 +1523,79 @@ export function Workbench() {
                   onDragOver={onTabDragOver}
                   onDrop={onTabStripDrop}
                 >
-                {tabs.map((tab) => {
-                  const isDeleted = tab.kind === "file" && tab.deleted;
-                  const label =
-                    tab.kind === "settings"
-                      ? t("common.settings")
-                      : tab.kind === "workflow"
-                        ? tab.title ?? tab.workflowId
-                        : tab.kind === "workflow-details"
-                          ? tab.title
-                          : tab.kind === "template"
-                            ? t("nav.templates")
-                            : tab.kind === "multi-diff"
-                              ? tab.title
-                              : tab.kind === "diff"
-                                ? `${basename(tab.filePath)} (${diffLabel(tab)})`
-                                : tab.externalName ?? tab.path.split("/").pop();
-                  const tabTitle =
-                    tab.kind === "file"
-                      ? isDeleted
-                        ? `${tab.path}${t("editor.deleted")}`
-                        : tab.externalName ?? tab.path
-                      : tab.kind === "diff"
-                        ? `${tab.filePath} · ${diffLabel(tab)}`
-                        : tab.kind === "multi-diff"
-                          ? tab.title
-                          : tab.kind === "workflow"
-                            ? tab.title ?? tab.workflowId
-                            : tab.kind === "workflow-details"
-                              ? `${tab.title} - ${t("workflow.details.title")}`
-                              : tab.kind === "template"
-                                ? `${t("nav.templates")} ${tab.templateId}`
-                                : t("common.settings");
-                  return (
-                    <div
-                      key={tab.path}
-                      className={
-                        "tab" +
-                        (tab.path === activePath ? " is-active" : "") +
-                        (isDeleted ? " is-deleted" : "") +
-                        (tab.kind === "diff" || tab.kind === "multi-diff" ? " is-diff" : "")
-                      }
-                      draggable
-                      data-workbench-tab-index={tabs.indexOf(tab)}
-                      data-workbench-tab-file={tab.kind === "file" ? "true" : undefined}
-                      onClick={() => setActivePath(tab.path)}
-                      onDragStart={(event) => onTabDragStart(event, tab.path)}
-                      onDragOver={onTabDragOver}
-                      onDrop={(event) => onTabDrop(event, tab.path, tabs.indexOf(tab))}
-                      onDragEnd={(event) => event.currentTarget.classList.remove("is-dragging")}
-                      title={tabTitle}
-                    >
-                      <span className="tab__icon" aria-hidden="true">
-                        <TabIcon tab={tab} />
-                      </span>
-                      <span className="tab__name">
-                        {label}
-                        {tab.kind === "file" && tab.dirty ? " *" : ""}
-                      </span>
-                      <span
-                        className="tab__close"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          closeTab(tab.path);
-                        }}
+                  {tabs.map((tab) => {
+                    const isDeleted = tab.kind === "file" && tab.deleted;
+                    const label =
+                      tab.kind === "settings"
+                        ? t("common.settings")
+                        : tab.kind === "workflow"
+                          ? (tab.title ?? tab.workflowId)
+                          : tab.kind === "workflow-details"
+                            ? tab.title
+                            : tab.kind === "template"
+                              ? t("nav.templates")
+                              : tab.kind === "multi-diff"
+                                ? tab.title
+                                : tab.kind === "diff"
+                                  ? `${basename(tab.filePath)} (${diffLabel(tab)})`
+                                  : (tab.externalName ?? tab.path.split("/").pop());
+                    const tabTitle =
+                      tab.kind === "file"
+                        ? isDeleted
+                          ? `${tab.path}${t("editor.deleted")}`
+                          : (tab.externalName ?? tab.path)
+                        : tab.kind === "diff"
+                          ? `${tab.filePath} · ${diffLabel(tab)}`
+                          : tab.kind === "multi-diff"
+                            ? tab.title
+                            : tab.kind === "workflow"
+                              ? (tab.title ?? tab.workflowId)
+                              : tab.kind === "workflow-details"
+                                ? `${tab.title} - ${t("workflow.details.title")}`
+                                : tab.kind === "template"
+                                  ? `${t("nav.templates")} ${tab.templateId}`
+                                  : t("common.settings");
+                    return (
+                      <div
+                        key={tab.path}
+                        className={
+                          "tab" +
+                          (tab.path === activePath ? " is-active" : "") +
+                          (isDeleted ? " is-deleted" : "") +
+                          (tab.kind === "diff" || tab.kind === "multi-diff" ? " is-diff" : "")
+                        }
+                        draggable
+                        data-workbench-tab-index={tabs.indexOf(tab)}
+                        data-workbench-tab-file={tab.kind === "file" ? "true" : undefined}
+                        onClick={() => setActivePath(tab.path)}
+                        onDragStart={(event) => onTabDragStart(event, tab.path)}
+                        onDragOver={onTabDragOver}
+                        onDrop={(event) => onTabDrop(event, tab.path, tabs.indexOf(tab))}
+                        onDragEnd={(event) => event.currentTarget.classList.remove("is-dragging")}
+                        title={tabTitle}
                       >
-                        ×
-                      </span>
-                    </div>
-                  );
-                })}
+                        <span className="tab__icon" aria-hidden="true">
+                          <TabIcon tab={tab} />
+                        </span>
+                        <span className="tab__name">
+                          {label}
+                          {tab.kind === "file" && tab.dirty ? " *" : ""}
+                        </span>
+                        <span
+                          className="tab__close"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            closeTab(tab.path);
+                          }}
+                        >
+                          ×
+                        </span>
+                      </div>
+                    );
+                  })}
                 </div>
                 <div
-                  className={"tabs__scrollbar" + (tabScroll.thumbPercent < 100 ? " is-visible" : "")}
+                  className={`tabs__scrollbar${tabScroll.thumbPercent < 100 ? " is-visible" : ""}`}
                   role="scrollbar"
                   aria-orientation="horizontal"
                   aria-valuemin={0}
@@ -1627,7 +1631,12 @@ export function Workbench() {
               className="editor-host"
               data-workbench-editor-drop="true"
               data-workbench-drop-index={
-                activePath ? Math.max(0, tabs.findIndex((tab) => tab.path === activePath)) : tabs.length
+                activePath
+                  ? Math.max(
+                      0,
+                      tabs.findIndex((tab) => tab.path === activePath),
+                    )
+                  : tabs.length
               }
               onDragOver={onWorkspaceDragOver}
               onDragOverCapture={onWorkspaceDragOver}
@@ -1867,15 +1876,21 @@ function TabIcon({ tab }: { tab: Tab }) {
   }
   const paths =
     tab.kind === "workflow-details"
-        ? "M3 2.5h7l3 3V13.5H3zM10 2.5v3h3M5 8h6M5 10.5h4"
-        : tab.kind === "template"
-          ? "M3 3h8.5v10H3zM5 5.5h4.5M5 8h4.5M5 10.5h3"
-          : tab.kind === "diff" || tab.kind === "multi-diff"
-            ? "M3 3h4v4H3zM9 9h4v4H9zM7 5h2v6M9 7h2"
-            : "M8 2.5a2 2 0 0 1 2 2v.5h.5a2 2 0 0 1 2 2v.5a2 2 0 0 1 0 4v.5a2 2 0 0 1-2 2H5.5a2 2 0 0 1-2-2v-.5a2 2 0 0 1 0-4v-.5a2 2 0 0 1 2-2H6v-.5a2 2 0 0 1 2-2zM6 8h4M8 6v4";
+      ? "M3 2.5h7l3 3V13.5H3zM10 2.5v3h3M5 8h6M5 10.5h4"
+      : tab.kind === "template"
+        ? "M3 3h8.5v10H3zM5 5.5h4.5M5 8h4.5M5 10.5h3"
+        : tab.kind === "diff" || tab.kind === "multi-diff"
+          ? "M3 3h4v4H3zM9 9h4v4H9zM7 5h2v6M9 7h2"
+          : "M8 2.5a2 2 0 0 1 2 2v.5h.5a2 2 0 0 1 2 2v.5a2 2 0 0 1 0 4v.5a2 2 0 0 1-2 2H5.5a2 2 0 0 1-2-2v-.5a2 2 0 0 1 0-4v-.5a2 2 0 0 1 2-2H6v-.5a2 2 0 0 1 2-2zM6 8h4M8 6v4";
   return (
     <svg viewBox="0 0 16 16" width="16" height="16" fill="none" aria-hidden="true">
-      <path d={paths} stroke="currentColor" strokeWidth="1.15" strokeLinecap="round" strokeLinejoin="round" />
+      <path
+        d={paths}
+        stroke="currentColor"
+        strokeWidth="1.15"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
     </svg>
   );
 }

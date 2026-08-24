@@ -51,8 +51,7 @@ export function WorkflowCodeEditor({
           detectIndentation: false,
           domReadOnly: disabled,
           folding: true,
-          fontFamily:
-            "Geist Mono, SFMono-Regular, Cascadia Mono, Consolas, Courier New, monospace",
+          fontFamily: "Geist Mono, SFMono-Regular, Cascadia Mono, Consolas, Courier New, monospace",
           fontLigatures: false,
           fontSize,
           glyphMargin: false,

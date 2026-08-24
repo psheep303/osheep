@@ -3,10 +3,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { config } from "./config.js";
 import { errors } from "./errors.js";
-import {
-  installRegistryTemplate,
-  loadTemplateRegistry,
-} from "./template-registry.js";
+import { installRegistryTemplate, loadTemplateRegistry } from "./template-registry.js";
 import type { WorkflowEdge, WorkflowNode, WorkflowRecord } from "./workflows.js";
 
 const TEMPLATE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -59,8 +56,10 @@ function options(value: TemplateStoreOptions = {}): Required<TemplateStoreOption
 }
 
 function usesDefaultMarketspace(opts: Required<TemplateStoreOptions>): boolean {
-  return path.resolve(opts.root) === path.resolve(config.templatesRoot) &&
-    path.resolve(opts.systemSourceRoot) === path.resolve(config.systemTemplatesRoot);
+  return (
+    path.resolve(opts.root) === path.resolve(config.templatesRoot) &&
+    path.resolve(opts.systemSourceRoot) === path.resolve(config.systemTemplatesRoot)
+  );
 }
 
 function randomPart(length: number): string {
@@ -459,7 +458,7 @@ async function listWorkflowTemplatesInternal(
                 version: entry.version,
                 updatedAt: 0,
                 nodeCount: 0,
-            };
+              };
         });
         const registryIds = new Set(registry.templates.map((entry) => entry.id));
         system = [...marketspace, ...system.filter((item) => !registryIds.has(item.id))];
@@ -507,8 +506,7 @@ export async function getWorkflowTemplate(
       return publicTemplate(stored);
     } catch (error) {
       const missing =
-        error && typeof error === "object" &&
-        (error as { statusCode?: number }).statusCode === 404;
+        error && typeof error === "object" && (error as { statusCode?: number }).statusCode === 404;
       if (!missing || source !== "system" || !usesDefaultMarketspace(opts)) throw error;
       const registry = await loadTemplateRegistry();
       const entry = registry.templates.find((item) => item.id === id);

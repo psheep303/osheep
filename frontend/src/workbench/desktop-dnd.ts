@@ -1,5 +1,5 @@
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { isTauri } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 export interface DesktopDropPayload {
   paths: string[];
@@ -8,9 +8,7 @@ export interface DesktopDropPayload {
 
 export const DESKTOP_EXTERNAL_DROP_EVENT = "osheep-desktop-external-drop";
 
-export function elementsAtDesktopDropPosition(
-  position: DesktopDropPayload["position"],
-): Element[] {
+export function elementsAtDesktopDropPosition(position: DesktopDropPayload["position"]): Element[] {
   if (!position || typeof document === "undefined") return [];
   const scale = window.devicePixelRatio || 1;
   const candidates = [
@@ -34,7 +32,9 @@ export async function listenDesktopFileDrop(
   if (!isTauri()) return null;
   return await listen<DesktopDropPayload>("tauri://drag-drop", (event) => {
     const paths = Array.isArray(event.payload?.paths)
-      ? event.payload.paths.filter((path): path is string => typeof path === "string" && path.length > 0)
+      ? event.payload.paths.filter(
+          (path): path is string => typeof path === "string" && path.length > 0,
+        )
       : [];
     if (paths.length > 0) handler({ paths, position: event.payload?.position });
   });

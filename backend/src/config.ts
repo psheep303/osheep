@@ -46,7 +46,9 @@ const workspaceRootConfigFile = path.resolve(
 
 function resolveWorkspacesRoot(raw: string | undefined): string {
   try {
-    const parsed = JSON.parse(fs.readFileSync(workspaceRootConfigFile, "utf8")) as { root?: unknown };
+    const parsed = JSON.parse(fs.readFileSync(workspaceRootConfigFile, "utf8")) as {
+      root?: unknown;
+    };
     if (typeof parsed.root === "string" && parsed.root.trim()) {
       return path.resolve(parsed.root);
     }
@@ -87,12 +89,10 @@ export const config: Config = {
   ),
   workspaceRootConfigFile,
   openedProjectsFile: path.resolve(
-    process.env.OSHEEP_OPENED_PROJECTS_FILE ??
-      path.join(APP_SETTINGS_DIR, "opened-projects.json"),
+    process.env.OSHEEP_OPENED_PROJECTS_FILE ?? path.join(APP_SETTINGS_DIR, "opened-projects.json"),
   ),
   workflowUsageFile: path.resolve(
-    process.env.OSHEEP_WORKFLOW_USAGE_FILE ??
-      path.join(APP_SETTINGS_DIR, "workflow-usage.json"),
+    process.env.OSHEEP_WORKFLOW_USAGE_FILE ?? path.join(APP_SETTINGS_DIR, "workflow-usage.json"),
   ),
 };
 

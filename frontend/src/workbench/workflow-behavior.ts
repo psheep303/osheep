@@ -1,9 +1,4 @@
-import type {
-  WorkflowEdge,
-  WorkflowNode,
-  WorkflowNodeKind,
-  WorkflowRecord,
-} from "./api";
+import type { WorkflowEdge, WorkflowNode, WorkflowNodeKind, WorkflowRecord } from "./api";
 
 export type WorkflowBlockOutput = Record<string, unknown>;
 
@@ -98,9 +93,7 @@ export function workflowLayoutDepths(
     indegree.set(edge.to, indegree.get(edge.to)! + 1);
   }
 
-  const queue = nodes
-    .filter((node) => indegree.get(node.id) === 0)
-    .map((node) => node.id);
+  const queue = nodes.filter((node) => indegree.get(node.id) === 0).map((node) => node.id);
   const depths = new Map<string, number>();
   while (queue.length > 0) {
     const id = queue.shift()!;
@@ -133,7 +126,7 @@ export function workflowLayoutColumns(
   if (nodes.length === 0) return [];
   const depths = workflowLayoutDepths(nodes, edges);
   const maxDepth = Math.max(...depths.values());
-  let columns = Array.from({ length: maxDepth + 1 }, () => [] as string[]);
+  const columns = Array.from({ length: maxDepth + 1 }, () => [] as string[]);
   for (const node of nodes) columns[depths.get(node.id) ?? 0]!.push(node.id);
 
   const incoming = new Map<string, string[]>();
@@ -183,7 +176,9 @@ function sortLayoutColumn(
   const currentRows = new Map(column.map((id, row) => [id, row]));
   const rows = new Map<string, number>();
   for (const ids of columns) {
-    ids.forEach((id, row) => rows.set(id, row));
+    ids.forEach((id, row) => {
+      rows.set(id, row);
+    });
   }
   const barycenter = (id: string): number => {
     const neighborRows = (neighborsByNode.get(id) ?? [])

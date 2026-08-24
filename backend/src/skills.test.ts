@@ -183,8 +183,14 @@ test("syncBuiltInUserSkills seeds both agents without overwriting user skills", 
   const base = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-built-in-skill-"));
   try {
     const sourceRoot = path.join(base, "built-ins");
-    const paths = { claude: [path.join(base, "claude-live")], codex: [path.join(base, "codex-live")] };
-    const stagingRoots = { claude: path.join(base, "claude-user"), codex: path.join(base, "codex-user") };
+    const paths = {
+      claude: [path.join(base, "claude-live")],
+      codex: [path.join(base, "codex-live")],
+    };
+    const stagingRoots = {
+      claude: path.join(base, "claude-user"),
+      codex: path.join(base, "codex-user"),
+    };
     const source = path.join(sourceRoot, "osheep-json");
     await fs.mkdir(source, { recursive: true });
     await fs.writeFile(path.join(source, "SKILL.md"), "description: built-in\n", "utf8");
@@ -198,7 +204,10 @@ test("syncBuiltInUserSkills seeds both agents without overwriting user skills", 
     await syncBuiltInUserSkills({ paths, stagingRoots, userSkillsRoot: sourceRoot });
 
     await assert.rejects(fs.access(path.join(stagingRoots.claude, "osheep-json", "SKILL.md")));
-    assert.equal(await fs.readFile(path.join(existing, "SKILL.md"), "utf8"), "description: user version\n");
+    assert.equal(
+      await fs.readFile(path.join(existing, "SKILL.md"), "utf8"),
+      "description: user version\n",
+    );
   } finally {
     await fs.rm(base, { recursive: true, force: true });
   }
@@ -263,15 +272,11 @@ test("applySkillSelection only moves skills between user and enabled groups", as
     );
 
     assert.deepEqual(
-      snapshot.enabled
-        .filter((skill) => skill.agents.includes("codex"))
-        .map((skill) => skill.name),
+      snapshot.enabled.filter((skill) => skill.agents.includes("codex")).map((skill) => skill.name),
       ["enable-me"],
     );
     assert.deepEqual(
-      snapshot.user
-        .filter((skill) => skill.agent === "codex")
-        .map((skill) => skill.name),
+      snapshot.user.filter((skill) => skill.agent === "codex").map((skill) => skill.name),
       ["disable-me", "shared-skill"],
     );
     assert.equal(
@@ -294,6 +299,7 @@ test("importSkill rejects a folder upload without SKILL.md", async () => {
       agent: "codex",
       files: [{ path: "not-a-skill/README.md", data: "cmVhZG1l" }],
     }),
-    (error: unknown) => error instanceof Error && "code" in error && error.code === "INVALID_SKILL_FOLDER",
+    (error: unknown) =>
+      error instanceof Error && "code" in error && error.code === "INVALID_SKILL_FOLDER",
   );
 });

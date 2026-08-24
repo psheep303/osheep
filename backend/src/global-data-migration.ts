@@ -96,9 +96,7 @@ async function migrateDirectory(
 export async function migrateLegacyGlobalData(
   options: GlobalDataMigrationOptions = {},
 ): Promise<GlobalDataMigrationResult> {
-  const legacyRoot = path.resolve(
-    options.legacyRoot ?? path.join(os.homedir() || ".", ".osheep"),
-  );
+  const legacyRoot = path.resolve(options.legacyRoot ?? path.join(os.homedir() || ".", ".osheep"));
   const targetRoot = path.resolve(options.targetRoot ?? APP_SETTINGS_DIR);
   const result: GlobalDataMigrationResult = {
     copied: 0,
