@@ -85,20 +85,18 @@ if (process.argv.includes("--history")) {
 }
 
 const documentationPairs = [
-  ["README.md", "README.zh-CN.md"],
-  ["CONTRIBUTING.md", "CONTRIBUTING.zh-CN.md"],
-  ["SECURITY.md", "SECURITY.zh-CN.md"],
-  ["CODE_OF_CONDUCT.md", "CODE_OF_CONDUCT.zh-CN.md"],
-  ["backend/README.md", "backend/README.zh-CN.md"],
-  ["backend/template-library/README.md", "backend/template-library/README.zh-CN.md"],
+  ["README.md", "README.en.md"],
+  ["CONTRIBUTING.md", "CONTRIBUTING.en.md"],
+  ["SECURITY.md", "SECURITY.en.md"],
+  ["CODE_OF_CONDUCT.md", "CODE_OF_CONDUCT.en.md"],
+  ["backend/README.md", "backend/README.en.md"],
+  ["backend/template-library/README.md", "backend/template-library/README.en.md"],
 ];
-const documentationFailures = repositoryFiles
-  .filter((file) => file.toLowerCase().endsWith(".en.md"))
-  .map((file) => `${file}: English documentation must use the unsuffixed .md filename`);
-for (const [english, chinese] of documentationPairs) {
-  if (!repositoryFileSet.has(english)) documentationFailures.push(`${english}: missing English document`);
-  if (!repositoryFileSet.has(chinese)) {
-    documentationFailures.push(`${chinese}: missing Simplified Chinese document`);
+const documentationFailures = [];
+for (const [chinese, english] of documentationPairs) {
+  if (!repositoryFileSet.has(chinese)) documentationFailures.push(`${chinese}: missing Simplified Chinese document`);
+  if (!repositoryFileSet.has(english)) {
+    documentationFailures.push(`${english}: missing English document`);
   }
 }
 
