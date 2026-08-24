@@ -1,8 +1,10 @@
-# Getting Started
+# 快速开始
 
-## 1. Start Osheep
+简体中文 · [English](getting-started.en.md)
 
-Install Node.js 20+, npm, and Git. Then install the backend and frontend dependencies:
+## 1. 启动 Osheep
+
+安装 Node.js 20+、npm 与 Git，然后安装前后端依赖：
 
 ```bash
 git clone https://github.com/psheep303/osheep.git
@@ -11,34 +13,26 @@ npm --prefix backend ci
 npm --prefix frontend ci
 ```
 
-Run `./dev.sh` on Linux or `.\dev.ps1` on Windows. Open <http://127.0.0.1:5173>.
+Linux 运行 `./dev.sh`，Windows 运行 `.\dev.ps1`，再打开 <http://127.0.0.1:5173>。
 
-Linux also needs Python 3 and `build-essential` for `node-pty`. Windows needs the C++ build tools
-required by `node-pty`.
+Linux 还需要 Python 3 与 `build-essential` 来编译 `node-pty`；Windows 需要 `node-pty` 所需的 C++ 构建工具。
 
-## 2. Choose A Workspace
+## 2. 选择工作区
 
-Use the workspace picker to select a project folder or create one. Osheep runs commands and agent
-blocks in that workspace, so choose the repository you intend to work on.
+通过工作区选择器打开项目文件夹或创建工作区。Osheep 会在这个工作区内运行命令和 Agent 块，因此请选择目标仓库。
 
-## 3. Run A Template
+## 3. 运行模板
 
-Open **Templates**, choose a template, and open it in the selected workspace. Enter the task in its
-Input block and press **Run**. This is the quickest way to learn the canvas.
+打开 **Templates**，选择一个模板并在当前工作区打开它。在 Input 块中填写任务，点击 **Run**。这是熟悉画布最快的方式。
 
-Templates are safe to adapt: edit the opened workflow without changing the source template. Save a
-useful workflow as your own template from the workflow menu.
+打开的工作流可以直接修改，不会改动源模板。常用流程可在工作流菜单中保存为个人模板。
 
-## 4. Add An Agent When Needed
+## 4. 需要时再加入 Agent
 
-Install and sign in to a supported agent CLI before running its blocks. Current built-in adapters
-are Codex CLI and Claude Code. Their permission controls live in the Agent block inspector.
+运行 Agent 块前，请先安装并登录受支持的 Agent CLI。当前内置 Adapter 为 Codex CLI 和 Claude Code，权限控制位于 Agent 块的检查器中。
 
-An agent block is optional. Files, commands, HTTP, Git, JavaScript, and MCP blocks also run locally
-in the selected workspace.
+Agent 不是必需的。文件、命令、HTTP、Git、JavaScript 与 MCP 块同样会在所选工作区内本地运行。
 
-## 5. Keep It Local
+## 5. 保持本地运行
 
-Osheep listens on `127.0.0.1` by default. Do not expose it to an untrusted network. For a protected
-remote single-user setup, use HTTPS plus explicit `CORS_ORIGIN` and `OSHEEP_AUTH_TOKEN`; see the
-root README for the security boundary.
+Osheep 默认监听 `127.0.0.1`，不要暴露到不可信网络。受控的远程单用户部署必须使用 HTTPS，并明确设置 `CORS_ORIGIN` 和 `OSHEEP_AUTH_TOKEN`；安全边界见根目录 README。

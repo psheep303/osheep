@@ -1,35 +1,35 @@
-# Osheep Documentation
+# Osheep 文档
 
-Osheep turns agents, harnesses, tools, and project operations into a small visual workflow. Start
-with the short guides; use the references only when you need a specific block or extension point.
+Osheep 将 Agent、Harness、工具和项目操作组织成简洁的可视化工作流。建议先阅读快速指南，
+需要了解具体工作流块或扩展点时再查阅参考文档。
 
-## Start Here
+简体中文 · [English](README.en.md)
 
-- [Getting started](getting-started.md): install, open a workspace, and run a template.
-- [First workflow](first-workflow.md): build a useful agent workflow in five steps.
-- [Agents, skills, templates, and adapters](agents-and-adapters.md): use the current integrations
-  and understand how Osheep stays open to more.
+## 从这里开始
 
-简体中文：
+- [快速开始](getting-started.md)：安装、打开工作区并运行模板。
+- [第一个工作流](first-workflow.md)：用五步构建一个实用的 Agent 工作流。
+- [Agent、Skills、模板与 Adapter](agents-and-adapters.md)：了解当前集成以及 Osheep 如何支持更多扩展。
 
-- [快速开始](getting-started.zh-CN.md)
-- [第一个工作流](first-workflow.zh-CN.md)
-- [Agent、Skills、模板与 Adapter](agents-and-adapters.zh-CN.md)
+English:
 
-## Reference
+- [Getting started](getting-started.en.md)
+- [First workflow](first-workflow.en.md)
+- [Agents, skills, templates, and adapters](agents-and-adapters.en.md)
 
-- [Workflow blocks](workflow-blocks.md): block behavior, inputs, and current limits.
-- [Workflow block output contract](workflow-block-output.md): stable output fields and templates.
-- [Adapter development](adapter-development.md): build an Osheep Adapter for another agent or
-  harness.
+## 参考
 
-## Repository Docs
+- [工作流块](workflow-blocks.md)：工作流块行为、输入和当前限制。
+- [工作流块输出契约](workflow-block-output.md)：稳定的输出字段与模板。
+- [Adapter 开发](adapter-development.md)：为其他 Agent 或 Harness 构建 Osheep Adapter。
 
-- [Contributing](../CONTRIBUTING.md)
-- [Security](../SECURITY.md)
-- [Desktop application](../desktop/README.md)
-- [Template library](../backend/template-library/README.md)
-- [Public release checklist](public-release-checklist.md)
+## 仓库文档
+
+- [贡献指南](../CONTRIBUTING.md) · [English](../CONTRIBUTING.en.md)
+- [安全说明](../SECURITY.md) · [English](../SECURITY.en.md)
+- [桌面应用](../desktop/README.md)
+- [模板库](../backend/template-library/README.md)
+- [公开发布检查清单](public-release-checklist.md)
 
 Keep public user, contributor, architecture, security, and maintenance documentation in `docs/`.
 Keep private notes, temporary plans, generated reports, and local runtime state under `.osheep/`;

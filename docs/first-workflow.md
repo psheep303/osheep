@@ -1,46 +1,42 @@
-# Your First Workflow
+# 第一个工作流
 
-Build a small, reviewable coding loop. It uses whatever built-in agent adapter you have installed.
+简体中文 · [English](first-workflow.en.md)
 
-## 1. Create The Chain
+下面搭建一个小而可审查的编码闭环。它使用你已安装的任一内置 Agent Adapter。
 
-Open **Workflow**, create a workflow, then add and connect these blocks:
+## 1. 创建链路
+
+打开 **Workflow**，新建工作流，并添加、连接以下块：
 
 ```text
 Workflow run -> Input -> Agent -> Diff approval -> Markdown
 ```
 
-Choose Codex or Claude Code for the Agent block. The current adapters are examples, not a limit on
-what an Osheep workflow can contain.
+Agent 块可选择 Codex 或 Claude Code。它们是当前内置 Adapter，不是 Osheep 工作流能力的边界。
 
-## 2. Write The Agent Prompt
+## 2. 编写 Agent 提示词
 
-In the Agent block, use the Input block value in the prompt:
+在 Agent 块中引用 Input 块的值：
 
 ```text
-Implement this task in the current workspace:
+在当前工作区完成以下任务：
 {{blocks[2].text}}
 
-Inspect the changed files and explain what you changed.
+检查改动的文件，并说明你做了什么。
 ```
 
-Block numbers are displayed on the canvas. Use an output reference when a later block needs an
-earlier result.
+画布上显示了块编号。后续块需要使用前面结果时，写一个输出引用即可。
 
-## 3. Choose Permissions
+## 3. 选择权限
 
-Pick a permission or sandbox mode appropriate for the task. Start with the least permission that
-lets the task proceed. You can stop a run at any time.
+根据任务选择合适的权限或沙箱模式。先使用能完成任务的最低权限，运行中随时可以停止。
 
-## 4. Run And Review
+## 4. 运行与审查
 
-Enter a task in **Input** and click **Run**. Osheep streams the agent session and records the block
-trace. When it reaches **Diff approval**, inspect the proposed changes and approve or reject them.
+在 **Input** 填入任务并点击 **Run**。Osheep 会流式展示 Agent 会话并记录块追踪。流程到达 **Diff approval** 后，检查变更并选择同意或拒绝。
 
-## 5. Reuse It
+## 5. 复用流程
 
-Open run details to inspect output, retries, terminal logs, tokens, and cost. Export the report when
-you need a record. Once the graph works for you, save it as a template.
+打开运行详情可查看输出、重试、终端日志、Token 与费用；需要记录时可导出报告。确认流程符合预期后，将它保存为模板。
 
-For a delivery flow, add **Git commit** after the approval block. For a data flow, replace the Agent
-block with HTTP, JSON extract, JavaScript, or Remote MCP blocks.
+若要交付代码，可在审批块后加入 **Git commit**。若是数据流程，可将 Agent 块替换为 HTTP、JSON extract、JavaScript 或 Remote MCP 块。
