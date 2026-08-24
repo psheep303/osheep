@@ -1076,7 +1076,8 @@ export async function applyCodexPluginSelection(
 ): Promise<CodexPluginSnapshot> {
   const paths = resolveCodexPluginPaths(options.paths);
   const snapshot = await getCodexPluginSnapshot(options);
-  const known = new Set(snapshot.plugins.map((plugin) => plugin.selector));
+  const installed = snapshot.plugins.filter((plugin) => plugin.status.installed);
+  const known = new Set(installed.map((plugin) => plugin.selector));
   const selected = new Set(
     selectedSelectors
       .filter((selector): selector is string => typeof selector === "string")
@@ -1092,7 +1093,7 @@ export async function applyCodexPluginSelection(
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
   const plugins = objectValue(parsed.plugins) ?? {};
-  for (const plugin of snapshot.plugins) {
+  for (const plugin of installed) {
     const existing = objectValue(plugins[plugin.selector]) ?? {};
     existing.enabled = selected.has(plugin.selector);
     plugins[plugin.selector] = existing;

@@ -403,6 +403,62 @@
   font-size: inherit;
 }
 
+.markdown-preview .hljs-keyword,
+.markdown-preview .hljs-selector-tag,
+.markdown-preview .hljs-literal,
+.markdown-preview .hljs-section,
+.markdown-preview .hljs-link { color: #c586c0; }
+
+.markdown-preview .hljs-string,
+.markdown-preview .hljs-title,
+.markdown-preview .hljs-name,
+.markdown-preview .hljs-type,
+.markdown-preview .hljs-attribute,
+.markdown-preview .hljs-symbol,
+.markdown-preview .hljs-bullet,
+.markdown-preview .hljs-addition,
+.markdown-preview .hljs-variable,
+.markdown-preview .hljs-template-tag,
+.markdown-preview .hljs-template-variable { color: #ce9178; }
+
+.markdown-preview .hljs-comment,
+.markdown-preview .hljs-quote,
+.markdown-preview .hljs-deletion,
+.markdown-preview .hljs-meta { color: #6a9955; }
+
+.markdown-preview .hljs-number,
+.markdown-preview .hljs-regexp,
+.markdown-preview .hljs-built_in,
+.markdown-preview .hljs-builtin-name,
+.markdown-preview .hljs-params { color: #b5cea8; }
+
+.markdown-preview .hljs-title.function_,
+.markdown-preview .hljs-function .hljs-title { color: #dcdcaa; }
+
+.markdown-mermaid {
+  width: 100%;
+  margin: 0 0 16px;
+  overflow: auto;
+  color: var(--fg-strong);
+  background: var(--bg-editor);
+  text-align: center;
+}
+
+.markdown-mermaid svg {
+  max-width: 100%;
+  height: auto;
+  color: inherit;
+}
+
+.markdown-mermaid foreignObject,
+.markdown-mermaid foreignObject div,
+.markdown-mermaid foreignObject span,
+.markdown-mermaid foreignObject p {
+  color: inherit;
+}
+
+.markdown-preview pre.mermaid.markdown-mermaid--error { color: var(--fg-error); }
+
 .markdown-preview table {
   border-collapse: collapse;
   display: block;

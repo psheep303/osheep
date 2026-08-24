@@ -45,6 +45,12 @@ test("Claude snapshot removes transcript write warnings", () => {
   assert.equal(cleanAgentTerminalConversation(raw, "claude-cli"), "● 最后一条 Claude 消息");
 });
 
+test("terminal fallback preserves short, repeated, and numeric answer lines", () => {
+  const raw = ["1", "2", "3", "3", "4", "5", "ok"].join("\r\n");
+
+  assert.equal(cleanAgentTerminalConversation(raw, "claude-cli"), raw.replace(/\r/g, ""));
+});
+
 test("details preserve an unparsed JSON final message from the agent snapshot", () => {
   const finalMessage = JSON.stringify(
     { summary: "README exists", exists: true, details: { path: "README.md" } },

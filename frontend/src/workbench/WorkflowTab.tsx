@@ -81,6 +81,7 @@ import { evaluateConditionExpression } from "./condition-expression";
 import { exportTextFile } from "./desktop-file-export";
 import { DOCS_DIR, findFreeName, writeFileText } from "./fs";
 import type { MultiDiffEntry } from "./MultiDiffPane";
+import { useMarkdownImagePaste } from "./markdown-image-paste";
 import { useOsheepOverlay } from "./OsheepOverlay";
 import {
   cleanAgentTerminalConversation,
@@ -90,6 +91,7 @@ import { createShiftEnterInput, isShiftEnterEvent } from "./terminal-keyboard";
 import {
   createTerminalUserInputGate,
   resizeTerminalPreservingViewport,
+  writeTerminalPreservingViewport,
   workflowAgentTerminalDimensions,
 } from "./terminal-layout";
 import {
@@ -102,8 +104,8 @@ import {
   terminalReplaySegments,
 } from "./terminal-write-batcher";
 import { normalizeLightTerminalAnsi, workflowXtermTheme, xtermAnsiTheme } from "./theme";
-import { prepareWorkflowAlertSound } from "./workflow-alert-sound";
 import { agentBlockOutput } from "./workflow-agent-output";
+import { prepareWorkflowAlertSound } from "./workflow-alert-sound";
 import {
   blockOutputText,
   canApplyWorkflowRefresh,
@@ -3037,6 +3039,7 @@ export function WorkflowTab({
       {waitingForInputNode && workflow && (
         <WorkflowInputDialog
           key={waitingForInputNode.id}
+          workspaceId={workspaceId}
           title={workflowInputTitle(waitingForInputNode)}
           onSubmit={async (value) => {
             await resolveWorkflowInput(workspaceId, workflow.id, waitingForInputNode.id, value);
@@ -4415,7 +4418,7 @@ function WorkflowDetailsPanel({
             initialAutoSuccess={snapshot.autoSuccess ?? true}
           />
         ) : (
-          <WorkflowFinishedRunResult snapshot={snapshot} />
+          <WorkflowFinishedRunResult snapshot={snapshot} workspaceId={workspaceId} />
         )}
       </div>
     </aside>
@@ -4826,8 +4829,10 @@ function formatTraceValue(value: unknown, t: WorkflowTranslate): string {
 
 function WorkflowFinishedRunResult({
   snapshot,
+  workspaceId,
 }: {
   snapshot: WorkflowRunDetailSnapshot | null;
+  workspaceId: string;
 }) {
   if (!snapshot) {
     return <pre>Run this block to capture a terminal snapshot.</pre>;
@@ -4839,7 +4844,11 @@ function WorkflowFinishedRunResult({
   return (
     <div className="workflow-run-details__answer">
       <Suspense fallback={<div className="tab-loading-fallback" />}>
-        <MarkdownPreview source={message || snapshot.stderr || "No final message was captured."} />
+        <MarkdownPreview
+          source={message || snapshot.stderr || "No final message was captured."}
+          workspaceId={workspaceId}
+          filePath="workflow-result.md"
+        />
       </Suspense>
     </div>
   );
@@ -4941,7 +4950,9 @@ function WorkflowAgentTerminalInner({
       truncated?: boolean;
     } | null = null;
     let replayChunks: string[] = [];
-    const outputWriter = createTerminalWriteBatcher((data) => term.write(data));
+    const outputWriter = createTerminalWriteBatcher((data) =>
+      writeTerminalPreservingViewport(term, data),
+    );
     const replayGuard = createTerminalReplayGuard((data, callback) => term.write(data, callback));
     const userInputGate = createTerminalUserInputGate();
     const keyInputSub = term.onKey(({ key }) => userInputGate.markKey(key));
@@ -5309,6 +5320,12 @@ function WorkflowMpePanel({
   const action = markdownActionValue(node);
   const waitingForApproval = node.status === "running" && node.config?.waitingForApproval === true;
   const waitingForInput = node.status === "running" && node.config?.waitingForInput === true;
+  const pasteMessageImage = useMarkdownImagePaste({
+    workspaceId,
+    value: message,
+    onChange: setMessage,
+    onError: (error) => onError(error.message),
+  });
 
   const resolveApproval = async (approved: boolean) => {
     if (submitting) return;
@@ -5411,7 +5428,11 @@ function WorkflowMpePanel({
       )}
       <div className="workflow-mpe-panel__body">
         <Suspense fallback={<div className="tab-loading-fallback" />}>
-          <MarkdownPreview source={markdown} />
+          <MarkdownPreview
+            source={markdown}
+            workspaceId={workspaceId}
+            filePath="workflow-result.md"
+          />
         </Suspense>
       </div>
       {action === "approval" && waitingForApproval && (
@@ -5436,6 +5457,7 @@ function WorkflowMpePanel({
             <textarea
               value={message}
               onChange={(event) => setMessage(event.target.value)}
+              onPaste={pasteMessageImage}
               disabled={submitting}
               autoFocus
               placeholder={t("workflow.markdown.messagePlaceholder")}
@@ -5459,10 +5481,12 @@ function WorkflowMpePanel({
 }
 
 function WorkflowInputDialog({
+  workspaceId,
   title,
   onSubmit,
   onError,
 }: {
+  workspaceId: string;
   title: string;
   onSubmit: (value: string) => Promise<void>;
   onError: (message: string) => void;
@@ -5471,6 +5495,12 @@ function WorkflowInputDialog({
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const [value, setValue] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const pasteImage = useMarkdownImagePaste({
+    workspaceId,
+    value,
+    onChange: setValue,
+    onError: (error) => onError(error.message),
+  });
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -5503,6 +5533,7 @@ function WorkflowInputDialog({
             id="workflow-runtime-input"
             value={value}
             onChange={(event) => setValue(event.target.value)}
+            onPaste={pasteImage}
             disabled={submitting}
             autoComplete="off"
             spellCheck={false}
@@ -5560,6 +5591,7 @@ function WorkflowNodeInspector({
   onDeleteEdge: (edgeId: string) => void;
 }) {
   const { t } = useUiPreferences();
+  const { notify } = useOsheepOverlay();
   const outgoing = edges.filter((edge) => edge.from === node.id);
   const incoming = edges.filter((edge) => edge.to === node.id);
   const bodyText = blockOutputText(node);
@@ -5619,6 +5651,8 @@ function WorkflowNodeInspector({
   const waitingAgentLabel = node.providerKind === "claude-cli" ? "Claude Code" : "Codex";
   const updateConfig = (patch: Record<string, unknown>) =>
     onUpdate({ config: { ...(node.config ?? {}), ...patch } });
+  const reportImagePasteError = (error: Error) =>
+    notify.error(t("error.writeFile", { detail: error.message }));
   const toggleVariableRow = (index: number) => {
     setCollapsedVariableRows((current) => {
       const next = new Set(current);
@@ -5709,7 +5743,7 @@ function WorkflowNodeInspector({
 
   const selectedPluginSelectors = pluginSelectorsForNode(node);
   const pluginOptions =
-    pluginSnapshot?.plugins.filter((plugin) => isCodexPlugin || plugin.status.installed) ?? [];
+    pluginSnapshot?.plugins.filter((plugin) => plugin.status.installed) ?? [];
   const normalizedPluginSearch = pluginSearch.trim().toLowerCase();
   const visiblePluginOptions = normalizedPluginSearch
     ? pluginOptions.filter((plugin) =>
@@ -6713,6 +6747,8 @@ function WorkflowNodeInspector({
                         })
                       }
                       disabled={running}
+                      workspaceId={workspaceId}
+                      onPasteError={reportImagePasteError}
                     />
                   </label>
                 </>
@@ -6744,6 +6780,8 @@ function WorkflowNodeInspector({
               value={node.prompt}
               onChange={(value) => onUpdate({ prompt: value })}
               disabled={running}
+              workspaceId={workspaceId}
+              onPasteError={reportImagePasteError}
             />
           </label>
         )
@@ -6854,6 +6892,8 @@ interface TemplateControlProps {
   onChange: (value: string) => void;
   disabled?: boolean;
   autoFocus?: boolean;
+  workspaceId?: string;
+  onPasteError?: (error: Error) => void;
 }
 
 function TemplateInput({ value, onChange, disabled, autoFocus }: TemplateControlProps) {
@@ -6892,8 +6932,20 @@ function TemplateInput({ value, onChange, disabled, autoFocus }: TemplateControl
   );
 }
 
-function TemplateTextarea({ value, onChange, disabled }: TemplateControlProps) {
+function TemplateTextarea({
+  value,
+  onChange,
+  disabled,
+  workspaceId,
+  onPasteError,
+}: TemplateControlProps) {
   const mirrorRef = useRef<HTMLDivElement | null>(null);
+  const pasteImage = useMarkdownImagePaste({
+    workspaceId,
+    value,
+    onChange,
+    onError: onPasteError ?? (() => undefined),
+  });
 
   return (
     <span
@@ -6909,6 +6961,7 @@ function TemplateTextarea({ value, onChange, disabled }: TemplateControlProps) {
         className="workflow-template-editor__control"
         value={value}
         onChange={(e) => onChange(e.target.value)}
+        onPaste={pasteImage}
         onScroll={(e) => {
           if (!mirrorRef.current) return;
           mirrorRef.current.scrollTop = e.currentTarget.scrollTop;

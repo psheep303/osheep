@@ -13,7 +13,10 @@ import {
   type TerminalCreateResp,
 } from "./api";
 import { createShiftEnterInput, isShiftEnterEvent } from "./terminal-keyboard";
-import { resizeTerminalPreservingViewport } from "./terminal-layout";
+import {
+  resizeTerminalPreservingViewport,
+  writeTerminalPreservingViewport,
+} from "./terminal-layout";
 import { normalizeLightTerminalAnsi, xtermAnsiTheme, xtermTheme } from "./theme";
 
 interface TerminalSessionProps {
@@ -189,7 +192,10 @@ export function TerminalSession({
               typeof msg.data === "string"
             ) {
               shiftEnterInput.observeOutput(msg.data);
-              term.write(normalizeLightTerminalAnsi(msg.data, resolvedThemeRef.current));
+              writeTerminalPreservingViewport(
+                term,
+                normalizeLightTerminalAnsi(msg.data, resolvedThemeRef.current),
+              );
             } else if (msg.type === "exit") {
               setStatus("closed");
               onCloseRef.current();
@@ -219,28 +225,40 @@ export function TerminalSession({
         }
       });
 
+      let resizeTimer: ReturnType<typeof setTimeout> | null = null;
       const resizeObs = new ResizeObserver(() => {
-        try {
-          resizeTerminalPreservingViewport(term, () => fit.fit());
-          const live = wsRef.current;
-          if (live && live.readyState === WebSocket.OPEN) {
-            live.send(
-              JSON.stringify({
-                type: "resize",
-                cols: term.cols,
-                rows: term.rows,
-              }),
-            );
+        if (resizeTimer) clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(() => {
+          resizeTimer = null;
+          try {
+            const previousCols = term.cols;
+            const previousRows = term.rows;
+            resizeTerminalPreservingViewport(term, () => fit.fit());
+            const live = wsRef.current;
+            if (
+              live &&
+              live.readyState === WebSocket.OPEN &&
+              (previousCols !== term.cols || previousRows !== term.rows)
+            ) {
+              live.send(
+                JSON.stringify({
+                  type: "resize",
+                  cols: term.cols,
+                  rows: term.rows,
+                }),
+              );
+            }
+          } catch {
+            /* layout race */
           }
-        } catch {
-          /* layout race */
-        }
+        }, 120);
       });
       resizeObs.observe(host);
 
       disposeTerminal = () => {
         cancelled = true;
         resizeObs.disconnect();
+        if (resizeTimer) clearTimeout(resizeTimer);
         shiftEnterInput.dispose();
         inputDisp.dispose();
         const live = wsRef.current;

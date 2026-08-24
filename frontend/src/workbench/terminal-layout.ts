@@ -4,6 +4,7 @@ export interface TerminalDimensions {
 }
 
 export interface TerminalViewportState {
+  cols?: number;
   buffer: {
     active: {
       viewportY: number;
@@ -21,13 +22,38 @@ export function resizeTerminalPreservingViewport(
 ): void {
   const active = terminal.buffer.active;
   const viewportY = active.viewportY;
+  const baseY = active.baseY;
+  const cols = terminal.cols;
   const wasAtBottom = viewportY >= active.baseY;
   resize();
   if (wasAtBottom) {
     terminal.scrollToBottom();
+  } else if (cols !== undefined && terminal.cols !== cols) {
+    const distanceFromBottom = Math.max(0, baseY - viewportY);
+    terminal.scrollToLine(Math.max(0, terminal.buffer.active.baseY - distanceFromBottom));
   } else {
     terminal.scrollToLine(Math.min(viewportY, terminal.buffer.active.baseY));
   }
+}
+
+export interface TerminalWriteViewportState extends TerminalViewportState {
+  write: (data: string, callback?: () => void) => void;
+}
+
+/** Keep TUI redraws and alternate-screen transitions from moving the user's viewport. */
+export function writeTerminalPreservingViewport(
+  terminal: TerminalWriteViewportState,
+  data: string,
+  onComplete?: () => void,
+): void {
+  const active = terminal.buffer.active;
+  const viewportY = active.viewportY;
+  const wasAtBottom = viewportY >= active.baseY;
+  terminal.write(data, () => {
+    if (wasAtBottom) terminal.scrollToBottom();
+    else terminal.scrollToLine(Math.min(viewportY, terminal.buffer.active.baseY));
+    onComplete?.();
+  });
 }
 
 export const WORKFLOW_AGENT_TERMINAL_SAFE_ROWS = 1;

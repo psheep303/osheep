@@ -21,3 +21,13 @@ test("ordinary lists keep their default indentation", async () => {
 
   assert.doesNotMatch(html, /contains-task-list/);
 });
+
+test("fenced code is highlighted and Mermaid diagrams are marked for rendering", async () => {
+  const parser = createMarkdownParser(false);
+  const code = String(await parser.parse("```js\nconst answer = 42;\n```"));
+  const diagram = String(await parser.parse("```mermaid\ngraph TD\nA --> B\n```"));
+
+  assert.match(code, /class="hljs language-js"/);
+  assert.match(code, /hljs-keyword/);
+  assert.match(diagram, /<pre class="mermaid">graph TD/);
+});

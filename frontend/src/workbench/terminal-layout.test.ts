@@ -5,6 +5,7 @@ import {
   resizeTerminalPreservingViewport,
   WORKFLOW_AGENT_TERMINAL_SAFE_ROWS,
   workflowAgentTerminalDimensions,
+  writeTerminalPreservingViewport,
 } from "./terminal-layout";
 
 function fakeTerminal(viewportY: number, baseY: number) {
@@ -45,6 +46,31 @@ test("terminal resize keeps a bottom-pinned viewport at the bottom", () => {
     fake.setActive({ viewportY: 100, baseY: 80 }),
   );
   assert.deepEqual(fake.calls, ["bottom"]);
+});
+
+test("terminal column reflow preserves the viewport distance from the output tail", () => {
+  const fake = fakeTerminal(80, 100);
+  Object.assign(fake.terminal, { cols: 120 });
+  resizeTerminalPreservingViewport(fake.terminal, () => {
+    Object.assign(fake.terminal, { cols: 80 });
+    fake.setActive({ viewportY: 100, baseY: 140 });
+  });
+  assert.deepEqual(fake.calls, ["line:120"]);
+});
+
+test("terminal writes preserve a user's scrolled viewport", () => {
+  const fake = fakeTerminal(70, 100);
+  writeTerminalPreservingViewport(
+    {
+      ...fake.terminal,
+      write(_data, callback) {
+        fake.setActive({ viewportY: 0, baseY: 125 });
+        callback?.();
+      },
+    },
+    "redraw",
+  );
+  assert.deepEqual(fake.calls, ["line:70"]);
 });
 
 test("workflow agent terminals reserve a row below full-screen TUI input", () => {

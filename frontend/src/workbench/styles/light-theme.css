@@ -173,6 +173,24 @@
   color: #24292f;
 }
 
+:root[data-theme="light"] .markdown-preview .hljs-keyword,
+:root[data-theme="light"] .markdown-preview .hljs-selector-tag,
+:root[data-theme="light"] .markdown-preview .hljs-literal { color: #8250df; }
+
+:root[data-theme="light"] .markdown-preview .hljs-string,
+:root[data-theme="light"] .markdown-preview .hljs-title,
+:root[data-theme="light"] .markdown-preview .hljs-name,
+:root[data-theme="light"] .markdown-preview .hljs-type,
+:root[data-theme="light"] .markdown-preview .hljs-attribute { color: #0a3069; }
+
+:root[data-theme="light"] .markdown-preview .hljs-comment,
+:root[data-theme="light"] .markdown-preview .hljs-quote,
+:root[data-theme="light"] .markdown-preview .hljs-meta { color: #6e7781; }
+
+:root[data-theme="light"] .markdown-preview .hljs-number,
+:root[data-theme="light"] .markdown-preview .hljs-built_in,
+:root[data-theme="light"] .markdown-preview .hljs-title.function_ { color: #953800; }
+
 :root[data-theme="light"] .markdown-preview blockquote {
   border-left-color: #c8c8c8;
 }

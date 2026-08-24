@@ -5,6 +5,7 @@ import { workspaceImageUrl } from "./api";
 import { isDesktopShell, openExternalUrl } from "./desktop-folder-picker";
 import { createMarkdownParser } from "./markdown-parser";
 import { useOsheepOverlay } from "./OsheepOverlay";
+import { useMermaidRendering } from "./use-mermaid-rendering";
 
 interface MarkdownPreviewProps {
   source: string;
@@ -15,7 +16,7 @@ interface MarkdownPreviewProps {
 const markdownParser = createMarkdownParser(false);
 
 export function MarkdownPreview({ source, workspaceId, filePath }: MarkdownPreviewProps) {
-  const { t } = useUiPreferences();
+  const { resolvedTheme, t } = useUiPreferences();
   const { notify } = useOsheepOverlay();
   const [html, setHtml] = useState("");
   const previewRef = useRef<HTMLDivElement>(null);
@@ -39,6 +40,8 @@ export function MarkdownPreview({ source, workspaceId, filePath }: MarkdownPrevi
       cancelled = true;
     };
   }, [filePath, source, workspaceId]);
+
+  useMermaidRendering(previewRef, html, resolvedTheme);
 
   useEffect(() => {
     const root = previewRef.current;
