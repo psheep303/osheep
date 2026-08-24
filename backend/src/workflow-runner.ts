@@ -3103,37 +3103,22 @@ function extractMcpToolCalls(
 }
 
 function agentOutput(node: WorkflowNode, raw: string): WorkflowBlockOutput {
-  const parsed = parseJsonObject(raw);
-  if (parsed) {
-    if (node.config?.parseOutputJson === true && typeof parsed.text === "string") {
-      try {
-        parsed.text = JSON.parse(parsed.text) as unknown;
-      } catch (error) {
-        throw new Error(`${node.title} output text is not valid JSON: ${(error as Error).message}`);
-      }
-    }
-    return normalizeOutputObject(parsed, {
-      type: node.providerKind === "claude-cli" ? "claude" : "codex",
-      status: "success",
-      text: textFromOutput(parsed) || raw.trim(),
-    });
-  }
+  const type = node.providerKind === "claude-cli" ? "claude" : "codex";
+  const trimmed = raw.trim();
   if (node.config?.parseOutputJson === true) {
     try {
-      return {
-        type: node.providerKind === "claude-cli" ? "claude" : "codex",
-        status: "success",
-        text: JSON.parse(raw.trim()) as unknown,
-      };
+      return { type, status: "success", text: JSON.parse(trimmed) as unknown };
     } catch (error) {
       throw new Error(`${node.title} output text is not valid JSON: ${(error as Error).message}`);
     }
   }
-  return {
-    type: node.providerKind === "claude-cli" ? "claude" : "codex",
-    status: "success",
-    text: raw.trim(),
-  };
+
+  const parsed = parseJsonObject(raw);
+  return { type, status: "success", text: (parsed && textFromOutput(parsed)) || trimmed };
+}
+
+export function agentOutputForTest(node: WorkflowNode, raw: string): WorkflowBlockOutput {
+  return agentOutput(node, raw);
 }
 
 function normalizeOutputObject(

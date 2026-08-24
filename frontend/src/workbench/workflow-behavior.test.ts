@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { agentBlockOutput } from "./workflow-agent-output.ts";
+
 async function loadBehavior() {
   return import("./workflow-behavior.ts").catch(() => null);
 }
@@ -29,6 +31,37 @@ test("unrun Claude output keeps known values and typed empty values", async () =
     status: "",
     text: "",
   });
+});
+
+test("agent JSON parsing nests the complete final message under text", async () => {
+  const behavior = await loadBehavior();
+  assert.ok(behavior, "workflow behavior module should exist");
+  const finalMessage = {
+    summary: "README exists",
+    exists: true,
+    details: { path: "README.md" },
+  };
+
+  assert.deepEqual(
+    agentBlockOutput(
+      node("agent", "codex-cli", { parseOutputJson: true }) as never,
+      JSON.stringify(finalMessage),
+    ),
+    { type: "codex", status: "success", text: finalMessage },
+  );
+});
+
+test("agent text output keeps only the standard envelope fields", async () => {
+  const behavior = await loadBehavior();
+  assert.ok(behavior, "workflow behavior module should exist");
+
+  assert.deepEqual(
+    agentBlockOutput(
+      node("agent", "claude-cli") as never,
+      JSON.stringify({ text: "done", summary: "duplicate", details: { extra: true } }),
+    ),
+    { type: "claude", status: "success", text: "done" },
+  );
 });
 
 test("workflow agent durations use hours minutes and seconds", async () => {

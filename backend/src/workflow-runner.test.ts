@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  agentOutputForTest,
   agentRetryPromptForLanguage,
   appendAgentAttemptTranscriptForTest,
   buildAgentProviderPlan,
@@ -25,6 +26,36 @@ import type { WorkflowNode, WorkflowRecord } from "./workflows.js";
 test("agent retry prompt follows the resolved Osheep language", () => {
   assert.equal(agentRetryPromptForLanguage("zh-CN"), "继续");
   assert.equal(agentRetryPromptForLanguage("en"), "continue");
+});
+
+test("parsed agent JSON is nested under text without leaking fields into the envelope", () => {
+  const finalMessage = {
+    summary: "README exists",
+    exists: true,
+    details: { path: "README.md" },
+  };
+  const node = {
+    ...workflowNode("node_codex", "agent", "Codex"),
+    config: { parseOutputJson: true },
+  };
+
+  assert.deepEqual(agentOutputForTest(node, JSON.stringify(finalMessage)), {
+    type: "codex",
+    status: "success",
+    text: finalMessage,
+  });
+});
+
+test("unparsed agent output retains a string in the three-field envelope", () => {
+  const node = workflowNode("node_claude", "agent", "Claude", "claude-cli");
+
+  assert.deepEqual(
+    agentOutputForTest(
+      node,
+      JSON.stringify({ text: "done", summary: "duplicate", details: { extra: true } }),
+    ),
+    { type: "claude", status: "success", text: "done" },
+  );
 });
 
 test("provider retry plans preserve round-robin order and sort lowest multipliers", () => {

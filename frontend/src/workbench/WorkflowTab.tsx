@@ -81,7 +81,10 @@ import { exportTextFile } from "./desktop-file-export";
 import { DOCS_DIR, findFreeName, writeFileText } from "./fs";
 import type { MultiDiffEntry } from "./MultiDiffPane";
 import { useOsheepOverlay } from "./OsheepOverlay";
-import { cleanAgentTerminalConversation } from "./terminal-conversation";
+import {
+  cleanAgentTerminalConversation,
+  lastAgentMessageFromSnapshot,
+} from "./terminal-conversation";
 import { createShiftEnterInput, isShiftEnterEvent } from "./terminal-keyboard";
 import {
   createTerminalUserInputGate,
@@ -99,6 +102,7 @@ import {
 } from "./terminal-write-batcher";
 import { normalizeLightTerminalAnsi, workflowXtermTheme, xtermAnsiTheme } from "./theme";
 import { prepareWorkflowAlertSound } from "./workflow-alert-sound";
+import { agentBlockOutput } from "./workflow-agent-output";
 import {
   blockOutputText,
   canApplyWorkflowRefresh,
@@ -4163,7 +4167,7 @@ function WorkflowDetailsPanel({
             initialAutoSuccess={snapshot.autoSuccess ?? true}
           />
         ) : (
-          <WorkflowFinishedRunResult node={node} snapshot={snapshot} />
+          <WorkflowFinishedRunResult snapshot={snapshot} />
         )}
       </div>
     </aside>
@@ -4565,10 +4569,8 @@ function formatTraceValue(value: unknown, t: WorkflowTranslate): string {
 }
 
 function WorkflowFinishedRunResult({
-  node,
   snapshot,
 }: {
-  node: WorkflowNode;
   snapshot: WorkflowRunDetailSnapshot | null;
 }) {
   if (!snapshot) {
@@ -4577,7 +4579,7 @@ function WorkflowFinishedRunResult({
   if (snapshot.kind === "command") {
     return <pre>{snapshot.transcript || snapshot.stdout || snapshot.stderr}</pre>;
   }
-  const message = workflowAgentLastMessage(node, snapshot);
+  const message = lastAgentMessageFromSnapshot(snapshot);
   return (
     <div className="workflow-run-details__answer">
       <Suspense fallback={<div className="tab-loading-fallback" />}>
@@ -4585,36 +4587,6 @@ function WorkflowFinishedRunResult({
       </Suspense>
     </div>
   );
-}
-
-function workflowAgentLastMessage(node: WorkflowNode, snapshot: WorkflowRunDetailSnapshot): string {
-  const output = parseJsonObject(node.rawOutput || node.summary || "");
-  const outputText = output ? textFromOutput(output) : "";
-  if (outputText && !/completed without text output/i.test(outputText)) return outputText;
-
-  const conversation = readableAgentConversation(snapshot);
-  const structured = [
-    ...conversation.matchAll(
-      /^(?:Claude|Assistant):\n([\s\S]*?)(?=^(?:User|Claude|Assistant|Tool(?: · \S+)?|Tool result|Tool error):\n|$)/gm,
-    ),
-  ];
-  const lastStructured =
-    structured.length > 0 ? structured[structured.length - 1]?.[1]?.trim() : "";
-  return lastStructured || conversation.trim();
-}
-
-function readableAgentConversation(snapshot: WorkflowRunDetailSnapshot): string {
-  const structured = /^(?:User|Claude|Tool(?: · \S+)?|Tool result|Tool error):/m.test(
-    snapshot.transcript,
-  );
-  if (structured) return snapshot.transcript.trim();
-  const rawTerminal = /\x1b|\r/.test(snapshot.stdout) ? snapshot.stdout : "";
-  const source = rawTerminal || snapshot.transcript || snapshot.stdout;
-  const kind = /^\s*codex(?:\.exe)?\b/i.test(snapshot.commandLine) ? "codex-cli" : "claude-cli";
-  const cleaned = cleanAgentTerminalConversation(source, kind);
-  if (snapshot.status !== "error" || !snapshot.stderr.trim()) return cleaned;
-  if (cleaned.includes(snapshot.stderr.trim())) return cleaned;
-  return [cleaned, `[error] ${snapshot.stderr.trim()}`].filter(Boolean).join("\n");
 }
 
 function WorkflowAgentTerminalInner({
@@ -8314,20 +8286,7 @@ function triggerOutput(node: WorkflowNode, record?: WorkflowRecord): WorkflowBlo
 }
 
 function agentOutput(node: WorkflowNode, raw: string): WorkflowBlockOutput {
-  const parsed = parseJsonObject(raw);
-  if (parsed) {
-    return normalizeOutputObject(parsed, {
-      type: node.providerKind === "claude-cli" ? "claude" : "codex",
-      status: "success",
-      text: textFromOutput(parsed) || raw.trim(),
-    });
-  }
-
-  return {
-    type: node.providerKind === "claude-cli" ? "claude" : "codex",
-    status: "success",
-    text: raw.trim(),
-  };
+  return agentBlockOutput(node, raw);
 }
 
 function normalizeOutputObject(
