@@ -89,6 +89,10 @@ Open <http://127.0.0.1:5173>, choose a workspace, then open **Templates** and ru
 create a workflow from **Workflow**. The concise [getting started guide](docs/getting-started.en.md)
 and [first workflow tutorial](docs/first-workflow.en.md) cover the rest.
 
+## Download The Desktop App
+
+Windows users can download the latest desktop installer from [GitHub Releases](https://github.com/psheep303/osheep/releases).
+
 ## Screenshots
 
 The workflow canvas and run details view:

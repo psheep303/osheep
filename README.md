@@ -75,6 +75,10 @@ chmod +x ./dev.sh
 
 打开 <http://127.0.0.1:5173>，选择工作区后，可在 **Templates** 运行模板，或在 **Workflow** 新建工作流。接下来只需阅读简短的[快速开始](docs/getting-started.md)和[第一个工作流](docs/first-workflow.md)。
 
+## 下载桌面版
+
+Windows 用户可直接前往 [GitHub Releases](https://github.com/psheep303/osheep/releases) 下载最新桌面版安装包。
+
 ## 界面截图
 
 工作流画布和运行详情页面：
