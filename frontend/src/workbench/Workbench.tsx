@@ -52,7 +52,7 @@ import { useOsheepOverlay } from "./OsheepOverlay";
 import { Resizer } from "./Resizer";
 import { SettingsView } from "./SettingsView";
 import { StatusBar } from "./StatusBar";
-import { playWorkflowWaitingSound } from "./workflow-alert-sound";
+import { playWorkflowAlertSound } from "./workflow-alert-sound";
 import { DEFAULT_SETTINGS, type OsheepSettings } from "./settings";
 import type { AgentTerminalLaunchRequest } from "./Terminal";
 import { WorkspacePicker } from "./WorkspacePicker";
@@ -348,6 +348,7 @@ export function Workbench() {
   // no longer the active tab (inactive tabs are intentionally unmounted).
   const waitingNotificationKeysRef = useRef(new Set<string>());
   const waitingSoundKnownWorkflowsRef = useRef(new Set<string>());
+  const workflowSoundKeysRef = useRef(new Set<string>());
   useEffect(() => {
     if (!workspaceId) return;
     const workflowIds = tabs
@@ -357,6 +358,7 @@ export function Workbench() {
     let cancelled = false;
     const check = async () => {
       const observedWaitingKeys = new Set<string>();
+      const observedSoundKeys = new Set<string>();
       await Promise.all(
         workflowIds.map(async (workflowId) => {
           try {
@@ -364,6 +366,7 @@ export function Workbench() {
             const workflowKey = `${workspaceId}:${workflowId}`;
             const firstObservation = !waitingSoundKnownWorkflowsRef.current.has(workflowKey);
             waitingSoundKnownWorkflowsRef.current.add(workflowKey);
+            const sounds = workflow.settings?.sounds;
             for (const node of workflow.nodes) {
               const details = node.config?.runDetails;
               const terminalStatus =
@@ -372,15 +375,45 @@ export function Workbench() {
                   : undefined;
               const waiting =
                 node.status === "running" &&
-                (terminalStatus === "waiting-for-choice" || node.config?.waitingForChoice === true);
+                (terminalStatus === "waiting-for-choice" ||
+                  node.config?.waitingForChoice === true ||
+                  (node.kind === "diff-approval" && node.config?.waitingForApproval === true) ||
+                  (node.kind === "markdown" &&
+                    (node.config?.waitingForApproval === true ||
+                      node.config?.waitingForInput === true)));
               const key = `${workflowKey}:${node.id}:${node.completedAt ?? node.startedAt ?? 0}`;
               if (waiting) observedWaitingKeys.add(key);
               if (waiting && !waitingNotificationKeysRef.current.has(key)) {
                 waitingNotificationKeysRef.current.add(key);
-                if (!firstObservation) playWorkflowWaitingSound();
+                if (!firstObservation && sounds?.waitingForChoice !== false) {
+                  playWorkflowAlertSound("waiting");
+                }
                 notify.warning(t("notification.waitingForChoice", { name: node.title }), {
                   title: t("workflow.details.waitingForChoice"),
                 });
+              }
+              if ((node.status === "success" || node.status === "error") && node.completedAt) {
+                const soundKey = `${workflowKey}:node:${node.id}:${node.status}:${node.completedAt}`;
+                observedSoundKeys.add(soundKey);
+                if (!firstObservation && !workflowSoundKeysRef.current.has(soundKey)) {
+                  if (node.status === "success" && sounds?.nodeSuccess === true) {
+                    playWorkflowAlertSound("node-success");
+                  } else if (node.status === "error" && sounds?.nodeError === true) {
+                    playWorkflowAlertSound("node-error");
+                  }
+                }
+              }
+            }
+            for (const run of workflow.runs) {
+              if (run.status === "running" || run.status === "idle" || !run.completedAt) continue;
+              const soundKey = `${workflowKey}:run:${run.id}:${run.status}:${run.completedAt}`;
+              observedSoundKeys.add(soundKey);
+              if (
+                !firstObservation &&
+                !workflowSoundKeysRef.current.has(soundKey) &&
+                sounds?.runCompleted === true
+              ) {
+                playWorkflowAlertSound("run-completed");
               }
             }
           } catch {
@@ -390,6 +423,7 @@ export function Workbench() {
       );
       if (!cancelled) {
         waitingNotificationKeysRef.current = observedWaitingKeys;
+        workflowSoundKeysRef.current = observedSoundKeys;
       }
     };
     void check();

@@ -6,6 +6,7 @@ import test from "node:test";
 import Fastify from "fastify";
 import { config } from "./config.js";
 import { registerWorkflowRoutes } from "./routes/workflows.js";
+import { startWorkflowRun } from "./workflow-runner.js";
 import {
   createWorkflow,
   deleteWorkflow,
@@ -16,10 +17,144 @@ import {
   listWorkflowIdsByTemplateBinding,
   listWorkflows,
   recordWorkflowUsageSnapshot,
+  sanitizeWorkflowSettings,
   saveWorkflow,
   updateWorkflow,
 } from "./workflows.js";
 import { markWorkspaceOpened } from "./workspace.js";
+
+test("workflow settings use safe defaults and disable cost limits when unbilled", () => {
+  assert.deepEqual(sanitizeWorkflowSettings(undefined), {
+    unbilled: false,
+    maxRunCost: 0,
+    maxRunDurationSeconds: 0,
+    sounds: {
+      nodeSuccess: false,
+      nodeError: false,
+      waitingForChoice: true,
+      runCompleted: false,
+    },
+  });
+  assert.deepEqual(
+    sanitizeWorkflowSettings({
+      unbilled: true,
+      maxRunCost: 12,
+      maxRunDurationSeconds: 30,
+      sounds: { nodeError: true, waitingForChoice: false },
+    }),
+    {
+      unbilled: true,
+      maxRunCost: 0,
+      maxRunDurationSeconds: 30,
+      sounds: {
+        nodeSuccess: false,
+        nodeError: true,
+        waitingForChoice: false,
+        runCompleted: false,
+      },
+    },
+  );
+});
+
+test("workflow duration limits fail the active block and the run", async () => {
+  const workspacesRoot = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-duration-limit-"));
+  const workspaceRoot = path.join(workspacesRoot, "demo");
+  const previousWorkspacesRoot = config.workspacesRoot;
+  try {
+    config.workspacesRoot = workspacesRoot;
+    await fs.mkdir(workspaceRoot);
+    const workflow = await createWorkflow(workspaceRoot, {
+      title: "Limited run",
+      settings: {
+        ...sanitizeWorkflowSettings(undefined),
+        maxRunDurationSeconds: 0.02,
+      },
+      nodes: [
+        {
+          id: "node_waiting",
+          blockId: 1,
+          kind: "wait",
+          title: "Wait",
+          providerKind: "codex-cli",
+          model: "default",
+          prompt: "",
+          x: 0,
+          y: 0,
+          status: "idle",
+          config: { seconds: 0.2 },
+        },
+      ],
+      edges: [],
+    });
+    const started = await startWorkflowRun("demo", workflow.id, ["node_waiting"], "en");
+    let completed = started.workflow;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      completed = await getWorkflow(workspaceRoot, workflow.id);
+      if (completed.runs.find((run) => run.id === started.runId)?.status !== "running") break;
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    }
+
+    const run = completed.runs.find((item) => item.id === started.runId);
+    assert.equal(run?.status, "error");
+    assert.match(run?.error ?? "", /duration exceeded/i);
+    assert.equal(completed.nodes[0]?.status, "error");
+    assert.match(completed.nodes[0]?.error ?? "", /duration exceeded/i);
+  } finally {
+    config.workspacesRoot = previousWorkspacesRoot;
+    await fs.rm(workspacesRoot, { recursive: true, force: true });
+  }
+});
+
+test("unbilled workflows keep usage but exclude current and historical costs", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-unbilled-workflow-"));
+  const previousWorkflowUsageFile = config.workflowUsageFile;
+  try {
+    config.workflowUsageFile = path.join(root, "workflow-usage.json");
+    const workflow = await createWorkflow(root, { title: "Internal automation" });
+    const run = {
+      id: "run_unbilled",
+      status: "success" as const,
+      startedAt: 100,
+      completedAt: 200,
+      nodeIds: ["node_usage"],
+      stats: { totalTokens: 200, cost: 0.5 },
+      trace: [
+        {
+          nodeId: "node_usage",
+          title: "Usage",
+          kind: "agent" as const,
+          model: "test-model",
+          status: "success" as const,
+          startedAt: 100,
+          completedAt: 200,
+          tokens: { total: 200 },
+          cost: 0.5,
+        },
+      ],
+    };
+    await recordWorkflowUsageSnapshot(root, workflow, run);
+    await updateWorkflow(root, workflow.id, (current) => ({
+      ...current,
+      runs: [run],
+      settings: { ...current.settings!, unbilled: true, maxRunCost: 0 },
+    }));
+
+    const unbilledWorkflow = await getWorkflow(root, workflow.id);
+    assert.equal(unbilledWorkflow.runs[0]?.trace?.[0]?.cost, undefined);
+    assert.equal(unbilledWorkflow.runs[0]?.stats?.cost, undefined);
+
+    const usage = await getWorkflowUsageStatistics(root, { range: "all", now: 1_000 });
+    assert.equal(usage.totals.runs, 1);
+    assert.equal(usage.totals.totalTokens, 200);
+    assert.equal(usage.totals.cost, 0);
+    assert.equal(usage.workflows[0]?.cost, 0);
+    assert.equal(usage.models[0]?.cost, 0);
+    assert.equal(usage.recentRuns[0]?.cost, 0);
+  } finally {
+    config.workflowUsageFile = previousWorkflowUsageFile;
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
 
 test("all-project workflow usage sums opened project totals without exposing details", async () => {
   const sandbox = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-all-project-usage-"));

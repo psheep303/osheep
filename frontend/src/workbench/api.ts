@@ -1433,6 +1433,18 @@ export interface WorkflowRunStats {
   retryCount?: number;
 }
 
+export interface WorkflowSettings {
+  unbilled: boolean;
+  maxRunCost: number;
+  maxRunDurationSeconds: number;
+  sounds: {
+    nodeSuccess: boolean;
+    nodeError: boolean;
+    waitingForChoice: boolean;
+    runCompleted: boolean;
+  };
+}
+
 export interface WorkflowRecord {
   id: string;
   title: string;
@@ -1443,6 +1455,7 @@ export interface WorkflowRecord {
   };
   createdAt: number;
   updatedAt: number;
+  settings?: WorkflowSettings;
   nodes: WorkflowNode[];
   edges: WorkflowEdge[];
   runs: WorkflowRun[];

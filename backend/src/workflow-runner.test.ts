@@ -19,6 +19,7 @@ import {
   shouldRetryAgentTerminalFailure,
   type WorkflowRunDetailSnapshot,
   workflowRunCheckpoints,
+  workflowRunExceedsCostLimit,
   workflowStopDisposition,
 } from "./workflow-runner.js";
 import type { WorkflowNode, WorkflowRecord } from "./workflows.js";
@@ -100,6 +101,36 @@ test("provider retry plans preserve round-robin order and sort lowest multiplier
 test("provider billing multiplies model cost and preserves unavailable cost", () => {
   assert.ok(Math.abs((multiplyCost(0.0125, 1.8) ?? 0) - 0.0225) < 1e-12);
   assert.equal(multiplyCost(undefined, 2), undefined);
+});
+
+test("workflow cost limits trigger only after the configured amount is exceeded", () => {
+  const run = {
+    id: "run_limit",
+    status: "running" as const,
+    startedAt: 1,
+    nodeIds: ["node_first", "node_second"],
+    trace: [
+      {
+        nodeId: "node_first",
+        title: "First",
+        kind: "agent" as const,
+        status: "success" as const,
+        startedAt: 1,
+        cost: 0.4,
+      },
+      {
+        nodeId: "node_second",
+        title: "Second",
+        kind: "agent" as const,
+        status: "running" as const,
+        startedAt: 2,
+        cost: 0.6,
+      },
+    ],
+  };
+  assert.equal(workflowRunExceedsCostLimit(run, 0), false);
+  assert.equal(workflowRunExceedsCostLimit(run, 1), false);
+  assert.equal(workflowRunExceedsCostLimit(run, 0.99), true);
 });
 
 test("workflow run planning excludes nodes that are not reachable from a trigger", () => {

@@ -1,5 +1,7 @@
 let workflowAlertAudioContext: AudioContext | null = null;
 
+export type WorkflowAlertSound = "node-success" | "node-error" | "waiting" | "run-completed";
+
 export function prepareWorkflowAlertSound(): void {
   try {
     workflowAlertAudioContext ??= new AudioContext();
@@ -11,18 +13,36 @@ export function prepareWorkflowAlertSound(): void {
   }
 }
 
-export function playWorkflowWaitingSound(): void {
+export function playWorkflowAlertSound(kind: WorkflowAlertSound): void {
   prepareWorkflowAlertSound();
   const audio = workflowAlertAudioContext;
   if (audio?.state !== "running") return;
   const now = audio.currentTime;
-  for (const [offset, frequency] of [
-    [0, 660],
-    [0.16, 880],
-  ] as const) {
+  const notes: ReadonlyArray<readonly [number, number]> =
+    kind === "node-success"
+      ? [
+          [0, 660],
+          [0.1, 880],
+        ]
+      : kind === "node-error"
+        ? [
+            [0, 330],
+            [0.12, 220],
+          ]
+        : kind === "run-completed"
+          ? [
+              [0, 523],
+              [0.1, 659],
+              [0.2, 784],
+            ]
+          : [
+              [0, 660],
+              [0.16, 880],
+            ];
+  for (const [offset, frequency] of notes) {
     const oscillator = audio.createOscillator();
     const gain = audio.createGain();
-    oscillator.type = "sine";
+    oscillator.type = kind === "node-error" ? "triangle" : "sine";
     oscillator.frequency.setValueAtTime(frequency, now + offset);
     gain.gain.setValueAtTime(0.0001, now + offset);
     gain.gain.exponentialRampToValueAtTime(0.12, now + offset + 0.015);

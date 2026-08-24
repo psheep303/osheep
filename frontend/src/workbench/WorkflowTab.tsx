@@ -72,6 +72,7 @@ import {
   type WorkflowRunStatus,
   type WorkflowRunTrace,
   type WorkflowRuntimeEvent,
+  type WorkflowSettings,
   writeFile,
 } from "./api";
 import { ClaudeLogo, OpenAILogo } from "./BrandIcons";
@@ -832,6 +833,7 @@ export function WorkflowTab({
   const [blockPickerCategory, setBlockPickerCategory] = useState<BlockCategoryId>("triggers");
   const [detailNodeId, setDetailNodeId] = useState<string | null>(null);
   const [observabilityOpen, setObservabilityOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [observabilityRunId, setObservabilityRunId] = useState<string | null>(null);
   const [mpeNodeId, setMpeNodeId] = useState<string | null>(null);
   const [titleMenu, setTitleMenu] = useState<{ x: number; y: number } | null>(null);
@@ -937,6 +939,7 @@ export function WorkflowTab({
     setPlacingNodeId(null);
     setReadmeOpen(false);
     setReadmeEditing(false);
+    setSettingsOpen(false);
     runtimeLayoutRef.current.clear();
     void apiGetWorkflow(workspaceId, workflowId)
       .then((record) => {
@@ -2220,6 +2223,7 @@ export function WorkflowTab({
     autoSeenMarkdownRef.current.clear();
     setRunning(true);
     setBlockPickerOpen(false);
+    setSettingsOpen(false);
     setError(null);
     const runtimeEventSeq = workflowRuntimeEventSeqRef.current;
     try {
@@ -2800,6 +2804,7 @@ export function WorkflowTab({
             onClick={() => {
               setReadmeOpen((open) => !open);
               setReadmeEditing(false);
+              setSettingsOpen(false);
             }}
             title="Open workflow README"
           >
@@ -2807,11 +2812,33 @@ export function WorkflowTab({
           </button>
           <button
             className={`workflow-toolbar__readme workflow-toolbar__run-history${observabilityOpen ? " is-active" : ""}`}
-            onClick={() => setObservabilityOpen((open) => !open)}
+            onClick={() => {
+              setObservabilityOpen((open) => !open);
+              setSettingsOpen(false);
+            }}
             title={t("workflow.runHistory")}
             aria-label={t("workflow.runHistory")}
           >
             {t("workflow.runHistory")}
+          </button>
+          <button
+            type="button"
+            className={`workflow-toolbar__readme workflow-toolbar__settings${settingsOpen ? " is-active" : ""}`}
+            onClick={() => {
+              setSettingsOpen((open) => !open);
+              setObservabilityOpen(false);
+              setReadmeOpen(false);
+              setBlockPickerOpen(false);
+              setNodeSelection([]);
+              setDetailNodeId(null);
+              setMpeNodeId(null);
+              setTitleRenaming(false);
+            }}
+            disabled={running}
+            title={t("workflow.settings.title")}
+            aria-label={t("workflow.settings.title")}
+          >
+            <i className="codicon codicon-settings-gear" aria-hidden="true" />
           </button>
           {workflow.templateBinding && (
             <span className="workflow-toolbar__template-binding">
@@ -3223,6 +3250,16 @@ export function WorkflowTab({
           </section>
         )}
 
+        {settingsOpen && (
+          <WorkflowSettingsCard
+            settings={resolvedWorkflowSettings(workflow.settings)}
+            onChange={(settings) =>
+              updateWorkflow((record) => withWorkflowSettings(record, settings))
+            }
+            onClose={() => setSettingsOpen(false)}
+          />
+        )}
+
         {selectedNode && !blockPickerOpen && (
           <div className="workflow-panel-shell">
             <WorkflowNodeInspector
@@ -3337,6 +3374,7 @@ export function WorkflowTab({
             workspaceId={workspaceId}
             node={workflow.nodes.find((node) => node.id === detailNodeId)!}
             trace={latestWorkflowNodeTrace(workflow, detailNodeId)}
+            hideCost={workflow.settings?.unbilled === true}
             onClose={() => setDetailNodeId(null)}
             onResumeSession={onResumeSession}
           />
@@ -3382,6 +3420,209 @@ export function WorkflowTab({
         </div>
       )}
     </div>
+  );
+}
+
+const DEFAULT_WORKFLOW_SETTINGS: WorkflowSettings = {
+  unbilled: false,
+  maxRunCost: 0,
+  maxRunDurationSeconds: 0,
+  sounds: {
+    nodeSuccess: false,
+    nodeError: false,
+    waitingForChoice: true,
+    runCompleted: false,
+  },
+};
+
+function resolvedWorkflowSettings(settings?: WorkflowSettings): WorkflowSettings {
+  return {
+    ...DEFAULT_WORKFLOW_SETTINGS,
+    ...settings,
+    sounds: { ...DEFAULT_WORKFLOW_SETTINGS.sounds, ...settings?.sounds },
+  };
+}
+
+function withWorkflowSettings(
+  workflow: WorkflowRecord,
+  settings: WorkflowSettings,
+): WorkflowRecord {
+  if (!settings.unbilled) return { ...workflow, settings };
+  return {
+    ...workflow,
+    settings,
+    runs: workflow.runs.map((run) => ({
+      ...run,
+      trace: run.trace?.map((trace) => ({ ...trace, cost: undefined })),
+      stats: run.stats ? { ...run.stats, cost: undefined } : undefined,
+    })),
+  };
+}
+
+function WorkflowSettingsCard({
+  settings,
+  onChange,
+  onClose,
+}: {
+  settings: WorkflowSettings;
+  onChange: (settings: WorkflowSettings) => void;
+  onClose: () => void;
+}) {
+  const { t } = useUiPreferences();
+  const [costDraft, setCostDraft] = useState(String(settings.maxRunCost));
+  const [durationDraft, setDurationDraft] = useState(String(settings.maxRunDurationSeconds));
+  useEffect(() => setCostDraft(String(settings.maxRunCost)), [settings.maxRunCost]);
+  useEffect(
+    () => setDurationDraft(String(settings.maxRunDurationSeconds)),
+    [settings.maxRunDurationSeconds],
+  );
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [onClose]);
+  const updateSound = (key: keyof WorkflowSettings["sounds"], checked: boolean) => {
+    onChange({ ...settings, sounds: { ...settings.sounds, [key]: checked } });
+  };
+  return (
+    <section className="workflow-settings-card" aria-label={t("workflow.settings.title")}>
+      <header className="workflow-settings-card__header">
+        <i className="codicon codicon-settings-gear" aria-hidden="true" />
+        <strong>{t("workflow.settings.title")}</strong>
+        <button
+          type="button"
+          onClick={onClose}
+          title={t("workflow.settings.close")}
+          aria-label={t("workflow.settings.close")}
+        >
+          <i className="codicon codicon-close" aria-hidden="true" />
+        </button>
+      </header>
+      <div className="workflow-settings-card__body">
+        <label className="workflow-settings-card__toggle">
+          <input
+            type="checkbox"
+            checked={settings.unbilled}
+            onChange={(event) =>
+              onChange({
+                ...settings,
+                unbilled: event.target.checked,
+                maxRunCost: event.target.checked ? 0 : settings.maxRunCost,
+              })
+            }
+          />
+          <span>{t("workflow.settings.unbilled")}</span>
+        </label>
+
+        <label className="workflow-settings-card__number">
+          <span>{t("workflow.settings.maxRunCost")}</span>
+          <span className="workflow-settings-card__input">
+            <b>$</b>
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              disabled={settings.unbilled}
+              value={costDraft}
+              onChange={(event) => {
+                const value = event.target.value;
+                setCostDraft(value);
+                if (value !== "") {
+                  onChange({ ...settings, maxRunCost: workflowSettingNumber(value) });
+                }
+              }}
+              onBlur={() => {
+                if (costDraft !== "") return;
+                setCostDraft("0");
+                onChange({ ...settings, maxRunCost: 0 });
+              }}
+              aria-label={t("workflow.settings.maxRunCost")}
+            />
+          </span>
+        </label>
+
+        <label className="workflow-settings-card__number">
+          <span>{t("workflow.settings.maxRunDuration")}</span>
+          <span className="workflow-settings-card__input">
+            <input
+              type="number"
+              min="0"
+              step="1"
+              value={durationDraft}
+              onChange={(event) => {
+                const value = event.target.value;
+                setDurationDraft(value);
+                if (value !== "") {
+                  onChange({
+                    ...settings,
+                    maxRunDurationSeconds: workflowSettingNumber(value),
+                  });
+                }
+              }}
+              onBlur={() => {
+                if (durationDraft !== "") return;
+                setDurationDraft("0");
+                onChange({ ...settings, maxRunDurationSeconds: 0 });
+              }}
+              aria-label={t("workflow.settings.maxRunDuration")}
+            />
+            <b>s</b>
+          </span>
+        </label>
+
+        <fieldset className="workflow-settings-card__sounds">
+          <legend>{t("workflow.settings.sounds")}</legend>
+          <WorkflowSoundToggle
+            checked={settings.sounds.nodeSuccess}
+            label={t("workflow.settings.nodeSuccessSound")}
+            onChange={(checked) => updateSound("nodeSuccess", checked)}
+          />
+          <WorkflowSoundToggle
+            checked={settings.sounds.nodeError}
+            label={t("workflow.settings.nodeErrorSound")}
+            onChange={(checked) => updateSound("nodeError", checked)}
+          />
+          <WorkflowSoundToggle
+            checked={settings.sounds.waitingForChoice}
+            label={t("workflow.settings.waitingSound")}
+            onChange={(checked) => updateSound("waitingForChoice", checked)}
+          />
+          <WorkflowSoundToggle
+            checked={settings.sounds.runCompleted}
+            label={t("workflow.settings.runCompletedSound")}
+            onChange={(checked) => updateSound("runCompleted", checked)}
+          />
+        </fieldset>
+      </div>
+    </section>
+  );
+}
+
+function workflowSettingNumber(value: string): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
+function WorkflowSoundToggle({
+  checked,
+  label,
+  onChange,
+}: {
+  checked: boolean;
+  label: string;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <label>
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(event) => onChange(event.target.checked)}
+      />
+      <span>{label}</span>
+    </label>
   );
 }
 
@@ -4004,6 +4245,7 @@ export function WorkflowRunDetailsPage({
           workflowId={workflowId}
           node={node}
           trace={workflow ? latestWorkflowNodeTrace(workflow, nodeId) : undefined}
+          hideCost={workflow?.settings?.unbilled === true}
           onClose={onClose}
           onResumeSession={onResumeSession}
         />
@@ -4025,6 +4267,7 @@ function WorkflowDetailsPanel({
   workflowId,
   node,
   trace,
+  hideCost = false,
   onClose,
   onResumeSession,
 }: {
@@ -4032,6 +4275,7 @@ function WorkflowDetailsPanel({
   workflowId?: string;
   node: WorkflowNode;
   trace?: WorkflowRunTrace;
+  hideCost?: boolean;
   onClose: () => void;
   onResumeSession?: (session: { app: AgentSessionApp; id: string; title: string }) => void;
 }) {
@@ -4127,7 +4371,11 @@ function WorkflowDetailsPanel({
         )}
       </div>
       {snapshot?.kind === "agent" && (
-        <WorkflowTraceUsageStats trace={trace} className="workflow-run-details__usage" />
+        <WorkflowTraceUsageStats
+          trace={trace}
+          hideCost={hideCost}
+          className="workflow-run-details__usage"
+        />
       )}
       {snapshot?.kind === "agent" && retryPending && (
         <div className="workflow-run-details__retry" role="status" aria-live="polite">
@@ -4192,6 +4440,7 @@ function WorkflowObservabilityPanel({
   onSelectNode: (id: string) => void;
 }) {
   const { resolvedLanguage, t } = useUiPreferences();
+  const hideCost = workflow.settings?.unbilled === true;
   const traces = run?.trace ?? [];
   const stats = run?.stats;
   const traceTokenStats = summarizeWorkflowTraceTokens(traces);
@@ -4288,9 +4537,11 @@ function WorkflowObservabilityPanel({
             <WorkflowObservabilityStat label={t("workflow.observability.totalTokens")}>
               <strong>{formatWorkflowTokenCount(totalTokens, resolvedLanguage, t)}</strong>
             </WorkflowObservabilityStat>
-            <WorkflowObservabilityStat label={t("workflow.observability.cost")}>
-              <strong>{formatWorkflowCost(stats?.cost, t)}</strong>
-            </WorkflowObservabilityStat>
+            {!hideCost && (
+              <WorkflowObservabilityStat label={t("workflow.observability.cost")}>
+                <strong>{formatWorkflowCost(stats?.cost, t)}</strong>
+              </WorkflowObservabilityStat>
+            )}
           </div>
           <div className="workflow-observability__timeline">
             {traces.length === 0 ? (
@@ -4312,7 +4563,7 @@ function WorkflowObservabilityPanel({
                     </small>
                   </span>
                   <span className="workflow-observability__event-cost">
-                    {trace.kind === "agent"
+                    {!hideCost && trace.kind === "agent"
                       ? trace.cost !== undefined
                         ? formatWorkflowCost(trace.cost, t)
                         : "—"
@@ -4343,6 +4594,7 @@ function WorkflowObservabilityPanel({
               {selectedTrace.kind === "agent" && (
                 <WorkflowTraceUsageStats
                   trace={selectedTrace}
+                  hideCost={hideCost}
                   className="workflow-observability__detail-usage"
                 />
               )}
@@ -4395,9 +4647,11 @@ function WorkflowObservabilityStat({ label, children }: { label: string; childre
 function WorkflowTraceUsageStats({
   trace,
   className,
+  hideCost = false,
 }: {
   trace?: WorkflowRunTrace;
   className?: string;
+  hideCost?: boolean;
 }) {
   const { resolvedLanguage, t } = useUiPreferences();
   const tokens = trace?.tokens;
@@ -4427,7 +4681,9 @@ function WorkflowTraceUsageStats({
       formatWorkflowTokenCount(tokens?.cacheWrite, resolvedLanguage, t),
     ],
     [t("workflow.observability.totalTokens"), formatWorkflowTokenCount(total, resolvedLanguage, t)],
-    [t("workflow.observability.cost"), formatWorkflowCost(trace?.cost, t)],
+    ...(hideCost
+      ? []
+      : [[t("workflow.observability.cost"), formatWorkflowCost(trace?.cost, t)]]),
   ];
 
   return (

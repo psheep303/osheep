@@ -132,6 +132,18 @@ export interface WorkflowRunStats {
   retryCount?: number;
 }
 
+export interface WorkflowSettings {
+  unbilled: boolean;
+  maxRunCost: number;
+  maxRunDurationSeconds: number;
+  sounds: {
+    nodeSuccess: boolean;
+    nodeError: boolean;
+    waitingForChoice: boolean;
+    runCompleted: boolean;
+  };
+}
+
 export interface WorkflowRecord {
   id: string;
   title: string;
@@ -142,6 +154,7 @@ export interface WorkflowRecord {
   };
   createdAt: number;
   updatedAt: number;
+  settings?: WorkflowSettings;
   nodes: WorkflowNode[];
   edges: WorkflowEdge[];
   runs: WorkflowRun[];
@@ -326,6 +339,31 @@ function asPositiveInteger(value: unknown): number | undefined {
   return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
 }
 
+function asNonNegativeNumber(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+export function sanitizeWorkflowSettings(value: unknown): WorkflowSettings {
+  const raw =
+    value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Partial<WorkflowSettings>)
+      : {};
+  const sounds: Partial<WorkflowSettings["sounds"]> =
+    raw.sounds && typeof raw.sounds === "object" && !Array.isArray(raw.sounds) ? raw.sounds : {};
+  const unbilled = raw.unbilled === true;
+  return {
+    unbilled,
+    maxRunCost: unbilled ? 0 : asNonNegativeNumber(raw.maxRunCost),
+    maxRunDurationSeconds: asNonNegativeNumber(raw.maxRunDurationSeconds),
+    sounds: {
+      nodeSuccess: sounds.nodeSuccess === true,
+      nodeError: sounds.nodeError === true,
+      waitingForChoice: sounds.waitingForChoice !== false,
+      runCompleted: sounds.runCompleted === true,
+    },
+  };
+}
+
 function sanitizeNode(raw: unknown, index: number): WorkflowNode | null {
   if (!raw || typeof raw !== "object") return null;
   const r = raw as Partial<WorkflowNode>;
@@ -467,6 +505,7 @@ function defaultNodes(): WorkflowNode[] {
 
 function sanitize(raw: unknown, fallbackId: string): WorkflowRecord {
   const r = (raw ?? {}) as Partial<WorkflowRecord>;
+  const settings = sanitizeWorkflowSettings(r.settings);
   const id = typeof r.id === "string" && WORKFLOW_ID_RE.test(r.id) ? r.id : fallbackId;
   const nodes = Array.isArray(r.nodes)
     ? r.nodes
@@ -481,12 +520,13 @@ function sanitize(raw: unknown, fallbackId: string): WorkflowRecord {
         .filter((edge): edge is WorkflowEdge => edge !== null)
     : [];
   const createdAt = typeof r.createdAt === "number" ? r.createdAt : Date.now();
-  const runs = Array.isArray(r.runs)
+  const sanitizedRuns = Array.isArray(r.runs)
     ? r.runs
         .map(sanitizeRun)
         .filter((run): run is WorkflowRun => run !== null)
         .slice(-50)
     : [];
+  const runs = settings.unbilled ? sanitizedRuns.map(stripWorkflowRunCost) : sanitizedRuns;
   const templateBinding =
     r.templateBinding &&
     typeof r.templateBinding === "object" &&
@@ -505,9 +545,19 @@ function sanitize(raw: unknown, fallbackId: string): WorkflowRecord {
     templateBinding,
     createdAt,
     updatedAt: typeof r.updatedAt === "number" ? r.updatedAt : createdAt,
+    settings,
     nodes: safeNodes,
     edges,
     runs,
+  };
+}
+
+function stripWorkflowRunCost(run: WorkflowRun): WorkflowRun {
+  const stats = run.stats ? { ...run.stats, cost: undefined } : undefined;
+  return {
+    ...run,
+    trace: run.trace?.map((trace) => ({ ...trace, cost: undefined })),
+    stats,
   };
 }
 
@@ -569,6 +619,12 @@ export async function getWorkflowUsageStatistics(
   const projectPath = await fs.realpath(workspaceRoot).catch(() => path.resolve(workspaceRoot));
   await workflowUsageWrite.catch(() => undefined);
   const stored = await readStoredWorkflowUsage();
+  const workflows = await listWorkflows(workspaceRoot);
+  const unbilledWorkflowIds = new Set(
+    (await Promise.all(workflows.map((workflow) => getWorkflow(workspaceRoot, workflow.id))))
+      .filter((workflow) => workflow.settings?.unbilled === true)
+      .map((workflow) => workflow.id),
+  );
   const entries = stored.entries.filter(
     (entry) =>
       openedProjectKey(entry.projectPath) === openedProjectKey(projectPath) &&
@@ -589,7 +645,7 @@ export async function getWorkflowUsageStatistics(
     string,
     WorkflowUsageStatistics["daily"][number] & { runIds: Set<string> }
   >();
-  const workflows = new Map<
+  const workflowTotals = new Map<
     string,
     WorkflowUsageStatistics["workflows"][number] & { runIds: Set<string> }
   >();
@@ -607,7 +663,8 @@ export async function getWorkflowUsageStatistics(
     totals.cacheReadTokens += entry.cacheReadTokens;
     totals.cacheWriteTokens += entry.cacheWriteTokens;
     totals.totalTokens += entry.totalTokens;
-    totals.cost += entry.cost;
+    const entryCost = unbilledWorkflowIds.has(entry.workflowId) ? 0 : entry.cost;
+    totals.cost += entryCost;
 
     const date = usageDateKey(entry.runStartedAt, timezoneOffsetMinutes);
     const day = daily.get(date) ?? {
@@ -620,10 +677,10 @@ export async function getWorkflowUsageStatistics(
     day.runIds.add(scopedRunId);
     day.runs = day.runIds.size;
     day.tokens += entry.totalTokens;
-    day.cost += entry.cost;
+    day.cost += entryCost;
     daily.set(date, day);
 
-    const workflow = workflows.get(entry.workflowId) ?? {
+    const workflow = workflowTotals.get(entry.workflowId) ?? {
       workflowId: entry.workflowId,
       title: entry.workflowTitle,
       runs: 0,
@@ -635,8 +692,8 @@ export async function getWorkflowUsageStatistics(
     workflow.runIds.add(scopedRunId);
     workflow.runs = workflow.runIds.size;
     workflow.tokens += entry.totalTokens;
-    workflow.cost += entry.cost;
-    workflows.set(entry.workflowId, workflow);
+    workflow.cost += entryCost;
+    workflowTotals.set(entry.workflowId, workflow);
 
     if (entry.model) {
       const model = models.get(entry.model) ?? {
@@ -649,7 +706,7 @@ export async function getWorkflowUsageStatistics(
       model.runIds.add(scopedRunId);
       model.runs = model.runIds.size;
       model.tokens += entry.totalTokens;
-      model.cost += entry.cost;
+      model.cost += entryCost;
       models.set(entry.model, model);
     }
 
@@ -667,7 +724,7 @@ export async function getWorkflowUsageStatistics(
     recent.status = entry.runStatus;
     recent.completedAt = entry.runCompletedAt;
     recent.tokens += entry.totalTokens;
-    recent.cost += entry.cost;
+    recent.cost += entryCost;
     recentRuns.set(scopedRunId, recent);
   }
   totals.runs = runIds.size;
@@ -689,7 +746,7 @@ export async function getWorkflowUsageStatistics(
     daily: [...daily.values()]
       .map(({ runIds: _runIds, ...day }) => day)
       .sort((a, b) => a.date.localeCompare(b.date)),
-    workflows: [...workflows.values()]
+    workflows: [...workflowTotals.values()]
       .map(({ runIds: _runIds, ...workflow }) => workflow)
       .sort((a, b) => b.cost - a.cost || b.tokens - a.tokens || a.title.localeCompare(b.title)),
     models: [...models.values()]
@@ -746,7 +803,7 @@ export async function recordWorkflowUsageSnapshot(
   const usageFile = config.workflowUsageFile;
   const projectPath = await fs.realpath(workspaceRoot).catch(() => path.resolve(workspaceRoot));
   const candidates = (run.trace ?? []).map((trace) =>
-    storedUsageEntry(projectPath, workflow, run, trace),
+    storedUsageEntry(projectPath, workflow, run, trace, workflow.settings?.unbilled === true),
   );
   if (candidates.length === 0) return;
 
@@ -817,6 +874,7 @@ function storedUsageEntry(
   workflow: WorkflowRecord,
   run: WorkflowRun,
   trace: WorkflowRunTrace,
+  unbilled = false,
 ): StoredWorkflowUsageEntry {
   return {
     key: JSON.stringify([
@@ -840,7 +898,7 @@ function storedUsageEntry(
     cacheReadTokens: finiteUsageNumber(trace.tokens?.cacheRead),
     cacheWriteTokens: finiteUsageNumber(trace.tokens?.cacheWrite),
     totalTokens: traceTotalTokens(trace),
-    cost: finiteUsageNumber(trace.cost),
+    cost: unbilled ? 0 : finiteUsageNumber(trace.cost),
   };
 }
 

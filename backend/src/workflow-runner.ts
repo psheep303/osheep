@@ -110,6 +110,16 @@ interface WorkflowRunState {
   checkpointOnStop: boolean;
 }
 
+class WorkflowRunLimitError extends Error {
+  readonly limitKind: "cost" | "duration";
+
+  constructor(limitKind: "cost" | "duration", message: string) {
+    super(message);
+    this.name = "WorkflowRunLimitError";
+    this.limitKind = limitKind;
+  }
+}
+
 interface PendingDiffApproval {
   resolve: (approved: boolean) => void;
   dispose: () => void;
@@ -758,6 +768,7 @@ async function runWorkflowInBackground(
   checkpointOnStop: () => boolean,
 ): Promise<void> {
   let fatalError: unknown;
+  let durationTimer: NodeJS.Timeout | undefined;
   try {
     const appSettings = await readAppSettings<{ workflow?: { maxParallelNodes?: unknown } }>({});
     const configuredLimit = appSettings.workflow?.maxParallelNodes;
@@ -768,8 +779,21 @@ async function runWorkflowInBackground(
         ? Math.min(32, configuredLimit)
         : 4;
     const record = await getWorkflow(workspace.path, workflowId);
+    const durationLimit = record.settings?.maxRunDurationSeconds ?? 0;
+    if (durationLimit > 0) {
+      const deadline = Date.now() + durationLimit * 1_000;
+      const armDurationLimit = () => {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) {
+          abort.abort(workflowLimitError("duration", durationLimit, retryLanguage));
+          return;
+        }
+        durationTimer = setTimeout(armDurationLimit, Math.min(remaining, 2_147_483_647));
+      };
+      armDurationLimit();
+    }
     await scheduleWorkflowNodes(nodeIds, record.edges, maxParallel, async (nodeId) => {
-      if (abort.signal.aborted) throw new Error("Stopped");
+      if (abort.signal.aborted) throw workflowAbortError(abort.signal);
       const checkpoint = checkpoints.get(nodeId)?.shift();
       if (checkpoint) {
         await restoreWorkflowNodeCheckpoint(workspace.path, workflowId, checkpoint);
@@ -791,28 +815,34 @@ async function runWorkflowInBackground(
           retryLanguage,
         );
       } catch (error) {
-        const message = (error as Error)?.message;
+        const effectiveError = abort.signal.aborted
+          ? workflowAbortError(abort.signal, error)
+          : error;
+        const message = (effectiveError as Error)?.message;
         if (!(abort.signal.aborted && message === "Stopped")) {
-          fatalError ??= error;
+          fatalError ??= effectiveError;
           if (!abort.signal.aborted) abort.abort();
         }
-        throw error;
+        throw effectiveError;
       }
     });
+    if (abort.signal.aborted) throw workflowAbortError(abort.signal);
     if (fatalError !== undefined) throw fatalError;
     await finishRun(workspace.path, workflowId, run.id, "success");
   } catch (e) {
-    const failure = fatalError ?? e;
+    const failure = fatalError ?? (abort.signal.aborted ? workflowAbortError(abort.signal, e) : e);
     const message = (failure as Error).message || "Workflow failed.";
     // A pause aborts the active node. Agent runtimes may surface that abort as
     // an AbortError before the workflow catch block runs, so the explicit
     // pause request must take precedence over the captured runtime error.
-    const { stopped, resumable } = workflowStopDisposition(
+    const disposition = workflowStopDisposition(
       checkpointOnStop(),
       abort.signal.aborted,
       fatalError !== undefined,
       message,
     );
+    const stopped = failure instanceof WorkflowRunLimitError ? false : disposition.stopped;
+    const resumable = failure instanceof WorkflowRunLimitError ? false : disposition.resumable;
     let failedNodeIds: string[] = [];
     const failedRecord = await updateWorkflow(workspace.path, workflowId, (record) => {
       const activeNodes = record.nodes.filter((node) => node.status === "running");
@@ -859,7 +889,36 @@ async function runWorkflowInBackground(
         run: failedRun,
       });
     }
+  } finally {
+    if (durationTimer) clearTimeout(durationTimer);
   }
+}
+
+function workflowAbortError(signal: AbortSignal, fallback?: unknown): Error {
+  if (signal.reason instanceof Error) return signal.reason;
+  return fallback instanceof Error ? fallback : new Error("Stopped");
+}
+
+function workflowLimitError(
+  kind: "cost" | "duration",
+  limit: number,
+  language: WorkflowRetryLanguage,
+): WorkflowRunLimitError {
+  if (kind === "cost") {
+    const formatted = `$${limit.toFixed(limit < 0.0001 ? 8 : 4)}`;
+    return new WorkflowRunLimitError(
+      kind,
+      language === "zh-CN"
+        ? `本次工作流费用已超过 ${formatted} 的限制。`
+        : `Workflow run cost exceeded the ${formatted} limit.`,
+    );
+  }
+  return new WorkflowRunLimitError(
+    kind,
+    language === "zh-CN"
+      ? `本次工作流运行时间已超过 ${limit} 秒的限制。`
+      : `Workflow run duration exceeded the ${limit}s limit.`,
+  );
 }
 
 async function executeWorkflowNode(
@@ -871,7 +930,7 @@ async function executeWorkflowNode(
   abort: AbortController,
   retryLanguage: WorkflowRetryLanguage,
 ): Promise<string | undefined> {
-  if (abort.signal.aborted) throw new Error("Stopped");
+  if (abort.signal.aborted) throw workflowAbortError(abort.signal);
   let record = await getWorkflow(workspace.path, workflowId);
   const node = record.nodes.find((item) => item.id === nodeId);
   if (!node) return;
@@ -946,6 +1005,7 @@ async function executeWorkflowNode(
               allowMcpToolCall: nodeIds.length === 1,
               signal: abort.signal,
             });
+    if (abort.signal.aborted) throw workflowAbortError(abort.signal);
   } catch (error) {
     const message = (error as Error).message || `${currentNode.title} failed.`;
     if (abort.signal.aborted || message === "Stopped" || !nodeFailover(currentNode, record)) {
@@ -980,14 +1040,6 @@ async function executeWorkflowNode(
   }
   const outputText = stringifyBlockOutput(result.output);
   const completedAt = Date.now();
-  await patchWorkflowNode(workspace.path, workflowId, nodeId, {
-    ...(result.nodePatch ?? {}),
-    status: result.error ? "error" : "success",
-    rawOutput: outputText,
-    summary: outputText,
-    error: result.error ?? "",
-    completedAt,
-  });
   const detailsConfig = result.nodePatch?.config ?? currentNode.config;
   const terminal = terminalFromConfig(detailsConfig);
   const runDetails =
@@ -1021,8 +1073,10 @@ async function executeWorkflowNode(
       : usage.cost;
   const billingMultiplier =
     result.usage?.billingMultiplier ?? (await activeProviderMultiplier(currentNode.providerKind));
-  const billedCost = result.usage?.cost ?? multiplyCost(modelCost, billingMultiplier);
-  await patchWorkflowRun(workspace.path, workflowId, run.id, (current) =>
+  const billedCost = record.settings?.unbilled
+    ? undefined
+    : (result.usage?.cost ?? multiplyCost(modelCost, billingMultiplier));
+  const costRecord = await patchWorkflowRun(workspace.path, workflowId, run.id, (current) =>
     completeRunTrace(current, nodeId, {
       status: result.error ? "error" : "success",
       completedAt,
@@ -1038,6 +1092,41 @@ async function executeWorkflowNode(
       billingMultiplier,
     }),
   );
+  const costLimit = record.settings?.unbilled ? 0 : (record.settings?.maxRunCost ?? 0);
+  const currentRun = costRecord.runs.find((item) => item.id === run.id);
+  if (currentRun && workflowRunExceedsCostLimit(currentRun, costLimit)) {
+    const limitError = workflowLimitError("cost", costLimit, retryLanguage);
+    abort.abort(limitError);
+    await patchWorkflowRun(workspace.path, workflowId, run.id, (current) => ({
+      ...current,
+      trace: current.trace?.map((item) =>
+        item.nodeId === nodeId && item.startedAt === startedAt
+          ? { ...item, status: "error", error: limitError.message }
+          : item,
+      ),
+    }));
+    await patchWorkflowNode(workspace.path, workflowId, nodeId, {
+      ...(result.nodePatch ?? {}),
+      status: "error",
+      rawOutput: outputText,
+      summary: outputText,
+      error: limitError.message,
+      completedAt: Date.now(),
+      config: finalizeRunDetailsOnError(
+        { ...currentNode, config: detailsConfig },
+        limitError.message,
+      ),
+    });
+    throw limitError;
+  }
+  await patchWorkflowNode(workspace.path, workflowId, nodeId, {
+    ...(result.nodePatch ?? {}),
+    status: result.error ? "error" : "success",
+    rawOutput: outputText,
+    summary: outputText,
+    error: result.error ?? "",
+    completedAt,
+  });
   if (result.error && !nodeFailover(currentNode, record)) throw new Error(result.error);
   return sourceHandleForOutput(kind, result.output);
 }
@@ -1064,6 +1153,10 @@ async function executeAgentNode(
     model: executionNode.model || "default",
     inputIncludesCache: executionNode.providerKind !== "claude-cli",
     provider: providerRuntime.current,
+    recordCost: record.settings?.unbilled !== true,
+    maxRunCost: record.settings?.unbilled ? 0 : (record.settings?.maxRunCost ?? 0),
+    abort,
+    retryLanguage,
     signal: abort.signal,
   });
   const autoSuccess = agentAutoSuccess(executionNode);
@@ -1432,6 +1525,10 @@ interface LiveAgentUsageMonitorOptions {
   model: string;
   inputIncludesCache: boolean;
   provider: AgentProviderChoice;
+  recordCost: boolean;
+  maxRunCost: number;
+  abort: AbortController;
+  retryLanguage: WorkflowRetryLanguage;
   signal?: AbortSignal;
 }
 
@@ -1463,7 +1560,7 @@ async function createLiveAgentUsageMonitor(options: LiveAgentUsageMonitorOptions
     return {
       model: latestUsage.model || (options.model === "default" ? undefined : options.model),
       tokens: latestUsage.tokens,
-      cost: segmentCost === undefined ? undefined : settledCost + segmentCost,
+      cost: options.recordCost && segmentCost !== undefined ? settledCost + segmentCost : undefined,
       providerId: currentProvider.id || undefined,
       billingMultiplier: currentProvider.multiplier,
     };
@@ -1485,16 +1582,29 @@ async function createLiveAgentUsageMonitor(options: LiveAgentUsageMonitorOptions
     if (baseCost !== undefined) latestBaseCost = baseCost;
     const usageSnapshot = snapshot();
     if (!usageSnapshot?.tokens && usageSnapshot?.cost === undefined) return;
-    await patchWorkflowRun(options.workspaceRoot, options.workflowId, options.runId, (run) => {
-      const next = completeRunTrace(run, options.nodeId, {
-        model: usageSnapshot.model,
-        tokens: usageSnapshot.tokens,
-        cost: usageSnapshot.cost,
-        providerId: usageSnapshot.providerId,
-        billingMultiplier: usageSnapshot.billingMultiplier,
-      });
-      return { ...next, stats: runStats(next, Date.now()) };
-    });
+    const record = await patchWorkflowRun(
+      options.workspaceRoot,
+      options.workflowId,
+      options.runId,
+      (run) => {
+        const next = completeRunTrace(run, options.nodeId, {
+          model: usageSnapshot.model,
+          tokens: usageSnapshot.tokens,
+          cost: usageSnapshot.cost,
+          providerId: usageSnapshot.providerId,
+          billingMultiplier: usageSnapshot.billingMultiplier,
+        });
+        return { ...next, stats: runStats(next, Date.now()) };
+      },
+    );
+    const run = record.runs.find((item) => item.id === options.runId);
+    if (
+      run &&
+      workflowRunExceedsCostLimit(run, options.maxRunCost) &&
+      !options.abort.signal.aborted
+    ) {
+      options.abort.abort(workflowLimitError("cost", options.maxRunCost, options.retryLanguage));
+    }
   };
 
   const enqueue = (task: () => Promise<void>) => {
@@ -2901,6 +3011,14 @@ function runStats(run: WorkflowRun, completedAt: number): WorkflowRun["stats"] {
     nodeCount: trace.length,
     retryCount: retryCount || undefined,
   };
+}
+
+function workflowRunCost(run: WorkflowRun): number {
+  return (run.trace ?? []).reduce((sum, item) => sum + (item.cost ?? 0), 0);
+}
+
+export function workflowRunExceedsCostLimit(run: WorkflowRun, limit: number): boolean {
+  return limit > 0 && workflowRunCost(run) > limit;
 }
 
 function isTriggerKind(kind: WorkflowNodeKind): boolean {
