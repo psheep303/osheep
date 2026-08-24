@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { agentBlockOutput } from "./workflow-agent-output.ts";
+
 async function loadBehavior() {
   return import("./workflow-behavior.ts").catch(() => null);
 }
@@ -31,6 +33,37 @@ test("unrun Claude output keeps known values and typed empty values", async () =
   });
 });
 
+test("agent JSON parsing nests the complete final message under text", async () => {
+  const behavior = await loadBehavior();
+  assert.ok(behavior, "workflow behavior module should exist");
+  const finalMessage = {
+    summary: "README exists",
+    exists: true,
+    details: { path: "README.md" },
+  };
+
+  assert.deepEqual(
+    agentBlockOutput(
+      node("agent", "codex-cli", { parseOutputJson: true }) as never,
+      JSON.stringify(finalMessage),
+    ),
+    { type: "codex", status: "success", text: finalMessage },
+  );
+});
+
+test("agent text output keeps only the standard envelope fields", async () => {
+  const behavior = await loadBehavior();
+  assert.ok(behavior, "workflow behavior module should exist");
+
+  assert.deepEqual(
+    agentBlockOutput(
+      node("agent", "claude-cli") as never,
+      JSON.stringify({ text: "done", summary: "duplicate", details: { extra: true } }),
+    ),
+    { type: "claude", status: "success", text: "done" },
+  );
+});
+
 test("workflow agent durations use hours minutes and seconds", async () => {
   const behavior = await loadBehavior();
   assert.ok(behavior, "workflow behavior module should exist");
@@ -54,6 +87,7 @@ test("every workflow kind has a standard empty output", async () => {
   const expectedTypes = new Map([
     ["agent", "codex"],
     ["input", "input"],
+    ["variable", "variable"],
     ["trigger", "trigger"],
     ["manual-trigger", "manual-trigger"],
     ["cron", "cron"],
@@ -72,6 +106,10 @@ test("every workflow kind has a standard empty output", async () => {
     ["file-write", "file-write"],
     ["markdown", "markdown"],
     ["mcp", "mcp"],
+    ["codex-plugin", "codex-plugin"],
+    ["claude-plugin", "claude-plugin"],
+    ["codex-skill", "codex-skill"],
+    ["claude-skill", "claude-skill"],
   ]);
 
   for (const [kind, type] of expectedTypes) {
@@ -101,6 +139,24 @@ test("empty output values preserve their JSON types", async () => {
   assert.equal(http.ok, null);
   assert.deepEqual(merge.data, {});
   assert.deepEqual(merge.items, []);
+});
+
+test("environment variable output exposes every configured variable", async () => {
+  const behavior = await loadBehavior();
+  assert.ok(behavior, "workflow behavior module should exist");
+  const output = behavior.emptyBlockOutput(
+    node("variable", "codex-cli", {
+      variables: [
+        { name: "first", value: "one", type: "text" },
+        { name: "second", value: "", type: "json" },
+      ],
+    }) as never,
+  );
+
+  assert.equal(output.name, "first");
+  assert.deepEqual(output.variables, { first: "", second: "" });
+  assert.deepEqual(output.variableTypes, { first: "text", second: "json" });
+  assert.deepEqual(output.data, { first: "", second: "" });
 });
 
 test("inspector output prefers real node state before the empty schema", async () => {
@@ -205,4 +261,102 @@ test("completed markdown auto preview works for runtime events and opens once", 
     behavior.findMarkdownAutoPreviewNode([running] as never, [completed] as never, seen, 1_000),
     undefined,
   );
+});
+
+test("workflow session ids use the UUID format shared by Claude and Codex", async () => {
+  const behavior = await loadBehavior();
+  assert.ok(behavior, "workflow behavior module should exist");
+  assert.equal(behavior.isWorkflowSessionId("550e8400-e29b-41d4-a716-446655440000"), true);
+  assert.equal(behavior.isWorkflowSessionId("not-a-session"), false);
+  assert.equal(
+    behavior.workflowSessionId(
+      node("agent", "codex-cli", { sessionId: " 550e8400-e29b-41d4-a716-446655440000 " }) as never,
+    ),
+    "550e8400-e29b-41d4-a716-446655440000",
+  );
+});
+
+test("external workflow renames replace stale titles without changing editor content", async () => {
+  const behavior = await loadBehavior();
+  assert.ok(behavior, "workflow behavior module should exist");
+  const record = {
+    id: "wf_title01",
+    title: "Old title",
+    readme: "edited locally",
+    createdAt: 1,
+    updatedAt: 2,
+    nodes: [node("command")],
+    edges: [],
+    runs: [],
+  };
+
+  const renamed = behavior.withWorkflowTitle(record as never, "New title");
+  assert.equal(renamed.title, "New title");
+  assert.equal(renamed.readme, "edited locally");
+  assert.equal(renamed.nodes, record.nodes);
+});
+
+test("workflow back edges are the edges that close a directed cycle", async () => {
+  const behavior = await loadBehavior();
+  assert.ok(behavior, "workflow behavior module should exist");
+  const edges = [
+    { id: "ab", from: "a", to: "b", passSummary: true },
+    { id: "bc", from: "b", to: "c", passSummary: true },
+    { id: "ca", from: "c", to: "a", passSummary: true },
+    { id: "cd", from: "c", to: "d", passSummary: true },
+    { id: "self", from: "d", to: "d", passSummary: true },
+  ];
+  assert.deepEqual([...behavior.findWorkflowBackEdgeIds(edges as never)], ["ca", "self"]);
+});
+
+test("workflow back edge detection follows graph roots instead of persisted edge order", async () => {
+  const behavior = await loadBehavior();
+  assert.ok(behavior, "workflow behavior module should exist");
+  const edges = [
+    { id: "condition-loop", from: "condition", to: "body", passSummary: true },
+    { id: "condition-exit", from: "condition", to: "exit", passSummary: true },
+    { id: "body-condition", from: "body", to: "condition", passSummary: true },
+    { id: "trigger-body", from: "trigger", to: "body", passSummary: true },
+  ];
+
+  assert.deepEqual([...behavior.findWorkflowBackEdgeIds(edges as never)], ["condition-loop"]);
+});
+
+test("workflow layout ranks cyclic graphs after removing their back edges", async () => {
+  const behavior = await loadBehavior();
+  assert.ok(behavior, "workflow behavior module should exist");
+  const nodes = ["a", "b", "c", "d", "detached"].map((id) => ({
+    ...node("command"),
+    id,
+  }));
+  const edges = [
+    { id: "ab", from: "a", to: "b", passSummary: true },
+    { id: "bc", from: "b", to: "c", passSummary: true },
+    { id: "ca", from: "c", to: "a", passSummary: true },
+    { id: "cd", from: "c", to: "d", passSummary: true },
+    { id: "self", from: "d", to: "d", passSummary: true },
+  ];
+
+  assert.deepEqual(
+    Object.fromEntries(behavior.workflowLayoutDepths(nodes as never, edges as never)),
+    { a: 0, detached: 0, b: 1, c: 2, d: 3 },
+  );
+});
+
+test("workflow layout reorders branches to remove avoidable crossings", async () => {
+  const behavior = await loadBehavior();
+  assert.ok(behavior, "workflow behavior module should exist");
+  const nodes = ["left-top", "left-bottom", "right-top", "right-bottom"].map((id) => ({
+    ...node("command"),
+    id,
+  }));
+  const edges = [
+    { id: "down", from: "left-top", to: "right-bottom", passSummary: true },
+    { id: "up", from: "left-bottom", to: "right-top", passSummary: true },
+  ];
+
+  assert.deepEqual(behavior.workflowLayoutColumns(nodes as never, edges as never), [
+    ["left-top", "left-bottom"],
+    ["right-bottom", "right-top"],
+  ]);
 });

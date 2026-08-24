@@ -29,7 +29,6 @@ workspaces/
 !**/.env.example
 *.local
 /set-version.ps1
-backend/.osheep/
 backend/workspaces/
 .agents/
 .claude/
@@ -78,7 +77,6 @@ Thumbs.db
 Desktop.ini
 
 # Local reports and scratch material
-docs/bugs/
 other/
-docs/reports/
-docs/superpowers/
+.osheep/
+/backend/template-library/user/

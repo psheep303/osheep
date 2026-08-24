@@ -51,7 +51,8 @@ export function DiffPane({ path, fontSize, leftContent, rightContent }: DiffPane
         automaticLayout: true,
         minimap: { enabled: false },
         scrollBeyondLastLine: false,
-        wordWrap: "on",
+        wordWrap: "off",
+        scrollBeyondLastColumn: 5,
         hideUnchangedRegions: {
           enabled: true,
           contextLineCount: 3,

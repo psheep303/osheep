@@ -5,13 +5,14 @@ import {
   deleteWorkflow as apiDeleteWorkflow,
   getWorkflow as apiGetWorkflow,
   listWorkflows as apiListWorkflows,
-  saveWorkflow as apiSaveWorkflow,
+  renameWorkflow as apiRenameWorkflow,
   saveWorkflowAsSystemTemplate as apiSaveWorkflowAsSystemTemplate,
   saveWorkflowAsTemplate as apiSaveWorkflowAsTemplate,
   type WorkflowRecord,
   type WorkflowSummary,
 } from "./api";
 import { ContextMenu, type CtxMenuSection } from "./ContextMenu";
+import { exportTextFile } from "./desktop-file-export";
 import { useOsheepOverlay } from "./OsheepOverlay";
 
 interface AiPanelProps {
@@ -20,6 +21,7 @@ interface AiPanelProps {
   activeWorkflowId: string | null;
   refreshSignal: number;
   onWorkflowDeleted: (workflowId: string) => void;
+  onWorkflowRenamed: (workflowId: string, title: string) => void;
   developerMode: boolean;
   onTemplatesChanged: () => void;
 }
@@ -30,6 +32,7 @@ export function AiPanel({
   activeWorkflowId,
   refreshSignal,
   onWorkflowDeleted,
+  onWorkflowRenamed,
   developerMode,
   onTemplatesChanged,
 }: AiPanelProps) {
@@ -152,15 +155,10 @@ export function AiPanel({
     if (!workspaceId) return;
     try {
       const workflow = await apiGetWorkflow(workspaceId, id);
-      const blob = new Blob([JSON.stringify(workflow, null, 2)], {
-        type: "application/json",
+      await exportTextFile({
+        suggestedName: `${safeFileName(workflow.title || "workflow")}.json`,
+        contents: JSON.stringify(workflow, null, 2),
       });
-      const href = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = href;
-      anchor.download = `${safeFileName(workflow.title || "workflow")}.json`;
-      anchor.click();
-      URL.revokeObjectURL(href);
     } catch (e) {
       setError((e as Error).message);
     }
@@ -218,8 +216,8 @@ export function AiPanel({
     if (!title || title === current?.title) return;
     renameCommitRef.current = id;
     try {
-      const workflow = await apiGetWorkflow(workspaceId, id);
-      await apiSaveWorkflow(workspaceId, { ...workflow, title });
+      const workflow = await apiRenameWorkflow(workspaceId, id, title);
+      onWorkflowRenamed(id, workflow.title);
       await reload();
     } catch (e) {
       setError((e as Error).message);

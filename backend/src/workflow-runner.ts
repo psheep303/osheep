@@ -1,6 +1,17 @@
-import { randomUUID } from "node:crypto";
-import { readAgentSessionUsage } from "./agent-sessions.js";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  type AgentSessionUsage,
+  findAgentSessionFilePath,
+  readAgentSessionUsage,
+} from "./agent-sessions.js";
 import { execRun } from "./ai-exec.js";
+import {
+  type AiProvider,
+  type AiSettingsApp,
+  providerBillingMultiplier,
+  readAiSettings,
+  switchAiProvider,
+} from "./ai-settings.js";
 import {
   type AgentEffort,
   type AgentMode,
@@ -21,7 +32,6 @@ import {
   createPullRequest,
   deleteBranch,
   getRepoInfo,
-  getWorkflowDiff,
   commit as gitCommit,
   isRepo,
   listBranches,
@@ -31,9 +41,11 @@ import {
 } from "./git-ops.js";
 import { calculateModelCost, readStoredModelPrices } from "./model-pricing.js";
 import { callRemoteMcp, discoverRemoteMcp, type RemoteMcpTool } from "./remote-mcp.js";
+import { applySkillSelection } from "./skills.js";
 import { publishWorkflowRuntime } from "./workflow-events.js";
 import {
   getWorkflow,
+  recordWorkflowUsageSnapshot,
   updateWorkflow,
   type WorkflowEdge,
   type WorkflowNode,
@@ -47,6 +59,9 @@ import { resolveWorkspace, type WorkspaceInfo } from "./workspace.js";
 type WorkflowBlockOutput = Record<string, unknown>;
 type RunLogEntry = { stream: "stdout" | "stderr"; content: string };
 type WorkflowRetryLanguage = "zh-CN" | "en";
+type WorkflowVariableValueType = "auto" | "text" | "json" | "number" | "boolean";
+const WORKFLOW_SESSION_ID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 interface LocalNodeResult {
   output: WorkflowBlockOutput;
@@ -54,6 +69,20 @@ interface LocalNodeResult {
   error?: string;
   nodePatch?: Partial<WorkflowNode>;
   conversationSessionId?: string;
+  usage?: {
+    model?: string;
+    tokens?: WorkflowRunTrace["tokens"];
+    cost?: number;
+    providerId?: string;
+    billingMultiplier?: number;
+  };
+}
+
+export type AgentRetryStrategy = "none" | "lowest-multiplier" | "round-robin";
+
+interface AgentProviderChoice {
+  id: string;
+  multiplier: number;
 }
 
 interface McpNodeConfig {
@@ -78,6 +107,17 @@ interface WorkflowRunState {
   runId: string;
   abort: AbortController;
   done: Promise<void>;
+  checkpointOnStop: boolean;
+}
+
+class WorkflowRunLimitError extends Error {
+  readonly limitKind: "cost" | "duration";
+
+  constructor(limitKind: "cost" | "duration", message: string) {
+    super(message);
+    this.name = "WorkflowRunLimitError";
+    this.limitKind = limitKind;
+  }
 }
 
 interface PendingDiffApproval {
@@ -90,8 +130,14 @@ interface PendingWorkflowInput {
   dispose: () => void;
 }
 
+interface PendingAgentRetry {
+  resolve: () => void;
+  dispose: () => void;
+}
+
 const pendingDiffApprovals = new Map<string, PendingDiffApproval>();
 const pendingWorkflowInputs = new Map<string, PendingWorkflowInput>();
+const pendingAgentRetries = new Map<string, PendingAgentRetry>();
 
 export interface WorkflowRunDetailSnapshot {
   kind: "agent" | "command";
@@ -111,6 +157,9 @@ export interface WorkflowRunDetailSnapshot {
   signal?: string | null;
   durationMs?: number;
   retryReasons?: string[];
+  retryAt?: number;
+  retryAttempt?: number;
+  retryReason?: string;
 }
 
 interface LiveAgentRunDetailsOptions {
@@ -129,11 +178,17 @@ export interface LiveAgentRunDetails {
     completedAt?: number,
   ) => WorkflowRunDetailSnapshot;
   drain: () => Promise<void>;
+  setRetryWait: (wait?: {
+    retryAt: number;
+    retryAttempt: number;
+    retryReason: string;
+  }) => Promise<void>;
 }
 
 export interface AgentTerminalFailure {
   failed: boolean;
   retryable: boolean;
+  apiFailure: boolean;
   hasModelOutput: boolean;
   message: string;
   modelOutput: string;
@@ -149,6 +204,7 @@ interface AgentTerminalProcessResult {
 }
 
 const activeRuns = new Map<string, WorkflowRunState>();
+const startingRuns = new Set<string>();
 const RUN_LOG_CHAR_LIMIT = 256 * 1024;
 const RUN_LOG_TRUNCATION_TEXT =
   "[osheep] run detail output exceeded 256 KiB; keeping the latest output only.";
@@ -158,6 +214,7 @@ const AGENT_RETAINED_OUTPUT_TRUNCATION_TEXT =
   "[osheep] retained retry output exceeded 512 KiB; keeping the latest output only.";
 const CONFIGURED_LOCAL_KINDS = new Set<WorkflowNodeKind>([
   "input",
+  "variable",
   "http-request",
   "set",
   "if",
@@ -179,6 +236,8 @@ const CONFIGURED_LOCAL_KINDS = new Set<WorkflowNodeKind>([
   "webhook-trigger",
   "codex-plugin",
   "claude-plugin",
+  "codex-skill",
+  "claude-skill",
 ]);
 
 const DEFAULT_MCP_HEADERS_JSON = JSON.stringify(
@@ -196,14 +255,15 @@ export function createLiveAgentRunDetails(
   let terminalSessionId = "";
   let conversationSessionId = "";
   let terminalStatus = "";
+  let retryWait: { retryAt: number; retryAttempt: number; retryReason: string } | undefined;
   let queue = Promise.resolve();
 
   const buildSnapshot = (
     status: WorkflowRunDetailSnapshot["status"],
     completedAt: number | undefined,
     snapshotLogs: RunLogEntry[],
-  ) =>
-    agentRunSnapshot(
+  ) => {
+    const built = agentRunSnapshot(
       options.node,
       status,
       options.startedAt,
@@ -214,6 +274,9 @@ export function createLiveAgentRunDetails(
       terminalStatus || undefined,
       options.autoSuccess,
     );
+    if (retryWait) Object.assign(built, retryWait);
+    return built;
+  };
   const snapshot = (status: WorkflowRunDetailSnapshot["status"], completedAt?: number) =>
     buildSnapshot(status, completedAt, logs);
 
@@ -249,6 +312,10 @@ export function createLiveAgentRunDetails(
     update,
     snapshot,
     drain: () => queue,
+    setRetryWait: (wait) => {
+      retryWait = wait;
+      return update("running");
+    },
   };
 }
 
@@ -261,12 +328,14 @@ export function classifyAgentTerminalResultFailure(
     return agentTerminalLifecycleFailure(
       message,
       isRetryableAgentTerminalMessage(message),
+      isAgentApiFailureMessage(message),
       result.content,
     );
   }
   if (result.outcome === "cancelled") {
     return agentTerminalLifecycleFailure(
       result.errorMessage || "Agent session was cancelled.",
+      false,
       false,
       result.content,
     );
@@ -277,11 +346,13 @@ export function classifyAgentTerminalResultFailure(
 function agentTerminalLifecycleFailure(
   message: string,
   retryable: boolean,
+  apiFailure: boolean,
   modelOutput: string,
 ): AgentTerminalFailure {
   return {
     failed: true,
     retryable,
+    apiFailure,
     hasModelOutput: modelOutput.length > 0,
     message,
     modelOutput,
@@ -292,6 +363,7 @@ function noAgentTerminalFailure(): AgentTerminalFailure {
   return {
     failed: false,
     retryable: false,
+    apiFailure: false,
     hasModelOutput: false,
     message: "",
     modelOutput: "",
@@ -299,14 +371,44 @@ function noAgentTerminalFailure(): AgentTerminalFailure {
 }
 
 function isRetryableAgentTerminalMessage(message: string): boolean {
-  const status = message.match(/(?:API Error\s*:\s*|unexpected status\s+)(\d{3})\b/i);
-  if (status) {
-    const code = Number(status[1]);
+  const status = agentApiStatusCode(message);
+  if (status !== undefined) {
+    const code = status;
     return code === 408 || code === 409 || code === 425 || code === 429 || code >= 500;
   }
   return /\b(?:service unavailable|auth_unavailable|rate limit|temporarily unavailable|overloaded|econnreset|etimedout|connection reset|network error|gateway timeout|internal server error)\b/i.test(
     message,
   );
+}
+
+export function isAgentApiFailureMessage(message: string): boolean {
+  if (
+    /\bAPI(?: request)? (?:Error|failed|failure)\b|\b(?:unable|failed) to (?:connect to|reach) (?:the )?API\b/i.test(
+      message,
+    )
+  ) {
+    return true;
+  }
+  if (agentApiStatusCode(message) !== undefined) return true;
+  if (
+    /\b(?:INVALID_API_KEY|authentication_error|permission_error|rate_limit_error|api_error|overloaded_error)\b/i.test(
+      message,
+    )
+  ) {
+    return true;
+  }
+  return /\b(?:fetch failed|network error|socket hang up|service unavailable|temporarily unavailable|gateway timeout|connection (?:error|failed|reset|refused|timed out)|(?:failed|unable|could not) to connect|error sending request|request timed out|proxy error|certificate (?:error|verify failed)|name resolution|name or service not known|econnaborted|econnreset|econnrefused|ehostunreach|enetunreach|etimedout|enotfound|eai_again|dns|tls)\b|网络错误|连接(?:失败|超时)/i.test(
+    message,
+  );
+}
+
+function agentApiStatusCode(message: string): number | undefined {
+  const match = message.match(
+    /\b(?:API Error\s*:|unexpected status|HTTP(?: status)?|response status|last status|status code|status)\s*(?:code\s*)?[:=]?\s*([1-5]\d{2})\b|\brequest failed with status(?: code)?\s*[:=]?\s*([1-5]\d{2})\b/i,
+  );
+  if (!match) return undefined;
+  const code = Number(match[1] ?? match[2]);
+  return Number.isInteger(code) ? code : undefined;
 }
 
 export function agentRetryPromptForLanguage(language: WorkflowRetryLanguage): string {
@@ -327,83 +429,140 @@ export async function startWorkflowRun(
   workflowId: string,
   requestedNodeIds?: string[],
   retryLanguage: WorkflowRetryLanguage = "en",
+  resume = false,
 ): Promise<{ runId: string; workflow: WorkflowRecord }> {
   const key = runKey(workspaceId, workflowId);
-  if (activeRuns.has(key)) throw new Error("Workflow is already running.");
-  const workspace = await resolveWorkspace(workspaceId);
-  let record = await getWorkflow(workspace.path, workflowId);
-  const plan = requestedNodeIds?.length
-    ? { nodeIds: requestedNodeIds }
-    : planWorkflowRunNodeIds(record);
-  if (plan.error) throw new Error(plan.error);
-  const ordered = plan.nodeIds;
-  if (ordered.length === 0) throw new Error("Workflow has no runnable blocks.");
+  if (activeRuns.has(key) || startingRuns.has(key)) {
+    throw new Error("Workflow is already running.");
+  }
+  startingRuns.add(key);
+  try {
+    const workspace = await resolveWorkspace(workspaceId);
+    let record = await getWorkflow(workspace.path, workflowId);
+    if (record.runs.some((run) => run.status === "running")) {
+      record = await updateWorkflow(workspace.path, workflowId, (current) =>
+        interruptWorkflowRunRecord(current),
+      );
+    }
+    const plan = requestedNodeIds?.length
+      ? { nodeIds: requestedNodeIds }
+      : planWorkflowRunNodeIds(record);
+    if (plan.error) throw new Error(plan.error);
+    const ordered = plan.nodeIds;
+    if (ordered.length === 0) throw new Error("Workflow has no runnable blocks.");
 
-  const run: WorkflowRun = {
-    id: makeId("run"),
-    status: "running",
-    startedAt: Date.now(),
-    nodeIds: ordered,
-  };
-  const resetIds = new Set(
-    requestedNodeIds?.length ? ordered : record.nodes.map((node) => node.id),
-  );
-  record = await updateWorkflow(workspace.path, workflowId, (current) => ({
-    ...current,
-    nodes: current.nodes.map((node) =>
-      resetIds.has(node.id)
-        ? {
-            ...node,
-            status: "idle",
-            summary: "",
-            rawOutput: "",
-            error: "",
-            config: clearRunDetails(node.config),
-            startedAt: undefined,
-            completedAt: undefined,
-          }
-        : node,
-    ),
-    runs: [...current.runs.slice(-49), run],
-  }));
-  for (const node of record.nodes) {
-    if (resetIds.has(node.id)) {
+    const latestRun = record.runs.at(-1);
+    const resumeRun =
+      resume &&
+      !requestedNodeIds?.length &&
+      latestRun &&
+      canResumeWorkflowRun(record, latestRun, ordered)
+        ? latestRun
+        : undefined;
+    if (resume && !resumeRun) {
+      throw new Error("Workflow checkpoint is no longer available.");
+    }
+    const run: WorkflowRun = resumeRun
+      ? {
+          ...resumeRun,
+          status: "running",
+          completedAt: undefined,
+          error: undefined,
+          stats: undefined,
+          resumable: undefined,
+          resumeFingerprint: undefined,
+        }
+      : {
+          id: makeId("run"),
+          status: "running",
+          startedAt: Date.now(),
+          nodeIds: ordered,
+        };
+    const checkpoints = resumeRun ? workflowRunCheckpoints(resumeRun) : new Map();
+    const resetIds = new Set(
+      requestedNodeIds?.length ? ordered : record.nodes.map((node) => node.id),
+    );
+    record = await updateWorkflow(workspace.path, workflowId, (current) => ({
+      ...current,
+      nodes: current.nodes.map((node) =>
+        resetIds.has(node.id)
+          ? {
+              ...node,
+              status: "idle",
+              summary: "",
+              rawOutput: "",
+              error: "",
+              config: clearRunDetails(node.config),
+              startedAt: undefined,
+              completedAt: undefined,
+            }
+          : node,
+      ),
+      runs: resumeRun
+        ? current.runs.map((item) => (item.id === run.id ? run : item))
+        : [...current.runs.slice(-49), run],
+    }));
+    for (const node of record.nodes) {
+      if (resetIds.has(node.id)) {
+        publishWorkflowRuntime(workspace.path, workflowId, {
+          type: "node",
+          updatedAt: record.updatedAt,
+          node,
+        });
+      }
+    }
+    const startedRun = record.runs.find((item) => item.id === run.id);
+    if (startedRun) {
       publishWorkflowRuntime(workspace.path, workflowId, {
-        type: "node",
+        type: "run",
         updatedAt: record.updatedAt,
-        node,
+        run: startedRun,
       });
     }
-  }
-  const startedRun = record.runs.find((item) => item.id === run.id);
-  if (startedRun) {
-    publishWorkflowRuntime(workspace.path, workflowId, {
-      type: "run",
-      updatedAt: record.updatedAt,
-      run: startedRun,
-    });
-  }
 
-  const abort = new AbortController();
-  const done = runWorkflowInBackground(
-    workspace,
-    workflowId,
-    run,
-    ordered,
-    abort,
-    retryLanguage,
-  ).catch(() => undefined);
-  activeRuns.set(key, { workspaceId, workflowId, runId: run.id, abort, done });
-  void done.finally(() => {
-    const state = activeRuns.get(key);
-    if (state?.runId === run.id) activeRuns.delete(key);
-  });
-  return { runId: run.id, workflow: record };
+    const abort = new AbortController();
+    const state: WorkflowRunState = {
+      workspaceId,
+      workflowId,
+      runId: run.id,
+      abort,
+      done: Promise.resolve(),
+      checkpointOnStop: false,
+    };
+    const done = runWorkflowInBackground(
+      workspace,
+      workflowId,
+      run,
+      ordered,
+      abort,
+      retryLanguage,
+      checkpoints,
+      () => state.checkpointOnStop,
+    ).catch(() => undefined);
+    state.done = done;
+    activeRuns.set(key, state);
+    void done.finally(() => {
+      const state = activeRuns.get(key);
+      if (state?.runId === run.id) activeRuns.delete(key);
+    });
+    return { runId: run.id, workflow: record };
+  } finally {
+    startingRuns.delete(key);
+  }
 }
 
 export function stopWorkflowRun(workspaceId: string, workflowId: string): boolean {
   const state = activeRuns.get(runKey(workspaceId, workflowId));
   if (!state) return false;
+  state.checkpointOnStop = false;
+  state.abort.abort();
+  return true;
+}
+
+export function pauseWorkflowRun(workspaceId: string, workflowId: string): boolean {
+  const state = activeRuns.get(runKey(workspaceId, workflowId));
+  if (!state) return false;
+  state.checkpointOnStop = true;
   state.abort.abort();
   return true;
 }
@@ -422,7 +581,8 @@ export async function stopWorkflowRunAndWait(
 }
 
 export function isWorkflowRunActive(workspaceId: string, workflowId: string): boolean {
-  return activeRuns.has(runKey(workspaceId, workflowId));
+  const key = runKey(workspaceId, workflowId);
+  return activeRuns.has(key) || startingRuns.has(key);
 }
 
 export async function scheduleWorkflowNodes(
@@ -432,23 +592,52 @@ export async function scheduleWorkflowNodes(
   execute: (nodeId: string) => Promise<unknown>,
 ): Promise<void> {
   const scheduledNodeIds = [...new Set(nodeIds)];
+  const selected = new Set(scheduledNodeIds);
+  const selectedEdges = edges.filter((edge) => selected.has(edge.from) && selected.has(edge.to));
+  const backEdgeIds = findWorkflowBackEdgeIds(selectedEdges);
+  const forwardEdges = selectedEdges.filter((edge) => !backEdgeIds.has(edge.id));
+  let passNodeIds = scheduledNodeIds;
+
+  while (passNodeIds.length > 0) {
+    const loopTargets = await scheduleWorkflowNodePass(
+      passNodeIds,
+      forwardEdges,
+      selectedEdges.filter((edge) => backEdgeIds.has(edge.id)),
+      maxParallel,
+      execute,
+    );
+    if (loopTargets.size === 0) return;
+    passNodeIds = reachableWorkflowNodeIds(loopTargets, forwardEdges, scheduledNodeIds);
+  }
+}
+
+async function scheduleWorkflowNodePass(
+  nodeIds: string[],
+  forwardEdges: WorkflowEdge[],
+  backEdges: WorkflowEdge[],
+  maxParallel: number,
+  execute: (nodeId: string) => Promise<unknown>,
+): Promise<Set<string>> {
+  const scheduledNodeIds = [...new Set(nodeIds)];
   const order = new Map(scheduledNodeIds.map((id, index) => [id, index]));
   const selected = new Set(scheduledNodeIds);
   const dependencies = new Map<string, Set<string>>();
   const outgoing = new Map<string, WorkflowEdge[]>();
   const incomingCount = new Map<string, number>();
-  const activeIncoming = new Map<string, number>();
+  const activeIncoming = new Map<string, Set<string>>();
   for (const id of scheduledNodeIds) {
     dependencies.set(id, new Set());
     outgoing.set(id, []);
     incomingCount.set(id, 0);
-    activeIncoming.set(id, 0);
+    activeIncoming.set(id, new Set());
   }
-  for (const edge of edges) {
+  for (const edge of forwardEdges) {
     if (!selected.has(edge.from) || !selected.has(edge.to)) continue;
     dependencies.get(edge.to)?.add(edge.from);
     outgoing.get(edge.from)?.push(edge);
-    incomingCount.set(edge.to, (incomingCount.get(edge.to) ?? 0) + 1);
+  }
+  for (const id of scheduledNodeIds) {
+    incomingCount.set(id, dependencies.get(id)?.size ?? 0);
   }
   const ready = scheduledNodeIds.filter((id) => dependencies.get(id)?.size === 0);
   const completed = new Set<string>();
@@ -462,6 +651,7 @@ export async function scheduleWorkflowNodes(
   const limit = Math.max(1, Math.min(32, Math.floor(maxParallel) || 1));
   let failed = false;
   let firstError: unknown;
+  const loopTargets = new Set<string>();
 
   const startReady = () => {
     ready.sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0));
@@ -492,19 +682,31 @@ export async function scheduleWorkflowNodes(
       continue;
     }
     completed.add(result.nodeId);
+    for (const edge of backEdges) {
+      if (edge.from !== result.nodeId || !selected.has(edge.from)) continue;
+      const matches =
+        !edge.sourceHandle || !result.sourceHandle || edge.sourceHandle === result.sourceHandle;
+      if (matches) loopTargets.add(edge.to);
+    }
     const propagation: Array<{ nodeId: string; sourceHandle?: string; skipped?: boolean }> = [
       { nodeId: result.nodeId, sourceHandle: result.sourceHandle },
     ];
     while (propagation.length) {
       const source = propagation.shift()!;
+      // A conditional node can have multiple outlets connected to the same
+      // target. Evaluate all of that source's edges before deciding whether
+      // the target is active; otherwise an unmatched edge encountered first
+      // can mark the target as skipped before a later matching edge is seen.
+      const targetMatches = new Map<string, boolean>();
       for (const edge of outgoing.get(source.nodeId) ?? []) {
-        const next = edge.to;
-        const pending = dependencies.get(next);
         const matches =
           !source.skipped &&
           (!edge.sourceHandle || !source.sourceHandle || edge.sourceHandle === source.sourceHandle);
-        if (matches) activeIncoming.set(next, (activeIncoming.get(next) ?? 0) + 1);
-        pending?.delete(result.nodeId);
+        targetMatches.set(edge.to, (targetMatches.get(edge.to) ?? false) || matches);
+      }
+      for (const [next, matches] of targetMatches) {
+        const pending = dependencies.get(next);
+        if (matches) activeIncoming.get(next)?.add(source.nodeId);
         pending?.delete(source.nodeId);
         if (
           pending?.size === 0 &&
@@ -512,7 +714,7 @@ export async function scheduleWorkflowNodes(
           !running.has(next) &&
           !ready.includes(next)
         ) {
-          if ((incomingCount.get(next) ?? 0) > 0 && (activeIncoming.get(next) ?? 0) === 0) {
+          if ((incomingCount.get(next) ?? 0) > 0 && (activeIncoming.get(next)?.size ?? 0) === 0) {
             completed.add(next);
             propagation.push({ nodeId: next, skipped: true });
           } else {
@@ -524,6 +726,31 @@ export async function scheduleWorkflowNodes(
   }
   await Promise.all(running.values());
   if (failed) throw firstError;
+  return loopTargets;
+}
+
+function reachableWorkflowNodeIds(
+  roots: ReadonlySet<string>,
+  edges: readonly WorkflowEdge[],
+  orderedNodeIds: readonly string[],
+): string[] {
+  const selected = new Set(orderedNodeIds);
+  const outgoing = new Map<string, string[]>();
+  for (const edge of edges) {
+    if (!selected.has(edge.from) || !selected.has(edge.to)) continue;
+    const targets = outgoing.get(edge.from) ?? [];
+    targets.push(edge.to);
+    outgoing.set(edge.from, targets);
+  }
+  const reachable = new Set<string>();
+  const pending = [...roots].filter((id) => selected.has(id));
+  while (pending.length > 0) {
+    const id = pending.pop()!;
+    if (reachable.has(id)) continue;
+    reachable.add(id);
+    pending.push(...(outgoing.get(id) ?? []));
+  }
+  return orderedNodeIds.filter((id) => reachable.has(id));
 }
 
 async function runWorkflowInBackground(
@@ -533,8 +760,11 @@ async function runWorkflowInBackground(
   nodeIds: string[],
   abort: AbortController,
   retryLanguage: WorkflowRetryLanguage,
+  checkpoints: Map<string, WorkflowRunTrace[]>,
+  checkpointOnStop: () => boolean,
 ): Promise<void> {
   let fatalError: unknown;
+  let durationTimer: NodeJS.Timeout | undefined;
   try {
     const appSettings = await readAppSettings<{ workflow?: { maxParallelNodes?: unknown } }>({});
     const configuredLimit = appSettings.workflow?.maxParallelNodes;
@@ -545,8 +775,31 @@ async function runWorkflowInBackground(
         ? Math.min(32, configuredLimit)
         : 4;
     const record = await getWorkflow(workspace.path, workflowId);
+    const durationLimit = record.settings?.maxRunDurationSeconds ?? 0;
+    if (durationLimit > 0) {
+      const deadline = Date.now() + durationLimit * 1_000;
+      const armDurationLimit = () => {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) {
+          abort.abort(workflowLimitError("duration", durationLimit, retryLanguage));
+          return;
+        }
+        durationTimer = setTimeout(armDurationLimit, Math.min(remaining, 2_147_483_647));
+      };
+      armDurationLimit();
+    }
     await scheduleWorkflowNodes(nodeIds, record.edges, maxParallel, async (nodeId) => {
-      if (abort.signal.aborted) throw new Error("Stopped");
+      if (abort.signal.aborted) throw workflowAbortError(abort.signal);
+      const checkpoint = checkpoints.get(nodeId)?.shift();
+      if (checkpoint) {
+        await restoreWorkflowNodeCheckpoint(workspace.path, workflowId, checkpoint);
+        return sourceHandleForOutput(
+          checkpoint.kind,
+          checkpoint.output && typeof checkpoint.output === "object"
+            ? (checkpoint.output as WorkflowBlockOutput)
+            : {},
+        );
+      }
       try {
         return await executeWorkflowNode(
           workspace,
@@ -558,20 +811,34 @@ async function runWorkflowInBackground(
           retryLanguage,
         );
       } catch (error) {
-        const message = (error as Error)?.message;
+        const effectiveError = abort.signal.aborted
+          ? workflowAbortError(abort.signal, error)
+          : error;
+        const message = (effectiveError as Error)?.message;
         if (!(abort.signal.aborted && message === "Stopped")) {
-          fatalError ??= error;
+          fatalError ??= effectiveError;
           if (!abort.signal.aborted) abort.abort();
         }
-        throw error;
+        throw effectiveError;
       }
     });
+    if (abort.signal.aborted) throw workflowAbortError(abort.signal);
     if (fatalError !== undefined) throw fatalError;
     await finishRun(workspace.path, workflowId, run.id, "success");
   } catch (e) {
-    const failure = fatalError ?? e;
+    const failure = fatalError ?? (abort.signal.aborted ? workflowAbortError(abort.signal, e) : e);
     const message = (failure as Error).message || "Workflow failed.";
-    const stopped = fatalError === undefined && (abort.signal.aborted || message === "Stopped");
+    // A pause aborts the active node. Agent runtimes may surface that abort as
+    // an AbortError before the workflow catch block runs, so the explicit
+    // pause request must take precedence over the captured runtime error.
+    const disposition = workflowStopDisposition(
+      checkpointOnStop(),
+      abort.signal.aborted,
+      fatalError !== undefined,
+      message,
+    );
+    const stopped = failure instanceof WorkflowRunLimitError ? false : disposition.stopped;
+    const resumable = failure instanceof WorkflowRunLimitError ? false : disposition.resumable;
     let failedNodeIds: string[] = [];
     const failedRecord = await updateWorkflow(workspace.path, workflowId, (record) => {
       const activeNodes = record.nodes.filter((node) => node.status === "running");
@@ -579,17 +846,25 @@ async function runWorkflowInBackground(
       const nodes = activeNodes.length
         ? record.nodes.map((node) =>
             node.status === "running"
-              ? {
-                  ...node,
-                  status: "error" as const,
-                  error: message,
-                  completedAt: Date.now(),
-                  config: finalizeRunDetailsOnError(node, message),
-                }
+              ? stopped && checkpointOnStop()
+                ? resetInterruptedNode(node)
+                : {
+                    ...node,
+                    status: "error" as const,
+                    error: message,
+                    completedAt: Date.now(),
+                    config: finalizeRunDetailsOnError(node, message),
+                  }
               : node,
           )
         : record.nodes;
-      return finishRunRecord({ ...record, nodes }, run.id, stopped ? "stopped" : "error", message);
+      return finishRunRecord(
+        { ...record, nodes },
+        run.id,
+        stopped ? "stopped" : "error",
+        message,
+        resumable,
+      );
     });
     for (const nodeId of failedNodeIds) {
       const node = failedRecord.nodes.find((item) => item.id === nodeId);
@@ -603,13 +878,43 @@ async function runWorkflowInBackground(
     }
     const failedRun = failedRecord.runs.find((item) => item.id === run.id);
     if (failedRun) {
+      await saveWorkflowUsageSnapshot(workspace.path, failedRecord, failedRun);
       publishWorkflowRuntime(workspace.path, workflowId, {
         type: "run",
         updatedAt: failedRecord.updatedAt,
         run: failedRun,
       });
     }
+  } finally {
+    if (durationTimer) clearTimeout(durationTimer);
   }
+}
+
+function workflowAbortError(signal: AbortSignal, fallback?: unknown): Error {
+  if (signal.reason instanceof Error) return signal.reason;
+  return fallback instanceof Error ? fallback : new Error("Stopped");
+}
+
+function workflowLimitError(
+  kind: "cost" | "duration",
+  limit: number,
+  language: WorkflowRetryLanguage,
+): WorkflowRunLimitError {
+  if (kind === "cost") {
+    const formatted = `$${limit.toFixed(limit < 0.0001 ? 8 : 4)}`;
+    return new WorkflowRunLimitError(
+      kind,
+      language === "zh-CN"
+        ? `本次工作流费用已超过 ${formatted} 的限制。`
+        : `Workflow run cost exceeded the ${formatted} limit.`,
+    );
+  }
+  return new WorkflowRunLimitError(
+    kind,
+    language === "zh-CN"
+      ? `本次工作流运行时间已超过 ${limit} 秒的限制。`
+      : `Workflow run duration exceeded the ${limit}s limit.`,
+  );
 }
 
 async function executeWorkflowNode(
@@ -621,7 +926,7 @@ async function executeWorkflowNode(
   abort: AbortController,
   retryLanguage: WorkflowRetryLanguage,
 ): Promise<string | undefined> {
-  if (abort.signal.aborted) throw new Error("Stopped");
+  if (abort.signal.aborted) throw workflowAbortError(abort.signal);
   let record = await getWorkflow(workspace.path, workflowId);
   const node = record.nodes.find((item) => item.id === nodeId);
   if (!node) return;
@@ -629,7 +934,7 @@ async function executeWorkflowNode(
   const kind = nodeKind(node);
 
   if (isTriggerKind(kind)) {
-    const output = triggerOutput(node, kind);
+    const output = triggerOutput(node, kind, record);
     const outputText = stringifyBlockOutput(output);
     const completedAt = Date.now();
     await patchWorkflowNode(workspace.path, workflowId, nodeId, {
@@ -681,16 +986,25 @@ async function executeWorkflowNode(
   try {
     result =
       kind === "agent"
-        ? await executeAgentNode(workspace, record, currentNode, startedAt, abort, retryLanguage)
+        ? await executeAgentNode(
+            workspace,
+            record,
+            currentNode,
+            run.id,
+            startedAt,
+            abort,
+            retryLanguage,
+          )
         : kind === "command"
           ? await executeCommandNode(workspace.path, record, currentNode, startedAt, abort)
           : await executeLocalNode(workspace.path, record, currentNode, {
               allowMcpToolCall: nodeIds.length === 1,
               signal: abort.signal,
             });
+    if (abort.signal.aborted) throw workflowAbortError(abort.signal);
   } catch (error) {
     const message = (error as Error).message || `${currentNode.title} failed.`;
-    if (abort.signal.aborted || message === "Stopped" || !nodeFailover(currentNode)) {
+    if (abort.signal.aborted || message === "Stopped" || !nodeFailover(currentNode, record)) {
       throw error;
     }
     const outputText = stringifyBlockOutput({
@@ -722,14 +1036,6 @@ async function executeWorkflowNode(
   }
   const outputText = stringifyBlockOutput(result.output);
   const completedAt = Date.now();
-  await patchWorkflowNode(workspace.path, workflowId, nodeId, {
-    ...(result.nodePatch ?? {}),
-    status: result.error ? "error" : "success",
-    rawOutput: outputText,
-    summary: outputText,
-    error: result.error ?? "",
-    completedAt,
-  });
   const detailsConfig = result.nodePatch?.config ?? currentNode.config;
   const terminal = terminalFromConfig(detailsConfig);
   const runDetails =
@@ -743,14 +1049,16 @@ async function executeWorkflowNode(
       : undefined);
   const terminalUsage = usageFromTerminal(terminal);
   const sessionUsage =
-    conversationSessionId && kind === "agent"
+    result.usage ??
+    (conversationSessionId && kind === "agent"
       ? await readAgentSessionUsage(
           currentNode.providerKind === "claude-cli" ? "claude" : "codex",
           conversationSessionId,
         ).catch(() => ({}))
-      : {};
+      : {});
   const usage = mergeUsage(terminalUsage, sessionUsage);
-  const usageModel = (usage.model ?? currentNode.model) || "default";
+  const usageModel =
+    (usage.model ?? resolveBlockTemplate(currentNode.model || "default", record)) || "default";
   const modelCost =
     usage.cost === undefined
       ? calculateModelCost(
@@ -760,7 +1068,12 @@ async function executeWorkflowNode(
           { inputIncludesCache: currentNode.providerKind !== "claude-cli" },
         )
       : usage.cost;
-  await patchWorkflowRun(workspace.path, workflowId, run.id, (current) =>
+  const billingMultiplier =
+    result.usage?.billingMultiplier ?? (await activeProviderMultiplier(currentNode.providerKind));
+  const billedCost = record.settings?.unbilled
+    ? undefined
+    : (result.usage?.cost ?? multiplyCost(modelCost, billingMultiplier));
+  const costRecord = await patchWorkflowRun(workspace.path, workflowId, run.id, (current) =>
     completeRunTrace(current, nodeId, {
       status: result.error ? "error" : "success",
       completedAt,
@@ -771,10 +1084,47 @@ async function executeWorkflowNode(
       retryReasons: retryReasonsFromConfig(detailsConfig),
       model: usageModel === "default" ? undefined : usageModel,
       tokens: usage.tokens,
-      cost: modelCost,
+      cost: billedCost,
+      providerId: result.usage?.providerId,
+      billingMultiplier,
     }),
   );
-  if (result.error && !nodeFailover(currentNode)) throw new Error(result.error);
+  const costLimit = record.settings?.unbilled ? 0 : (record.settings?.maxRunCost ?? 0);
+  const currentRun = costRecord.runs.find((item) => item.id === run.id);
+  if (currentRun && workflowRunExceedsCostLimit(currentRun, costLimit)) {
+    const limitError = workflowLimitError("cost", costLimit, retryLanguage);
+    abort.abort(limitError);
+    await patchWorkflowRun(workspace.path, workflowId, run.id, (current) => ({
+      ...current,
+      trace: current.trace?.map((item) =>
+        item.nodeId === nodeId && item.startedAt === startedAt
+          ? { ...item, status: "error", error: limitError.message }
+          : item,
+      ),
+    }));
+    await patchWorkflowNode(workspace.path, workflowId, nodeId, {
+      ...(result.nodePatch ?? {}),
+      status: "error",
+      rawOutput: outputText,
+      summary: outputText,
+      error: limitError.message,
+      completedAt: Date.now(),
+      config: finalizeRunDetailsOnError(
+        { ...currentNode, config: detailsConfig },
+        limitError.message,
+      ),
+    });
+    throw limitError;
+  }
+  await patchWorkflowNode(workspace.path, workflowId, nodeId, {
+    ...(result.nodePatch ?? {}),
+    status: result.error ? "error" : "success",
+    rawOutput: outputText,
+    summary: outputText,
+    error: result.error ?? "",
+    completedAt,
+  });
+  if (result.error && !nodeFailover(currentNode, record)) throw new Error(result.error);
   return sourceHandleForOutput(kind, result.output);
 }
 
@@ -782,15 +1132,33 @@ async function executeAgentNode(
   workspace: WorkspaceInfo,
   record: WorkflowRecord,
   node: WorkflowNode,
+  runId: string,
   startedAt: number,
   abort: AbortController,
   retryLanguage: WorkflowRetryLanguage,
 ): Promise<LocalNodeResult> {
   if (!node.prompt.trim()) throw new Error(`${node.title} has no prompt.`);
+  const executionNode = resolveAgentExecutionNode(node, record);
   const logs: RunLogEntry[] = [];
-  const autoSuccess = agentAutoSuccess(node);
+  const providerRuntime = await prepareAgentProviderRuntime(executionNode);
+  const usageMonitor = await createLiveAgentUsageMonitor({
+    workspaceRoot: workspace.path,
+    workflowId: record.id,
+    runId,
+    nodeId: node.id,
+    app: providerRuntime.app,
+    model: executionNode.model || "default",
+    inputIncludesCache: executionNode.providerKind !== "claude-cli",
+    provider: providerRuntime.current,
+    recordCost: record.settings?.unbilled !== true,
+    maxRunCost: record.settings?.unbilled ? 0 : (record.settings?.maxRunCost ?? 0),
+    abort,
+    retryLanguage,
+    signal: abort.signal,
+  });
+  const autoSuccess = agentAutoSuccess(executionNode);
   const details = createLiveAgentRunDetails({
-    node,
+    node: executionNode,
     startedAt,
     autoSuccess,
     logs,
@@ -804,6 +1172,7 @@ async function executeAgentNode(
     },
   });
   const onFrame = (frame: AgentTerminalFrame) => {
+    if (frame.type === "conversation") usageMonitor.setSessionId(frame.sessionId);
     void details.handleFrame(frame).catch(() => undefined);
   };
   await details.update("running");
@@ -817,11 +1186,21 @@ async function executeAgentNode(
   let terminalFailure: AgentTerminalFailure | null = null;
   const retryReasons: string[] = [];
   let terminalTranscript = "";
-  const retries = agentRetryCount(node);
-  const retryForever = agentRetryForever(node);
+  const retries = agentRetryCount(executionNode);
+  const retryForever = agentRetryForever(executionNode);
+  const retryDelaySeconds = agentRetryDelaySeconds(executionNode);
   const retryPrompt = agentRetryPromptForLanguage(retryLanguage);
+  const configuredSessionId = agentConfiguredSessionId(executionNode);
+  const sessionApp = executionNode.providerKind === "claude-cli" ? "claude" : "codex";
+  const resumeConfiguredSession = configuredSessionId
+    ? Boolean(await findAgentSessionFilePath(sessionApp, configuredSessionId))
+    : false;
   let conversationSessionId: string | undefined =
-    node.providerKind === "claude-cli" ? randomUUID() : undefined;
+    executionNode.providerKind === "claude-cli"
+      ? configuredSessionId || randomUUID()
+      : resumeConfiguredSession
+        ? configuredSessionId
+        : undefined;
   let attempt = 0;
   while (true) {
     if (attempt > 0) {
@@ -834,34 +1213,55 @@ async function executeAgentNode(
     try {
       result = await runAgentTerminal({
         workspace,
-        kind: node.providerKind,
-        model: node.model || "default",
+        kind: executionNode.providerKind,
+        model: executionNode.model || "default",
         prompt: currentPrompt,
         autoSuccess,
-        claudePermissionMode: agentClaudePermissionMode(node),
-        mode: agentMode(node),
-        codexApproval: agentCodexApproval(node),
-        codexSandbox: agentCodexSandbox(node),
-        effort: agentEffort(node),
-        alwaysEnter: agentAlwaysEnter(node),
+        claudePermissionMode: agentClaudePermissionMode(executionNode),
+        mode: agentMode(executionNode),
+        codexApproval: agentCodexApproval(executionNode),
+        codexSandbox: agentCodexSandbox(executionNode),
+        effort: agentEffort(executionNode),
+        alwaysEnter: agentAlwaysEnter(executionNode),
+        keepRunningOnInterrupt: agentKeepRunningOnInterrupt(executionNode),
         conversationSessionId,
-        resumeConversation: attempt > 0,
+        requestedConversationSessionId: configuredSessionId || undefined,
+        resumeConversation: resumeConfiguredSession || attempt > 0,
         signal: abort.signal,
         onFrame,
       });
     } catch (error) {
       await details.drain();
-      await patchWorkflowNode(workspace.path, record.id, node.id, {
-        config: {
-          ...(node.config ?? {}),
-          runDetails: details.snapshot("error", Date.now()),
-        },
-      });
-      throw error;
+      if (abort.signal.aborted) {
+        await usageMonitor.finalize();
+        await patchWorkflowNode(workspace.path, record.id, node.id, {
+          config: {
+            ...(node.config ?? {}),
+            runDetails: details.snapshot("error", Date.now()),
+          },
+        });
+        throw error;
+      }
+      const message = (error as Error).message || String(error);
+      result = {
+        sessionId: "",
+        content: "",
+        transcript: message,
+        changedFiles: [],
+        verification: [],
+        exitCode: 1,
+        signal: "error",
+        outcome: "error",
+        errorMessage: message,
+      };
     }
     await details.drain();
-    if (abort.signal.aborted) throw new Error("Stopped");
+    if (abort.signal.aborted) {
+      await usageMonitor.finalize();
+      throw new Error("Stopped");
+    }
     conversationSessionId = result.conversationSessionId ?? conversationSessionId;
+    if (conversationSessionId) usageMonitor.setSessionId(conversationSessionId);
     terminalTranscript = appendAgentAttemptTranscript(
       terminalTranscript,
       result.transcript || result.content,
@@ -873,18 +1273,33 @@ async function executeAgentNode(
       result.content && !/completed without text output/i.test(result.content)
         ? result.content
         : result.transcript ||
-          `${node.providerKind === "codex-cli" ? "Codex CLI" : "Claude Code CLI"} completed without text output.`;
+          `${executionNode.providerKind === "codex-cli" ? "Codex CLI" : "Claude Code CLI"} completed without text output.`;
     terminalFailure = classifyAgentTerminalResultFailure(result, currentPrompt);
     if (!terminalFailure.failed) break;
     if (!shouldRetryAgentTerminalFailure(terminalFailure, attempt, retries, retryForever)) break;
     retryReasons.push(terminalFailure.message);
     attempt += 1;
+    if (terminalFailure.apiFailure) {
+      const nextProvider = await providerRuntime.rotate();
+      if (nextProvider) await usageMonitor.changeProvider(nextProvider);
+    }
     currentPrompt = retryPrompt;
-    await sleep(1_000, abort.signal);
+    const retryAt = Date.now() + retryDelaySeconds * 1_000;
+    await details.setRetryWait({
+      retryAt,
+      retryAttempt: attempt,
+      retryReason: terminalFailure.message,
+    });
+    try {
+      await waitForAgentRetry(workspace.path, record.id, node.id, retryDelaySeconds, abort.signal);
+    } finally {
+      await details.setRetryWait();
+    }
   }
   if (!result) throw new Error(`${node.title} did not start.`);
+  const finalUsage = await usageMonitor.finalize();
   if (terminalFailure?.failed) {
-    const agentLabel = node.providerKind === "codex-cli" ? "Codex CLI" : "Claude Code CLI";
+    const agentLabel = executionNode.providerKind === "codex-cli" ? "Codex CLI" : "Claude Code CLI";
     const errorMessage =
       attempt > 0
         ? `${agentLabel} failed after ${attempt + 1} attempt${attempt === 0 ? "" : "s"}: ${terminalFailure.message}`
@@ -903,7 +1318,7 @@ async function executeAgentNode(
     if (retryReasons.length) errorDetails.retryReasons = retryReasons;
     return {
       output: {
-        type: node.providerKind === "claude-cli" ? "claude" : "codex",
+        type: executionNode.providerKind === "claude-cli" ? "claude" : "codex",
         status: "failed",
         text: raw.trim(),
         error: errorMessage,
@@ -917,18 +1332,19 @@ async function executeAgentNode(
         },
       },
       conversationSessionId,
+      usage: finalUsage,
     };
   }
   const toolRun = await maybeRunAgentMcpToolCalls(
     record,
-    node,
+    executionNode,
     mcpTools,
     raw,
     abort.signal,
     (entry) => appendRunLog(logs, entry),
   );
   if (toolRun) raw = toolRun.raw;
-  const output = agentOutput(node, raw);
+  const output = agentOutput(executionNode, raw);
   const finalDetails = details.snapshot("success", Date.now());
   finalDetails.terminalSessionId = finalDetails.terminalSessionId ?? result.sessionId;
   finalDetails.conversationSessionId =
@@ -950,6 +1366,271 @@ async function executeAgentNode(
       },
     },
     conversationSessionId,
+    usage: finalUsage,
+  };
+}
+
+function resolveAgentExecutionNode(node: WorkflowNode, record: WorkflowRecord): WorkflowNode {
+  const config = { ...(node.config ?? {}) };
+  const stringKeys = [
+    "sessionId",
+    "effort",
+    "claudeMode",
+    "mode",
+    "claudePermissionMode",
+    "codexApproval",
+    "codexSandbox",
+    "retryStrategy",
+  ];
+  for (const key of stringKeys) {
+    const value = config[key];
+    if (typeof value === "string") config[key] = resolveBlockTemplate(value, record);
+  }
+  for (const key of ["retries", "retryDelaySeconds"]) {
+    const value = config[key];
+    if (typeof value === "string") {
+      const resolved = resolveTemplateValue(value, record);
+      const number = typeof resolved === "number" ? resolved : Number(resolved);
+      if (Number.isFinite(number)) config[key] = number;
+    }
+  }
+  for (const key of [
+    "autoSuccess",
+    "retryForever",
+    "alwaysEnter",
+    "keepRunningOnInterrupt",
+    "parseOutputJson",
+  ]) {
+    const value = config[key];
+    if (typeof value === "string") {
+      const resolved = resolveTemplateValue(value, record);
+      if (typeof resolved === "boolean") config[key] = resolved;
+      else if (typeof resolved === "string") {
+        const normalized = resolved.trim().toLowerCase();
+        if (normalized === "true" || normalized === "false") config[key] = normalized === "true";
+      }
+    }
+  }
+  if (Array.isArray(config.retryProviderIds)) {
+    config.retryProviderIds = config.retryProviderIds.map((value) =>
+      typeof value === "string" ? resolveBlockTemplate(value, record) : value,
+    );
+  }
+  return {
+    ...node,
+    model: resolveBlockTemplate(node.model || "default", record),
+    config,
+  };
+}
+
+export function agentRetryStrategy(node: WorkflowNode): AgentRetryStrategy {
+  const value = node.config?.retryStrategy;
+  if (value === "lowest-multiplier" || value === "round-robin") return value;
+  return "none";
+}
+
+function agentRetryProviderIds(node: WorkflowNode): string[] {
+  const value = node.config?.retryProviderIds;
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.filter((item): item is string => typeof item === "string" && !!item))];
+}
+
+export function buildAgentProviderPlan(
+  strategy: AgentRetryStrategy,
+  providerIds: readonly string[],
+  providers: Record<string, AiProvider>,
+  currentId: string,
+): AgentProviderChoice[] {
+  if (strategy === "none") {
+    const current = providers[currentId];
+    return current ? [{ id: current.id, multiplier: providerBillingMultiplier(current) }] : [];
+  }
+  const selected = providerIds.flatMap((id) => {
+    const provider = providers[id];
+    return provider ? [{ id, multiplier: providerBillingMultiplier(provider), provider }] : [];
+  });
+  if (strategy === "lowest-multiplier") {
+    selected.sort(
+      (a, b) =>
+        a.multiplier - b.multiplier ||
+        (a.provider.sortIndex ?? 0) - (b.provider.sortIndex ?? 0) ||
+        a.id.localeCompare(b.id),
+    );
+  }
+  return selected.map(({ id, multiplier }) => ({ id, multiplier }));
+}
+
+async function prepareAgentProviderRuntime(node: WorkflowNode): Promise<{
+  app: AiSettingsApp;
+  current: AgentProviderChoice;
+  rotate: () => Promise<AgentProviderChoice | null>;
+}> {
+  const app: AiSettingsApp = node.providerKind === "claude-cli" ? "claude" : "codex";
+  const settings = await readAiSettings().catch(() => null);
+  const manager = settings?.apps[app];
+  const retryEnabled = agentRetryForever(node) || agentRetryCount(node) > 0;
+  const strategy = retryEnabled ? agentRetryStrategy(node) : "none";
+  const plan = manager
+    ? buildAgentProviderPlan(
+        strategy,
+        agentRetryProviderIds(node),
+        manager.providers,
+        manager.current,
+      )
+    : [];
+  if (plan.length === 0) {
+    const fallback = { id: manager?.current ?? "", multiplier: 1 };
+    return { app, current: fallback, rotate: async () => null };
+  }
+  let index = 0;
+  if (strategy !== "none" && manager?.current !== plan[0]?.id) {
+    await switchAiProvider(app, plan[0]!.id);
+  }
+  return {
+    app,
+    current: plan[0]!,
+    rotate: async () => {
+      if (strategy === "none" || plan.length < 2) return null;
+      index = (index + 1) % plan.length;
+      const next = plan[index]!;
+      await switchAiProvider(app, next.id);
+      return next;
+    },
+  };
+}
+
+async function activeProviderMultiplier(kind: WorkflowNode["providerKind"]): Promise<number> {
+  const app: AiSettingsApp = kind === "claude-cli" ? "claude" : "codex";
+  const settings = await readAiSettings().catch(() => null);
+  const manager = settings?.apps[app];
+  return providerBillingMultiplier(manager?.providers[manager.current]);
+}
+
+export function multiplyCost(cost: number | undefined, multiplier: number): number | undefined {
+  if (cost === undefined) return undefined;
+  const billed = cost * multiplier;
+  return Number.isFinite(billed) ? billed : undefined;
+}
+
+interface LiveAgentUsageMonitorOptions {
+  workspaceRoot: string;
+  workflowId: string;
+  runId: string;
+  nodeId: string;
+  app: AiSettingsApp;
+  model: string;
+  inputIncludesCache: boolean;
+  provider: AgentProviderChoice;
+  recordCost: boolean;
+  maxRunCost: number;
+  abort: AbortController;
+  retryLanguage: WorkflowRetryLanguage;
+  signal?: AbortSignal;
+}
+
+async function createLiveAgentUsageMonitor(options: LiveAgentUsageMonitorOptions): Promise<{
+  setSessionId: (id: string) => void;
+  changeProvider: (provider: AgentProviderChoice) => Promise<void>;
+  finalize: () => Promise<LocalNodeResult["usage"]>;
+}> {
+  const prices = await readStoredModelPrices().catch(() => []);
+  let sessionId = "";
+  let timer: NodeJS.Timeout | undefined;
+  let currentProvider = options.provider;
+  let latestUsage: Awaited<ReturnType<typeof readAgentSessionUsage>> = {};
+  let latestBaseCost: number | undefined;
+  let segmentBaseCost = 0;
+  let settledCost = 0;
+  let queue = Promise.resolve();
+  const stopTimer = () => {
+    if (timer) clearInterval(timer);
+    timer = undefined;
+  };
+  options.signal?.addEventListener("abort", stopTimer, { once: true });
+
+  const snapshot = (): LocalNodeResult["usage"] => {
+    const segmentCost =
+      latestBaseCost === undefined
+        ? undefined
+        : Math.max(0, latestBaseCost - segmentBaseCost) * currentProvider.multiplier;
+    return {
+      model: latestUsage.model || (options.model === "default" ? undefined : options.model),
+      tokens: latestUsage.tokens,
+      cost: options.recordCost && segmentCost !== undefined ? settledCost + segmentCost : undefined,
+      providerId: currentProvider.id || undefined,
+      billingMultiplier: currentProvider.multiplier,
+    };
+  };
+
+  const refresh = async () => {
+    if (!sessionId) return;
+    const usage = await readAgentSessionUsage(options.app, sessionId).catch(
+      () => ({}) as AgentSessionUsage,
+    );
+    if (!usage.model && !usage.tokens && usage.cost === undefined) return;
+    latestUsage = usage;
+    const model = (usage.model ?? options.model) || "default";
+    const baseCost =
+      usage.cost ??
+      calculateModelCost(model, usage.tokens, prices, {
+        inputIncludesCache: options.inputIncludesCache,
+      });
+    if (baseCost !== undefined) latestBaseCost = baseCost;
+    const usageSnapshot = snapshot();
+    if (!usageSnapshot?.tokens && usageSnapshot?.cost === undefined) return;
+    const record = await patchWorkflowRun(
+      options.workspaceRoot,
+      options.workflowId,
+      options.runId,
+      (run) => {
+        const next = completeRunTrace(run, options.nodeId, {
+          model: usageSnapshot.model,
+          tokens: usageSnapshot.tokens,
+          cost: usageSnapshot.cost,
+          providerId: usageSnapshot.providerId,
+          billingMultiplier: usageSnapshot.billingMultiplier,
+        });
+        return { ...next, stats: runStats(next, Date.now()) };
+      },
+    );
+    const run = record.runs.find((item) => item.id === options.runId);
+    if (
+      run &&
+      workflowRunExceedsCostLimit(run, options.maxRunCost) &&
+      !options.abort.signal.aborted
+    ) {
+      options.abort.abort(workflowLimitError("cost", options.maxRunCost, options.retryLanguage));
+    }
+  };
+
+  const enqueue = (task: () => Promise<void>) => {
+    queue = queue.then(task, task);
+    return queue;
+  };
+
+  return {
+    setSessionId: (id) => {
+      if (!id || sessionId === id) return;
+      sessionId = id;
+      void enqueue(refresh).catch(() => undefined);
+      timer ??= setInterval(() => void enqueue(refresh).catch(() => undefined), 1_000);
+    },
+    changeProvider: async (provider) => {
+      await enqueue(async () => {
+        await refresh();
+        if (latestBaseCost !== undefined) {
+          settledCost += Math.max(0, latestBaseCost - segmentBaseCost) * currentProvider.multiplier;
+          segmentBaseCost = latestBaseCost;
+        }
+        currentProvider = provider;
+      });
+    },
+    finalize: async () => {
+      stopTimer();
+      options.signal?.removeEventListener("abort", stopTimer);
+      await enqueue(refresh).catch(() => undefined);
+      return snapshot();
+    },
   };
 }
 
@@ -1043,8 +1724,8 @@ async function executeLocalNode(
   const kind = nodeKind(node);
   if (kind === "input") {
     const inputTitle = Object.prototype.hasOwnProperty.call(node.config ?? {}, "inputTitle")
-      ? configString(node, "inputTitle").trim()
-      : configString(node, "inputTitle", node.prompt || node.title).trim();
+      ? configString(node, "inputTitle", "", record).trim()
+      : configString(node, "inputTitle", node.prompt || node.title, record).trim();
     const waitingOutput = {
       type: "input",
       status: "waiting",
@@ -1074,6 +1755,47 @@ async function executeLocalNode(
       },
       nodePatch: {
         config: { ...(node.config ?? {}), waitingForInput: false },
+      },
+    };
+  }
+  if (kind === "variable") {
+    const config = variableNodeConfig(node);
+    const resolved: Array<{
+      name: string;
+      type: WorkflowVariableValueType;
+      value: unknown;
+    }> = [];
+    for (const entry of config) {
+      const name = resolveBlockTemplate(entry.name, record).trim();
+      if (!name) continue;
+      const rawValue = resolveBlockTemplate(entry.value, record);
+      resolved.push({
+        name,
+        type: entry.type,
+        value: parseVariableValue(rawValue, entry.type, node.title, name),
+      });
+    }
+    if (resolved.length === 0) throw new Error(`${node.title} has no variable name.`);
+    const inherited = inheritedWorkflowVariables(record, node);
+    const variables = {
+      ...inherited.variables,
+      ...Object.fromEntries(resolved.map((entry) => [entry.name, entry.value])),
+    };
+    const variableTypes = {
+      ...inherited.variableTypes,
+      ...Object.fromEntries(resolved.map((entry) => [entry.name, entry.type])),
+    };
+    const first = resolved[0]!;
+    return {
+      output: {
+        type: "variable",
+        status: "success",
+        name: first.name,
+        value: first.value,
+        variables,
+        variableTypes,
+        data: variables,
+        text: textFromAny(variables),
       },
     };
   }
@@ -1118,7 +1840,7 @@ async function executeLocalNode(
         url,
         headers: stringRecord(headersObject),
         body,
-        responseType: config.responseType,
+        responseType: resolveBlockTemplate(config.responseType, record),
       }),
       "",
       120_000,
@@ -1225,13 +1947,11 @@ async function executeLocalNode(
 
   if (kind === "diff-approval") {
     if (!(await isRepo(workspaceRoot))) throw new Error(`${node.title} requires a Git repository.`);
-    const diff = await getWorkflowDiff(workspaceRoot);
     const approvalOutput = {
       type: "diff-approval",
       status: "waiting",
       approved: null,
-      diff,
-      text: diff || "No changes to review.",
+      text: "Waiting for diff approval.",
     };
     const approval = waitForDiffApproval(workspaceRoot, record.id, node.id, options.signal);
     try {
@@ -1262,7 +1982,7 @@ async function executeLocalNode(
     if (!(await isRepo(workspaceRoot))) throw new Error(`${node.title} requires a Git repository.`);
     const message = resolveBlockTemplate(configString(node, "message"), record).trim();
     if (!message) throw new Error(`${node.title} requires a commit message.`);
-    if (node.config?.stageAll === true) {
+    if (configBoolean(node, "stageAll", record)) {
       await stageAllChanges(workspaceRoot);
     }
     const head = await gitCommit(workspaceRoot, message);
@@ -1276,7 +1996,7 @@ async function executeLocalNode(
     if (!(await isRepo(workspaceRoot))) throw new Error(`${node.title} requires a Git repository.`);
     const branch = resolveBlockTemplate(configString(node, "branch"), record).trim();
     if (!branch) throw new Error(`${node.title} requires a branch name.`);
-    const createIfMissing = node.config?.createIfMissing === true;
+    const createIfMissing = configBoolean(node, "createIfMissing", record);
     const branches = await listBranches(workspaceRoot);
     const exists = branches.branches.some((item) => item.name === branch);
     if (exists) {
@@ -1296,13 +2016,11 @@ async function executeLocalNode(
     if (!(await isRepo(workspaceRoot))) throw new Error(`${node.title} requires a Git repository.`);
     const branch = resolveBlockTemplate(configString(node, "branch"), record).trim();
     if (!branch) throw new Error(`${node.title} requires a branch name.`);
-    const remote =
-      node.config?.remote === true
-        ? resolveBlockTemplate(configString(node, "remoteName", "origin"), record).trim() ||
-          "origin"
-        : null;
+    const remote = configBoolean(node, "remote", record)
+      ? resolveBlockTemplate(configString(node, "remoteName", "origin"), record).trim() || "origin"
+      : null;
     await deleteBranch(workspaceRoot, branch, {
-      force: node.config?.force === true,
+      force: configBoolean(node, "force", record),
       remote,
     });
     return {
@@ -1311,7 +2029,7 @@ async function executeLocalNode(
         status: "success",
         branch,
         remote,
-        force: node.config?.force === true,
+        force: configBoolean(node, "force", record),
         text: branch,
       },
       changedFiles: true,
@@ -1324,7 +2042,7 @@ async function executeLocalNode(
     const body = resolveBlockTemplate(configString(node, "body"), record);
     const base = resolveBlockTemplate(configString(node, "base"), record).trim();
     const head = resolveBlockTemplate(configString(node, "compare"), record).trim();
-    if (node.config?.push !== false) {
+    if (configBoolean(node, "push", record, true)) {
       const info = await getRepoInfo(workspaceRoot);
       if (!info.upstream) {
         const remotes = await listRemotes(workspaceRoot);
@@ -1346,7 +2064,7 @@ async function executeLocalNode(
       body,
       base: base || undefined,
       head: head || undefined,
-      draft: node.config?.draft === true,
+      draft: configBoolean(node, "draft", record),
     });
     return {
       output: {
@@ -1360,7 +2078,7 @@ async function executeLocalNode(
   }
 
   if (kind === "merge") {
-    const mode = mergeNodeConfig(node).mode === "array" ? "array" : "object";
+    const mode = mergeNodeConfig(node, record).mode === "array" ? "array" : "object";
     const items = incomingOutputs(record, node);
     const data =
       mode === "array"
@@ -1381,34 +2099,40 @@ async function executeLocalNode(
   if (kind === "code") {
     const config = codeNodeConfig(node);
     const items = incomingOutputs(record, node);
-    const value = await runCodeBlock(config.code, items[0] ?? {}, items);
+    const value = await runWorkflowCode(config.code, record, items[0] ?? {}, items);
     return { output: outputFromValue("code", value) };
   }
 
   if (kind === "loop-items") {
     const config = loopItemsConfig(node);
+    const resolvedMode = resolveBlockTemplate(config.mode, record);
+    const batchSizeValue =
+      typeof node.config?.batchSize === "string"
+        ? Number(resolveBlockTemplate(node.config.batchSize, record))
+        : config.batchSize;
+    const batchSize = Number.isFinite(batchSizeValue) ? clamp(batchSizeValue, 1, 1000) : 1;
     const source = config.source.trim()
       ? resolveTemplateValue(config.source, record)
       : (incomingOutputs(record, node)[0]?.data ?? incomingOutputs(record, node)[0] ?? []);
     const items = Array.isArray(source) ? source : [source].filter((item) => item !== undefined);
-    const batches = chunk(items, Math.max(1, config.batchSize));
+    const batches = chunk(items, Math.max(1, batchSize));
     return {
       output: {
         type: "loop-items",
         status: "success",
-        mode: config.mode,
-        batchSize: config.batchSize,
+        mode: resolvedMode,
+        batchSize,
         items,
         batches,
-        data: config.mode === "batches" ? batches : items,
+        data: resolvedMode === "batches" ? batches : items,
         count: items.length,
-        text: jsonPreview(config.mode === "batches" ? batches : items),
+        text: jsonPreview(resolvedMode === "batches" ? batches : items),
       },
     };
   }
 
   if (kind === "wait") {
-    const seconds = Math.max(0, waitNodeConfig(node).seconds);
+    const seconds = Math.max(0, waitNodeConfig(node, record).seconds);
     const startedAt = Date.now();
     await sleep(seconds * 1000, options.signal);
     const durationMs = Date.now() - startedAt;
@@ -1430,12 +2154,13 @@ async function executeLocalNode(
       ? resolveTemplateValue(config.source, record)
       : (incoming[0] ?? "");
     const parsedSource = parseMaybeJson(source);
-    const value = config.path.trim() ? getLoosePathValue(parsedSource, config.path) : parsedSource;
+    const resolvedPath = resolveBlockTemplate(config.path, record).trim();
+    const value = resolvedPath ? getLoosePathValue(parsedSource, resolvedPath) : parsedSource;
     return {
       output: {
         type: "json",
         status: "success",
-        path: config.path,
+        path: resolvedPath,
         source: parsedSource,
         value,
         data: value,
@@ -1445,7 +2170,7 @@ async function executeLocalNode(
   }
 
   if (kind === "codex-plugin") {
-    const selected = pluginSelectors(node);
+    const selected = pluginSelectors(node, record);
     const snapshot = await applyCodexPluginSelection(selected);
     const enabled = snapshot.plugins
       .filter((plugin) => plugin.status.enabled)
@@ -1462,7 +2187,7 @@ async function executeLocalNode(
   }
 
   if (kind === "claude-plugin") {
-    const selected = pluginSelectors(node);
+    const selected = pluginSelectors(node, record);
     const snapshot = await applyClaudePluginSelection(selected);
     const enabled = snapshot.plugins
       .filter((plugin) => plugin.status.installed && plugin.status.enabled)
@@ -1478,8 +2203,93 @@ async function executeLocalNode(
     };
   }
 
+  if (kind === "codex-skill" || kind === "claude-skill") {
+    const selected = skillNames(node, record);
+    const agent = kind === "codex-skill" ? "codex" : "claude";
+    const snapshot = await applySkillSelection({ agent, selectedNames: selected });
+    const enabled = snapshot.enabled
+      .filter((skill) => skill.agents.includes(agent))
+      .map((skill) => skill.name);
+    return {
+      output: {
+        type: kind,
+        status: "success",
+        selected,
+        enabled,
+        text: `${agent === "codex" ? "Codex" : "Claude"} skills updated: ${enabled.length} enabled.`,
+      },
+    };
+  }
+
   if (kind === "markdown") {
     const markdown = resolveBlockTemplate(node.prompt, record);
+    const action = markdownAction(node);
+    if (action === "approval") {
+      const waitingOutput = {
+        type: "markdown",
+        status: "waiting",
+        action,
+        approved: null,
+        markdown,
+        text: markdown,
+      };
+      const approval = waitForDiffApproval(workspaceRoot, record.id, node.id, options.signal);
+      try {
+        await patchWorkflowNode(workspaceRoot, record.id, node.id, {
+          rawOutput: stringifyBlockOutput(waitingOutput),
+          summary: stringifyBlockOutput(waitingOutput),
+          config: { ...(node.config ?? {}), waitingForApproval: true },
+        });
+      } catch (error) {
+        pendingDiffApprovals.get(interactionKey(workspaceRoot, record.id, node.id))?.dispose();
+        throw error;
+      }
+      const approved = await approval;
+      return {
+        output: {
+          ...waitingOutput,
+          status: approved ? "approved" : "rejected",
+          approved,
+          text: markdown,
+        },
+        nodePatch: {
+          config: { ...(node.config ?? {}), waitingForApproval: false },
+        },
+      };
+    }
+    if (action === "message") {
+      const waitingOutput = {
+        type: "markdown",
+        status: "waiting",
+        action,
+        markdown,
+        text: markdown,
+      };
+      const inputValue = waitForWorkflowInput(workspaceRoot, record.id, node.id, options.signal);
+      try {
+        await patchWorkflowNode(workspaceRoot, record.id, node.id, {
+          rawOutput: stringifyBlockOutput(waitingOutput),
+          summary: stringifyBlockOutput(waitingOutput),
+          config: { ...(node.config ?? {}), waitingForInput: true },
+        });
+      } catch (error) {
+        pendingWorkflowInputs.get(interactionKey(workspaceRoot, record.id, node.id))?.dispose();
+        throw error;
+      }
+      const message = await inputValue;
+      return {
+        output: {
+          ...waitingOutput,
+          status: "success",
+          message,
+          text: message,
+          markdown,
+        },
+        nodePatch: {
+          config: { ...(node.config ?? {}), waitingForInput: false },
+        },
+      };
+    }
     return {
       output: {
         type: "markdown",
@@ -1501,12 +2311,12 @@ async function executeLocalNode(
     if (!options.allowMcpToolCall) {
       const discovery = await discoverRemoteMcp({
         remoteLink,
-        postUrl: config.postUrl || undefined,
+        postUrl: resolveBlockTemplate(config.postUrl, record).trim() || undefined,
         headers: stringRecord(headers),
-        apiKey: config.apiKey || undefined,
+        apiKey: resolveBlockTemplate(config.apiKey, record).trim() || undefined,
       });
       const firstTool = discovery.tools[0]?.name ?? "";
-      const nextToolName = config.toolName || firstTool;
+      const nextToolName = toolName || firstTool;
       const nextTool = discovery.tools.find((tool) => tool.name === nextToolName);
       return {
         output: {
@@ -1524,13 +2334,13 @@ async function executeLocalNode(
         nodePatch: {
           config: {
             ...(node.config ?? {}),
-            remoteLink: discovery.remoteLink,
-            postUrl: discovery.postUrl,
+            remoteLink: preserveMcpTemplate(node, "remoteLink", discovery.remoteLink),
+            postUrl: preserveMcpTemplate(node, "postUrl", discovery.postUrl),
             tools: discovery.tools,
             connectedAt: discovery.connectedAt,
             connectionStatus: "connected",
             connectionError: "",
-            toolName: nextToolName,
+            toolName: preserveMcpTemplate(node, "toolName", nextToolName),
             arguments: shouldReplaceMcpArguments(config.arguments)
               ? argumentsTemplateFromTool(nextTool)
               : config.arguments,
@@ -1541,9 +2351,9 @@ async function executeLocalNode(
     if (!toolName) throw new Error(`${node.title} has no tool selected.`);
     const result = await callRemoteMcp({
       remoteLink,
-      postUrl: config.postUrl || undefined,
+      postUrl: resolveBlockTemplate(config.postUrl, record).trim() || undefined,
       headers: stringRecord(headers),
-      apiKey: config.apiKey || undefined,
+      apiKey: resolveBlockTemplate(config.apiKey, record).trim() || undefined,
       name: toolName,
       arguments: args,
     });
@@ -1563,8 +2373,8 @@ async function executeLocalNode(
       nodePatch: {
         config: {
           ...(node.config ?? {}),
-          remoteLink: result.remoteLink,
-          postUrl: result.postUrl,
+          remoteLink: preserveMcpTemplate(node, "remoteLink", result.remoteLink),
+          postUrl: preserveMcpTemplate(node, "postUrl", result.postUrl),
           connectionStatus: result.ok ? "connected" : "error",
           connectionError: result.ok ? "" : stringifyTemplateValue(result.error),
         },
@@ -1615,8 +2425,15 @@ function topoOrder(
     indegree.set(node.id, 0);
     outgoing.set(node.id, []);
   }
-  for (const edge of record.edges) {
-    if (!nodeIds.has(edge.from) || !nodeIds.has(edge.to)) continue;
+  const selectedEdges = record.edges.filter(
+    (edge) => nodeIds.has(edge.from) && nodeIds.has(edge.to),
+  );
+  if (hasClosedWorkflowCycle(nodeIds, selectedEdges)) {
+    return { nodeIds: [], error: "Workflow has a cycle without an exit." };
+  }
+  const backEdgeIds = findWorkflowBackEdgeIds(selectedEdges);
+  for (const edge of selectedEdges) {
+    if (backEdgeIds.has(edge.id)) continue;
     indegree.set(edge.to, (indegree.get(edge.to) ?? 0) + 1);
     outgoing.get(edge.from)?.push(edge.to);
   }
@@ -1639,6 +2456,108 @@ function topoOrder(
   return { nodeIds: ordered };
 }
 
+function findWorkflowBackEdgeIds(edges: readonly WorkflowEdge[]): Set<string> {
+  const backEdgeIds = new Set<string>();
+  const outgoing = new Map<string, WorkflowEdge[]>();
+  const nodeOrder: string[] = [];
+  const nodeIds = new Set<string>();
+  const indegree = new Map<string, number>();
+
+  for (const edge of edges) {
+    if (!nodeIds.has(edge.from)) {
+      nodeIds.add(edge.from);
+      nodeOrder.push(edge.from);
+      indegree.set(edge.from, 0);
+    }
+    if (!nodeIds.has(edge.to)) {
+      nodeIds.add(edge.to);
+      nodeOrder.push(edge.to);
+      indegree.set(edge.to, 0);
+    }
+    const targets = outgoing.get(edge.from) ?? [];
+    targets.push(edge);
+    outgoing.set(edge.from, targets);
+    if (edge.from !== edge.to) indegree.set(edge.to, (indegree.get(edge.to) ?? 0) + 1);
+  }
+
+  // Traverse from roots so an edge saved before its forward path cannot be
+  // mistaken for a forward edge merely because of array order.
+  const state = new Map<string, 0 | 1 | 2>();
+  const visit = (id: string): void => {
+    state.set(id, 1);
+    for (const edge of outgoing.get(id) ?? []) {
+      if (edge.from === edge.to) {
+        backEdgeIds.add(edge.id);
+        continue;
+      }
+      const targetState = state.get(edge.to);
+      if (targetState === 1) {
+        backEdgeIds.add(edge.id);
+      } else if (targetState === undefined) {
+        visit(edge.to);
+      }
+    }
+    state.set(id, 2);
+  };
+
+  for (const id of nodeOrder) {
+    if ((indegree.get(id) ?? 0) === 0 && state.get(id) === undefined) visit(id);
+  }
+  for (const id of nodeOrder) {
+    if (state.get(id) === undefined) visit(id);
+  }
+  return backEdgeIds;
+}
+
+function hasClosedWorkflowCycle(
+  nodeIds: ReadonlySet<string>,
+  edges: readonly WorkflowEdge[],
+): boolean {
+  const outgoing = new Map<string, string[]>();
+  for (const id of nodeIds) outgoing.set(id, []);
+  for (const edge of edges) outgoing.get(edge.from)?.push(edge.to);
+
+  let nextIndex = 0;
+  const indexes = new Map<string, number>();
+  const lowLinks = new Map<string, number>();
+  const stack: string[] = [];
+  const onStack = new Set<string>();
+  let closedCycle = false;
+
+  const visit = (id: string) => {
+    indexes.set(id, nextIndex);
+    lowLinks.set(id, nextIndex);
+    nextIndex += 1;
+    stack.push(id);
+    onStack.add(id);
+    for (const target of outgoing.get(id) ?? []) {
+      if (!indexes.has(target)) {
+        visit(target);
+        lowLinks.set(id, Math.min(lowLinks.get(id)!, lowLinks.get(target)!));
+      } else if (onStack.has(target)) {
+        lowLinks.set(id, Math.min(lowLinks.get(id)!, indexes.get(target)!));
+      }
+    }
+    if (lowLinks.get(id) !== indexes.get(id)) return;
+    const component = new Set<string>();
+    while (stack.length > 0) {
+      const member = stack.pop()!;
+      onStack.delete(member);
+      component.add(member);
+      if (member === id) break;
+    }
+    const cyclic = component.size > 1 || edges.some((edge) => edge.from === id && edge.to === id);
+    if (!cyclic) return;
+    const hasExit = edges.some((edge) => component.has(edge.from) && !component.has(edge.to));
+    if (!hasExit) closedCycle = true;
+  };
+
+  for (const id of nodeIds) {
+    if (!indexes.has(id)) visit(id);
+  }
+  return closedCycle;
+}
+
 async function patchWorkflowNode(
   workspaceRoot: string,
   workflowId: string,
@@ -1659,6 +2578,26 @@ async function patchWorkflowNode(
   return record;
 }
 
+async function restoreWorkflowNodeCheckpoint(
+  workspaceRoot: string,
+  workflowId: string,
+  checkpoint: WorkflowRunTrace,
+): Promise<void> {
+  const outputText =
+    checkpoint.output === undefined
+      ? undefined
+      : typeof checkpoint.output === "string"
+        ? checkpoint.output
+        : stringifyBlockOutput(checkpoint.output as WorkflowBlockOutput);
+  await patchWorkflowNode(workspaceRoot, workflowId, checkpoint.nodeId, {
+    status: "success",
+    ...(outputText === undefined ? {} : { rawOutput: outputText, summary: outputText }),
+    error: "",
+    startedAt: checkpoint.startedAt,
+    completedAt: checkpoint.completedAt,
+  });
+}
+
 async function patchWorkflowRun(
   workspaceRoot: string,
   workflowId: string,
@@ -1671,6 +2610,7 @@ async function patchWorkflowRun(
   }));
   const run = record.runs.find((item) => item.id === runId);
   if (run) {
+    await saveWorkflowUsageSnapshot(workspaceRoot, record, run);
     publishWorkflowRuntime(workspaceRoot, workflowId, {
       type: "run",
       updatedAt: record.updatedAt,
@@ -1891,6 +2831,7 @@ async function finishRun(
   );
   const run = record.runs.find((item) => item.id === runId);
   if (run) {
+    await saveWorkflowUsageSnapshot(workspaceRoot, record, run);
     publishWorkflowRuntime(workspaceRoot, workflowId, {
       type: "run",
       updatedAt: record.updatedAt,
@@ -1900,13 +2841,22 @@ async function finishRun(
   return record;
 }
 
+async function saveWorkflowUsageSnapshot(
+  workspaceRoot: string,
+  workflow: WorkflowRecord,
+  run: WorkflowRun,
+): Promise<void> {
+  await recordWorkflowUsageSnapshot(workspaceRoot, workflow, run).catch(() => undefined);
+}
+
 function finishRunRecord(
   record: WorkflowRecord,
   runId: string,
   status: WorkflowRun["status"],
   error?: string,
+  resumable = false,
+  completedAt = Date.now(),
 ): WorkflowRecord {
-  const completedAt = Date.now();
   return {
     ...record,
     runs: record.runs.map((run) =>
@@ -1931,11 +2881,99 @@ function finishRunRecord(
               error: error ?? run.error,
               trace,
               stats: runStats(finalized, completedAt),
+              resumable: resumable || undefined,
+              resumeFingerprint: resumable ? workflowDefinitionFingerprint(record) : undefined,
             };
           })()
         : run,
     ),
   };
+}
+
+export function interruptWorkflowRunRecord(
+  record: WorkflowRecord,
+  completedAt = Date.now(),
+): WorkflowRecord {
+  const runningIds = record.runs.filter((run) => run.status === "running").map((run) => run.id);
+  if (runningIds.length === 0) return record;
+  let next = record;
+  for (const runId of runningIds) {
+    next = finishRunRecord(next, runId, "stopped", "Workflow was interrupted.", true, completedAt);
+  }
+  return {
+    ...next,
+    nodes: next.nodes.map((node) =>
+      node.status === "running" ? resetInterruptedNode(node) : node,
+    ),
+  };
+}
+
+function resetInterruptedNode(node: WorkflowNode): WorkflowNode {
+  return {
+    ...node,
+    status: "idle",
+    summary: "",
+    rawOutput: "",
+    error: "",
+    config: clearRunDetails(node.config),
+    startedAt: undefined,
+    completedAt: undefined,
+  };
+}
+
+export function workflowRunCheckpoints(run: WorkflowRun): Map<string, WorkflowRunTrace[]> {
+  const checkpoints = new Map<string, WorkflowRunTrace[]>();
+  for (const trace of run.trace ?? []) {
+    if (trace.status !== "success") continue;
+    const entries = checkpoints.get(trace.nodeId) ?? [];
+    entries.push(trace);
+    checkpoints.set(trace.nodeId, entries);
+  }
+  return checkpoints;
+}
+
+export function canResumeWorkflowRun(
+  record: WorkflowRecord,
+  run: WorkflowRun,
+  orderedNodeIds: readonly string[],
+): boolean {
+  return (
+    run.status === "stopped" &&
+    run.resumable === true &&
+    run.resumeFingerprint === workflowDefinitionFingerprint(record) &&
+    run.nodeIds.length === orderedNodeIds.length &&
+    run.nodeIds.every((id, index) => id === orderedNodeIds[index])
+  );
+}
+
+export function workflowStopDisposition(
+  pauseRequested: boolean,
+  aborted: boolean,
+  hasFatalError: boolean,
+  message: string,
+): { stopped: boolean; resumable: boolean } {
+  const stopped =
+    (pauseRequested && aborted) ||
+    hasFatalError ||
+    (!hasFatalError && (aborted || message === "Stopped"));
+  return { stopped, resumable: stopped && (pauseRequested || hasFatalError) };
+}
+
+function workflowDefinitionFingerprint(record: WorkflowRecord): string {
+  const definition = {
+    nodes: record.nodes.map((node) => ({
+      id: node.id,
+      blockId: node.blockId,
+      kind: node.kind,
+      title: node.title,
+      providerKind: node.providerKind,
+      model: node.model,
+      prompt: node.prompt,
+      config: clearRunDetails(node.config),
+    })),
+    edges: record.edges,
+  };
+  return createHash("sha256").update(JSON.stringify(definition)).digest("hex");
 }
 
 function runStats(run: WorkflowRun, completedAt: number): WorkflowRun["stats"] {
@@ -1965,20 +3003,36 @@ function runStats(run: WorkflowRun, completedAt: number): WorkflowRun["stats"] {
   };
 }
 
+function workflowRunCost(run: WorkflowRun): number {
+  return (run.trace ?? []).reduce((sum, item) => sum + (item.cost ?? 0), 0);
+}
+
+export function workflowRunExceedsCostLimit(run: WorkflowRun, limit: number): boolean {
+  return limit > 0 && workflowRunCost(run) > limit;
+}
+
 function isTriggerKind(kind: WorkflowNodeKind): boolean {
   return (
     kind === "trigger" || kind === "manual-trigger" || kind === "cron" || kind === "webhook-trigger"
   );
 }
 
-function triggerOutput(node: WorkflowNode, kind: WorkflowNodeKind): WorkflowBlockOutput {
+function triggerOutput(
+  node: WorkflowNode,
+  kind: WorkflowNodeKind,
+  record?: WorkflowRecord,
+): WorkflowBlockOutput {
   const config = node.config ?? {};
+  const resolve = (value: unknown): string | undefined =>
+    typeof value === "string" ? (record ? resolveBlockTemplate(value, record) : value) : undefined;
   return {
     type: kind,
     status: "success",
     id: displayBlockId(node),
-    schedule: typeof config.cron === "string" ? config.cron : undefined,
-    webhookPath: typeof config.path === "string" ? config.path : undefined,
+    schedule: resolve(config.cron),
+    timezone: resolve(config.timezone),
+    method: resolve(config.method),
+    webhookPath: resolve(config.path),
     text:
       kind === "cron"
         ? "Cron trigger evaluated for manual run."
@@ -2072,11 +3126,11 @@ async function maybeRunAgentMcpToolCalls(
     }
     const result = await callRemoteMcp({
       remoteLink: resolveBlockTemplate(runtimeTool.config.remoteLink, record).trim(),
-      postUrl: runtimeTool.config.postUrl || undefined,
+      postUrl: resolveBlockTemplate(runtimeTool.config.postUrl, record).trim() || undefined,
       headers: stringRecord(
         parseJsonObject(resolveBlockTemplate(runtimeTool.config.headers, record)) ?? {},
       ),
-      apiKey: runtimeTool.config.apiKey || undefined,
+      apiKey: resolveBlockTemplate(runtimeTool.config.apiKey, record).trim() || undefined,
       name: call.name,
       arguments: call.arguments,
     });
@@ -2157,19 +3211,22 @@ function extractMcpToolCalls(
 }
 
 function agentOutput(node: WorkflowNode, raw: string): WorkflowBlockOutput {
-  const parsed = parseJsonObject(raw);
-  if (parsed) {
-    return normalizeOutputObject(parsed, {
-      type: node.providerKind === "claude-cli" ? "claude" : "codex",
-      status: "success",
-      text: textFromOutput(parsed) || raw.trim(),
-    });
+  const type = node.providerKind === "claude-cli" ? "claude" : "codex";
+  const trimmed = raw.trim();
+  if (node.config?.parseOutputJson === true) {
+    try {
+      return { type, status: "success", text: JSON.parse(trimmed) as unknown };
+    } catch (error) {
+      throw new Error(`${node.title} output text is not valid JSON: ${(error as Error).message}`);
+    }
   }
-  return {
-    type: node.providerKind === "claude-cli" ? "claude" : "codex",
-    status: "success",
-    text: raw.trim(),
-  };
+
+  const parsed = parseJsonObject(raw);
+  return { type, status: "success", text: (parsed && textFromOutput(parsed)) || trimmed };
+}
+
+export function agentOutputForTest(node: WorkflowNode, raw: string): WorkflowBlockOutput {
+  return agentOutput(node, raw);
 }
 
 function normalizeOutputObject(
@@ -2186,6 +3243,7 @@ function sanitizeBlockOutput(output: WorkflowBlockOutput): WorkflowBlockOutput {
   const sanitized = { ...output };
   delete sanitized.CHANGED_FILES;
   delete sanitized.VERIFICATION;
+  if (sanitized.type === "diff-approval") delete sanitized.diff;
   return sanitized;
 }
 
@@ -2253,11 +3311,17 @@ function textFromAny(value: unknown): string {
 
 function resolveBlockTemplate(input: string, record: WorkflowRecord): string {
   assertValidBlockTemplates(input);
-  return input.replace(
-    /\{\{\s*blocks\[(\d+)\]((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}/g,
-    (_match, idText: string, pathText: string) =>
-      stringifyTemplateValue(resolveBlockReference(record, idText, pathText)),
-  );
+  return input
+    .replace(
+      /\{\{\s*blocks\[(\d+)\]((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}/g,
+      (_match, idText: string, pathText: string) =>
+        stringifyTemplateValue(resolveBlockReference(record, idText, pathText)),
+    )
+    .replace(
+      /\{\{\s*vars\[\s*((?:"[^"\r\n]+"|'[^'\r\n]+'|[^\]"'\r\n]+?))\s*\]((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}/g,
+      (_match, nameText: string, pathText: string) =>
+        stringifyTemplateValue(resolveVariableReference(record, nameText, pathText)),
+    );
 }
 
 function resolveTemplateValue(input: string, record: WorkflowRecord): unknown {
@@ -2267,12 +3331,19 @@ function resolveTemplateValue(input: string, record: WorkflowRecord): unknown {
     /^\{\{\s*blocks\[(\d+)\]((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}$/,
   );
   if (whole) return resolveBlockReference(record, whole[1] ?? "", whole[2] ?? "");
+  const wholeVariable = trimmed.match(
+    /^\{\{\s*vars\[\s*((?:"[^"\r\n]+"|'[^'\r\n]+'|[^\]"'\r\n]+?))\s*\]((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}$/,
+  );
+  if (wholeVariable) {
+    return resolveVariableReference(record, wholeVariable[1] ?? "", wholeVariable[2] ?? "");
+  }
   return parseMaybeJson(resolveBlockTemplate(input, record));
 }
 
 function resolveJsonTemplate(input: string, record: WorkflowRecord): string {
   assertValidBlockTemplates(input);
-  const re = /\{\{\s*blocks\[(\d+)\]((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}/g;
+  const re =
+    /\{\{\s*(?:blocks\[(\d+)\]|vars\[\s*((?:"[^"\r\n]+"|'[^'\r\n]+'|[^\]"'\r\n]+?))\s*\])((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}/g;
   let output = "";
   let index = 0;
   let inString = false;
@@ -2289,7 +3360,10 @@ function resolveJsonTemplate(input: string, record: WorkflowRecord): string {
     const before = input.slice(index, match.index);
     output += before;
     updateState(before);
-    const value = resolveBlockReference(record, match[1] ?? "", match[2] ?? "");
+    const pathText = match[3] ?? "";
+    const value = match[1]
+      ? resolveBlockReference(record, match[1], pathText)
+      : resolveVariableReference(record, match[2] ?? "", pathText);
     output += inString
       ? escapeJsonStringContent(stringifyTemplateValue(value))
       : JSON.stringify(value ?? null);
@@ -2318,6 +3392,128 @@ function resolveBlockReference(record: WorkflowRecord, idText: string, pathText:
   return result.value;
 }
 
+function resolveVariableReference(
+  record: WorkflowRecord,
+  nameText: string,
+  pathText: string,
+): unknown {
+  const name = variableNameFromReference(nameText);
+  const reference = `{{vars[${nameText}]${pathText}}}`;
+  const variableNodes = record.nodes.filter((item) => nodeKind(item) === "variable");
+  const activeRun = record.runs.find((run) => run.status === "running");
+  const executedNode = variableNodes
+    .filter(
+      (item) =>
+        variableNodeOutputValue(item, name).found &&
+        (!activeRun ||
+          (item.status === "success" && (item.completedAt ?? 0) >= activeRun.startedAt)),
+    )
+    .sort((a, b) => (b.completedAt ?? 0) - (a.completedAt ?? 0))[0];
+  if (activeRun) {
+    if (!executedNode) {
+      throw new Error(`Workflow variable ${reference} references missing variable ${name}.`);
+    }
+    const value = variableNodeOutputValue(executedNode, name).value;
+    const result = getPathResult(value, pathText);
+    if (!result.found) {
+      throw new Error(`Workflow variable ${reference} references a value that does not exist.`);
+    }
+    return result.value;
+  }
+  const node =
+    executedNode ??
+    [...variableNodes]
+      .reverse()
+      .find((item) => variableNodeConfig(item).some((entry) => entry.name.trim() === name));
+  if (!node) {
+    throw new Error(`Workflow variable ${reference} references missing variable ${name}.`);
+  }
+  const config = variableNodeConfig(node);
+  const outputValue = variableNodeOutputValue(node, name);
+  const configuredEntry = [...config].reverse().find((entry) => entry.name.trim() === name);
+  const value = outputValue.found
+    ? outputValue.value
+    : parseVariableValue(
+        configuredEntry?.value ?? "",
+        configuredEntry?.type ?? "auto",
+        node.title,
+        name,
+      );
+  const result = getPathResult(value, pathText);
+  if (!result.found) {
+    throw new Error(`Workflow variable ${reference} references a value that does not exist.`);
+  }
+  return result.value;
+}
+
+function variableNodeOutputValue(
+  node: WorkflowNode,
+  name: string,
+): { found: boolean; value: unknown } {
+  const output = parseBlockOutput(node);
+  if (!output) return { found: false, value: undefined };
+  const variables = output.variables;
+  if (variables && typeof variables === "object" && !Array.isArray(variables)) {
+    if (Object.prototype.hasOwnProperty.call(variables, name)) {
+      return { found: true, value: (variables as Record<string, unknown>)[name] };
+    }
+  }
+  if (output.name === name && Object.prototype.hasOwnProperty.call(output, "value")) {
+    return { found: true, value: output.value };
+  }
+  return { found: false, value: undefined };
+}
+
+function inheritedWorkflowVariables(
+  record: WorkflowRecord,
+  node: WorkflowNode,
+): {
+  variables: Record<string, unknown>;
+  variableTypes: Record<string, unknown>;
+} {
+  const variables: Record<string, unknown> = {};
+  const variableTypes: Record<string, unknown> = {};
+  const nodeIndex = record.nodes.findIndex((item) => item.id === node.id);
+  const precedingNodes = nodeIndex < 0 ? [] : record.nodes.slice(0, nodeIndex);
+  for (const preceding of precedingNodes) {
+    if (nodeKind(preceding) !== "variable") continue;
+    const output = parseBlockOutput(preceding);
+    if (!output) continue;
+    if (
+      output.variables &&
+      typeof output.variables === "object" &&
+      !Array.isArray(output.variables)
+    ) {
+      Object.assign(variables, output.variables);
+    } else if (
+      typeof output.name === "string" &&
+      Object.prototype.hasOwnProperty.call(output, "value")
+    ) {
+      variables[output.name] = output.value;
+    }
+    if (
+      output.variableTypes &&
+      typeof output.variableTypes === "object" &&
+      !Array.isArray(output.variableTypes)
+    ) {
+      Object.assign(variableTypes, output.variableTypes);
+    }
+  }
+  return { variables, variableTypes };
+}
+
+function variableNameFromReference(nameText: string): string {
+  const trimmed = nameText.trim();
+  if (
+    trimmed.length >= 2 &&
+    ((trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+      (trimmed.startsWith("'") && trimmed.endsWith("'")))
+  ) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
 export function resolveWorkflowTemplate(input: string, record: WorkflowRecord): string {
   return resolveBlockTemplate(input, record);
 }
@@ -2325,7 +3521,7 @@ export function resolveWorkflowTemplate(input: string, record: WorkflowRecord): 
 function assertValidBlockTemplates(input: string): void {
   const expressionRe = /\{\{[\s\S]*?\}\}/g;
   const validRe =
-    /^\{\{\s*blocks\[(\d+)\]((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}$/;
+    /^\{\{\s*(?:blocks\[(\d+)\]|vars\[\s*(?:"[^"\r\n]+"|'[^'\r\n]+'|[^\]"'\r\n]+?)\s*\])((?:\.[A-Za-z_$][\w$]*|\[(?:"[^"]+"|'[^']+'|\d+)\])*)\s*\}\}$/;
   const expressions = input.match(expressionRe) ?? [];
   for (const expression of expressions) {
     if (!validRe.test(expression)) throw invalidWorkflowVariable(expression);
@@ -2339,7 +3535,7 @@ function assertValidBlockTemplates(input: string): void {
 function invalidWorkflowVariable(expression: string): Error {
   const preview = expression.length > 120 ? `${expression.slice(0, 117)}...` : expression;
   return new Error(
-    `Invalid workflow variable ${JSON.stringify(preview)}. Expected syntax: {{blocks[2].text}}.`,
+    `Invalid workflow variable ${JSON.stringify(preview)}. Expected syntax: {{blocks[2].text}} or {{vars[name].id}}.`,
   );
 }
 
@@ -2405,19 +3601,46 @@ async function runCodeBlock(
   code: string,
   input: WorkflowBlockOutput,
   items: WorkflowBlockOutput[],
+  templateValues: unknown[],
 ): Promise<unknown> {
   const helpers = { jsonPreview, textFromAny };
   const fn = new Function(
     "input",
     "items",
     "helpers",
+    "__osheepWorkflowTemplateValues",
     `"use strict";\nreturn (async () => {\n${code}\n})();`,
   ) as (
     input: WorkflowBlockOutput,
     items: WorkflowBlockOutput[],
     helpers: Record<string, unknown>,
+    templateValues: unknown[],
   ) => Promise<unknown>;
-  return await fn(input, items, helpers);
+  return await fn(input, items, helpers, templateValues);
+}
+
+async function runWorkflowCode(
+  code: string,
+  record: WorkflowRecord,
+  input: WorkflowBlockOutput,
+  items: WorkflowBlockOutput[],
+): Promise<unknown> {
+  assertValidBlockTemplates(code);
+  const values: unknown[] = [];
+  const compiledCode = code.replace(/\{\{[\s\S]*?\}\}/g, (expression) => {
+    const index = values.push(resolveTemplateValue(expression, record)) - 1;
+    return `__osheepWorkflowTemplateValues[${index}]`;
+  });
+  return await runCodeBlock(compiledCode, input, items, values);
+}
+
+export async function runWorkflowCodeForTest(
+  code: string,
+  record: WorkflowRecord,
+  input: WorkflowBlockOutput = {},
+  items: WorkflowBlockOutput[] = [],
+): Promise<unknown> {
+  return await runWorkflowCode(code, record, input, items);
 }
 
 function outputFromValue(type: string, value: unknown): WorkflowBlockOutput {
@@ -2544,9 +3767,16 @@ function ifNodeConfig(node: WorkflowNode): { expression: string } {
   };
 }
 
-function mergeNodeConfig(node: WorkflowNode): { mode: string } {
+function mergeNodeConfig(node: WorkflowNode, record?: WorkflowRecord): { mode: string } {
   const config = node.config ?? {};
-  return { mode: typeof config.mode === "string" ? config.mode : "object" };
+  return {
+    mode:
+      typeof config.mode === "string"
+        ? record
+          ? resolveBlockTemplate(config.mode, record)
+          : config.mode
+        : "object",
+  };
 }
 
 function codeNodeConfig(node: WorkflowNode): { code: string } {
@@ -2569,9 +3799,13 @@ function loopItemsConfig(node: WorkflowNode): { source: string; batchSize: numbe
   };
 }
 
-function waitNodeConfig(node: WorkflowNode): { seconds: number } {
+function waitNodeConfig(node: WorkflowNode, record?: WorkflowRecord): { seconds: number } {
   const config = node.config ?? {};
-  const seconds = Number(config.seconds);
+  const seconds = Number(
+    typeof config.seconds === "string" && record
+      ? resolveBlockTemplate(config.seconds, record)
+      : config.seconds,
+  );
   return { seconds: Number.isFinite(seconds) ? clamp(seconds, 0, 86_400) : 1 };
 }
 
@@ -2583,10 +3817,21 @@ function jsonNodeConfig(node: WorkflowNode): { source: string; path: string } {
   };
 }
 
-function pluginSelectors(node: WorkflowNode): string[] {
+function pluginSelectors(node: WorkflowNode, record?: WorkflowRecord): string[] {
   const value = node.config?.pluginSelectors;
   return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === "string")
+    ? value
+        .filter((item): item is string => typeof item === "string")
+        .map((item) => (record ? resolveBlockTemplate(item, record) : item))
+    : [];
+}
+
+function skillNames(node: WorkflowNode, record?: WorkflowRecord): string[] {
+  const value = node.config?.skillNames;
+  return Array.isArray(value)
+    ? value
+        .filter((item): item is string => typeof item === "string")
+        .map((item) => (record ? resolveBlockTemplate(item, record) : item))
     : [];
 }
 
@@ -2607,6 +3852,85 @@ function mcpNodeConfig(node: WorkflowNode): McpNodeConfig {
     arguments: typeof config.arguments === "string" ? config.arguments : "{}",
     tools,
   };
+}
+
+function preserveMcpTemplate(node: WorkflowNode, key: string, resolved: string): string {
+  const original =
+    node.config?.[key] ??
+    (key === "remoteLink"
+      ? node.config?.server
+      : key === "toolName"
+        ? node.config?.tool
+        : undefined);
+  return typeof original === "string" && original.includes("{{") ? original : resolved;
+}
+
+function variableNodeConfig(
+  node: WorkflowNode,
+): Array<{ name: string; value: string; type: WorkflowVariableValueType }> {
+  const config = node.config ?? {};
+  if (Array.isArray(config.variables)) {
+    return config.variables.map((entry) => {
+      const item = objectValue(entry);
+      return {
+        name: typeof item?.name === "string" ? item.name : "",
+        value: typeof item?.value === "string" ? item.value : "",
+        type: workflowVariableValueType(item?.type),
+      };
+    });
+  }
+  return [
+    {
+      name: typeof config.name === "string" ? config.name : "",
+      value: typeof config.value === "string" ? config.value : "",
+      type: "auto",
+    },
+  ];
+}
+
+function workflowVariableValueType(value: unknown): WorkflowVariableValueType {
+  return value === "text" || value === "json" || value === "number" || value === "boolean"
+    ? value
+    : "auto";
+}
+
+function parseVariableValue(
+  rawValue: string,
+  type: WorkflowVariableValueType,
+  nodeTitle: string,
+  name: string,
+): unknown {
+  if (!rawValue.trim()) return "";
+  if (type === "text") return rawValue;
+  if (type === "auto") return parseMaybeJson(rawValue);
+  if (type === "json") {
+    try {
+      return parseJsonValue(rawValue);
+    } catch (error) {
+      throw new Error(
+        `${nodeTitle} variable ${name} has invalid JSON: ${(error as Error).message}`,
+      );
+    }
+  }
+  if (type === "number") {
+    const value = Number(rawValue.trim());
+    if (!Number.isFinite(value)) {
+      throw new Error(`${nodeTitle} variable ${name} must be a finite number.`);
+    }
+    return value;
+  }
+  const normalized = rawValue.trim().toLowerCase();
+  if (normalized === "true") return true;
+  if (normalized === "false") return false;
+  throw new Error(`${nodeTitle} variable ${name} must be true or false.`);
+}
+
+function agentConfiguredSessionId(node: WorkflowNode): string {
+  const value = typeof node.config?.sessionId === "string" ? node.config.sessionId.trim() : "";
+  if (value && !WORKFLOW_SESSION_ID_RE.test(value)) {
+    throw new Error(`${node.title} session ID must be a valid UUID.`);
+  }
+  return value;
 }
 
 function agentAutoSuccess(node: WorkflowNode): boolean {
@@ -2675,8 +3999,18 @@ function agentRetryForever(node: WorkflowNode): boolean {
   return node.config?.retryForever === true;
 }
 
+function agentRetryDelaySeconds(node: WorkflowNode): number {
+  const value = node.config?.retryDelaySeconds;
+  if (typeof value !== "number" || !Number.isInteger(value)) return 1;
+  return clamp(value, 0, 86_400);
+}
+
 function agentAlwaysEnter(node: WorkflowNode): boolean {
   return node.config?.alwaysEnter === true;
+}
+
+function agentKeepRunningOnInterrupt(node: WorkflowNode): boolean {
+  return node.config?.keepRunningOnInterrupt === true;
 }
 
 function agentMode(node: WorkflowNode): AgentMode {
@@ -2979,9 +4313,34 @@ function nodeKind(node: WorkflowNode): WorkflowNodeKind {
   return node.kind ?? "agent";
 }
 
-function configString(node: WorkflowNode, key: string, fallback = ""): string {
+function configString(
+  node: WorkflowNode,
+  key: string,
+  fallback = "",
+  record?: WorkflowRecord,
+): string {
   const value = node.config?.[key];
-  return typeof value === "string" ? value : fallback;
+  return typeof value === "string"
+    ? record
+      ? resolveBlockTemplate(value, record)
+      : value
+    : fallback;
+}
+
+function configBoolean(
+  node: WorkflowNode,
+  key: string,
+  record?: WorkflowRecord,
+  fallback = false,
+): boolean {
+  const value = node.config?.[key];
+  if (typeof value === "boolean") return value;
+  if (typeof value !== "string" || !record) return fallback;
+  const resolved = resolveTemplateValue(value, record);
+  if (typeof resolved === "boolean") return resolved;
+  if (typeof resolved !== "string") return fallback;
+  const normalized = resolved.trim().toLowerCase();
+  return normalized === "true" ? true : normalized === "false" ? false : fallback;
 }
 
 function sourceHandleForOutput(
@@ -2990,7 +4349,15 @@ function sourceHandleForOutput(
 ): string | undefined {
   if (kind === "if") return output.result === true ? "true" : "false";
   if (kind === "diff-approval") return output.approved === true ? "success" : "failure";
+  if (kind === "markdown" && output.action === "approval") {
+    return output.approved === true ? "success" : "failure";
+  }
   return undefined;
+}
+
+function markdownAction(node: WorkflowNode): "none" | "approval" | "message" {
+  const value = node.config?.action ?? node.config?.markdownAction;
+  return value === "approval" || value === "message" ? value : "none";
 }
 
 function interactionKey(workspaceRoot: string, workflowId: string, nodeId: string): string {
@@ -3077,8 +4444,51 @@ export async function resolveWorkflowInput(
   return true;
 }
 
-function nodeFailover(node: WorkflowNode): boolean {
-  return supportsFailover(nodeKind(node)) && node.config?.failover === true;
+function waitForAgentRetry(
+  workspaceRoot: string,
+  workflowId: string,
+  nodeId: string,
+  seconds: number,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (seconds <= 0) return Promise.resolve();
+  if (signal?.aborted) return Promise.reject(new Error("Stopped"));
+  const key = interactionKey(workspaceRoot, workflowId, nodeId);
+  return new Promise<void>((resolve, reject) => {
+    let timer: NodeJS.Timeout;
+    const dispose = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      if (pendingAgentRetries.get(key)?.dispose === dispose) pendingAgentRetries.delete(key);
+    };
+    const finish = () => {
+      dispose();
+      resolve();
+    };
+    const onAbort = () => {
+      dispose();
+      reject(new Error("Stopped"));
+    };
+    timer = setTimeout(finish, seconds * 1_000);
+    pendingAgentRetries.set(key, { resolve: finish, dispose });
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+export async function retryWorkflowNodeNow(
+  workspaceId: string,
+  workflowId: string,
+  nodeId: string,
+): Promise<boolean> {
+  const workspace = await resolveWorkspace(workspaceId);
+  const pending = pendingAgentRetries.get(interactionKey(workspace.path, workflowId, nodeId));
+  if (!pending) return false;
+  pending.resolve();
+  return true;
+}
+
+function nodeFailover(node: WorkflowNode, record?: WorkflowRecord): boolean {
+  return supportsFailover(nodeKind(node)) && configBoolean(node, "failover", record);
 }
 
 function supportsFailover(kind: WorkflowNodeKind): boolean {
@@ -3092,7 +4502,9 @@ function supportsFailover(kind: WorkflowNodeKind): boolean {
     kind === "file-write" ||
     kind === "mcp" ||
     kind === "codex-plugin" ||
-    kind === "claude-plugin"
+    kind === "claude-plugin" ||
+    kind === "codex-skill" ||
+    kind === "claude-skill"
   );
 }
 

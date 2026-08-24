@@ -18,19 +18,21 @@ import {
 import { ClaudeLogo, OpenAILogo } from "./BrandIcons";
 import { useOsheepOverlay } from "./OsheepOverlay";
 import type { ModelPrice, OsheepSettings, TabSize } from "./settings";
+import { WorkflowUsageStatistics } from "./WorkflowUsageStatistics";
 
 interface SettingsViewProps {
   settings: OsheepSettings;
   onChange: (settings: OsheepSettings) => void;
+  workspaceId?: string | null;
 }
 
 const MIN_FONT = 8;
 const MAX_FONT = 64;
 const MIN_WORKFLOW_PARALLEL = 1;
 const MAX_WORKFLOW_PARALLEL = 32;
-type SettingsSection = "general" | "editor" | "workflow" | "pricing" | "about";
+type SettingsSection = "general" | "editor" | "workflow" | "usage" | "pricing" | "about";
 
-export function SettingsView({ settings, onChange }: SettingsViewProps) {
+export function SettingsView({ settings, onChange, workspaceId = null }: SettingsViewProps) {
   const { language, setLanguage, theme, setTheme, t } = useUiPreferences();
   const { notify, resetConfirmations } = useOsheepOverlay();
   const [section, setSection] = useState<SettingsSection>("general");
@@ -124,6 +126,7 @@ export function SettingsView({ settings, onChange }: SettingsViewProps) {
     { id: "general", label: t("settings.category.general"), icon: "settings-gear" },
     { id: "editor", label: t("settings.category.editor"), icon: "edit" },
     { id: "workflow", label: t("settings.category.workflow"), icon: "type-hierarchy-sub" },
+    { id: "usage", label: t("settings.category.usage"), icon: "graph" },
     { id: "pricing", label: t("settings.category.pricing"), icon: "symbol-number" },
     { id: "about", label: t("settings.category.about"), icon: "info" },
   ];
@@ -309,6 +312,7 @@ export function SettingsView({ settings, onChange }: SettingsViewProps) {
               </SettingItem>
             </section>
           )}
+          {section === "usage" && <WorkflowUsageStatistics workspaceId={workspaceId} />}
           {section === "pricing" && <ModelPricingPanel settings={settings} onChange={onChange} />}
           {section === "about" && <AboutPanel />}
         </main>

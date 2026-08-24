@@ -5,9 +5,13 @@
   position: relative;
 }
 
-.file-tree.is-drop-target-root {
-  outline: 1px dashed var(--accent);
-  outline-offset: -2px;
+/* Drag feedback is rendered on the row itself. Do not leave the native
+   keyboard-focus ring behind after a drop completes. */
+.file-tree.is-drop-target-root:focus,
+.file-tree.is-drop-target-root:focus-visible,
+.tree-row.is-drop-target:focus,
+.tree-row.is-drop-target:focus-visible {
+  outline: none;
 }
 
 .tree-row {
@@ -37,10 +41,82 @@
   opacity: 0.55;
 }
 
+.tree-row.is-pointer-dragging {
+  opacity: 0.55;
+}
+
+.file-tree.is-pointer-dragging,
+.file-tree.is-pointer-dragging .tree-row {
+  cursor: grabbing;
+}
+
+.file-tree-drag-preview {
+  position: fixed;
+  z-index: var(--z-toast);
+  top: 0;
+  left: 0;
+  width: min(240px, calc(100vw - 32px));
+  padding: 4px 28px 4px 6px;
+  border: 1px solid var(--border-default);
+  border-radius: 4px;
+  background: var(--ui-surface-menu);
+  box-shadow: var(--shadow-2);
+  color: var(--fg-strong);
+  pointer-events: none;
+  opacity: 0.94;
+  will-change: transform;
+}
+
+.file-tree-drag-preview__item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  min-width: 0;
+  font-size: 12px;
+}
+
+.file-tree-drag-preview__item > :first-child {
+  flex: 0 0 16px;
+  color: var(--fg-muted);
+}
+
+.file-tree-drag-preview__item > span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-tree-drag-preview__count {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border: 1px solid var(--ui-surface-menu);
+  border-radius: 10px;
+  background: var(--accent);
+  color: var(--ui-text-on-accent);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+  text-align: center;
+}
+
+.tree-row.is-ignored {
+  color: var(--fg-faint);
+  opacity: 0.62;
+}
+
+.tree-row.is-ignored .tree-row__icon {
+  color: var(--fg-faint);
+}
+
 .tree-row.is-drop-target {
   background: var(--accent-soft);
-  outline: 1px solid var(--accent);
-  outline-offset: -1px;
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 
 .tree-row:hover .tree-row__actions {

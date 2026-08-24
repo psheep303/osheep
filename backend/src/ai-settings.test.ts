@@ -7,11 +7,24 @@ import {
   type AiProvider,
   type AiSettingsState,
   importLiveProvider,
+  normalizeBillingMultiplier,
+  providerBillingMultiplier,
   readAiSettings,
   snapshotAiSettings,
   switchAiProvider,
   writeAiSettings,
 } from "./ai-settings.js";
+
+test("provider billing multipliers are positive Osheep-only values", () => {
+  assert.equal(normalizeBillingMultiplier(1.5), 1.5);
+  assert.equal(normalizeBillingMultiplier("0.25"), 0.25);
+  assert.equal(normalizeBillingMultiplier(0), undefined);
+  assert.equal(normalizeBillingMultiplier(Number.NaN), undefined);
+  assert.equal(
+    providerBillingMultiplier({ id: "default", name: "Default", settingsConfig: {} }),
+    1,
+  );
+});
 
 const ENV_KEYS = [
   "CLAUDE_CONFIG_DIR",
@@ -76,6 +89,7 @@ test("switches Claude and Codex live configuration using cc-switch semantics", a
         ANTHROPIC_SMALL_FAST_MODEL: "keep-as-saved",
       },
     });
+    nextProvider.billingMultiplier = 1.75;
     await writeAiSettings(stateWith("claude", [oldProvider, nextProvider], "old"));
 
     const snapshot = await switchAiProvider("claude", "next");
@@ -83,7 +97,9 @@ test("switches Claude and Codex live configuration using cc-switch semantics", a
 
     assert.equal(snapshot.paths.claude.settings, legacyPath);
     assert.equal(snapshot.state.apps.claude.current, "next");
+    assert.equal(snapshot.state.apps.claude.providers.next.billingMultiplier, 1.75);
     assert.equal(live.api_format, undefined);
+    assert.equal(live.billingMultiplier, undefined);
     assert.deepEqual(live.env, {
       ANTHROPIC_BASE_URL: "https://example.test",
       ANTHROPIC_MODEL: "next-model",

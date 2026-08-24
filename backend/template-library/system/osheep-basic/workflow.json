@@ -1,0 +1,338 @@
+{
+  "id": "wf_7gui0fhnr9oo",
+  "title": "osheep copy",
+  "readme": "",
+  "createdAt": 1787544357575,
+  "updatedAt": 1787544465740,
+  "settings": {
+    "unbilled": false,
+    "maxRunCost": 0,
+    "maxRunDurationSeconds": 0,
+    "sounds": {
+      "nodeSuccess": false,
+      "nodeError": false,
+      "waitingForChoice": true,
+      "runCompleted": false
+    }
+  },
+  "nodes": [
+    {
+      "id": "node_yddblkwj",
+      "blockId": 1,
+      "kind": "trigger",
+      "title": "Workflow run",
+      "providerKind": "codex-cli",
+      "adapterId": "codex",
+      "model": "default",
+      "prompt": "",
+      "x": 80,
+      "y": 80,
+      "status": "idle",
+      "summary": "",
+      "rawOutput": "",
+      "error": "",
+      "config": {}
+    },
+    {
+      "id": "node_hy69jnb4",
+      "blockId": 2,
+      "kind": "agent",
+      "title": "Codex",
+      "providerKind": "codex-cli",
+      "adapterId": "codex",
+      "model": "default",
+      "prompt": "{{vars[input]}}",
+      "x": 624,
+      "y": 80,
+      "status": "idle",
+      "summary": "",
+      "rawOutput": "",
+      "error": "",
+      "config": {
+        "retryForever": false,
+        "retries": 5,
+        "autoSuccess": true,
+        "keepRunningOnInterrupt": true,
+        "retryDelaySeconds": 20,
+        "sessionId": "",
+        "effort": "high",
+        "retryStrategy": "lowest-multiplier",
+        "retryProviderIds": [
+          "sas"
+        ],
+        "alwaysEnter": false
+      }
+    },
+    {
+      "id": "node_syhmvuzd",
+      "blockId": 3,
+      "kind": "variable",
+      "title": "输入任务",
+      "providerKind": "codex-cli",
+      "adapterId": "codex",
+      "model": "default",
+      "prompt": "",
+      "x": 352,
+      "y": 80,
+      "status": "idle",
+      "summary": "",
+      "rawOutput": "",
+      "error": "",
+      "config": {
+        "variables": [
+          {
+            "name": "input",
+            "value": "",
+            "type": "text"
+          }
+        ],
+        "icon": "set"
+      }
+    },
+    {
+      "id": "node_hrz694qs",
+      "blockId": 4,
+      "kind": "command",
+      "title": "运行测试",
+      "providerKind": "codex-cli",
+      "adapterId": "codex",
+      "model": "default",
+      "prompt": "",
+      "x": 924,
+      "y": 92,
+      "status": "idle",
+      "summary": "",
+      "rawOutput": "",
+      "error": "",
+      "config": {
+        "failover": false,
+        "icon": "command"
+      }
+    },
+    {
+      "id": "node_yw56w0un",
+      "blockId": 6,
+      "kind": "if",
+      "title": "条件判断（IF）",
+      "providerKind": "codex-cli",
+      "adapterId": "codex",
+      "model": "default",
+      "prompt": "",
+      "x": 1984,
+      "y": 156,
+      "status": "idle",
+      "summary": "",
+      "rawOutput": "",
+      "error": "",
+      "config": {
+        "expression": "{{blocks[15].text}} != \"\"",
+        "icon": "if"
+      }
+    },
+    {
+      "id": "node_zddxqq7c",
+      "blockId": 8,
+      "kind": "markdown",
+      "title": "查看摘要",
+      "providerKind": "codex-cli",
+      "adapterId": "codex",
+      "model": "default",
+      "prompt": "{{blocks[2].text}}",
+      "x": 1280,
+      "y": 99,
+      "status": "idle",
+      "summary": "",
+      "rawOutput": "",
+      "error": "",
+      "config": {
+        "icon": "markdown",
+        "autoSeeResult": true,
+        "action": "approval",
+        "waitingForApproval": true
+      }
+    },
+    {
+      "id": "node_ubjbubp4",
+      "blockId": 9,
+      "kind": "input",
+      "title": "commit消息",
+      "providerKind": "codex-cli",
+      "adapterId": "codex",
+      "model": "default",
+      "prompt": "",
+      "x": 1712,
+      "y": 80,
+      "status": "idle",
+      "summary": "",
+      "rawOutput": "",
+      "error": "",
+      "config": {
+        "inputTitle": "commit text?  (留空拒绝)",
+        "icon": "input"
+      }
+    },
+    {
+      "id": "node_59rba5de",
+      "blockId": 10,
+      "kind": "if",
+      "title": "条件判断（IF）",
+      "providerKind": "codex-cli",
+      "adapterId": "codex",
+      "model": "default",
+      "prompt": "",
+      "x": 1984,
+      "y": 79,
+      "status": "idle",
+      "summary": "",
+      "rawOutput": "",
+      "error": "",
+      "config": {
+        "expression": "{{blocks[9].text}} != \"\"",
+        "icon": "if"
+      }
+    },
+    {
+      "id": "node_0emrwcsa",
+      "blockId": 11,
+      "kind": "git-commit",
+      "title": "Commit 提交",
+      "providerKind": "codex-cli",
+      "adapterId": "codex",
+      "model": "default",
+      "prompt": "",
+      "x": 2256,
+      "y": 80,
+      "status": "idle",
+      "summary": "",
+      "rawOutput": "",
+      "error": "",
+      "config": {
+        "message": "{{blocks[9].text}}",
+        "stageAll": true,
+        "icon": "git"
+      }
+    },
+    {
+      "id": "node_cjous974",
+      "blockId": 13,
+      "kind": "variable",
+      "title": "环境变量",
+      "providerKind": "codex-cli",
+      "adapterId": "codex",
+      "model": "default",
+      "prompt": "",
+      "x": 2256,
+      "y": 156,
+      "status": "idle",
+      "summary": "",
+      "rawOutput": "",
+      "error": "",
+      "config": {
+        "variables": [
+          {
+            "name": "input",
+            "value": "{{blocks[15].text}}",
+            "type": "text"
+          }
+        ],
+        "icon": "set"
+      }
+    },
+    {
+      "id": "node_holsbup6",
+      "blockId": 15,
+      "kind": "markdown",
+      "title": "修正",
+      "providerKind": "codex-cli",
+      "adapterId": "codex",
+      "model": "default",
+      "prompt": "{{blocks[2].text}}",
+      "x": 1698,
+      "y": 155,
+      "status": "idle",
+      "summary": "",
+      "rawOutput": "",
+      "error": "",
+      "config": {
+        "icon": "markdown",
+        "autoSeeResult": true,
+        "action": "message",
+        "waitingForInput": false
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge_llziqrrh",
+      "from": "node_syhmvuzd",
+      "to": "node_hy69jnb4",
+      "passSummary": true
+    },
+    {
+      "id": "edge_tazkonts",
+      "from": "node_ubjbubp4",
+      "to": "node_59rba5de",
+      "passSummary": true
+    },
+    {
+      "id": "edge_caqb04uz",
+      "from": "node_59rba5de",
+      "to": "node_0emrwcsa",
+      "passSummary": true,
+      "sourceHandle": "true"
+    },
+    {
+      "id": "edge_vc3zwxuq",
+      "from": "node_yw56w0un",
+      "to": "node_cjous974",
+      "passSummary": true,
+      "sourceHandle": "true"
+    },
+    {
+      "id": "edge_tpltwo7l",
+      "from": "node_cjous974",
+      "to": "node_hy69jnb4",
+      "passSummary": true
+    },
+    {
+      "id": "edge_qooo679v",
+      "from": "node_yddblkwj",
+      "to": "node_syhmvuzd",
+      "passSummary": true
+    },
+    {
+      "id": "edge_lebpjv97",
+      "from": "node_hy69jnb4",
+      "to": "node_hrz694qs",
+      "passSummary": true
+    },
+    {
+      "id": "edge_udq1kdfh",
+      "from": "node_hrz694qs",
+      "to": "node_zddxqq7c",
+      "passSummary": true
+    },
+    {
+      "id": "edge_xqkxrdpb",
+      "from": "node_zddxqq7c",
+      "to": "node_ubjbubp4",
+      "passSummary": true,
+      "sourceHandle": "success"
+    },
+    {
+      "id": "edge_wxiygwcj",
+      "from": "node_zddxqq7c",
+      "to": "node_holsbup6",
+      "passSummary": true,
+      "sourceHandle": "failure"
+    },
+    {
+      "id": "edge_cw60kkz8",
+      "from": "node_holsbup6",
+      "to": "node_yw56w0un",
+      "passSummary": true,
+      "sourceHandle": "success"
+    }
+  ],
+  "runs": []
+}

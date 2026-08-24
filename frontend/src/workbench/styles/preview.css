@@ -16,17 +16,19 @@
 .plan-view__sidebar {
   width: 200px;
   flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
   background: var(--bg-shell);
   border-right: 1px solid var(--border-faint);
-  overflow-y: auto;
-  padding-bottom: 6px;
 }
 
 .plan-view__sidebar-header {
   height: 28px;
   display: flex;
   align-items: center;
-  padding: 0 12px;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 0 6px 0 12px;
   font-size: 11px;
   letter-spacing: 0.5px;
   text-transform: uppercase;
@@ -34,17 +36,113 @@
   border-bottom: 1px solid var(--border-faint);
 }
 
+.plan-view__sidebar-header > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plan-view__sidebar-header > .plan-view__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  overflow: visible;
+  white-space: normal;
+}
+
+.plan-view__new {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.plan-view__new:hover {
+  border-color: var(--border-faint);
+  background: var(--bg-hover);
+  color: var(--fg-strong);
+}
+
+.plan-view__list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: 6px;
+}
+
+.plan-view__list.is-pointer-dragging,
+.plan-view__list.is-pointer-dragging .plan-view__item {
+  cursor: grabbing;
+  user-select: none;
+}
+
+.plan-view__list.is-pointer-drop-target {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
 .plan-view__item {
+  width: 100%;
   display: flex;
   align-items: center;
+  gap: 5px;
   height: 24px;
-  padding: 0 12px;
+  padding: 0 8px;
+  border: 0;
+  background: transparent;
+  font-family: inherit;
+  text-align: left;
   font-size: 13px;
   color: var(--fg-default);
   cursor: pointer;
   white-space: nowrap;
+}
+
+.plan-view__chevron {
+  flex: none;
+  width: 12px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-muted);
+}
+
+.plan-view__chevron.is-placeholder {
+  visibility: hidden;
+}
+
+.plan-view__folder {
+  flex: none;
+  width: 16px;
+  color: var(--fg-muted);
+  text-align: center;
+}
+
+.plan-view__children {
+  position: relative;
+}
+
+.plan-view__loading {
+  height: 24px;
+  display: flex;
+  align-items: center;
+  font-size: 12px;
+}
+
+.plan-view__item > span:last-child {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .plan-view__item:hover {
@@ -56,6 +154,15 @@
   color: var(--fg-strong);
 }
 
+.plan-view__item.is-pointer-dragging {
+  opacity: 0.55;
+}
+
+.plan-view__item.is-pointer-drop-target {
+  background: var(--accent-soft);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
 .plan-view__empty {
   padding: 10px 12px;
 }
@@ -63,8 +170,69 @@
 .plan-view__main {
   flex: 1 1 auto;
   min-width: 0;
-  overflow: auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   background: var(--bg-editor);
+}
+
+.plan-view__toolbar {
+  flex: none;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 6px 0 10px;
+  border-bottom: 1px solid var(--border-faint);
+  background: var(--bg-shell);
+}
+
+.plan-view__current {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-muted);
+  font-size: 11px;
+}
+
+.plan-view__toolbar .preview-toggle:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.plan-view__document {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+
+.plan-view__document > .markdown-preview {
+  min-height: 100%;
+}
+
+.plan-view__name-input {
+  height: 24px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 6px;
+}
+
+.plan-view__name-input input {
+  min-width: 0;
+  flex: 1 1 auto;
+  height: 20px;
+  padding: 1px 4px;
+  border: 1px solid var(--accent);
+  border-radius: 2px;
+  outline: none;
+  background: var(--surface-control);
+  color: var(--fg-default);
+  font: 12px var(--font-sans);
 }
 
 .plan-view__placeholder {
@@ -187,6 +355,22 @@
   margin-top: 16px;
 }
 
+.markdown-preview .task-list-item {
+  list-style: none;
+}
+
+.markdown-preview .contains-task-list {
+  padding-left: 0;
+}
+
+.markdown-preview .task-list-item .contains-task-list {
+  padding-left: 2em;
+}
+
+.markdown-preview .contains-task-list > li:not(.task-list-item) {
+  margin-left: 2em;
+}
+
 .markdown-preview li input[type="checkbox"] {
   margin-right: 6px;
   vertical-align: middle;
@@ -219,6 +403,62 @@
   font-size: inherit;
 }
 
+.markdown-preview .hljs-keyword,
+.markdown-preview .hljs-selector-tag,
+.markdown-preview .hljs-literal,
+.markdown-preview .hljs-section,
+.markdown-preview .hljs-link { color: #c586c0; }
+
+.markdown-preview .hljs-string,
+.markdown-preview .hljs-title,
+.markdown-preview .hljs-name,
+.markdown-preview .hljs-type,
+.markdown-preview .hljs-attribute,
+.markdown-preview .hljs-symbol,
+.markdown-preview .hljs-bullet,
+.markdown-preview .hljs-addition,
+.markdown-preview .hljs-variable,
+.markdown-preview .hljs-template-tag,
+.markdown-preview .hljs-template-variable { color: #ce9178; }
+
+.markdown-preview .hljs-comment,
+.markdown-preview .hljs-quote,
+.markdown-preview .hljs-deletion,
+.markdown-preview .hljs-meta { color: #6a9955; }
+
+.markdown-preview .hljs-number,
+.markdown-preview .hljs-regexp,
+.markdown-preview .hljs-built_in,
+.markdown-preview .hljs-builtin-name,
+.markdown-preview .hljs-params { color: #b5cea8; }
+
+.markdown-preview .hljs-title.function_,
+.markdown-preview .hljs-function .hljs-title { color: #dcdcaa; }
+
+.markdown-mermaid {
+  width: 100%;
+  margin: 0 0 16px;
+  overflow: auto;
+  color: var(--fg-strong);
+  background: var(--bg-editor);
+  text-align: center;
+}
+
+.markdown-mermaid svg {
+  max-width: 100%;
+  height: auto;
+  color: inherit;
+}
+
+.markdown-mermaid foreignObject,
+.markdown-mermaid foreignObject div,
+.markdown-mermaid foreignObject span,
+.markdown-mermaid foreignObject p {
+  color: inherit;
+}
+
+.markdown-preview pre.mermaid.markdown-mermaid--error { color: var(--fg-error); }
+
 .markdown-preview table {
   border-collapse: collapse;
   display: block;
@@ -246,6 +486,21 @@
 .markdown-preview img {
   max-width: 100%;
   background: transparent;
+}
+
+.image-preview {
+  height: 100%;
+  overflow: auto;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--bg-editor);
+}
+
+.image-preview img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
 }
 
 .markdown-preview kbd {

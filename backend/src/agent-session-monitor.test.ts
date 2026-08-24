@@ -6,6 +6,26 @@ import test from "node:test";
 import { AgentSessionEventReducer, watchAgentSession } from "./agent-session-monitor.js";
 import { buildAgentTerminalCommand } from "./ai-terminal.js";
 
+function codexUserInterruptMarker() {
+  return {
+    type: "response_item",
+    payload: {
+      type: "message",
+      role: "developer",
+      content: [
+        {
+          type: "input_text",
+          text: [
+            "<turn_aborted>",
+            "The previous turn was interrupted on purpose.",
+            "</turn_aborted>",
+          ].join("\n"),
+        },
+      ],
+    },
+  };
+}
+
 test("interactive CLI commands receive the initial prompt without terminal readiness parsing", () => {
   assert.equal(
     buildAgentTerminalCommand("claude-cli", "default", { prompt: "analyze this project" }).command,
@@ -435,9 +455,115 @@ test("Codex task_complete distinguishes success and error for the active turn", 
     }),
     [{ state: "completed", outcome: "error", error: "503 unavailable" }],
   );
+
+  const disabledKey = new AgentSessionEventReducer("codex");
+  disabledKey.push({ type: "event_msg", payload: { type: "task_started", turn_id: "turn_3" } });
+  const disabledKeyMessage =
+    'unexpected status 401 Unauthorized: {"code":"API_KEY_DISABLED","message":"API key is disabled"}, url: https://aihub.top/responses, request id: request_1';
+  assert.deepEqual(
+    disabledKey.push({
+      type: "event_msg",
+      payload: {
+        type: "task_complete",
+        turn_id: "turn_3",
+        last_agent_message: "",
+        error: { message: disabledKeyMessage, codex_error_info: "other" },
+      },
+    }),
+    [{ state: "completed", outcome: "error", error: disabledKeyMessage }],
+  );
 });
 
-test("Codex user input and approval events drive waiting state", () => {
+test("Codex reports a stream error after its internal retry limit is exhausted", () => {
+  const reducer = new AgentSessionEventReducer("codex");
+  reducer.push({ type: "event_msg", payload: { type: "task_started", turn_id: "turn_1" } });
+
+  assert.deepEqual(
+    reducer.push({
+      type: "event_msg",
+      payload: {
+        type: "stream_error",
+        turn_id: "turn_1",
+        message: "Reconnecting... 5/5",
+      },
+    }),
+    [],
+  );
+  assert.deepEqual(
+    reducer.push({
+      type: "event_msg",
+      payload: {
+        type: "stream_error",
+        turn_id: "turn_1",
+        message: "exceeded retry limit, last status: 429 Too Many Requests, request id: request_1",
+      },
+    }),
+    [
+      {
+        state: "completed",
+        outcome: "error",
+        error: "exceeded retry limit, last status: 429 Too Many Requests, request id: request_1",
+      },
+    ],
+  );
+});
+
+test("Codex API error events are not treated as user interruptions", () => {
+  const reducer = new AgentSessionEventReducer("codex");
+  reducer.push({ type: "event_msg", payload: { type: "task_started", turn_id: "turn_1" } });
+
+  assert.deepEqual(
+    reducer.push({
+      type: "event_msg",
+      payload: {
+        type: "error",
+        turn_id: "turn_1",
+        message:
+          'unexpected status 401 Unauthorized: {"code":"API_KEY_DISABLED","message":"API key is disabled"}',
+      },
+    }),
+    [
+      {
+        state: "completed",
+        outcome: "error",
+        error:
+          'unexpected status 401 Unauthorized: {"code":"API_KEY_DISABLED","message":"API key is disabled"}',
+      },
+    ],
+  );
+
+  const aborted = new AgentSessionEventReducer("codex");
+  aborted.push({ type: "event_msg", payload: { type: "task_started", turn_id: "turn_2" } });
+  assert.deepEqual(
+    aborted.push({
+      type: "event_msg",
+      payload: {
+        type: "turn_aborted",
+        turn_id: "turn_2",
+        reason: "last status: 429 Too Many Requests",
+      },
+    }),
+    [{ state: "completed", outcome: "error", error: "last status: 429 Too Many Requests" }],
+  );
+
+  const genericAbort = new AgentSessionEventReducer("codex");
+  genericAbort.push({ type: "event_msg", payload: { type: "task_started", turn_id: "turn_3" } });
+  assert.deepEqual(
+    genericAbort.push(
+      {
+        type: "event_msg",
+        payload: { type: "turn_aborted", turn_id: "turn_3", reason: "interrupted" },
+      },
+      100,
+    ),
+    [],
+  );
+  assert.deepEqual(genericAbort.poll(350), [
+    { state: "completed", outcome: "error", error: "interrupted" },
+  ]);
+});
+
+test("Codex user input and approval events do not directly drive waiting state", () => {
   const reducer = new AgentSessionEventReducer("codex");
   reducer.push({ type: "event_msg", payload: { type: "task_started", turn_id: "turn_1" } }, 0);
   assert.deepEqual(
@@ -445,15 +571,16 @@ test("Codex user input and approval events drive waiting state", () => {
       type: "event_msg",
       payload: { type: "request_user_input", turn_id: "turn_1" },
     }),
-    [{ state: "waiting-for-choice" }],
+    [],
   );
   assert.deepEqual(
     reducer.push({
       type: "event_msg",
       payload: { type: "user_input", turn_id: "turn_1" },
     }),
-    [{ state: "running" }],
+    [],
   );
+  assert.deepEqual(reducer.push(codexUserInterruptMarker()), []);
   assert.deepEqual(
     reducer.push(
       {
@@ -470,9 +597,21 @@ test("Codex user input and approval events drive waiting state", () => {
   ]);
 });
 
-test("Codex declined approval waits for replacement input before the next turn completes", () => {
+test("Codex declined approval waits for replacement input before the next turn", () => {
   const reducer = new AgentSessionEventReducer("codex");
   reducer.push({ type: "event_msg", payload: { type: "task_started", turn_id: "turn_1" } }, 0);
+  assert.deepEqual(
+    reducer.push({
+      type: "response_item",
+      payload: {
+        type: "custom_tool_call",
+        name: "exec",
+        call_id: "call_1",
+        input: '{"sandbox_permissions":"require_escalated"}',
+      },
+    }),
+    [{ state: "waiting-for-choice" }],
+  );
   assert.deepEqual(
     reducer.push(
       {
@@ -481,6 +620,17 @@ test("Codex declined approval waits for replacement input before the next turn c
       },
       100,
     ),
+    [],
+  );
+  assert.deepEqual(
+    reducer.push({
+      type: "event_msg",
+      payload: {
+        type: "task_complete",
+        turn_id: "turn_1",
+        error: { message: "approval request aborted" },
+      },
+    }),
     [],
   );
   assert.deepEqual(
@@ -500,9 +650,20 @@ test("Codex declined approval waits for replacement input before the next turn c
       },
       106,
     ),
-    [{ state: "waiting-for-choice" }],
+    [],
   );
   assert.deepEqual(reducer.poll(1_000), []);
+  assert.deepEqual(
+    reducer.push({
+      type: "event_msg",
+      payload: {
+        type: "error",
+        turn_id: "turn_1",
+        message: "approval request aborted",
+      },
+    }),
+    [],
+  );
   assert.deepEqual(
     reducer.push({ type: "event_msg", payload: { type: "task_started", turn_id: "turn_2" } }),
     [{ state: "running" }],
@@ -513,7 +674,7 @@ test("Codex declined approval waits for replacement input before the next turn c
   );
 });
 
-test("Codex declined approval ignores the rejected turn's later completion error", () => {
+test("Codex declined approval retains rejected-turn completion handling", () => {
   const reducer = new AgentSessionEventReducer("codex");
   reducer.push({ type: "event_msg", payload: { type: "task_started", turn_id: "turn_1" } });
   assert.deepEqual(
@@ -540,7 +701,7 @@ test("Codex declined approval ignores the rejected turn's later completion error
   );
 });
 
-test("Codex function calls are not filtered by model-internal turn metadata", () => {
+test("Codex function calls do not directly drive waiting state", () => {
   const reducer = new AgentSessionEventReducer("codex");
   reducer.push({ type: "event_msg", payload: { type: "task_started", turn_id: "turn_1" } });
   assert.deepEqual(
@@ -553,7 +714,7 @@ test("Codex function calls are not filtered by model-internal turn metadata", ()
         internal_chat_message_metadata_passthrough: { turn_id: "model_turn_2" },
       },
     }),
-    [{ state: "waiting-for-choice" }],
+    [],
   );
   assert.deepEqual(
     reducer.push({
@@ -567,23 +728,57 @@ test("Codex function calls are not filtered by model-internal turn metadata", ()
       type: "response_item",
       payload: { type: "function_call_output", call_id: "call_1" },
     }),
-    [{ state: "running" }],
+    [],
   );
 });
 
-test("Codex PermissionRequest sidecar waits until its matching tool output", () => {
+test("Codex ordinary exec does not fall back to waiting", () => {
   const reducer = new AgentSessionEventReducer("codex");
-  reducer.push({ type: "event_msg", payload: { type: "task_started", turn_id: "turn_1" } });
+  reducer.push({ type: "event_msg", payload: { type: "task_started", turn_id: "task_turn" } }, 0);
   assert.deepEqual(
-    reducer.pushCodexPermission({
-      osheep_event: "codex-permission-request",
-      payload: {
-        hook_event_name: "PermissionRequest",
-        tool_name: "exec",
-        tool_use_id: "call_1",
+    reducer.push(
+      {
+        type: "response_item",
+        payload: { type: "custom_tool_call", name: "exec", call_id: "call_1" },
       },
+      100,
+    ),
+    [],
+  );
+  assert.deepEqual(reducer.poll(5_100), []);
+  assert.deepEqual(
+    reducer.push({
+      type: "response_item",
+      payload: { type: "custom_tool_call_output", call_id: "call_1" },
     }),
+    [],
+  );
+});
+
+test("Codex require_escalated exec waits and resumes on matching output", () => {
+  const reducer = new AgentSessionEventReducer("codex");
+  reducer.push({ type: "event_msg", payload: { type: "task_started", turn_id: "task_turn" } }, 0);
+  assert.deepEqual(
+    reducer.push(
+      {
+        type: "response_item",
+        payload: {
+          type: "custom_tool_call",
+          name: "exec",
+          call_id: "call_1",
+          input: '{"command":"git push","sandbox_permissions":"require_escalated"}',
+        },
+      },
+      100,
+    ),
     [{ state: "waiting-for-choice" }],
+  );
+  assert.deepEqual(
+    reducer.push({
+      type: "response_item",
+      payload: { type: "custom_tool_call", name: "exec", call_id: "call_1" },
+    }),
+    [],
   );
   assert.deepEqual(
     reducer.push({
@@ -601,38 +796,7 @@ test("Codex PermissionRequest sidecar waits until its matching tool output", () 
   );
 });
 
-test("Codex PermissionRequest without a tool id binds before or after the rollout call", () => {
-  for (const permissionFirst of [true, false]) {
-    const reducer = new AgentSessionEventReducer("codex");
-    reducer.push({ type: "event_msg", payload: { type: "task_started", turn_id: "turn_1" } });
-    const permission = () =>
-      reducer.pushCodexPermission({
-        osheep_event: "codex-permission-request",
-        payload: { hook_event_name: "PermissionRequest", tool_name: "exec" },
-      });
-    const toolCall = () =>
-      reducer.push({
-        type: "response_item",
-        payload: { type: "custom_tool_call", name: "exec", call_id: "call_1" },
-      });
-    if (permissionFirst) {
-      assert.deepEqual(permission(), [{ state: "waiting-for-choice" }]);
-      assert.deepEqual(toolCall(), []);
-    } else {
-      assert.deepEqual(toolCall(), []);
-      assert.deepEqual(permission(), [{ state: "waiting-for-choice" }]);
-    }
-    assert.deepEqual(
-      reducer.push({
-        type: "response_item",
-        payload: { type: "custom_tool_call_output", call_id: "call_1" },
-      }),
-      [{ state: "running" }],
-    );
-  }
-});
-
-test("Codex permission binds despite a different model-internal turn id", () => {
+test("Codex require_escalated exec accepts source-like input", () => {
   const reducer = new AgentSessionEventReducer("codex");
   reducer.push({ type: "event_msg", payload: { type: "task_started", turn_id: "task_turn" } });
   assert.deepEqual(
@@ -642,50 +806,107 @@ test("Codex permission binds despite a different model-internal turn id", () => 
         type: "custom_tool_call",
         name: "exec",
         call_id: "call_1",
-        internal_chat_message_metadata_passthrough: { turn_id: "model_turn" },
+        input: 'exec(command="git push", sandbox_permissions: "require_escalated")',
       },
     }),
-    [],
+    [{ state: "waiting-for-choice" }],
   );
+});
+
+test("Codex denied approval output waits for a replacement turn", () => {
+  const reducer = new AgentSessionEventReducer("codex");
+  reducer.push({ type: "event_msg", payload: { type: "task_started", turn_id: "turn_1" } });
   assert.deepEqual(
-    reducer.pushCodexPermission({
-      osheep_event: "codex-permission-request",
-      payload: { hook_event_name: "PermissionRequest" },
+    reducer.push({
+      type: "response_item",
+      payload: {
+        type: "custom_tool_call",
+        name: "exec",
+        call_id: "call_1",
+        input: '{"sandbox_permissions":"require_escalated"}',
+      },
     }),
     [{ state: "waiting-for-choice" }],
   );
   assert.deepEqual(
     reducer.push({
       type: "response_item",
-      payload: { type: "custom_tool_call_output", call_id: "call_1" },
+      payload: {
+        type: "custom_tool_call_output",
+        call_id: "call_1",
+        output: "code-mode host closed its stdout",
+      },
     }),
+    [{ state: "waiting-for-choice" }],
+  );
+  assert.deepEqual(
+    reducer.push({
+      type: "event_msg",
+      payload: {
+        type: "task_complete",
+        turn_id: "turn_1",
+        error: { message: "approval request aborted" },
+      },
+    }),
+    [],
+  );
+  assert.deepEqual(
+    reducer.push({ type: "event_msg", payload: { type: "task_started", turn_id: "turn_2" } }),
     [{ state: "running" }],
+  );
+  assert.deepEqual(
+    reducer.push({
+      type: "event_msg",
+      payload: {
+        type: "task_complete",
+        turn_id: "turn_2",
+        error: { message: "503 unavailable" },
+      },
+    }),
+    [{ state: "completed", outcome: "error", error: "503 unavailable" }],
   );
 });
 
-test("Codex silent exec falls back to waiting and resumes on matching output", () => {
+test("Codex approval abort output and turn abort wait for replacement input", () => {
   const reducer = new AgentSessionEventReducer("codex");
-  reducer.push({ type: "event_msg", payload: { type: "task_started", turn_id: "task_turn" } }, 0);
-  reducer.push(
-    {
-      type: "response_item",
-      payload: { type: "custom_tool_call", name: "exec", call_id: "call_1" },
-    },
-    100,
-  );
-  assert.deepEqual(reducer.poll(4_099), []);
-  assert.deepEqual(reducer.poll(4_100), [{ state: "waiting-for-choice" }]);
-  assert.deepEqual(reducer.poll(5_000), []);
+  reducer.push({ type: "event_msg", payload: { type: "task_started", turn_id: "turn_1" } });
   assert.deepEqual(
     reducer.push({
       type: "response_item",
-      payload: { type: "custom_tool_call_output", call_id: "call_1" },
+      payload: {
+        type: "custom_tool_call",
+        name: "exec",
+        call_id: "call_1",
+        input: '{"sandbox_permissions":"require_escalated"}',
+      },
     }),
+    [{ state: "waiting-for-choice" }],
+  );
+  assert.deepEqual(
+    reducer.push({
+      type: "response_item",
+      payload: {
+        type: "custom_tool_call_output",
+        call_id: "call_1",
+        output: "aborted by user after 2.8s",
+      },
+    }),
+    [{ state: "waiting-for-choice" }],
+  );
+  assert.deepEqual(
+    reducer.push({
+      type: "event_msg",
+      payload: { type: "turn_aborted", turn_id: "turn_1", reason: "interrupted" },
+    }),
+    [],
+  );
+  assert.deepEqual(
+    reducer.push({ type: "event_msg", payload: { type: "task_started", turn_id: "turn_2" } }),
     [{ state: "running" }],
   );
 });
 
-test("Codex fast exec output cancels the silent waiting fallback", () => {
+test("Codex fast ordinary exec output does not trigger waiting", () => {
   const reducer = new AgentSessionEventReducer("codex");
   reducer.push({ type: "event_msg", payload: { type: "task_started", turn_id: "task_turn" } }, 0);
   reducer.push(
@@ -708,58 +929,10 @@ test("Codex fast exec output cancels the silent waiting fallback", () => {
   assert.deepEqual(reducer.poll(5_000), []);
 });
 
-test("Codex explicit permission sidecar supersedes the silent exec fallback", () => {
-  const reducer = new AgentSessionEventReducer("codex");
-  reducer.push({ type: "event_msg", payload: { type: "task_started", turn_id: "task_turn" } }, 0);
-  reducer.push(
-    {
-      type: "response_item",
-      payload: { type: "custom_tool_call", name: "exec", call_id: "call_1" },
-    },
-    100,
-  );
-  assert.deepEqual(
-    reducer.pushCodexPermission({
-      osheep_event: "codex-permission-request",
-      payload: { hook_event_name: "PermissionRequest" },
-    }),
-    [{ state: "waiting-for-choice" }],
-  );
-  assert.deepEqual(reducer.poll(5_000), []);
-});
-
-test("Codex initial task_started does not overwrite an earlier sidecar wait", () => {
-  const reducer = new AgentSessionEventReducer("codex");
-  assert.deepEqual(
-    reducer.pushCodexPermission({
-      osheep_event: "codex-permission-request",
-      payload: { hook_event_name: "PermissionRequest" },
-    }),
-    [{ state: "waiting-for-choice" }],
-  );
-  assert.deepEqual(
-    reducer.push({ type: "event_msg", payload: { type: "task_started", turn_id: "turn_1" } }),
-    [],
-  );
-  assert.deepEqual(
-    reducer.push({
-      type: "response_item",
-      payload: { type: "custom_tool_call", name: "exec", call_id: "call_1" },
-    }),
-    [],
-  );
-  assert.deepEqual(
-    reducer.push({
-      type: "response_item",
-      payload: { type: "custom_tool_call_output", call_id: "call_1" },
-    }),
-    [{ state: "running" }],
-  );
-});
-
 test("Codex reducer continues with a new turn after an aborted turn", () => {
   const reducer = new AgentSessionEventReducer("codex");
   reducer.push({ type: "event_msg", payload: { type: "task_started", turn_id: "turn_1" } }, 0);
+  reducer.push(codexUserInterruptMarker());
   assert.deepEqual(
     reducer.push(
       {
@@ -804,6 +977,7 @@ test("JSONL watcher can reject a paused abort and accept a later turn completion
       type: "event_msg",
       payload: { type: "task_started", turn_id: "turn_1" },
     });
+    await appendJsonl(filePath, codexUserInterruptMarker());
     await appendJsonl(filePath, {
       type: "event_msg",
       payload: { type: "turn_aborted", turn_id: "turn_1", reason: "interrupted" },
@@ -819,6 +993,103 @@ test("JSONL watcher can reject a paused abort and accept a later turn completion
 
     assert.deepEqual(await watched, { state: "completed", outcome: "success" });
     assert.deepEqual(events, ["running:", "completed:cancelled", "running:", "completed:success"]);
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("JSONL watcher accepts an API error after continuing from an explicit user interrupt", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-codex-interrupt-error-"));
+  const filePath = path.join(directory, "session.jsonl");
+  await fs.writeFile(filePath, "");
+  const events: string[] = [];
+  const errorMessage =
+    'unexpected status 401 Unauthorized: {"code":"API_KEY_DISABLED","message":"API key is disabled"}';
+  try {
+    const watched = watchAgentSession({
+      app: "codex",
+      sessionId: "session",
+      filePath,
+      onEvent: (event) => events.push(`${event.state}:${event.outcome ?? ""}`),
+      acceptCompletion: (event) => event.outcome !== "cancelled",
+    });
+    await appendJsonl(filePath, {
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: "turn_1" },
+    });
+    await appendJsonl(filePath, codexUserInterruptMarker());
+    await appendJsonl(filePath, {
+      type: "event_msg",
+      payload: { type: "turn_aborted", turn_id: "turn_1", reason: "interrupted" },
+    });
+    await appendJsonl(filePath, {
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: "turn_2" },
+    });
+    await appendJsonl(filePath, {
+      type: "event_msg",
+      payload: {
+        type: "task_complete",
+        turn_id: "turn_2",
+        last_agent_message: null,
+        error: { message: errorMessage, codex_error_info: "other" },
+      },
+    });
+
+    assert.deepEqual(await watched, { state: "completed", outcome: "error", error: errorMessage });
+    assert.deepEqual(events, ["running:", "completed:cancelled", "running:", "completed:error"]);
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a completed turn after ESC clears interruption handling for later API errors", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-codex-interrupt-next-error-"));
+  const filePath = path.join(directory, "session.jsonl");
+  await fs.writeFile(filePath, "");
+  const errorMessage =
+    'unexpected status 401 Unauthorized: {"code":"API_KEY_DISABLED","message":"API key is disabled"}';
+  try {
+    const watched = watchAgentSession({
+      app: "codex",
+      sessionId: "session",
+      filePath,
+      onEvent: () => {},
+      // Model a workflow terminal that continues after ESC and after a manual-success turn.
+      acceptCompletion: (event) => event.outcome === "error",
+    });
+    await appendJsonl(filePath, {
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: "turn_1" },
+    });
+    await appendJsonl(filePath, codexUserInterruptMarker());
+    await appendJsonl(filePath, {
+      type: "event_msg",
+      payload: { type: "turn_aborted", turn_id: "turn_1", reason: "interrupted" },
+    });
+    await appendJsonl(filePath, {
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: "turn_2" },
+    });
+    await appendJsonl(filePath, {
+      type: "event_msg",
+      payload: { type: "task_complete", turn_id: "turn_2", last_agent_message: "done" },
+    });
+    await appendJsonl(filePath, {
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: "turn_3" },
+    });
+    await appendJsonl(filePath, {
+      type: "event_msg",
+      payload: {
+        type: "task_complete",
+        turn_id: "turn_3",
+        last_agent_message: null,
+        error: { message: errorMessage, codex_error_info: "other" },
+      },
+    });
+
+    assert.deepEqual(await watched, { state: "completed", outcome: "error", error: errorMessage });
   } finally {
     await fs.rm(directory, { recursive: true, force: true });
   }
@@ -877,64 +1148,6 @@ test("JSONL watcher waits after a Claude rejection and completes the replacement
   }
 });
 
-test("JSONL watcher waits after a Codex decline and completes the replacement turn", async () => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-codex-declined-"));
-  const filePath = path.join(directory, "session.jsonl");
-  await fs.writeFile(filePath, "");
-  const events: string[] = [];
-  try {
-    const watched = watchAgentSession({
-      app: "codex",
-      sessionId: "session",
-      filePath,
-      onEvent: (event) => events.push(`${event.state}:${event.outcome ?? ""}`),
-    });
-    await appendJsonl(filePath, {
-      type: "event_msg",
-      payload: { type: "task_started", turn_id: "turn_1" },
-    });
-    await fs.appendFile(
-      filePath,
-      [
-        JSON.stringify({
-          type: "event_msg",
-          payload: { type: "turn_aborted", turn_id: "turn_1" },
-        }),
-        JSON.stringify({
-          type: "event_msg",
-          payload: {
-            type: "item_completed",
-            turn_id: "turn_1",
-            item: {
-              type: "CommandExecution",
-              status: "declined",
-              stderr: "approval request aborted",
-              exit_code: -1,
-            },
-          },
-        }),
-        "",
-      ].join("\n"),
-    );
-
-    await new Promise<void>((resolve) => setTimeout(resolve, 300));
-    assert.deepEqual(events, ["running:", "waiting-for-choice:"]);
-    await appendJsonl(filePath, {
-      type: "event_msg",
-      payload: { type: "task_started", turn_id: "turn_2" },
-    });
-    await appendJsonl(filePath, {
-      type: "event_msg",
-      payload: { type: "task_complete", turn_id: "turn_2" },
-    });
-
-    assert.deepEqual(await watched, { state: "completed", outcome: "success" });
-    assert.deepEqual(events, ["running:", "waiting-for-choice:", "running:", "completed:success"]);
-  } finally {
-    await fs.rm(directory, { recursive: true, force: true });
-  }
-});
-
 test("JSONL watcher completes a Codex abort after its declined-event window", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-codex-aborted-"));
   const filePath = path.join(directory, "session.jsonl");
@@ -945,6 +1158,7 @@ test("JSONL watcher completes a Codex abort after its declined-event window", as
         type: "event_msg",
         payload: { type: "task_started", turn_id: "turn_1" },
       }),
+      JSON.stringify(codexUserInterruptMarker()),
       JSON.stringify({
         type: "event_msg",
         payload: { type: "turn_aborted", turn_id: "turn_1", reason: "interrupted" },
@@ -1000,99 +1214,8 @@ test("JSONL watcher combines Claude permission sidecar and session results", asy
   }
 });
 
-test("JSONL watcher combines Codex permission sidecar and tool output", async () => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-codex-monitor-"));
-  const filePath = path.join(directory, "session.jsonl");
-  const permissionFilePath = path.join(directory, "permission.jsonl");
-  await fs.writeFile(filePath, "");
-  const events: string[] = [];
-  const controller = new AbortController();
-  try {
-    const watched = watchAgentSession({
-      app: "codex",
-      sessionId: "session",
-      filePath,
-      permissionFilePath,
-      signal: controller.signal,
-      onEvent: (event) => events.push(`${event.state}:${event.outcome ?? ""}`),
-    });
-    await appendJsonl(filePath, {
-      type: "event_msg",
-      payload: { type: "task_started", turn_id: "turn_1" },
-    });
-    await appendJsonl(permissionFilePath, {
-      osheep_event: "codex-permission-request",
-      payload: { hook_event_name: "PermissionRequest", tool_name: "exec", tool_use_id: "call_1" },
-    });
-    await appendJsonl(filePath, {
-      type: "response_item",
-      payload: {
-        type: "custom_tool_call_output",
-        call_id: "call_1",
-        output: "ok",
-        internal_chat_message_metadata_passthrough: { turn_id: "model_turn_2" },
-      },
-    });
-    controller.abort();
-    await watched;
-    assert.deepEqual(events, ["running:", "waiting-for-choice:", "running:"]);
-  } finally {
-    await fs.rm(directory, { recursive: true, force: true });
-  }
-});
-
-test("JSONL watcher replays Codex session state before an existing permission sidecar", async () => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-codex-order-"));
-  const filePath = path.join(directory, "session.jsonl");
-  const permissionFilePath = path.join(directory, "permission.jsonl");
-  await fs.writeFile(
-    filePath,
-    [
-      JSON.stringify({
-        type: "event_msg",
-        payload: { type: "task_started", turn_id: "turn_1" },
-      }),
-      JSON.stringify({
-        type: "response_item",
-        payload: {
-          type: "custom_tool_call",
-          name: "exec",
-          call_id: "call_1",
-          internal_chat_message_metadata_passthrough: { turn_id: "model_turn_2" },
-        },
-      }),
-      "",
-    ].join("\n"),
-  );
-  await fs.writeFile(
-    permissionFilePath,
-    `${JSON.stringify({
-      osheep_event: "codex-permission-request",
-      payload: { hook_event_name: "PermissionRequest" },
-    })}\n`,
-  );
-  const events: string[] = [];
-  const controller = new AbortController();
-  try {
-    const watched = watchAgentSession({
-      app: "codex",
-      sessionId: "session",
-      filePath,
-      permissionFilePath,
-      signal: controller.signal,
-      onEvent: (event) => events.push(event.state),
-    });
-    await new Promise<void>((resolve) => setTimeout(resolve, 180));
-    controller.abort();
-    await watched;
-    assert.deepEqual(events, ["running", "waiting-for-choice"]);
-  } finally {
-    await fs.rm(directory, { recursive: true, force: true });
-  }
-});
-
-test("JSONL watcher falls back to waiting for a silent Codex exec", async () => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-codex-silent-"));
+test("JSONL watcher waits for an explicit Codex permission request", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-codex-permission-"));
   const filePath = path.join(directory, "session.jsonl");
   await fs.writeFile(filePath, "");
   const events: string[] = [];
@@ -1115,10 +1238,10 @@ test("JSONL watcher falls back to waiting for a silent Codex exec", async () => 
         type: "custom_tool_call",
         name: "exec",
         call_id: "call_1",
+        input: '{"command":"git push","sandbox_permissions":"require_escalated"}',
         internal_chat_message_metadata_passthrough: { turn_id: "model_turn" },
       },
     });
-    await new Promise<void>((resolve) => setTimeout(resolve, 4_150));
     assert.deepEqual(events, ["running", "waiting-for-choice"]);
     await appendJsonl(filePath, {
       type: "response_item",
@@ -1127,6 +1250,68 @@ test("JSONL watcher falls back to waiting for a silent Codex exec", async () => 
     controller.abort();
     await watched;
     assert.deepEqual(events, ["running", "waiting-for-choice", "running"]);
+  } finally {
+    controller.abort();
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("JSONL watcher keeps a declined Codex approval open for a replacement turn", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-codex-declined-"));
+  const filePath = path.join(directory, "session.jsonl");
+  await fs.writeFile(filePath, "");
+  const events: string[] = [];
+  const controller = new AbortController();
+  try {
+    const watched = watchAgentSession({
+      app: "codex",
+      sessionId: "session",
+      filePath,
+      signal: controller.signal,
+      onEvent: (event) => events.push(`${event.state}:${event.outcome ?? ""}`),
+    });
+    await appendJsonl(filePath, {
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: "turn_1" },
+    });
+    await appendJsonl(filePath, {
+      type: "response_item",
+      payload: {
+        type: "custom_tool_call",
+        name: "exec",
+        call_id: "call_1",
+        input: '{"sandbox_permissions":"require_escalated"}',
+      },
+    });
+    await appendJsonl(filePath, {
+      type: "event_msg",
+      payload: { type: "turn_aborted", turn_id: "turn_1", reason: "approval request aborted" },
+    });
+    await appendJsonl(filePath, {
+      type: "event_msg",
+      payload: {
+        type: "item_completed",
+        turn_id: "turn_1",
+        item: { type: "CommandExecution", status: "declined" },
+      },
+    });
+    await appendJsonl(filePath, {
+      type: "event_msg",
+      payload: { type: "error", turn_id: "turn_1", message: "approval request aborted" },
+    });
+    assert.deepEqual(events, ["running:", "waiting-for-choice:"]);
+
+    await appendJsonl(filePath, {
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: "turn_2" },
+    });
+    await appendJsonl(filePath, {
+      type: "event_msg",
+      payload: { type: "task_complete", turn_id: "turn_2" },
+    });
+
+    assert.deepEqual(await watched, { state: "completed", outcome: "success" });
+    assert.deepEqual(events, ["running:", "waiting-for-choice:", "running:", "completed:success"]);
   } finally {
     controller.abort();
     await fs.rm(directory, { recursive: true, force: true });

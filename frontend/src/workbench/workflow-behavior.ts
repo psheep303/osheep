@@ -1,6 +1,197 @@
-import type { WorkflowNode, WorkflowNodeKind } from "./api";
+import type { WorkflowEdge, WorkflowNode, WorkflowNodeKind, WorkflowRecord } from "./api";
 
 export type WorkflowBlockOutput = Record<string, unknown>;
+
+export const WORKFLOW_SESSION_ID_PATTERN =
+  "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}";
+
+const WORKFLOW_SESSION_ID_RE = new RegExp(`^${WORKFLOW_SESSION_ID_PATTERN}$`);
+
+export function workflowSessionId(node: WorkflowNode): string {
+  const value = node.config?.sessionId;
+  return typeof value === "string" ? value.trim() : "";
+}
+
+export function isWorkflowSessionId(value: string): boolean {
+  return WORKFLOW_SESSION_ID_RE.test(value.trim());
+}
+
+export function findWorkflowBackEdgeIds(edges: readonly WorkflowEdge[]): Set<string> {
+  const backEdgeIds = new Set<string>();
+  const outgoing = new Map<string, WorkflowEdge[]>();
+  const nodeOrder: string[] = [];
+  const nodeIds = new Set<string>();
+  const indegree = new Map<string, number>();
+
+  for (const edge of edges) {
+    if (!nodeIds.has(edge.from)) {
+      nodeIds.add(edge.from);
+      nodeOrder.push(edge.from);
+      indegree.set(edge.from, 0);
+    }
+    if (!nodeIds.has(edge.to)) {
+      nodeIds.add(edge.to);
+      nodeOrder.push(edge.to);
+      indegree.set(edge.to, 0);
+    }
+    const targets = outgoing.get(edge.from) ?? [];
+    targets.push(edge);
+    outgoing.set(edge.from, targets);
+    if (edge.from !== edge.to) indegree.set(edge.to, (indegree.get(edge.to) ?? 0) + 1);
+  }
+
+  // A back edge is an edge to a node on the current DFS path. Starting at
+  // graph roots prevents a loop edge saved before its forward path from being
+  // selected as a forward edge just because it appears first in the array.
+  const state = new Map<string, 0 | 1 | 2>();
+  const visit = (id: string): void => {
+    state.set(id, 1);
+    for (const edge of outgoing.get(id) ?? []) {
+      if (edge.from === edge.to) {
+        backEdgeIds.add(edge.id);
+        continue;
+      }
+      const targetState = state.get(edge.to);
+      if (targetState === 1) {
+        backEdgeIds.add(edge.id);
+      } else if (targetState === undefined) {
+        visit(edge.to);
+      }
+    }
+    state.set(id, 2);
+  };
+
+  for (const id of nodeOrder) {
+    if ((indegree.get(id) ?? 0) === 0 && state.get(id) === undefined) visit(id);
+  }
+  // A component made entirely of cycles has no root. It still needs one
+  // deterministic traversal so layout and scheduling can remove its feedback
+  // edges rather than leaving a dependency cycle unresolved.
+  for (const id of nodeOrder) {
+    if (state.get(id) === undefined) visit(id);
+  }
+  return backEdgeIds;
+}
+
+export function workflowLayoutDepths(
+  nodes: readonly WorkflowNode[],
+  edges: readonly WorkflowEdge[],
+): Map<string, number> {
+  const forwardEdges = workflowForwardEdges(nodes, edges);
+  const incoming = new Map<string, string[]>();
+  const outgoing = new Map<string, string[]>();
+  const indegree = new Map<string, number>();
+
+  for (const node of nodes) {
+    incoming.set(node.id, []);
+    outgoing.set(node.id, []);
+    indegree.set(node.id, 0);
+  }
+  for (const edge of forwardEdges) {
+    incoming.get(edge.to)!.push(edge.from);
+    outgoing.get(edge.from)!.push(edge.to);
+    indegree.set(edge.to, indegree.get(edge.to)! + 1);
+  }
+
+  const queue = nodes.filter((node) => indegree.get(node.id) === 0).map((node) => node.id);
+  const depths = new Map<string, number>();
+  while (queue.length > 0) {
+    const id = queue.shift()!;
+    const predecessors = incoming.get(id)!;
+    depths.set(
+      id,
+      predecessors.length > 0
+        ? Math.max(...predecessors.map((predecessor) => (depths.get(predecessor) ?? 0) + 1))
+        : 0,
+    );
+    for (const target of outgoing.get(id)!) {
+      const nextIndegree = indegree.get(target)! - 1;
+      indegree.set(target, nextIndegree);
+      if (nextIndegree === 0) queue.push(target);
+    }
+  }
+
+  // Removing the feedback edges makes the graph acyclic. Keep malformed or
+  // otherwise unresolved nodes visible in the first column as a final guard.
+  for (const node of nodes) {
+    if (!depths.has(node.id)) depths.set(node.id, 0);
+  }
+  return depths;
+}
+
+export function workflowLayoutColumns(
+  nodes: readonly WorkflowNode[],
+  edges: readonly WorkflowEdge[],
+): string[][] {
+  if (nodes.length === 0) return [];
+  const depths = workflowLayoutDepths(nodes, edges);
+  const maxDepth = Math.max(...depths.values());
+  const columns = Array.from({ length: maxDepth + 1 }, () => [] as string[]);
+  for (const node of nodes) columns[depths.get(node.id) ?? 0]!.push(node.id);
+
+  const incoming = new Map<string, string[]>();
+  const outgoing = new Map<string, string[]>();
+  for (const node of nodes) {
+    incoming.set(node.id, []);
+    outgoing.set(node.id, []);
+  }
+  for (const edge of workflowForwardEdges(nodes, edges)) {
+    incoming.get(edge.to)!.push(edge.from);
+    outgoing.get(edge.from)!.push(edge.to);
+  }
+
+  // Alternating barycenter sweeps reduce avoidable crossings while keeping the
+  // result deterministic for nodes with equal or missing neighbor positions.
+  for (let pass = 0; pass < 4; pass += 1) {
+    const before = JSON.stringify(columns);
+    for (let depth = 1; depth < columns.length; depth += 1) {
+      columns[depth] = sortLayoutColumn(columns[depth]!, incoming, columns);
+    }
+    for (let depth = columns.length - 2; depth >= 0; depth -= 1) {
+      columns[depth] = sortLayoutColumn(columns[depth]!, outgoing, columns);
+    }
+    const after = JSON.stringify(columns);
+    if (after === before) break;
+  }
+  return columns;
+}
+
+function workflowForwardEdges(
+  nodes: readonly WorkflowNode[],
+  edges: readonly WorkflowEdge[],
+): WorkflowEdge[] {
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const validEdges = edges.filter(
+    (edge) => nodeIds.has(edge.from) && nodeIds.has(edge.to) && edge.from !== edge.to,
+  );
+  const backEdgeIds = findWorkflowBackEdgeIds(validEdges);
+  return validEdges.filter((edge) => !backEdgeIds.has(edge.id));
+}
+
+function sortLayoutColumn(
+  column: readonly string[],
+  neighborsByNode: ReadonlyMap<string, string[]>,
+  columns: readonly string[][],
+): string[] {
+  const currentRows = new Map(column.map((id, row) => [id, row]));
+  const rows = new Map<string, number>();
+  for (const ids of columns) {
+    ids.forEach((id, row) => {
+      rows.set(id, row);
+    });
+  }
+  const barycenter = (id: string): number => {
+    const neighborRows = (neighborsByNode.get(id) ?? [])
+      .map((neighbor) => rows.get(neighbor))
+      .filter((row): row is number => row !== undefined);
+    if (neighborRows.length === 0) return currentRows.get(id) ?? 0;
+    return neighborRows.reduce((sum, row) => sum + row, 0) / neighborRows.length;
+  };
+  return [...column].sort((left, right) => {
+    const difference = barycenter(left) - barycenter(right);
+    return difference || currentRows.get(left)! - currentRows.get(right)!;
+  });
+}
 
 export function formatWorkflowDuration(ms: number): string {
   const safeMs = Number.isFinite(ms) ? Math.max(0, ms) : 0;
@@ -41,6 +232,29 @@ function configNumber(node: WorkflowNode, key: string, fallback: number): number
   return Number.isFinite(value) ? value : fallback;
 }
 
+function configuredVariables(
+  node: WorkflowNode,
+): Array<{ name: string; value: string; type: string }> {
+  const variables = node.config?.variables;
+  if (Array.isArray(variables)) {
+    return variables.map((entry) => {
+      const item = entry && typeof entry === "object" ? (entry as Record<string, unknown>) : {};
+      return {
+        name: typeof item.name === "string" ? item.name : "",
+        value: typeof item.value === "string" ? item.value : "",
+        type: typeof item.type === "string" ? item.type : "auto",
+      };
+    });
+  }
+  return [
+    {
+      name: configString(node, "name"),
+      value: configString(node, "value"),
+      type: "auto",
+    },
+  ];
+}
+
 export function emptyBlockOutput(node: WorkflowNode): WorkflowBlockOutput {
   const kind: WorkflowNodeKind = node.kind ?? "agent";
   switch (kind) {
@@ -52,6 +266,28 @@ export function emptyBlockOutput(node: WorkflowNode): WorkflowBlockOutput {
         data: "",
         text: "",
       };
+    case "variable": {
+      const variables = Object.fromEntries(
+        configuredVariables(node)
+          .filter((entry) => entry.name.trim())
+          .map((entry) => [entry.name.trim(), ""]),
+      );
+      const variableTypes = Object.fromEntries(
+        configuredVariables(node)
+          .filter((entry) => entry.name.trim())
+          .map((entry) => [entry.name.trim(), entry.type]),
+      );
+      return {
+        type: kind,
+        status: "",
+        name: configuredVariables(node)[0]?.name ?? "",
+        value: "",
+        variables,
+        variableTypes,
+        data: variables,
+        text: "",
+      };
+    }
     case "agent":
       return {
         type: node.providerKind === "claude-cli" ? "claude" : "codex",
@@ -215,6 +451,8 @@ export function emptyBlockOutput(node: WorkflowNode): WorkflowBlockOutput {
       };
     case "codex-plugin":
     case "claude-plugin":
+    case "codex-skill":
+    case "claude-skill":
       return {
         type: kind,
         status: "",
@@ -252,6 +490,10 @@ interface WorkflowRefreshState {
 
 export function canApplyWorkflowRefresh(state: WorkflowRefreshState): boolean {
   return state.requestedRevision === state.currentRevision && !state.dragging && !state.pendingSave;
+}
+
+export function withWorkflowTitle(record: WorkflowRecord, title: string): WorkflowRecord {
+  return record.title === title ? record : { ...record, title };
 }
 
 export function findMarkdownAutoPreviewNode(

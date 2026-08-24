@@ -1,41 +1,46 @@
-# Security Policy
+# 安全策略
 
-English | [简体中文](SECURITY.zh-CN.md)
+简体中文 · [English](SECURITY.en.md)
 
-## Supported Versions
+## 支持范围
 
-Osheep is in early development and does not maintain long-term support branches. Security fixes
-land on the default branch and ship with the next release. Use the latest release or commit.
+Osheep 目前处于早期开发阶段，尚未维护长期支持分支。安全修复将优先合入默认分支，并随下一次发布提供。建议只使用最新版本或最新提交。
 
-## Reporting a Vulnerability
+## 报告漏洞
 
-Do not open a public issue for an unpatched vulnerability or include real API keys, tokens, private
-keys, or personal data in a report.
+请不要为未修复的安全问题创建公开 Issue，也不要在报告中提交真实 API Key、访问令牌、私钥或个人数据。
 
-Use **Report a vulnerability** on the repository Security page. If private vulnerability reporting
-is unavailable, contact the maintainer privately through their GitHub profile and initially share
-only enough information to establish a secure communication channel.
+优先使用 GitHub 仓库的 **Security** 页面提交 Private vulnerability report。如果该功能不可用，请通过维护者的 GitHub 个人资料私下联系，并只提供建立安全沟通渠道所需的最少信息。
 
-Include the affected version, minimal reproduction, actual impact, expected behavior, and known
-mitigations. Wait for the maintainer to confirm a secure channel before sending exploit code.
+报告建议包含：
 
-## Deployment Boundary
+- 受影响的版本或提交；
+- 复现条件和最小复现步骤；
+- 实际影响与预期行为；
+- 已知的缓解措施；
+- 必要时提供经过脱敏的日志或截图。
 
-The backend can modify workspace files, start terminal processes, run Git, and invoke local AI CLIs.
-It is a privileged local tool, not a public sandbox.
+维护者确认安全沟通渠道后再发送详细利用代码。请给维护者合理的确认与修复时间，再讨论公开披露。
 
-- It listens on `127.0.0.1` by default and protects APIs and WebSockets with a random local session
-  restricted to trusted Origins.
-- Non-loopback listening requires `OSHEEP_AUTH_TOKEN` and explicit `CORS_ORIGIN` values.
-- The shared token is only for controlled single-user deployments. Remote access also requires
-  HTTPS, reverse-proxy access controls, and network isolation.
-- Run the service as a dedicated low-privilege user and restrict accessible workspaces.
-- Protect `~/.osheep`, `~/.codex`, `~/.claude`, and application data because they may contain
-  plaintext credentials.
-- Do not open or execute untrusted workspace content.
+## 部署边界
 
-## Leaked Credentials
+Osheep 后端能够读取和修改工作区文件、启动终端进程、执行 Git 操作并调用本机 AI CLI。这是高权限能力，不是面向公网的隔离执行环境。
 
-Immediately revoke leaked credentials, remove them from the current tree and Git history, force
-update affected remote refs, notify collaborators, and scan every branch and tag again. Adding a
-path to `.gitignore` or deleting only the current file does not invalidate an exposed credential.
+- 默认仅监听 `127.0.0.1`，通过随机本地会话和可信 Origin 限制 API 与 WebSocket 访问。
+- 非本地监听必须配置 `OSHEEP_AUTH_TOKEN` 和明确的 `CORS_ORIGIN`，否则后端拒绝启动。
+- 共享令牌只面向受控的单用户部署；远程部署还必须使用 HTTPS、反向代理访问控制和网络隔离。
+- 使用专用低权限账户运行服务，并限制其可访问的工作区。
+- AI 设置可能含有明文凭据，应保护 `~/.osheep`、`~/.codex`、`~/.claude` 和应用数据目录。
+- 不要打开或执行来源不可信的工作区内容。
+
+## 凭据误提交
+
+发现凭据进入 Git 后，应立即执行以下操作：
+
+1. 在对应服务商处吊销并重新生成凭据；
+2. 从当前版本删除文件或秘密值，并加入 `.gitignore`；
+3. 使用 `git filter-repo` 等工具从所有分支和标签清理历史；
+4. 强制更新远程历史，并通知所有协作者重新克隆或正确清理本地副本；
+5. 再次扫描完整 Git 历史，确认旧凭据已不存在。
+
+仅删除当前文件或加入 `.gitignore` 无法让已经提交的凭据失效。

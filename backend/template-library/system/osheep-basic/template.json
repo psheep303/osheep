@@ -1,0 +1,330 @@
+{
+  "id": "osheep-basic",
+  "source": "system",
+  "title": "Osheep Basic",
+  "description": "osheep basic 是一个基础的 AI 编程工作流。用户输入开发任务后，由 Codex 执行任务并运行测试；测试通过后可输入 Commit 消息提交代码，测试失败时则进入修正流程，修正完成后重新执行任务。\n该工作流适合用于日常代码修改、测试验证和可选的 Git 提交。",
+  "version": "main",
+  "readme": "# osheep basic\n\n## 简介\n\nosheep basic 是一个基础的 AI 编程工作流。用户输入开发任务后，由 Codex 执行任务并运行测试；测试通过后可输入 Commit 消息提交代码，测试失败时则进入修正流程，修正完成后重新执行任务。\n\n该工作流适合用于日常代码修改、测试验证和可选的 Git 提交。\n\n## 工作流程\n\n```text\n启动工作流\n↓\n设置输入任务\n↓\nCodex 执行任务\n↓\n运行测试\n↓\n人工查看执行摘要\n├─ 测试通过 → 输入 Commit 消息\n│                ↓\n│             条件判断\n│                └─ 消息不为空 → Git Commit\n│\n└─ 测试失败 → 修正问题\n                    ↓\n                条件判断\n                    └─ 修正内容不为空\n                        ↓\n                    更新任务变量\n                        ↓\n                    Codex 重新执行\n```\n\n## 节点说明\n\n### Workflow run\n\n工作流触发节点，负责启动工作流。\n\n### 输入任务\n\n**类型：** `variable`\n\n**变量配置：**\n\n```text\ninput = \"\"\n```\n\n用于保存用户输入的开发任务。\n\n### Codex\n\n**类型：** `agent`\n\n**提示词：**\n\n```text\n{{vars[input]}}\n```\n\nCodex 使用 input 变量中的任务描述执行代码修改或其他开发工作。\n\n**主要配置：**\n\n* 模型：default\n* 思考强度：high\n* 最大重试次数：5\n* 重试间隔：20 秒\n* 重试策略：lowest-multiplier\n* 备用 Provider：sas\n* 自动成功：启用\n* 中断后继续运行：启用\n\n### 运行测试\n\n**类型：** `command`\n\n用于运行项目测试，并将测试结果传递给后续节点。\n\n当前工作流数据中未记录具体的测试命令，需要在工作流编辑器中确认或补充。\n\n### 查看摘要\n\n**类型：** `markdown`\n\n**内容：**\n\n```text\n{{blocks[2].text}}\n```\n\n用于展示 Codex 的执行摘要，并等待人工审批。\n\n**审批结果：**\n\n* 成功：进入 Commit 流程。\n* 失败：进入修正流程。\n\n### commit消息\n\n**类型：** `input`\n\n**输入标题：**\n\n```text\ncommit text?  (留空拒绝)\n```\n\n用于输入 Git Commit 消息。留空表示不提交代码。\n\n### 条件判断：Commit\n\n**判断表达式：**\n\n```text\n{{blocks[9].text}} != \"\"\n```\n\n当 Commit 消息不为空时，执行 Git Commit；为空时结束该分支。\n\n### Commit 提交\n\n**类型：** `git-commit`\n\n**提交消息：**\n\n```text\n{{blocks[9].text}}\n```\n\n**配置：**\n\n```json\n{\n  \"stageAll\": true\n}\n```\n\n执行提交时会自动暂存所有变更文件。\n\n### 修正\n\n**类型：** `markdown`\n\n**内容：**\n\n```text\n{{blocks[2].text}}\n```\n\n用于展示失败结果，并将其作为后续修正任务的依据。\n\n### 条件判断：修正\n\n**判断表达式：**\n\n```text\n{{blocks[15].text}} != \"\"\n```\n\n当修正内容不为空时，进入环境变量节点；为空时结束修正流程。\n\n### 环境变量\n\n**类型：** `variable`\n\n**变量配置：**\n\n```text\ninput = {{blocks[15].text}}\n```\n\n将修正内容写回 input 变量，然后重新执行 Codex。\n\n## 变量引用\n\n| 引用                    | 说明         |\n| --------------------- | ---------- |\n| `{{vars[input]}}`     | 当前输入任务     |\n| `{{blocks[2].text}}`  | Codex 执行摘要 |\n| `{{blocks[9].text}}`  | Commit 消息  |\n| `{{blocks[15].text}}` | 修正内容       |\n\n## 注意事项\n\n* 运行测试 节点当前未显示具体命令，需要确认其实际配置。\n* 修改节点编号后，需要同步更新所有 `blocks[n]` 引用。\n* `stageAll: true` 会将工作区中的所有变更加入 Commit。\n* Commit 消息为空时不会提交代码。\n* 修正内容为空时不会重新执行 Codex。\n",
+  "iconFile": "icon.png",
+  "createdAt": 1787547189379,
+  "updatedAt": 1787547189379,
+  "nodes": [
+    {
+      "id": "node_yddblkwj",
+      "blockId": 1,
+      "kind": "trigger",
+      "title": "Workflow run",
+      "providerKind": "codex-cli",
+      "adapterId": "codex",
+      "model": "default",
+      "prompt": "",
+      "x": 80,
+      "y": 80,
+      "status": "idle",
+      "summary": "",
+      "rawOutput": "",
+      "error": "",
+      "config": {}
+    },
+    {
+      "id": "node_hy69jnb4",
+      "blockId": 2,
+      "kind": "agent",
+      "title": "Codex",
+      "providerKind": "codex-cli",
+      "adapterId": "codex",
+      "model": "default",
+      "prompt": "{{vars[input]}}",
+      "x": 624,
+      "y": 80,
+      "status": "idle",
+      "summary": "",
+      "rawOutput": "",
+      "error": "",
+      "config": {
+        "retryForever": false,
+        "retries": 5,
+        "autoSuccess": true,
+        "keepRunningOnInterrupt": true,
+        "retryDelaySeconds": 20,
+        "sessionId": "",
+        "effort": "high",
+        "retryStrategy": "lowest-multiplier",
+        "retryProviderIds": [
+          "sas"
+        ],
+        "alwaysEnter": false
+      }
+    },
+    {
+      "id": "node_syhmvuzd",
+      "blockId": 3,
+      "kind": "variable",
+      "title": "输入任务",
+      "providerKind": "codex-cli",
+      "adapterId": "codex",
+      "model": "default",
+      "prompt": "",
+      "x": 352,
+      "y": 80,
+      "status": "idle",
+      "summary": "",
+      "rawOutput": "",
+      "error": "",
+      "config": {
+        "variables": [
+          {
+            "name": "input",
+            "value": "",
+            "type": "text"
+          }
+        ],
+        "icon": "set"
+      }
+    },
+    {
+      "id": "node_hrz694qs",
+      "blockId": 4,
+      "kind": "command",
+      "title": "运行测试",
+      "providerKind": "codex-cli",
+      "adapterId": "codex",
+      "model": "default",
+      "prompt": "",
+      "x": 924,
+      "y": 92,
+      "status": "idle",
+      "summary": "",
+      "rawOutput": "",
+      "error": "",
+      "config": {
+        "failover": false,
+        "icon": "command"
+      }
+    },
+    {
+      "id": "node_yw56w0un",
+      "blockId": 6,
+      "kind": "if",
+      "title": "条件判断（IF）",
+      "providerKind": "codex-cli",
+      "adapterId": "codex",
+      "model": "default",
+      "prompt": "",
+      "x": 1984,
+      "y": 156,
+      "status": "idle",
+      "summary": "",
+      "rawOutput": "",
+      "error": "",
+      "config": {
+        "expression": "{{blocks[15].text}} != \"\"",
+        "icon": "if"
+      }
+    },
+    {
+      "id": "node_zddxqq7c",
+      "blockId": 8,
+      "kind": "markdown",
+      "title": "查看摘要",
+      "providerKind": "codex-cli",
+      "adapterId": "codex",
+      "model": "default",
+      "prompt": "{{blocks[2].text}}",
+      "x": 1280,
+      "y": 99,
+      "status": "idle",
+      "summary": "",
+      "rawOutput": "",
+      "error": "",
+      "config": {
+        "icon": "markdown",
+        "autoSeeResult": true,
+        "action": "approval",
+        "waitingForApproval": true
+      }
+    },
+    {
+      "id": "node_ubjbubp4",
+      "blockId": 9,
+      "kind": "input",
+      "title": "commit消息",
+      "providerKind": "codex-cli",
+      "adapterId": "codex",
+      "model": "default",
+      "prompt": "",
+      "x": 1712,
+      "y": 80,
+      "status": "idle",
+      "summary": "",
+      "rawOutput": "",
+      "error": "",
+      "config": {
+        "inputTitle": "commit text?  (留空拒绝)",
+        "icon": "input"
+      }
+    },
+    {
+      "id": "node_59rba5de",
+      "blockId": 10,
+      "kind": "if",
+      "title": "条件判断（IF）",
+      "providerKind": "codex-cli",
+      "adapterId": "codex",
+      "model": "default",
+      "prompt": "",
+      "x": 1984,
+      "y": 79,
+      "status": "idle",
+      "summary": "",
+      "rawOutput": "",
+      "error": "",
+      "config": {
+        "expression": "{{blocks[9].text}} != \"\"",
+        "icon": "if"
+      }
+    },
+    {
+      "id": "node_0emrwcsa",
+      "blockId": 11,
+      "kind": "git-commit",
+      "title": "Commit 提交",
+      "providerKind": "codex-cli",
+      "adapterId": "codex",
+      "model": "default",
+      "prompt": "",
+      "x": 2256,
+      "y": 80,
+      "status": "idle",
+      "summary": "",
+      "rawOutput": "",
+      "error": "",
+      "config": {
+        "message": "{{blocks[9].text}}",
+        "stageAll": true,
+        "icon": "git"
+      }
+    },
+    {
+      "id": "node_cjous974",
+      "blockId": 13,
+      "kind": "variable",
+      "title": "环境变量",
+      "providerKind": "codex-cli",
+      "adapterId": "codex",
+      "model": "default",
+      "prompt": "",
+      "x": 2256,
+      "y": 156,
+      "status": "idle",
+      "summary": "",
+      "rawOutput": "",
+      "error": "",
+      "config": {
+        "variables": [
+          {
+            "name": "input",
+            "value": "{{blocks[15].text}}",
+            "type": "text"
+          }
+        ],
+        "icon": "set"
+      }
+    },
+    {
+      "id": "node_holsbup6",
+      "blockId": 15,
+      "kind": "markdown",
+      "title": "修正",
+      "providerKind": "codex-cli",
+      "adapterId": "codex",
+      "model": "default",
+      "prompt": "{{blocks[2].text}}",
+      "x": 1698,
+      "y": 155,
+      "status": "idle",
+      "summary": "",
+      "rawOutput": "",
+      "error": "",
+      "config": {
+        "icon": "markdown",
+        "autoSeeResult": true,
+        "action": "message",
+        "waitingForInput": false
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge_llziqrrh",
+      "from": "node_syhmvuzd",
+      "to": "node_hy69jnb4",
+      "passSummary": true
+    },
+    {
+      "id": "edge_tazkonts",
+      "from": "node_ubjbubp4",
+      "to": "node_59rba5de",
+      "passSummary": true
+    },
+    {
+      "id": "edge_caqb04uz",
+      "from": "node_59rba5de",
+      "to": "node_0emrwcsa",
+      "passSummary": true,
+      "sourceHandle": "true"
+    },
+    {
+      "id": "edge_vc3zwxuq",
+      "from": "node_yw56w0un",
+      "to": "node_cjous974",
+      "passSummary": true,
+      "sourceHandle": "true"
+    },
+    {
+      "id": "edge_tpltwo7l",
+      "from": "node_cjous974",
+      "to": "node_hy69jnb4",
+      "passSummary": true
+    },
+    {
+      "id": "edge_qooo679v",
+      "from": "node_yddblkwj",
+      "to": "node_syhmvuzd",
+      "passSummary": true
+    },
+    {
+      "id": "edge_lebpjv97",
+      "from": "node_hy69jnb4",
+      "to": "node_hrz694qs",
+      "passSummary": true
+    },
+    {
+      "id": "edge_udq1kdfh",
+      "from": "node_hrz694qs",
+      "to": "node_zddxqq7c",
+      "passSummary": true
+    },
+    {
+      "id": "edge_xqkxrdpb",
+      "from": "node_zddxqq7c",
+      "to": "node_ubjbubp4",
+      "passSummary": true,
+      "sourceHandle": "success"
+    },
+    {
+      "id": "edge_wxiygwcj",
+      "from": "node_zddxqq7c",
+      "to": "node_holsbup6",
+      "passSummary": true,
+      "sourceHandle": "failure"
+    },
+    {
+      "id": "edge_cw60kkz8",
+      "from": "node_holsbup6",
+      "to": "node_yw56w0un",
+      "passSummary": true,
+      "sourceHandle": "success"
+    }
+  ]
+}

@@ -1,10 +1,12 @@
 import type { FastifyInstance } from "fastify";
 import { config } from "../config.js";
 import { errors } from "../errors.js";
+import { installRegistryTemplate, loadTemplateRegistry } from "../template-registry.js";
 import {
   deleteWorkflowTemplate,
   getWorkflowTemplate,
   getWorkflowTemplateIcon,
+  listLocalWorkflowTemplates,
   listWorkflowTemplates,
   saveWorkflowAsTemplate,
   type TemplateSource,
@@ -38,6 +40,19 @@ export async function registerTemplateRoutes(app: FastifyInstance) {
   }));
 
   app.get("/api/templates", async () => await listWorkflowTemplates());
+  app.get("/api/templates/local", async () => await listLocalWorkflowTemplates());
+
+  // The marketspace is intentionally separate from user/system CRUD so clients can
+  // refresh available templates without mutating the local library.
+  app.get("/api/templates/marketspace", async () => await loadTemplateRegistry());
+
+  app.post<{ Params: { id: string } }>("/api/templates/marketspace/:id/install", async (req) => {
+    const registry = await loadTemplateRegistry();
+    const entry = registry.templates.find((item) => item.id === req.params.id);
+    if (!entry) throw errors.notFound(`template not found: ${req.params.id}`);
+    await installRegistryTemplate(entry);
+    return await getWorkflowTemplate("system", entry.id);
+  });
 
   app.get<{ Params: { source: string; tid: string } }>(
     "/api/templates/:source/:tid/icon",

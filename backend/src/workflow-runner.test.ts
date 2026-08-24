@@ -1,22 +1,136 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  agentOutputForTest,
   agentRetryPromptForLanguage,
   appendAgentAttemptTranscriptForTest,
+  buildAgentProviderPlan,
+  canResumeWorkflowRun,
   classifyAgentTerminalResultFailure,
   createLiveAgentRunDetails,
+  interruptWorkflowRunRecord,
+  isAgentApiFailureMessage,
+  multiplyCost,
   parseWorkflowUsage,
   planWorkflowRunNodeIds,
   resolveWorkflowTemplate,
+  runWorkflowCodeForTest,
   scheduleWorkflowNodes,
   shouldRetryAgentTerminalFailure,
   type WorkflowRunDetailSnapshot,
+  workflowRunCheckpoints,
+  workflowRunExceedsCostLimit,
+  workflowStopDisposition,
 } from "./workflow-runner.js";
 import type { WorkflowNode, WorkflowRecord } from "./workflows.js";
 
 test("agent retry prompt follows the resolved Osheep language", () => {
   assert.equal(agentRetryPromptForLanguage("zh-CN"), "继续");
   assert.equal(agentRetryPromptForLanguage("en"), "continue");
+});
+
+test("parsed agent JSON is nested under text without leaking fields into the envelope", () => {
+  const finalMessage = {
+    summary: "README exists",
+    exists: true,
+    details: { path: "README.md" },
+  };
+  const node = {
+    ...workflowNode("node_codex", "agent", "Codex"),
+    config: { parseOutputJson: true },
+  };
+
+  assert.deepEqual(agentOutputForTest(node, JSON.stringify(finalMessage)), {
+    type: "codex",
+    status: "success",
+    text: finalMessage,
+  });
+});
+
+test("unparsed agent output retains a string in the three-field envelope", () => {
+  const node = workflowNode("node_claude", "agent", "Claude", "claude-cli");
+
+  assert.deepEqual(
+    agentOutputForTest(
+      node,
+      JSON.stringify({ text: "done", summary: "duplicate", details: { extra: true } }),
+    ),
+    { type: "claude", status: "success", text: "done" },
+  );
+});
+
+test("provider retry plans preserve round-robin order and sort lowest multipliers", () => {
+  const providers = {
+    expensive: {
+      id: "expensive",
+      name: "Expensive",
+      settingsConfig: {},
+      billingMultiplier: 2,
+    },
+    cheap: { id: "cheap", name: "Cheap", settingsConfig: {}, billingMultiplier: 0.5 },
+    standard: { id: "standard", name: "Standard", settingsConfig: {} },
+  };
+  assert.deepEqual(
+    buildAgentProviderPlan(
+      "round-robin",
+      ["standard", "expensive", "cheap"],
+      providers,
+      "expensive",
+    ),
+    [
+      { id: "standard", multiplier: 1 },
+      { id: "expensive", multiplier: 2 },
+      { id: "cheap", multiplier: 0.5 },
+    ],
+  );
+  assert.deepEqual(
+    buildAgentProviderPlan(
+      "lowest-multiplier",
+      ["standard", "expensive", "cheap"],
+      providers,
+      "expensive",
+    ),
+    [
+      { id: "cheap", multiplier: 0.5 },
+      { id: "standard", multiplier: 1 },
+      { id: "expensive", multiplier: 2 },
+    ],
+  );
+});
+
+test("provider billing multiplies model cost and preserves unavailable cost", () => {
+  assert.ok(Math.abs((multiplyCost(0.0125, 1.8) ?? 0) - 0.0225) < 1e-12);
+  assert.equal(multiplyCost(undefined, 2), undefined);
+});
+
+test("workflow cost limits trigger only after the configured amount is exceeded", () => {
+  const run = {
+    id: "run_limit",
+    status: "running" as const,
+    startedAt: 1,
+    nodeIds: ["node_first", "node_second"],
+    trace: [
+      {
+        nodeId: "node_first",
+        title: "First",
+        kind: "agent" as const,
+        status: "success" as const,
+        startedAt: 1,
+        cost: 0.4,
+      },
+      {
+        nodeId: "node_second",
+        title: "Second",
+        kind: "agent" as const,
+        status: "running" as const,
+        startedAt: 2,
+        cost: 0.6,
+      },
+    ],
+  };
+  assert.equal(workflowRunExceedsCostLimit(run, 0), false);
+  assert.equal(workflowRunExceedsCostLimit(run, 1), false);
+  assert.equal(workflowRunExceedsCostLimit(run, 0.99), true);
 });
 
 test("workflow run planning excludes nodes that are not reachable from a trigger", () => {
@@ -94,6 +208,396 @@ test("workflow templates resolve existing block output values", () => {
 
   assert.equal(resolveWorkflowTemplate("Say {{blocks[2].text}}", record), "Say hello");
   assert.equal(resolveWorkflowTemplate("{{blocks[2].data.items[0]}}", record), "first");
+});
+
+test("interrupted workflow keeps completed checkpoints and resets the active agent", () => {
+  const completed = {
+    ...workflowNode("node_completed", "set", "Completed"),
+    status: "success" as const,
+    rawOutput: JSON.stringify({ type: "set", value: 1 }),
+    completedAt: 20,
+  };
+  const active = {
+    ...workflowNode("node_active", "agent", "Codex"),
+    status: "running" as const,
+    rawOutput: "partial output",
+    summary: "partial output",
+    startedAt: 30,
+    config: { runDetails: { status: "running" }, retries: 2 },
+  };
+  const record = workflowRecord([completed, active]);
+  record.runs = [
+    {
+      id: "run_interrupted",
+      status: "running",
+      startedAt: 10,
+      nodeIds: [completed.id, active.id],
+      trace: [
+        {
+          nodeId: completed.id,
+          title: completed.title,
+          kind: "set",
+          status: "success",
+          startedAt: 10,
+          completedAt: 20,
+          output: { type: "set", value: 1 },
+        },
+        {
+          nodeId: active.id,
+          title: active.title,
+          kind: "agent",
+          status: "running",
+          startedAt: 30,
+        },
+      ],
+    },
+  ];
+
+  const interrupted = interruptWorkflowRunRecord(record, 50);
+  const run = interrupted.runs[0]!;
+  const resetAgent = interrupted.nodes.find((node) => node.id === active.id)!;
+
+  assert.equal(run.status, "stopped");
+  assert.equal(run.resumable, true);
+  assert.match(run.resumeFingerprint ?? "", /^[a-f0-9]{64}$/);
+  assert.equal(run.completedAt, 50);
+  assert.equal(run.trace?.[0]?.status, "success");
+  assert.equal(run.trace?.[1]?.status, "stopped");
+  assert.equal(resetAgent.status, "idle");
+  assert.equal(resetAgent.rawOutput, "");
+  assert.deepEqual(resetAgent.config, { retries: 2 });
+  assert.equal(interrupted.nodes[0]?.status, "success");
+  assert.equal(canResumeWorkflowRun(interrupted, run, run.nodeIds), true);
+  assert.equal(
+    canResumeWorkflowRun(
+      {
+        ...interrupted,
+        nodes: interrupted.nodes.map((node) =>
+          node.id === active.id ? { ...node, prompt: "changed prompt" } : node,
+        ),
+      },
+      run,
+      run.nodeIds,
+    ),
+    false,
+  );
+});
+
+test("workflow checkpoints preserve every successful loop pass in order", () => {
+  const run = {
+    id: "run_loop",
+    status: "stopped" as const,
+    startedAt: 1,
+    nodeIds: ["node_condition"],
+    trace: [
+      {
+        nodeId: "node_condition",
+        title: "Condition",
+        kind: "if" as const,
+        status: "success" as const,
+        startedAt: 2,
+        output: { result: true },
+      },
+      {
+        nodeId: "node_condition",
+        title: "Condition",
+        kind: "if" as const,
+        status: "success" as const,
+        startedAt: 3,
+        output: { result: false },
+      },
+      {
+        nodeId: "node_condition",
+        title: "Condition",
+        kind: "if" as const,
+        status: "stopped" as const,
+        startedAt: 4,
+      },
+    ],
+  };
+
+  assert.deepEqual(
+    workflowRunCheckpoints(run)
+      .get("node_condition")
+      ?.map((trace) => trace.output),
+    [{ result: true }, { result: false }],
+  );
+});
+
+test("pause remains resumable when an agent reports an abort error", () => {
+  assert.deepEqual(workflowStopDisposition(true, true, true, "The operation was aborted."), {
+    stopped: true,
+    resumable: true,
+  });
+  assert.deepEqual(workflowStopDisposition(false, true, true, "The operation was aborted."), {
+    stopped: true,
+    resumable: true,
+  });
+  assert.deepEqual(workflowStopDisposition(false, false, true, "Node failed."), {
+    stopped: true,
+    resumable: true,
+  });
+  assert.deepEqual(workflowStopDisposition(false, true, false, "Stopped"), {
+    stopped: true,
+    resumable: false,
+  });
+});
+
+test("workflow run planning allows a cycle that has an exit", () => {
+  const record = workflowRecord([
+    workflowNode("trigger", "trigger", "Workflow run"),
+    workflowNode("body", "agent", "Codex"),
+    workflowNode("condition", "if", "Condition"),
+    workflowNode("exit", "set", "Exit"),
+  ]);
+  record.edges = [
+    { id: "trigger-body", from: "trigger", to: "body", passSummary: true },
+    { id: "body-condition", from: "body", to: "condition", passSummary: true },
+    {
+      id: "condition-loop",
+      from: "condition",
+      to: "body",
+      sourceHandle: "true",
+      passSummary: true,
+    },
+    {
+      id: "condition-exit",
+      from: "condition",
+      to: "exit",
+      sourceHandle: "false",
+      passSummary: true,
+    },
+  ];
+
+  assert.deepEqual(planWorkflowRunNodeIds(record), {
+    nodeIds: ["trigger", "body", "condition", "exit"],
+  });
+});
+
+test("workflow run planning finds the loop edge when edges are persisted out of order", () => {
+  const record = workflowRecord([
+    workflowNode("trigger", "trigger", "Workflow run"),
+    workflowNode("body", "agent", "Codex"),
+    workflowNode("condition", "if", "Condition"),
+    workflowNode("exit", "set", "Exit"),
+  ]);
+  record.edges = [
+    {
+      id: "condition-loop",
+      from: "condition",
+      to: "body",
+      sourceHandle: "true",
+      passSummary: true,
+    },
+    {
+      id: "condition-exit",
+      from: "condition",
+      to: "exit",
+      sourceHandle: "false",
+      passSummary: true,
+    },
+    { id: "body-condition", from: "body", to: "condition", passSummary: true },
+    { id: "trigger-body", from: "trigger", to: "body", passSummary: true },
+  ];
+
+  assert.deepEqual(planWorkflowRunNodeIds(record), {
+    nodeIds: ["trigger", "body", "condition", "exit"],
+  });
+});
+
+test("workflow run planning rejects a cycle without an exit", () => {
+  const record = workflowRecord([
+    workflowNode("trigger", "trigger", "Workflow run"),
+    workflowNode("first", "set", "First"),
+    workflowNode("second", "set", "Second"),
+  ]);
+  record.edges = [
+    { id: "trigger-first", from: "trigger", to: "first", passSummary: true },
+    { id: "first-second", from: "first", to: "second", passSummary: true },
+    { id: "second-first", from: "second", to: "first", passSummary: true },
+  ];
+
+  assert.deepEqual(planWorkflowRunNodeIds(record), {
+    nodeIds: [],
+    error: "Workflow has a cycle without an exit.",
+  });
+});
+
+test("workflow templates resolve environment variables and JSON paths", () => {
+  const variable = {
+    ...workflowNode("node_variable", "variable", "Environment variable"),
+    config: {
+      variables: [
+        { name: "name", value: '{"id": 42, "label": "hello"}' },
+        { name: "enabled", value: "true" },
+        { name: "literalJson", value: '{"id": 1}', type: "text" },
+        { name: "typedJson", value: '{"id": 1}', type: "json" },
+      ],
+    },
+  };
+  const record = workflowRecord([variable]);
+
+  assert.equal(resolveWorkflowTemplate("Value: {{vars[name].label}}", record), "Value: hello");
+  assert.equal(resolveWorkflowTemplate("{{vars['name'].id}}", record), "42");
+  assert.equal(resolveWorkflowTemplate("{{vars[name].id}}", record), "42");
+  assert.equal(resolveWorkflowTemplate('{"id": {{vars["name"].id}}}', record), '{"id": 42}');
+  assert.equal(resolveWorkflowTemplate("{{vars[name]}}", record), '{"id":42,"label":"hello"}');
+  assert.equal(resolveWorkflowTemplate("{{vars[enabled]}}", record), "true");
+  assert.equal(
+    resolveWorkflowTemplate("{{vars[b]}}", {
+      ...record,
+      nodes: [
+        {
+          ...variable,
+          config: { variables: [{ name: "b", value: "single", type: "text" }] },
+        },
+      ],
+    }),
+    "single",
+  );
+  assert.equal(resolveWorkflowTemplate("{{vars[literalJson]}}", record), '{"id": 1}');
+  assert.equal(resolveWorkflowTemplate("{{vars[typedJson]}}", record), '{"id":1}');
+});
+
+test("JavaScript workflow code receives typed variable and block template values", async () => {
+  const record: WorkflowRecord = {
+    id: "wf_code_template",
+    title: "Code template",
+    createdAt: 1,
+    updatedAt: 1,
+    runs: [],
+    edges: [],
+    nodes: [
+      {
+        ...workflowNode("node_variable", "variable", "Environment"),
+        blockId: 1,
+        config: {
+          variables: [
+            { name: "name", value: "Osheep", type: "text" },
+            { name: "options", value: '{"enabled":true}', type: "json" },
+          ],
+        },
+      },
+      {
+        ...workflowNode("node_source", "set", "Source"),
+        blockId: 2,
+        rawOutput: JSON.stringify({ status: "success", data: { count: 3 } }),
+      },
+    ],
+  };
+
+  assert.deepEqual(
+    await runWorkflowCodeForTest(
+      "return { name: {{vars[name]}}, enabled: {{vars[options].enabled}}, count: {{blocks[2].data.count}} };",
+      record,
+    ),
+    { name: "Osheep", enabled: true, count: 3 },
+  );
+});
+
+test("workflow variable types validate configured values", () => {
+  const record = workflowRecord([
+    {
+      ...workflowNode("node_typed_variable", "variable", "Typed variables"),
+      config: {
+        variables: [
+          { name: "badJson", value: "{", type: "json" },
+          { name: "badNumber", value: "NaN", type: "number" },
+          { name: "badBoolean", value: "yes", type: "boolean" },
+        ],
+      },
+    },
+  ]);
+
+  assert.throws(() => resolveWorkflowTemplate("{{vars[badJson]}}", record), /invalid JSON/);
+  assert.throws(() => resolveWorkflowTemplate("{{vars[badNumber]}}", record), /finite number/);
+  assert.throws(() => resolveWorkflowTemplate("{{vars[badBoolean]}}", record), /true or false/);
+});
+
+test("workflow templates resolve empty and string environment variables", () => {
+  const record = workflowRecord([
+    {
+      ...workflowNode("node_empty", "variable", "Empty"),
+      config: { name: "empty", value: "" },
+    },
+    {
+      ...workflowNode("node_string", "variable", "String"),
+      config: { name: "plain", value: "not-json" },
+    },
+  ]);
+
+  assert.equal(resolveWorkflowTemplate("empty={{vars[empty]}}", record), "empty=");
+  assert.equal(resolveWorkflowTemplate("plain={{vars[plain]}}", record), "plain=not-json");
+  assert.throws(() => resolveWorkflowTemplate("{{vars[missing]}}", record), /missing variable/);
+});
+
+test("later environment variable blocks overwrite existing names", () => {
+  const first = {
+    ...workflowNode("node_first_variable", "variable", "First variables"),
+    config: { variables: [{ name: "shared", value: "first", type: "text" }] },
+  };
+  const second = {
+    ...workflowNode("node_second_variable", "variable", "Second variables"),
+    config: {
+      variables: [
+        { name: "shared", value: "second", type: "text" },
+        { name: "added", value: "new", type: "text" },
+      ],
+    },
+  };
+  const record = workflowRecord([first, second]);
+
+  assert.equal(resolveWorkflowTemplate("{{vars[shared]}}", record), "second");
+  assert.equal(resolveWorkflowTemplate("{{vars[added]}}", record), "new");
+});
+
+test("a running workflow only resolves environment variable blocks that already ran", () => {
+  const upstream = {
+    ...workflowNode("node_upstream_variable", "variable", "Upstream variables"),
+    blockId: 3,
+    status: "success" as const,
+    completedAt: 100,
+    rawOutput: JSON.stringify({
+      type: "variable",
+      status: "success",
+      variables: { instruction: "from block 3" },
+    }),
+    config: {
+      variables: [{ name: "instruction", value: "from block 3", type: "text" }],
+    },
+  };
+  const downstream = {
+    ...workflowNode("node_downstream_variable", "variable", "Downstream variables"),
+    blockId: 13,
+    config: {
+      variables: [{ name: "instruction", value: "from block 13", type: "text" }],
+    },
+  };
+  const record = workflowRecord([upstream, downstream]);
+  record.runs = [{ id: "run_active", status: "running", startedAt: 1, nodeIds: [] }];
+
+  assert.equal(resolveWorkflowTemplate("{{vars[instruction]}}", record), "from block 3");
+
+  upstream.completedAt = 100;
+  downstream.status = "success";
+  downstream.completedAt = 90;
+  downstream.rawOutput = JSON.stringify({
+    type: "variable",
+    status: "success",
+    variables: { instruction: "stale block 13 output" },
+  });
+  record.runs[0]!.startedAt = 95;
+  assert.equal(resolveWorkflowTemplate("{{vars[instruction]}}", record), "from block 3");
+});
+
+test("workflow variable names support non-ASCII names", () => {
+  const record = workflowRecord([
+    {
+      ...workflowNode("node_cn_variable", "variable", "中文变量"),
+      config: { name: "服务地址", value: "https://example.test" },
+    },
+  ]);
+  assert.equal(resolveWorkflowTemplate("{{vars[服务地址]}}", record), "https://example.test");
 });
 
 test("workflow templates reject malformed and missing variables", () => {
@@ -182,6 +686,20 @@ test("live agent run details capture terminal and JSONL status metadata", async 
   assert.equal(writes[3]?.stdout, "");
   assert.equal(writes[4]?.terminalStatus, "waiting-for-choice");
   assert.equal(details.snapshot("running").stdout, "");
+
+  await details.setRetryWait({
+    retryAt: 9_000,
+    retryAttempt: 1,
+    retryReason: "temporary API failure",
+  });
+  assert.equal(writes.at(-1)?.retryAt, 9_000);
+  assert.equal(writes.at(-1)?.retryAttempt, 1);
+  assert.equal(writes.at(-1)?.retryReason, "temporary API failure");
+
+  await details.setRetryWait();
+  assert.equal(writes.at(-1)?.retryAt, undefined);
+  assert.equal(writes.at(-1)?.retryAttempt, undefined);
+  assert.equal(writes.at(-1)?.retryReason, undefined);
 });
 
 test("workflow scheduler runs sibling branches in parallel and waits before a join", async () => {
@@ -261,6 +779,116 @@ test("workflow scheduler follows only the matching conditional output", async ()
     },
   );
   assert.deepEqual(executed, ["if", "false-node"]);
+});
+
+test("workflow scheduler activates a shared target from either conditional output", async () => {
+  for (const selectedHandle of ["true", "false"]) {
+    const executed: string[] = [];
+    await scheduleWorkflowNodes(
+      ["if", "shared-node"],
+      [
+        {
+          id: "edge_if_true_shared",
+          from: "if",
+          to: "shared-node",
+          passSummary: true,
+          sourceHandle: "true",
+        },
+        {
+          id: "edge_if_false_shared",
+          from: "if",
+          to: "shared-node",
+          passSummary: true,
+          sourceHandle: "false",
+        },
+      ],
+      1,
+      async (nodeId) => {
+        executed.push(nodeId);
+        return nodeId === "if" ? selectedHandle : undefined;
+      },
+    );
+    assert.deepEqual(executed, ["if", "shared-node"]);
+  }
+});
+
+test("workflow scheduler repeats a loop body until its exit is selected", async () => {
+  const executed: string[] = [];
+  let conditionRuns = 0;
+  await scheduleWorkflowNodes(
+    ["trigger", "body", "condition", "exit"],
+    [
+      { id: "trigger-body", from: "trigger", to: "body", passSummary: true },
+      { id: "body-condition", from: "body", to: "condition", passSummary: true },
+      {
+        id: "condition-loop",
+        from: "condition",
+        to: "body",
+        sourceHandle: "true",
+        passSummary: true,
+      },
+      {
+        id: "condition-exit",
+        from: "condition",
+        to: "exit",
+        sourceHandle: "false",
+        passSummary: true,
+      },
+    ],
+    2,
+    async (nodeId) => {
+      executed.push(nodeId);
+      if (nodeId !== "condition") return undefined;
+      conditionRuns += 1;
+      return conditionRuns < 3 ? "true" : "false";
+    },
+  );
+
+  assert.deepEqual(executed, [
+    "trigger",
+    "body",
+    "condition",
+    "body",
+    "condition",
+    "body",
+    "condition",
+    "exit",
+  ]);
+});
+
+test("workflow scheduler repeats the intended edge when loop edges were saved first", async () => {
+  const executed: string[] = [];
+  let conditionRuns = 0;
+  await scheduleWorkflowNodes(
+    ["trigger", "body", "condition", "exit"],
+    [
+      {
+        id: "condition-loop",
+        from: "condition",
+        to: "body",
+        sourceHandle: "true",
+        passSummary: true,
+      },
+      {
+        id: "condition-exit",
+        from: "condition",
+        to: "exit",
+        sourceHandle: "false",
+        passSummary: true,
+      },
+      { id: "body-condition", from: "body", to: "condition", passSummary: true },
+      { id: "trigger-body", from: "trigger", to: "body", passSummary: true },
+    ],
+    2,
+    async (nodeId) => {
+      executed.push(nodeId);
+      if (nodeId !== "condition") return undefined;
+      conditionRuns += 1;
+      return conditionRuns < 2 ? "true" : "false";
+    },
+  );
+
+  assert.deepEqual(executed, ["trigger", "body", "condition", "body", "condition", "exit"]);
 });
 
 test("workflow scheduler rejoins after an unselected branch without duplicating the join", async () => {
@@ -431,10 +1059,56 @@ test("configured retries are honored for structured permanent failures", () => {
 
   assert.equal(failure.failed, true);
   assert.equal(failure.retryable, false);
+  assert.equal(failure.apiFailure, true);
   assert.equal(shouldRetryAgentTerminalFailure(failure, 0, 2, false), true);
   assert.equal(shouldRetryAgentTerminalFailure(failure, 1, 2, false), true);
   assert.equal(shouldRetryAgentTerminalFailure(failure, 2, 2, false), false);
   assert.equal(shouldRetryAgentTerminalFailure(failure, 2, 0, true), true);
+});
+
+test("all API status and network failures are eligible for provider rotation", () => {
+  const unauthorized = classifyAgentTerminalResultFailure(
+    {
+      content: "",
+      transcript: "",
+      exitCode: 1,
+      signal: "error",
+      outcome: "error",
+      errorMessage:
+        'unexpected status 401 Unauthorized: {"code":"INVALID_API_KEY","message":"Invalid API key"}',
+    },
+    "Continue",
+  );
+  assert.equal(unauthorized.retryable, false);
+  assert.equal(unauthorized.apiFailure, true);
+  const exhausted = classifyAgentTerminalResultFailure(
+    {
+      content: "",
+      transcript: "",
+      exitCode: 1,
+      signal: "error",
+      outcome: "error",
+      errorMessage:
+        "exceeded retry limit, last status: 429 Too Many Requests, request id: request_1",
+    },
+    "Continue",
+  );
+  assert.equal(exhausted.failed, true);
+  assert.equal(exhausted.retryable, true);
+  assert.equal(exhausted.apiFailure, true);
+  assert.equal(shouldRetryAgentTerminalFailure(exhausted, 0, 2, false), true);
+  assert.equal(isAgentApiFailureMessage("API Error: Content block not found"), true);
+  assert.equal(isAgentApiFailureMessage("API request failed: upstream disconnected"), true);
+  assert.equal(isAgentApiFailureMessage("Request failed with status code 401"), true);
+  assert.equal(isAgentApiFailureMessage("Response status: 403 Forbidden"), true);
+  assert.equal(isAgentApiFailureMessage("Unable to connect to the API"), true);
+  assert.equal(isAgentApiFailureMessage("Failed to connect to api.example.test"), true);
+  assert.equal(isAgentApiFailureMessage("error sending request for url"), true);
+  assert.equal(
+    isAgentApiFailureMessage("fetch failed: getaddrinfo ENOTFOUND api.example.test"),
+    true,
+  );
+  assert.equal(isAgentApiFailureMessage("Tool output could not be parsed"), false);
 });
 
 test("run details retain every terminal retry attempt", () => {
@@ -469,6 +1143,7 @@ test("agent result uses the structured JSONL error outcome", () => {
 
   assert.equal(failure.failed, true);
   assert.equal(failure.retryable, false);
+  assert.equal(failure.apiFailure, true);
 });
 
 test("agent result derives retryability from the JSONL error message", () => {
@@ -492,6 +1167,7 @@ test("agent result derives retryability from the JSONL error message", () => {
 
   assert.equal(failure.failed, true);
   assert.equal(failure.retryable, true);
+  assert.equal(failure.apiFailure, true);
   assert.match(failure.message, /unexpected status 503/i);
 });
 
@@ -514,6 +1190,7 @@ test("agent result treats a generic JSONL error as non-retryable", () => {
 
   assert.equal(failure.failed, true);
   assert.equal(failure.retryable, false);
+  assert.equal(failure.apiFailure, false);
   assert.match(failure.message, /Fatal exception/i);
 });
 

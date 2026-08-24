@@ -162,6 +162,10 @@ export interface CreateSessionInput {
   guardRoot?: string;
   /** Internal command run by the shell only after its startup guard is installed. */
   initialCommand?: string;
+  /** Optional process to launch directly, without a shell parsing its arguments. */
+  initialExecutable?: string;
+  /** Raw argv for initialExecutable. Each item is passed as one argument. */
+  initialArgs?: string[];
   /** Terminal identity advertised to interactive agent TUIs. */
   terminalProgram?: string;
 }
@@ -170,8 +174,8 @@ export function createSession(input: CreateSessionInput): TerminalSession {
   if (sessions.size >= config.maxTerminalSessions) {
     throw errors.tooManySessions(config.maxTerminalSessions);
   }
-  const profile = findProfile(input.shell);
-  if (!profile) throw errors.unsupportedShell(input.shell);
+  const profile = input.initialExecutable ? null : findProfile(input.shell);
+  if (!profile && !input.initialExecutable) throw errors.unsupportedShell(input.shell);
 
   const cols = clampSize(input.cols, 80);
   const rows = clampSize(input.rows, 24);
@@ -180,10 +184,11 @@ export function createSession(input: CreateSessionInput): TerminalSession {
   // and a cleanup to call when the session ends.
   const workspacesRootAbs = path.resolve(input.guardRoot ?? config.workspacesRoot);
   const initialCwd = path.resolve(input.workspace.path);
-  let spawnArgs = profile.args;
+  let spawnExecutable = input.initialExecutable ?? profile!.executable;
+  let spawnArgs = input.initialExecutable ? (input.initialArgs ?? []) : profile!.args;
   let guardCleanup: (() => void) | null = null;
   try {
-    if (profile.id === "powershell") {
+    if (profile?.id === "powershell") {
       const g = buildPowerShellGuard(
         profile.args,
         workspacesRootAbs,
@@ -192,11 +197,11 @@ export function createSession(input: CreateSessionInput): TerminalSession {
       );
       spawnArgs = g.args;
       guardCleanup = g.cleanup;
-    } else if (profile.id === "cmd") {
+    } else if (profile?.id === "cmd") {
       const g = buildCmdGuard(profile.args, workspacesRootAbs, initialCwd, input.initialCommand);
       spawnArgs = g.args;
       guardCleanup = g.cleanup;
-    } else if (profile.id === "bash" || profile.id === "zsh") {
+    } else if (profile?.id === "bash" || profile?.id === "zsh") {
       const g = buildBashGuard(profile.args, workspacesRootAbs, initialCwd, input.initialCommand);
       spawnArgs = g.args;
       guardCleanup = g.cleanup;
@@ -205,7 +210,8 @@ export function createSession(input: CreateSessionInput): TerminalSession {
     // heuristic in handleInputData remains as fallback.
   } catch {
     // If guard generation fails (e.g., tmp write), fall back silently.
-    spawnArgs = profile.args;
+    spawnExecutable = input.initialExecutable ?? profile!.executable;
+    spawnArgs = input.initialExecutable ? (input.initialArgs ?? []) : profile!.args;
     guardCleanup = null;
   }
 
@@ -215,7 +221,7 @@ export function createSession(input: CreateSessionInput): TerminalSession {
 
   let pty: nodePty.IPty;
   try {
-    pty = nodePty.spawn(profile.executable, spawnArgs, {
+    pty = nodePty.spawn(spawnExecutable, spawnArgs, {
       name: "xterm-256color",
       cols,
       rows,

@@ -5,9 +5,12 @@ export type WorkflowRuntimeEvent =
   | { type: "node"; updatedAt: number; node: WorkflowNode }
   | { type: "run"; updatedAt: number; run: WorkflowRun };
 
+export type GlobalWorkflowRuntimeEvent = WorkflowRuntimeEvent & { workflowId: string };
+
 type WorkflowRuntimeListener = (event: WorkflowRuntimeEvent) => void;
 
 const listeners = new Map<string, Set<WorkflowRuntimeListener>>();
+const workspaceListeners = new Map<string, Set<(event: GlobalWorkflowRuntimeEvent) => void>>();
 
 function eventKey(workspaceRoot: string, workflowId: string): string {
   return `${workspaceRoot}\0${workflowId}`;
@@ -34,12 +37,36 @@ export function publishWorkflowRuntime(
   event: WorkflowRuntimeEvent,
 ): void {
   const current = listeners.get(eventKey(workspaceRoot, workflowId));
-  if (!current) return;
-  for (const listener of current) {
+  if (current) {
+    for (const listener of current) {
+      try {
+        listener(event);
+      } catch {
+        // Runtime observers must never be able to fail the workflow they watch.
+      }
+    }
+  }
+  const workspaceCurrent = workspaceListeners.get(workspaceRoot);
+  if (!workspaceCurrent) return;
+  const globalEvent = { ...event, workflowId } as GlobalWorkflowRuntimeEvent;
+  for (const listener of workspaceCurrent) {
     try {
-      listener(event);
+      listener(globalEvent);
     } catch {
       // Runtime observers must never be able to fail the workflow they watch.
     }
   }
+}
+
+export function subscribeWorkspaceWorkflowRuntime(
+  workspaceRoot: string,
+  listener: (event: GlobalWorkflowRuntimeEvent) => void,
+): () => void {
+  const current = workspaceListeners.get(workspaceRoot) ?? new Set();
+  current.add(listener);
+  workspaceListeners.set(workspaceRoot, current);
+  return () => {
+    current.delete(listener);
+    if (current.size === 0) workspaceListeners.delete(workspaceRoot);
+  };
 }

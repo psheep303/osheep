@@ -38,6 +38,22 @@ const EXPECTED_MONACO_COLORS = {
   "editor.inactiveSelectionBackground": "#3a3d41",
   "editorWidget.background": "#202020",
   "editorWidget.border": "#454545",
+  "editorSuggestWidget.background": "#252526",
+  "editorSuggestWidget.border": "#454545",
+  "editorSuggestWidget.foreground": "#d4d4d4",
+  "editorSuggestWidget.selectedBackground": "#094771",
+  "editorSuggestWidget.selectedForeground": "#ffffff",
+  "editorSuggestWidget.highlightForeground": "#4fc1ff",
+  "editorSuggestWidget.focusHighlightForeground": "#9cdcfe",
+  "editorSuggestWidgetStatus.foreground": "#b8b8b8",
+  "list.foreground": "#d4d4d4",
+  "list.focusForeground": "#ffffff",
+  "list.activeSelectionForeground": "#ffffff",
+  "list.inactiveSelectionForeground": "#d4d4d4",
+  "list.highlightForeground": "#4fc1ff",
+  "list.activeSelectionBackground": "#094771",
+  "list.focusBackground": "#094771",
+  "list.inactiveSelectionBackground": "#37373d",
   "scrollbarSlider.background": "#79797966",
   "scrollbarSlider.hoverBackground": "#646464b3",
   "scrollbarSlider.activeBackground": "#bfbfbf66",
@@ -86,6 +102,8 @@ test("theme helpers preserve exact fallbacks without a DOM", () => {
 test("explicit light palettes stay readable without a DOM", () => {
   assert.equal(monacoEditorColors("light")["editor.background"], "#ffffff");
   assert.equal(monacoEditorColors("light")["editor.foreground"], "#26313d");
+  assert.equal(monacoEditorColors("light")["editorSuggestWidget.foreground"], "#26313d");
+  assert.equal(monacoEditorColors("light")["editorSuggestWidget.selectedForeground"], "#17212b");
   assert.deepEqual(xtermTheme("light"), {
     background: "#ffffff",
     foreground: "#26313d",
@@ -143,6 +161,16 @@ test("GitGraph palette calls return stable fresh arrays", () => {
   first[0] = "#000000";
   assert.deepEqual(second, ["#ffb000", "#dc267f", "#994f00", "#40b0a6", "#b66dff"]);
   assert.deepEqual(gitGraphPalette(), second);
+});
+
+test("workbench layout selectors do not collide with Monaco widget internals", async () => {
+  const [editorCss, workbenchSource] = await Promise.all([
+    readFile(new URL("./styles/editor.css", import.meta.url), "utf8"),
+    readFile(new URL("./Workbench.tsx", import.meta.url), "utf8"),
+  ]);
+  assert.doesNotMatch(editorCss, /(^|})\s*\.main\s*\{/m);
+  assert.match(editorCss, /\.workbench-main\s*\{/);
+  assert.match(workbenchSource, /className="workbench-main"/);
 });
 
 test("theme-sensitive cards and terminal menus use component roles", async () => {

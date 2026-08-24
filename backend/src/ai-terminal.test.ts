@@ -4,14 +4,84 @@ import * as fs from "node:fs/promises";
 import test from "node:test";
 import {
   type AgentEffort,
+  agentAutoFinishPausedAfterEventForTest,
+  agentCompletionDecisionForTest,
   buildAgentTerminalCommand,
+  buildAgentTerminalInvocation,
   createAgentTerminalControlForTest,
   createClaudePermissionHookRuntimeForTest,
-  createCodexPermissionHookRuntimeForTest,
   finishAgentTerminalSuccess,
   selectConversationSessionIdForTest,
   waitForAgentTerminalManualSuccessForTest,
 } from "./ai-terminal.js";
+
+test("JSONL completion policy only keeps user-interrupted turns running", () => {
+  const enabled = { keepRunningOnInterrupt: true, autoFinishPaused: false };
+  assert.equal(
+    agentCompletionDecisionForTest({ state: "completed", outcome: "cancelled" }, enabled),
+    "continue-interrupted",
+  );
+  assert.equal(
+    agentCompletionDecisionForTest({ state: "completed", outcome: "success" }, enabled),
+    "accept",
+  );
+  assert.equal(
+    agentCompletionDecisionForTest({ state: "completed", outcome: "error" }, enabled),
+    "accept",
+  );
+  assert.equal(
+    agentCompletionDecisionForTest(
+      { state: "completed", outcome: "cancelled" },
+      { keepRunningOnInterrupt: false, autoFinishPaused: false },
+    ),
+    "accept",
+  );
+  assert.equal(
+    agentCompletionDecisionForTest(
+      { state: "completed", outcome: "cancelled" },
+      { keepRunningOnInterrupt: true, autoFinishPaused: true },
+    ),
+    "continue-paused",
+  );
+  assert.equal(
+    agentCompletionDecisionForTest(
+      { state: "completed", outcome: "error", error: "unexpected status 401 Unauthorized" },
+      { keepRunningOnInterrupt: true, autoFinishPaused: true },
+    ),
+    "accept",
+  );
+});
+
+test("a new JSONL turn clears the ESC auto-finish pause", () => {
+  assert.equal(agentAutoFinishPausedAfterEventForTest({ state: "running" }, true), false);
+  assert.equal(agentAutoFinishPausedAfterEventForTest({ state: "waiting-for-choice" }, true), true);
+  assert.equal(
+    agentAutoFinishPausedAfterEventForTest(
+      { state: "completed", outcome: "error", error: "401 Unauthorized" },
+      true,
+    ),
+    true,
+  );
+});
+
+test("manual success keeps monitoring later turns and still accepts errors", () => {
+  const manual = {
+    keepRunningOnInterrupt: true,
+    autoFinishPaused: false,
+    autoSuccess: false,
+  };
+  assert.equal(
+    agentCompletionDecisionForTest({ state: "completed", outcome: "success" }, manual),
+    "continue-paused",
+  );
+  assert.equal(
+    agentCompletionDecisionForTest(
+      { state: "completed", outcome: "error", error: "401 Unauthorized" },
+      manual,
+    ),
+    "accept",
+  );
+});
 
 test("Claude Code TUI command preserves permission, session, model, effort and prompt", () => {
   const id = "123e4567-e89b-12d3-a456-426614174000";
@@ -108,122 +178,19 @@ test("Codex TUI command preserves approval, sandbox, resume, effort and prompt",
   );
 });
 
-test("Codex permission hook appends a structured sidecar event", async () => {
-  const runtime = await createCodexPermissionHookRuntimeForTest();
-  try {
-    assert.match(runtime.codexConfig, /^hooks\.PermissionRequest=/);
-    const commandMatch = runtime.codexConfig.match(/command='([^']+)'/);
-    assert.ok(commandMatch);
-    const command = commandMatch[1];
-    if (process.platform === "win32") {
-      assert.ok(runtime.windowsCommandPath);
-      assert.match(
-        runtime.codexConfig,
-        new RegExp(`commandWindows='"${escapeRegExp(runtime.windowsCommandPath)}"'`),
-      );
-    }
-    const args = command.match(/^"([^"]+)" "([^"]+)" "([^"]+)"$/);
-    assert.ok(args);
-    await new Promise<void>((resolve, reject) => {
-      const child = spawn(args[1], [args[2], args[3]], { stdio: ["pipe", "ignore", "ignore"] });
-      child.once("error", reject);
-      child.once("exit", (code) =>
-        code === 0 ? resolve() : reject(new Error(`hook exit ${code}`)),
-      );
-      child.stdin.end(
-        JSON.stringify({
-          hook_event_name: "PermissionRequest",
-          tool_use_id: "call-1",
-          tool_name: "exec",
-        }),
-      );
-    });
-    const event = JSON.parse(await fs.readFile(runtime.eventsPath, "utf8"));
-    assert.equal(event.osheep_event, "codex-permission-request");
-    assert.equal(event.payload.hook_event_name, "PermissionRequest");
-    assert.equal(event.payload.tool_use_id, "call-1");
+test("agent invocation keeps JSON prompt as one raw argv value", () => {
+  const prompt = JSON.stringify({
+    id: "task-001",
+    task: '检查 README.md，并保留 "quoted" 文本',
+    nested: { line: "first\nsecond" },
+  });
+  const invocation = buildAgentTerminalInvocation("codex-cli", "default", { prompt });
+  assert.equal(invocation.args.at(-1), prompt);
+  assert.equal(JSON.parse(invocation.args.at(-1) ?? "").id, "task-001");
 
-    if (runtime.windowsCommandPath) {
-      await fs.rm(runtime.eventsPath, { force: true });
-      await new Promise<void>((resolve, reject) => {
-        const child = spawn(runtime.windowsCommandPath!, [], {
-          shell: true,
-          stdio: ["pipe", "ignore", "pipe"],
-        });
-        let stderr = "";
-        child.stderr.on("data", (chunk) => (stderr += chunk));
-        child.once("error", reject);
-        child.once("exit", (code) =>
-          code === 0 ? resolve() : reject(new Error(stderr || `hook exit ${code}`)),
-        );
-        child.stdin.end(
-          JSON.stringify({
-            session_id: "session-2",
-            turn_id: "turn-2",
-            hook_event_name: "PermissionRequest",
-            tool_name: "exec",
-          }),
-        );
-      });
-      const windowsEvent = JSON.parse(await fs.readFile(runtime.eventsPath, "utf8"));
-      assert.equal(windowsEvent.osheep_event, "codex-permission-request");
-      assert.equal(windowsEvent.payload.hook_event_name, "PermissionRequest");
-    }
-  } finally {
-    await fs.rm(runtime.directory, { recursive: true, force: true });
-  }
-});
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-test("Codex TUI command injects its permission hook for this invocation", () => {
-  const command = buildAgentTerminalCommand("codex-cli", "default", {
-    codexPermissionHookConfig:
-      'hooks.PermissionRequest=[{ hooks=[{ type="command", command="node hook.mjs" }] }]',
-  }).command;
-  assert.match(command, /--dangerously-bypass-hook-trust -c /);
-  if (process.platform === "win32") {
-    assert.match(command, /FromBase64String/);
-  } else {
-    assert.match(command, /hooks\.PermissionRequest/);
-  }
-});
-
-test("Codex permission hook TOML survives PowerShell argument parsing", async () => {
-  if (process.platform !== "win32") return;
-  const runtime = await createCodexPermissionHookRuntimeForTest();
-  try {
-    const command = buildAgentTerminalCommand("codex-cli", "default", {
-      codexPermissionHookConfig: runtime.codexConfig,
-    }).command;
-    const configArgument = command.match(/ -c (\$\(.+\))$/)?.[1];
-    assert.ok(configArgument);
-    const output = await new Promise<string>((resolve, reject) => {
-      const executable = `'${process.execPath.replace(/'/g, "''")}'`;
-      const child = spawn(
-        "powershell.exe",
-        [
-          "-NoProfile",
-          "-Command",
-          `& ${executable} -e 'process.stdout.write(process.argv[1])' -- ${configArgument}`,
-        ],
-        { stdio: ["ignore", "pipe", "pipe"] },
-      );
-      let stdout = "";
-      let stderr = "";
-      child.stdout.on("data", (chunk) => (stdout += chunk));
-      child.stderr.on("data", (chunk) => (stderr += chunk));
-      child.once("error", reject);
-      child.once("exit", (code) =>
-        code === 0 ? resolve(stdout) : reject(new Error(stderr || `PowerShell exit ${code}`)),
-      );
-    });
-    assert.equal(output, runtime.codexConfig);
-  } finally {
-    await fs.rm(runtime.directory, { recursive: true, force: true });
-  }
+  const claudeInvocation = buildAgentTerminalInvocation("claude-cli", "default", { prompt });
+  assert.equal(claudeInvocation.args.at(-1), prompt);
+  assert.equal(JSON.parse(claudeInvocation.args.at(-1) ?? "").nested.line, "first\nsecond");
 });
 
 test("unsupported effort values are normalized per provider", () => {

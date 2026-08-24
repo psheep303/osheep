@@ -3,6 +3,7 @@ import websocket from "@fastify/websocket";
 import Fastify from "fastify";
 import { config } from "./config.js";
 import { ApiError } from "./errors.js";
+import { registerAdapterRoutes } from "./routes/adapters.js";
 import { registerAgentSessionRoutes } from "./routes/agent-sessions.js";
 import { registerAgentRoutes } from "./routes/agents.js";
 import { registerAiRoutes } from "./routes/ai.js";
@@ -15,6 +16,7 @@ import { registerGitRoutes } from "./routes/git.js";
 import { registerMcpRoutes } from "./routes/mcp.js";
 import { registerSearchRoutes } from "./routes/search.js";
 import { registerSessionRoutes } from "./routes/sessions.js";
+import { registerSkillsRoutes } from "./routes/skills.js";
 import { registerTemplateRoutes } from "./routes/templates.js";
 import { registerTerminalRoutes } from "./routes/terminals.js";
 import { registerWorkflowRoutes } from "./routes/workflows.js";
@@ -88,6 +90,8 @@ export async function buildServer() {
   await registerClaudePluginRoutes(app);
   await registerCodexPluginRoutes(app);
   await registerAgentSessionRoutes(app);
+  await registerAdapterRoutes(app);
+  await registerSkillsRoutes(app);
   await registerTemplateRoutes(app);
 
   if (config.frontendRoot) {

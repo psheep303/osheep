@@ -89,6 +89,8 @@ const templateControlFocusMetrics = finalDeclarations(
   ".workflow-template-editor .workflow-template-editor__control:focus",
 );
 const toolbarMetrics = finalDeclarations(".workflow-toolbar");
+const runDetailsTerminalHostMetrics = finalDeclarations(".workflow-run-details__xterm-host");
+const runDetailsTerminalMetrics = finalDeclarations(".workflow-run-details__xterm-host .xterm");
 
 assert(
   css.includes("/* Workflow Shadcn Graph Surface */"),
@@ -270,6 +272,14 @@ assert(
 assert(
   workflowTab.includes("Geist Mono, SFMono-Regular, Cascadia Mono"),
   "workflow xterm should prefer Geist Mono for terminal output",
+);
+
+assert(
+  runDetailsTerminalHostMetrics.padding === "0" &&
+    runDetailsTerminalHostMetrics.overflow === "hidden" &&
+    runDetailsTerminalMetrics.height === "100%" &&
+    runDetailsTerminalMetrics.padding === "8px",
+  "workflow run details must put padding on xterm so FitAddon excludes it from PTY rows",
 );
 
 assert(

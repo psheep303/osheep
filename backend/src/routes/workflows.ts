@@ -10,8 +10,12 @@ import { calculateModelCost, readStoredModelPrices } from "../model-pricing.js";
 import { updateTemplateFromWorkflow } from "../templates.js";
 import { subscribeWorkflowRuntime } from "../workflow-events.js";
 import {
+  interruptWorkflowRunRecord,
+  isWorkflowRunActive,
+  pauseWorkflowRun,
   resolveWorkflowDiffApproval,
   resolveWorkflowInput,
+  retryWorkflowNodeNow,
   startWorkflowRun,
   stopWorkflowRun,
   stopWorkflowRunAndWait,
@@ -19,12 +23,15 @@ import {
 import {
   createWorkflow,
   deleteWorkflow,
+  getAllProjectsWorkflowUsage,
   getWorkflow,
+  getWorkflowUsageStatistics,
   listWorkflows,
   saveWorkflow,
+  updateWorkflow,
   type WorkflowRecord,
 } from "../workflows.js";
-import { resolveWorkspace } from "../workspace.js";
+import { listOpenedProjects, resolveWorkspace } from "../workspace.js";
 
 const WORKFLOW_SESSION_USAGE_CACHE_LIMIT = 128;
 const workflowSessionUsageCache = new Map<string, Promise<AgentSessionUsage>>();
@@ -39,18 +46,77 @@ function sendWithEtag(req: FastifyRequest, reply: FastifyReply, payload: unknown
   return reply.type("application/json; charset=utf-8").send(body);
 }
 
+async function recoverInterruptedWorkflow(
+  workspaceId: string,
+  workspaceRoot: string,
+  workflowId: string,
+): Promise<WorkflowRecord> {
+  let workflow = await getWorkflow(workspaceRoot, workflowId);
+  if (
+    isWorkflowRunActive(workspaceId, workflowId) ||
+    !workflow.runs.some((run) => run.status === "running")
+  ) {
+    return workflow;
+  }
+  workflow = await updateWorkflow(workspaceRoot, workflowId, (current) =>
+    isWorkflowRunActive(workspaceId, workflowId) ? current : interruptWorkflowRunRecord(current),
+  );
+  return workflow;
+}
+
 export async function registerWorkflowRoutes(app: FastifyInstance) {
+  app.get<{
+    Querystring: { range?: string; timezoneOffset?: string };
+  }>("/api/workflow-usage", async (req, reply) => {
+    const range = req.query.range === "7d" || req.query.range === "all" ? req.query.range : "30d";
+    const parsedOffset = Number(req.query.timezoneOffset);
+    const timezoneOffsetMinutes = Number.isFinite(parsedOffset) ? parsedOffset : 0;
+    const projects = await listOpenedProjects();
+    const usage = await getAllProjectsWorkflowUsage(
+      projects.map((project) => project.path),
+      { range, timezoneOffsetMinutes },
+    );
+    return sendWithEtag(req, reply, usage);
+  });
+
   app.get<{ Params: { id: string } }>("/api/workspaces/:id/workflows", async (req, reply) => {
     const ws = await resolveWorkspace(req.params.id);
-    const workflows = await listWorkflows(ws.path);
+    let workflows = await listWorkflows(ws.path);
+    const interrupted = workflows.filter(
+      (workflow) =>
+        workflow.status === "running" && !isWorkflowRunActive(req.params.id, workflow.id),
+    );
+    if (interrupted.length > 0) {
+      await Promise.all(
+        interrupted.map((workflow) =>
+          recoverInterruptedWorkflow(req.params.id, ws.path, workflow.id),
+        ),
+      );
+      workflows = await listWorkflows(ws.path);
+    }
     return sendWithEtag(req, reply, { workflows });
+  });
+
+  app.get<{
+    Params: { id: string };
+    Querystring: { range?: string; timezoneOffset?: string };
+  }>("/api/workspaces/:id/workflows/usage", async (req, reply) => {
+    const ws = await resolveWorkspace(req.params.id);
+    const range = req.query.range === "7d" || req.query.range === "all" ? req.query.range : "30d";
+    const parsedOffset = Number(req.query.timezoneOffset);
+    const timezoneOffsetMinutes = Number.isFinite(parsedOffset) ? parsedOffset : 0;
+    const usage = await getWorkflowUsageStatistics(ws.path, {
+      range,
+      timezoneOffsetMinutes,
+    });
+    return sendWithEtag(req, reply, usage);
   });
 
   app.get<{ Params: { id: string; wid: string } }>(
     "/api/workspaces/:id/workflows/:wid",
     async (req, reply) => {
       const ws = await resolveWorkspace(req.params.id);
-      const workflow = await getWorkflow(ws.path, req.params.wid);
+      const workflow = await recoverInterruptedWorkflow(req.params.id, ws.path, req.params.wid);
       const [prices, currentSessionUsage] = await Promise.all([
         readStoredModelPrices().catch(() => []),
         readCurrentWorkflowSessionUsage(workflow),
@@ -165,16 +231,62 @@ export async function registerWorkflowRoutes(app: FastifyInstance) {
     return saved;
   });
 
+  app.patch<{
+    Params: { id: string; wid: string };
+    Body: WorkflowRecord;
+  }>("/api/workspaces/:id/workflows/:wid/content", async (req) => {
+    const ws = await resolveWorkspace(req.params.id);
+    const body = req.body;
+    if (!body || body.id !== req.params.wid) {
+      throw errors.invalidPath("workflow id does not match URL");
+    }
+    const saved = await updateWorkflow(ws.path, req.params.wid, (current) => ({
+      ...body,
+      title: current.title,
+    }));
+    await updateTemplateFromWorkflow(saved);
+    return saved;
+  });
+
+  app.patch<{
+    Params: { id: string; wid: string };
+    Body: { title?: string };
+  }>("/api/workspaces/:id/workflows/:wid/title", async (req) => {
+    const ws = await resolveWorkspace(req.params.id);
+    const title = req.body?.title?.trim();
+    if (!title) throw errors.invalidPath("workflow title is required");
+    const saved = await updateWorkflow(ws.path, req.params.wid, (current) => ({
+      ...current,
+      title,
+    }));
+    await updateTemplateFromWorkflow(saved);
+    return saved;
+  });
+
   app.post<{
     Params: { id: string; wid: string };
-    Body: { nodeIds?: string[]; language?: "zh-CN" | "en" };
+    Body: { nodeIds?: string[]; language?: "zh-CN" | "en"; resume?: boolean };
   }>("/api/workspaces/:id/workflows/:wid/run", async (req) => {
     const nodeIds = Array.isArray(req.body?.nodeIds)
       ? req.body.nodeIds.filter((id): id is string => typeof id === "string")
       : undefined;
     const retryLanguage = req.body?.language === "zh-CN" ? "zh-CN" : "en";
-    return await startWorkflowRun(req.params.id, req.params.wid, nodeIds, retryLanguage);
+    return await startWorkflowRun(
+      req.params.id,
+      req.params.wid,
+      nodeIds,
+      retryLanguage,
+      req.body?.resume === true,
+    );
   });
+
+  app.post<{ Params: { id: string; wid: string } }>(
+    "/api/workspaces/:id/workflows/:wid/pause",
+    async (req) => {
+      const paused = pauseWorkflowRun(req.params.id, req.params.wid);
+      return { ok: true, paused };
+    },
+  );
 
   app.post<{ Params: { id: string; wid: string } }>(
     "/api/workspaces/:id/workflows/:wid/stop",
@@ -217,6 +329,15 @@ export async function registerWorkflowRoutes(app: FastifyInstance) {
     if (!resolved) throw errors.invalidPath("input is no longer pending");
     return { ok: true };
   });
+
+  app.post<{ Params: { id: string; wid: string; nodeId: string } }>(
+    "/api/workspaces/:id/workflows/:wid/nodes/:nodeId/retry-now",
+    async (req) => {
+      const retried = await retryWorkflowNodeNow(req.params.id, req.params.wid, req.params.nodeId);
+      if (!retried) throw errors.invalidPath("agent retry is no longer pending");
+      return { ok: true };
+    },
+  );
 
   app.delete<{ Params: { id: string; wid: string } }>(
     "/api/workspaces/:id/workflows/:wid",

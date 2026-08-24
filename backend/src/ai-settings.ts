@@ -22,6 +22,8 @@ export interface AiProvider {
   icon?: string;
   iconColor?: string;
   inFailoverQueue?: boolean;
+  /** Osheep-only billing multiplier. Never serialized into the native CLI config. */
+  billingMultiplier?: number;
 }
 
 export interface AiProviderManager {
@@ -113,12 +115,25 @@ function normalizeProvider(value: unknown, fallbackId?: string): AiProvider | nu
   const rawId = typeof obj.id === "string" ? obj.id.trim() : fallbackId?.trim();
   if (!rawId) return null;
   const name = typeof obj.name === "string" && obj.name.trim() ? obj.name.trim() : rawId;
+  const billingMultiplier = normalizeBillingMultiplier(obj.billingMultiplier);
   return {
     ...(obj as Omit<AiProvider, "id" | "name">),
     id: rawId,
     name,
     settingsConfig: obj.settingsConfig ?? {},
+    billingMultiplier,
   };
+}
+
+export function normalizeBillingMultiplier(value: unknown): number | undefined {
+  const parsed =
+    typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
+  return Math.min(parsed, 1_000_000);
+}
+
+export function providerBillingMultiplier(provider: AiProvider | undefined): number {
+  return normalizeBillingMultiplier(provider?.billingMultiplier) ?? 1;
 }
 
 export async function readAiSettings(): Promise<AiSettingsState> {

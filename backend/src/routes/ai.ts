@@ -358,7 +358,9 @@ export async function registerAiRoutes(app: FastifyInstance) {
       codexSandbox?: CodexSandbox;
       effort?: AgentEffort;
       alwaysEnter?: boolean;
+      keepRunningOnInterrupt?: boolean;
       conversationSessionId?: string;
+      requestedConversationSessionId?: string;
       resumeConversation?: boolean;
     };
   }>("/api/workspaces/:id/ai/chat/terminal", async (req, reply) => {
@@ -413,9 +415,14 @@ export async function registerAiRoutes(app: FastifyInstance) {
         codexSandbox: parseCodexSandbox(req.body?.codexSandbox),
         effort: parseAgentEffort(req.body?.effort),
         alwaysEnter: req.body?.alwaysEnter === true,
+        keepRunningOnInterrupt: req.body?.keepRunningOnInterrupt === true,
         conversationSessionId:
           typeof req.body?.conversationSessionId === "string"
             ? req.body.conversationSessionId
+            : undefined,
+        requestedConversationSessionId:
+          typeof req.body?.requestedConversationSessionId === "string"
+            ? req.body.requestedConversationSessionId
             : undefined,
         resumeConversation: req.body?.resumeConversation === true,
         signal: abort.signal,

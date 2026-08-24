@@ -2,3 +2,13 @@
 identifier = "allow-pick-workspace-folder"
 description = "Allows the main osheep window to open the native workspaces folder picker."
 commands.allow = ["pick_workspace_folder"]
+
+[[permission]]
+identifier = "allow-save-export-file"
+description = "Allows the main osheep window to open the native export save dialog."
+commands.allow = ["save_export_file"]
+
+[[permission]]
+identifier = "allow-open-external-url"
+description = "Allows the main osheep window to open validated HTTP(S) URLs in the system browser."
+commands.allow = ["open_external_url"]

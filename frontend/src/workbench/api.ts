@@ -120,6 +120,7 @@ export const http = {
   get: <T>(url: string) => request<T>("GET", url),
   post: <T>(url: string, body?: unknown) => request<T>("POST", url, body ?? {}),
   put: <T>(url: string, body?: unknown) => request<T>("PUT", url, body ?? {}),
+  patch: <T>(url: string, body?: unknown) => request<T>("PATCH", url, body ?? {}),
   delete: <T>(url: string) => request<T>("DELETE", url),
 };
 
@@ -156,6 +157,45 @@ export type AgentSessionApp = "claude" | "codex";
 
 export type CliToolName = "claude" | "codex";
 export type CliToolAction = "install" | "update";
+
+export type SkillAgent = "claude" | "codex";
+
+export type SkillOrigin = "skills.sh" | "manual";
+
+export interface InstalledSkill {
+  name: string;
+  description?: string;
+  path: string;
+  agents: SkillAgent[];
+  source: "local" | "skills.sh";
+  builtIn?: boolean;
+}
+
+export interface StagedSkill {
+  name: string;
+  description?: string;
+  path: string;
+  agent: SkillAgent;
+  origin: SkillOrigin;
+  source?: string;
+  builtIn?: boolean;
+}
+
+export interface SkillsSnapshot {
+  enabled: InstalledSkill[];
+  user: StagedSkill[];
+  paths: Record<SkillAgent, string[]>;
+}
+
+export interface SkillsLibraryItem {
+  name: string;
+  owner?: string;
+  repo?: string;
+  description?: string;
+  installCount: number;
+  source?: string;
+  url?: string;
+}
 
 export interface CliToolStatus {
   name: CliToolName;
@@ -232,6 +272,22 @@ export async function readFile(
   return await http.get(wsUrl(workspaceId, "/file", { path }));
 }
 
+export async function resolveExternalFilePath(workspaceId: string, path: string): Promise<string> {
+  const result = await http.post<{ path: string }>(wsUrl(workspaceId, "/external"), { path });
+  return result.path;
+}
+
+export async function readExternalFile(
+  workspaceId: string,
+  path: string,
+): Promise<{ name: string; content?: string; contentBase64?: string; mime?: string }> {
+  return await http.post(wsUrl(workspaceId, "/external-read"), { path });
+}
+
+export function workspaceImageUrl(workspaceId: string, path: string): string {
+  return wsUrl(workspaceId, "/image", { path });
+}
+
 export async function writeFile(
   workspaceId: string,
   path: string,
@@ -243,6 +299,15 @@ export async function writeFile(
     content,
     createParents,
   });
+}
+
+export async function writeFileBase64(
+  workspaceId: string,
+  path: string,
+  contentBase64: string,
+  createParents = true,
+): Promise<{ size: number; mtime: number }> {
+  return await http.put(wsUrl(workspaceId, "/file"), { path, contentBase64, createParents });
 }
 
 export async function createEntry(
@@ -259,6 +324,17 @@ export async function moveEntry(workspaceId: string, from: string, to: string): 
 
 export async function copyEntry(workspaceId: string, from: string, to: string): Promise<void> {
   await http.post(wsUrl(workspaceId, "/copy"), { from, to });
+}
+
+export async function copyExternalEntry(
+  workspaceId: string,
+  sourcePath: string,
+  targetPath: string,
+): Promise<void> {
+  await http.post(wsUrl(workspaceId, "/copy-external"), {
+    sourcePath,
+    targetPath,
+  });
 }
 
 export async function deleteEntry(
@@ -323,6 +399,17 @@ export async function putUiPreferences(value: unknown): Promise<void> {
   await http.put("/api/ui-preferences", value);
 }
 
+export async function getDismissedConfirmations(): Promise<string[]> {
+  const result = await http.get<{ values?: unknown }>("/api/dismissed-confirmations");
+  return Array.isArray(result.values)
+    ? result.values.filter((value): value is string => typeof value === "string")
+    : [];
+}
+
+export async function putDismissedConfirmations(values: string[]): Promise<void> {
+  await http.put("/api/dismissed-confirmations", { values });
+}
+
 export interface ClaudeOnboardingStatus {
   enabled: boolean;
   path: string;
@@ -355,6 +442,7 @@ export interface AiSettingsProvider {
   icon?: string;
   iconColor?: string;
   inFailoverQueue?: boolean;
+  billingMultiplier?: number;
 }
 
 export interface AiSettingsProviderManager {
@@ -607,6 +695,72 @@ export interface GitChange {
 
 export interface GitStatus extends GitRepoInfo {
   changes: GitChange[];
+  ignoredPaths?: string[];
+}
+
+export async function getSkills(): Promise<SkillsSnapshot> {
+  return await http.get<SkillsSnapshot>("/api/skills");
+}
+
+export async function searchSkillsLibrary(query = ""): Promise<SkillsLibraryItem[]> {
+  const result = await http.get<{ skills: SkillsLibraryItem[] }>(
+    `/api/skills/library?${new URLSearchParams({ q: query }).toString()}`,
+  );
+  return result.skills;
+}
+
+export async function installSkillApi(input: {
+  source: string;
+  skill?: string;
+  agent: SkillAgent;
+  origin: SkillOrigin;
+}): Promise<SkillsSnapshot> {
+  const result = await http.post<{ snapshot: SkillsSnapshot }>("/api/skills/install", input);
+  return result.snapshot;
+}
+
+export async function importSkillApi(input: {
+  agent: SkillAgent;
+  sourcePath?: string;
+  files?: Array<{ path: string; data: string }>;
+}): Promise<SkillsSnapshot> {
+  const result = await http.post<{ snapshot: SkillsSnapshot }>("/api/skills/import", input);
+  return result.snapshot;
+}
+
+export async function enableSkillApi(name: string, agent: SkillAgent): Promise<SkillsSnapshot> {
+  const result = await http.post<{ snapshot: SkillsSnapshot }>("/api/skills/enable", {
+    name,
+    agent,
+  });
+  return result.snapshot;
+}
+
+export async function disableSkillApi(name: string, agent: SkillAgent): Promise<SkillsSnapshot> {
+  const result = await http.post<{ snapshot: SkillsSnapshot }>("/api/skills/disable", {
+    name,
+    agent,
+  });
+  return result.snapshot;
+}
+
+export async function applySkillSelectionApi(
+  names: string[],
+  agent: SkillAgent,
+): Promise<SkillsSnapshot> {
+  const result = await http.post<{ snapshot: SkillsSnapshot }>("/api/skills/apply", {
+    names,
+    agent,
+  });
+  return result.snapshot;
+}
+
+export async function deleteSkillApi(name: string, agent: SkillAgent): Promise<SkillsSnapshot> {
+  const result = await http.post<{ snapshot: SkillsSnapshot }>("/api/skills/delete", {
+    name,
+    agent,
+  });
+  return result.snapshot;
 }
 
 export interface GitDiff {
@@ -1113,10 +1267,13 @@ export async function installClaudePluginApi(selector: string): Promise<ClaudePl
   return result.snapshot;
 }
 
-export async function uninstallClaudePluginApi(selector: string): Promise<ClaudePluginSnapshot> {
+export async function uninstallClaudePluginApi(
+  selector: string,
+  scope?: string,
+): Promise<ClaudePluginSnapshot> {
   const result = await http.post<{ snapshot: ClaudePluginSnapshot }>(
     "/api/claude-plugins/uninstall",
-    { selector },
+    { selector, ...(scope ? { scope } : {}) },
   );
   return result.snapshot;
 }
@@ -1146,10 +1303,31 @@ export async function addClaudeMarketplaceApi(source: string): Promise<ClaudePlu
 
 // Workflows
 
+export type AdapterConfigField = {
+  key: string;
+  label: string;
+  type: "text" | "select" | "number" | "boolean";
+  required?: boolean;
+  defaultValue?: unknown;
+  options?: Array<{ value: string; label: string }>;
+};
+export interface AdapterMetadata {
+  id: string;
+  name: string;
+  kind: "agent" | "harness";
+  capabilities: Record<string, boolean>;
+  configSchema: { fields: AdapterConfigField[] };
+}
+export async function getAdapters(): Promise<AdapterMetadata[]> {
+  const result = await http.get<{ adapters: AdapterMetadata[] }>("/api/adapters");
+  return result.adapters;
+}
+
 export type WorkflowProviderKind = "codex-cli" | "claude-cli";
 export type WorkflowNodeKind =
   | "agent"
   | "input"
+  | "variable"
   | "trigger"
   | "manual-trigger"
   | "cron"
@@ -1174,7 +1352,9 @@ export type WorkflowNodeKind =
   | "markdown"
   | "mcp"
   | "codex-plugin"
-  | "claude-plugin";
+  | "claude-plugin"
+  | "codex-skill"
+  | "claude-skill";
 export type WorkflowNodeStatus = "idle" | "running" | "success" | "error";
 export type WorkflowRunStatus = "idle" | "running" | "success" | "error" | "stopped";
 
@@ -1184,6 +1364,7 @@ export interface WorkflowNode {
   kind?: WorkflowNodeKind;
   title: string;
   providerKind: WorkflowProviderKind;
+  adapterId?: string;
   model: string;
   prompt: string;
   x: number;
@@ -1214,6 +1395,8 @@ export interface WorkflowRun {
   error?: string;
   trace?: WorkflowRunTrace[];
   stats?: WorkflowRunStats;
+  resumable?: boolean;
+  resumeFingerprint?: string;
 }
 
 export interface WorkflowRunTrace {
@@ -1245,6 +1428,8 @@ export interface WorkflowRunTrace {
     total?: number;
   };
   cost?: number;
+  providerId?: string;
+  billingMultiplier?: number;
 }
 
 export interface WorkflowRunStats {
@@ -1259,6 +1444,18 @@ export interface WorkflowRunStats {
   retryCount?: number;
 }
 
+export interface WorkflowSettings {
+  unbilled: boolean;
+  maxRunCost: number;
+  maxRunDurationSeconds: number;
+  sounds: {
+    nodeSuccess: boolean;
+    nodeError: boolean;
+    waitingForChoice: boolean;
+    runCompleted: boolean;
+  };
+}
+
 export interface WorkflowRecord {
   id: string;
   title: string;
@@ -1269,6 +1466,7 @@ export interface WorkflowRecord {
   };
   createdAt: number;
   updatedAt: number;
+  settings?: WorkflowSettings;
   nodes: WorkflowNode[];
   edges: WorkflowEdge[];
   runs: WorkflowRun[];
@@ -1287,6 +1485,50 @@ export interface WorkflowSummary {
   nodeCount: number;
   edgeCount: number;
   status: WorkflowRunStatus;
+}
+
+export type WorkflowUsageRange = "7d" | "30d" | "all";
+
+export interface WorkflowUsageTotals {
+  runs: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  totalTokens: number;
+  cost: number;
+}
+
+export interface WorkflowUsageStatistics {
+  generatedAt: number;
+  range: WorkflowUsageRange;
+  totals: WorkflowUsageTotals;
+  daily: Array<{ date: string; runs: number; tokens: number; cost: number }>;
+  workflows: Array<{
+    workflowId: string;
+    title: string;
+    runs: number;
+    tokens: number;
+    cost: number;
+  }>;
+  models: Array<{ model: string; runs: number; tokens: number; cost: number }>;
+  recentRuns: Array<{
+    workflowId: string;
+    workflowTitle: string;
+    runId: string;
+    status: WorkflowRunStatus;
+    startedAt: number;
+    completedAt?: number;
+    tokens: number;
+    cost: number;
+  }>;
+}
+
+export interface AllProjectsWorkflowUsage {
+  generatedAt: number;
+  range: WorkflowUsageRange;
+  projectCount: number;
+  totals: WorkflowUsageTotals;
 }
 
 const workflowsUrl = (id: string, suffix = "") =>
@@ -1308,6 +1550,11 @@ export function openWorkflowRuntimeSocket(workspaceId: string, workflowId: strin
   return openTerminalSocket(workflowsUrl(workspaceId, `/${encodeURIComponent(workflowId)}/events`));
 }
 
+export function openAdapterEventsSocket(workspaceId?: string): WebSocket {
+  const suffix = workspaceId ? `?workspaceId=${encodeURIComponent(workspaceId)}` : "";
+  return openTerminalSocket(`/api/adapter-events${suffix}`);
+}
+
 export async function createWorkflow(
   workspaceId: string,
   partial: Partial<WorkflowRecord> = {},
@@ -1322,16 +1569,66 @@ export async function saveWorkflow(
   return await http.put(workflowsUrl(workspaceId, `/${encodeURIComponent(record.id)}`), record);
 }
 
+export async function getWorkflowUsageStatistics(
+  workspaceId: string,
+  range: WorkflowUsageRange,
+): Promise<WorkflowUsageStatistics> {
+  const query = new URLSearchParams({
+    range,
+    timezoneOffset: String(new Date().getTimezoneOffset()),
+  });
+  return await http.get<WorkflowUsageStatistics>(workflowsUrl(workspaceId, `/usage?${query}`));
+}
+
+export async function getAllProjectsWorkflowUsage(
+  range: WorkflowUsageRange,
+): Promise<AllProjectsWorkflowUsage> {
+  const query = new URLSearchParams({
+    range,
+    timezoneOffset: String(new Date().getTimezoneOffset()),
+  });
+  return await http.get<AllProjectsWorkflowUsage>(`/api/workflow-usage?${query}`);
+}
+
+export async function saveWorkflowContent(
+  workspaceId: string,
+  record: WorkflowRecord,
+): Promise<WorkflowRecord> {
+  return await http.patch(
+    workflowsUrl(workspaceId, `/${encodeURIComponent(record.id)}/content`),
+    record,
+  );
+}
+
+export async function renameWorkflow(
+  workspaceId: string,
+  workflowId: string,
+  title: string,
+): Promise<WorkflowRecord> {
+  return await http.patch(workflowsUrl(workspaceId, `/${encodeURIComponent(workflowId)}/title`), {
+    title,
+  });
+}
+
 export async function runWorkflow(
   workspaceId: string,
   workflowId: string,
   language: "zh-CN" | "en",
   nodeIds?: string[],
+  resume = false,
 ): Promise<{ runId: string; workflow: WorkflowRecord }> {
   return await http.post(workflowsUrl(workspaceId, `/${encodeURIComponent(workflowId)}/run`), {
     nodeIds,
     language,
+    resume,
   });
+}
+
+export async function pauseWorkflow(
+  workspaceId: string,
+  workflowId: string,
+): Promise<{ ok: boolean; paused: boolean }> {
+  return await http.post(workflowsUrl(workspaceId, `/${encodeURIComponent(workflowId)}/pause`));
 }
 
 export async function stopWorkflow(
@@ -1371,6 +1668,19 @@ export async function resolveWorkflowInput(
   );
 }
 
+export async function retryWorkflowNodeNow(
+  workspaceId: string,
+  workflowId: string,
+  nodeId: string,
+): Promise<{ ok: boolean }> {
+  return await http.post(
+    workflowsUrl(
+      workspaceId,
+      `/${encodeURIComponent(workflowId)}/nodes/${encodeURIComponent(nodeId)}/retry-now`,
+    ),
+  );
+}
+
 export async function deleteWorkflow(workspaceId: string, workflowId: string): Promise<void> {
   await http.delete(workflowsUrl(workspaceId, `/${encodeURIComponent(workflowId)}`));
 }
@@ -1384,6 +1694,7 @@ export interface WorkflowTemplateSummary {
   source: TemplateSource;
   title: string;
   description: string;
+  version?: string;
   icon?: string;
   updatedAt: number;
   nodeCount: number;
@@ -1394,6 +1705,7 @@ export interface WorkflowTemplate {
   source: TemplateSource;
   title: string;
   description: string;
+  version?: string;
   readme: string;
   icon?: string;
   createdAt: number;
@@ -1402,12 +1714,35 @@ export interface WorkflowTemplate {
   edges: WorkflowEdge[];
 }
 
+export interface TemplateMarketspaceEntry {
+  id: string;
+  name: string;
+  description: string;
+  source: { type: "github" | "cdn"; repo: string; path?: string };
+  version: string;
+}
+
 export async function listWorkflowTemplates(): Promise<{
   system: WorkflowTemplateSummary[];
   user: WorkflowTemplateSummary[];
   developerMode: boolean;
 }> {
   return await http.get("/api/templates");
+}
+
+export async function listLocalWorkflowTemplates(): Promise<{
+  system: WorkflowTemplateSummary[];
+  user: WorkflowTemplateSummary[];
+  developerMode: boolean;
+}> {
+  return await http.get("/api/templates/local");
+}
+
+export async function listTemplateMarketspace(): Promise<{
+  version: string;
+  templates: TemplateMarketspaceEntry[];
+}> {
+  return await http.get("/api/templates/marketspace");
 }
 
 export async function getTemplateCapabilities(): Promise<{
@@ -1815,7 +2150,9 @@ export async function aiChatTerminalStream(
     codexSandbox?: AiTerminalCodexSandbox;
     effort?: AiTerminalEffort;
     alwaysEnter?: boolean;
+    keepRunningOnInterrupt?: boolean;
     conversationSessionId?: string;
+    requestedConversationSessionId?: string;
     resumeConversation?: boolean;
   },
   onFrame: (frame: AiTerminalFrame) => void,

@@ -13,6 +13,10 @@ import {
   type TerminalCreateResp,
 } from "./api";
 import { createShiftEnterInput, isShiftEnterEvent } from "./terminal-keyboard";
+import {
+  resizeTerminalPreservingViewport,
+  writeTerminalPreservingViewport,
+} from "./terminal-layout";
 import { normalizeLightTerminalAnsi, xtermAnsiTheme, xtermTheme } from "./theme";
 
 interface TerminalSessionProps {
@@ -43,8 +47,10 @@ export function TerminalSession({
   const wsRef = useRef<WebSocket | null>(null);
   const sessionIdRef = useRef<string | null>(null);
   const activeRef = useRef(active);
+  const onCloseRef = useRef(onClose);
   const resolvedThemeRef = useRef(resolvedTheme);
   activeRef.current = active;
+  onCloseRef.current = onClose;
   resolvedThemeRef.current = resolvedTheme;
   const [status, setStatus] = useState<Status>("connecting");
   const [error, setError] = useState<string | null>(null);
@@ -186,12 +192,13 @@ export function TerminalSession({
               typeof msg.data === "string"
             ) {
               shiftEnterInput.observeOutput(msg.data);
-              term.write(normalizeLightTerminalAnsi(msg.data, resolvedThemeRef.current));
-            } else if (msg.type === "exit") {
-              term.writeln(
-                `\r\n\x1b[2m[osheep] process exited code=${msg.code} signal=${msg.signal ?? "null"}\x1b[0m`,
+              writeTerminalPreservingViewport(
+                term,
+                normalizeLightTerminalAnsi(msg.data, resolvedThemeRef.current),
               );
+            } else if (msg.type === "exit") {
               setStatus("closed");
+              onCloseRef.current();
             } else if (msg.type === "error") {
               term.writeln(`\r\n\x1b[31m[osheep] ${msg.message}\x1b[0m`);
             } else if (msg.type === "ping") {
@@ -218,28 +225,40 @@ export function TerminalSession({
         }
       });
 
+      let resizeTimer: ReturnType<typeof setTimeout> | null = null;
       const resizeObs = new ResizeObserver(() => {
-        try {
-          fit.fit();
-          const live = wsRef.current;
-          if (live && live.readyState === WebSocket.OPEN) {
-            live.send(
-              JSON.stringify({
-                type: "resize",
-                cols: term.cols,
-                rows: term.rows,
-              }),
-            );
+        if (resizeTimer) clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(() => {
+          resizeTimer = null;
+          try {
+            const previousCols = term.cols;
+            const previousRows = term.rows;
+            resizeTerminalPreservingViewport(term, () => fit.fit());
+            const live = wsRef.current;
+            if (
+              live &&
+              live.readyState === WebSocket.OPEN &&
+              (previousCols !== term.cols || previousRows !== term.rows)
+            ) {
+              live.send(
+                JSON.stringify({
+                  type: "resize",
+                  cols: term.cols,
+                  rows: term.rows,
+                }),
+              );
+            }
+          } catch {
+            /* layout race */
           }
-        } catch {
-          /* layout race */
-        }
+        }, 120);
       });
       resizeObs.observe(host);
 
       disposeTerminal = () => {
         cancelled = true;
         resizeObs.disconnect();
+        if (resizeTimer) clearTimeout(resizeTimer);
         shiftEnterInput.dispose();
         inputDisp.dispose();
         const live = wsRef.current;
@@ -288,7 +307,7 @@ export function TerminalSession({
     // Defer to next frame so layout settles before measuring.
     const raf = requestAnimationFrame(() => {
       try {
-        fit.fit();
+        resizeTerminalPreservingViewport(term, () => fit.fit());
         term.focus();
         const live = wsRef.current;
         if (live && live.readyState === WebSocket.OPEN) {

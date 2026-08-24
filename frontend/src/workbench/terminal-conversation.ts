@@ -3,12 +3,31 @@ const ANSI_SEQUENCE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 
 export type AgentTerminalConversationKind = "claude-cli" | "codex-cli";
 
+export interface AgentMessageSnapshot {
+  status: "running" | "success" | "error" | "stopped";
+  commandLine: string;
+  stdout: string;
+  stderr: string;
+  transcript: string;
+}
+
+export function lastAgentMessageFromSnapshot(snapshot: AgentMessageSnapshot): string {
+  const conversation = readableAgentConversation(snapshot);
+  const structured = [
+    ...conversation.matchAll(
+      /^(?:Claude|Assistant):\n([\s\S]*?)(?=^(?:User|Claude|Assistant|Tool(?: · \S+)?|Tool result|Tool error):\n|(?![\s\S]))/gm,
+    ),
+  ];
+  const lastStructured =
+    structured.length > 0 ? structured[structured.length - 1]?.[1]?.trim() : "";
+  return lastStructured || conversation.trim();
+}
+
 export function cleanAgentTerminalConversation(
   raw: string,
   kind?: AgentTerminalConversationKind,
 ): string {
   if (!raw.trim()) return "";
-  const seen = new Set<string>();
   const output: string[] = [];
   const lines = plainText(raw).split("\n");
   const codexStart =
@@ -21,14 +40,33 @@ export function cleanAgentTerminalConversation(
     const line = normalizeLine(sourceLine);
     const trimmed = line.trim();
     if (!trimmed) continue;
-    const key = lineKey(trimmed);
-    if (!key || isTerminalChrome(trimmed, kind) || isCursorFragment(trimmed) || seen.has(key)) {
+    if (isTerminalChrome(trimmed, kind) || isCursorFragment(trimmed)) {
       continue;
     }
-    seen.add(key);
     output.push(line);
   }
   return output.join("\n").trim();
+}
+
+function readableAgentConversation(snapshot: AgentMessageSnapshot): string {
+  const structured = /^(?:User|Claude|Tool(?: · \S+)?|Tool result|Tool error):/m.test(
+    snapshot.transcript,
+  );
+  if (structured) return snapshot.transcript.trim();
+  if (snapshot.transcript.trim() && !/\x1b|\r/.test(snapshot.transcript)) {
+    return withSnapshotError(snapshot.transcript.trim(), snapshot);
+  }
+  const rawTerminal = /\x1b|\r/.test(snapshot.stdout) ? snapshot.stdout : "";
+  const source = rawTerminal || snapshot.transcript || snapshot.stdout;
+  const kind = /^\s*codex(?:\.exe)?\b/i.test(snapshot.commandLine) ? "codex-cli" : "claude-cli";
+  const cleaned = cleanAgentTerminalConversation(source, kind);
+  return withSnapshotError(cleaned, snapshot);
+}
+
+function withSnapshotError(message: string, snapshot: AgentMessageSnapshot): string {
+  if (snapshot.status !== "error" || !snapshot.stderr.trim()) return message;
+  if (message.includes(snapshot.stderr.trim())) return message;
+  return [message, `[error] ${snapshot.stderr.trim()}`].filter(Boolean).join("\n");
 }
 
 function plainText(value: string): string {
@@ -47,10 +85,6 @@ function normalizeLine(value: string): string {
   const line = value.replace(/\s+$/g, "");
   const leading = line.match(/^\s*/)?.[0].length ?? 0;
   return `${" ".repeat(Math.min(leading, 6))}${line.trimStart()}`;
-}
-
-function lineKey(value: string): string {
-  return value.trim().replace(/\s+/g, " ");
 }
 
 function isCodexConversationStart(line: string): boolean {
@@ -114,10 +148,6 @@ function isTerminalChrome(line: string, kind?: AgentTerminalConversationKind): b
 }
 
 function isCursorFragment(line: string): boolean {
-  if (line.length <= 3) return true;
-  if (/^[\d\s).·…↓↑]+$/.test(line)) return true;
-  if (/^[,)]/.test(line)) return true;
   if (/^\d*(?:ought|hinking)\b/i.test(line)) return true;
-  if (/^(?:mbé|lambé|inking|frming)\b/i.test(line)) return true;
-  return /^[A-Za-zÀ-ÿ]{1,12}$/.test(line);
+  return /^(?:mbé|lambé|inking|frming|orking)\b/i.test(line);
 }

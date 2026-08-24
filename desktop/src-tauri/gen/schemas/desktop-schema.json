@@ -177,10 +177,22 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Allows the main osheep window to open validated HTTP(S) URLs in the system browser.",
+          "type": "string",
+          "const": "allow-open-external-url",
+          "markdownDescription": "Allows the main osheep window to open validated HTTP(S) URLs in the system browser."
+        },
+        {
           "description": "Allows the main osheep window to open the native workspaces folder picker.",
           "type": "string",
           "const": "allow-pick-workspace-folder",
           "markdownDescription": "Allows the main osheep window to open the native workspaces folder picker."
+        },
+        {
+          "description": "Allows the main osheep window to open the native export save dialog.",
+          "type": "string",
+          "const": "allow-save-export-file",
+          "markdownDescription": "Allows the main osheep window to open the native export save dialog."
         },
         {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",

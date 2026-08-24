@@ -1,3 +1,4 @@
+import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -8,6 +9,7 @@ import {
   findAgentSessionFilePath,
   isAgentSessionInProject,
   listAgentSessions,
+  reassignCodexSessionId,
 } from "./agent-sessions.js";
 import type { CliProviderKind } from "./ai-cli.js";
 import { platform } from "./config.js";
@@ -18,6 +20,7 @@ import {
   type TerminalSession,
   writeRawInput,
 } from "./pty.js";
+import { detectAiCli } from "./runtime-tools.js";
 import {
   extractAgentRunMetadata,
   extractLastStructuredClaudeAnswer,
@@ -72,7 +75,9 @@ export interface AgentTerminalOptions {
   codexSandbox?: CodexSandbox;
   effort?: AgentEffort;
   alwaysEnter?: boolean;
+  keepRunningOnInterrupt?: boolean;
   conversationSessionId?: string;
+  requestedConversationSessionId?: string;
   resumeConversation?: boolean;
   signal?: AbortSignal;
   onFrame?: (frame: AgentTerminalFrame) => void;
@@ -100,29 +105,59 @@ const DEFAULT_COLS = 120;
 const DEFAULT_ROWS = 34;
 const SESSION_DISCOVERY_TIMEOUT_MS = 30_000;
 const SESSION_DISCOVERY_POLL_MS = 120;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 interface AgentTerminalControl {
   autoSuccess: boolean;
   alwaysEnter: boolean;
+  keepRunningOnInterrupt: boolean;
   autoFinishPaused: boolean;
   manualSuccessRequested: boolean;
   manualSuccessWaiters: Set<() => void>;
   lastCompletionState?: AgentTerminalContentState;
 }
 
+export type AgentCompletionDecision = "accept" | "continue-interrupted" | "continue-paused";
+
+export function agentCompletionDecisionForTest(
+  event: AgentSessionEvent,
+  options: {
+    keepRunningOnInterrupt: boolean;
+    autoFinishPaused: boolean;
+    autoSuccess?: boolean;
+  },
+): AgentCompletionDecision {
+  if (event.outcome === "error") return "accept";
+  if (event.outcome === "success" && options.autoSuccess === false) return "continue-paused";
+  if (options.autoFinishPaused) return "continue-paused";
+  if (event.outcome === "cancelled" && options.keepRunningOnInterrupt) {
+    return "continue-interrupted";
+  }
+  return "accept";
+}
+
+export function agentAutoFinishPausedAfterEventForTest(
+  event: AgentSessionEvent,
+  paused: boolean,
+): boolean {
+  return event.state === "running" ? false : paused;
+}
+
 const controls = new Map<string, AgentTerminalControl>();
 
 export async function runAgentTerminal(opts: AgentTerminalOptions): Promise<AgentTerminalResult> {
+  const requestedConversationSessionId = opts.requestedConversationSessionId?.trim() || "";
+  if (requestedConversationSessionId && !UUID_RE.test(requestedConversationSessionId)) {
+    throw new Error("Requested session ID must be a valid UUID.");
+  }
   const conversationBaseline = await captureConversationSessionBaseline(opts);
   const resumeOffset = await existingSessionSize(opts, conversationBaseline.app);
   const workspaceBaseline = await captureWorkspaceChanges(opts.workspace.path).catch(
     () => null as WorkspaceChangeBaseline | null,
   );
   const permissionHook =
-    opts.kind === "claude-cli"
-      ? await createClaudePermissionHookRuntime()
-      : await createCodexPermissionHookRuntime();
-  const command = buildAgentTerminalCommand(opts.kind, opts.model, {
+    opts.kind === "claude-cli" ? await createClaudePermissionHookRuntime() : undefined;
+  const invocation = buildAgentTerminalInvocation(opts.kind, opts.model, {
     claudePermissionMode: opts.claudePermissionMode,
     mode: opts.mode,
     codexApproval: opts.codexApproval,
@@ -132,8 +167,7 @@ export async function runAgentTerminal(opts: AgentTerminalOptions): Promise<Agen
     resumeConversation: opts.resumeConversation,
     prompt: opts.prompt,
     settingsPath: permissionHook?.settingsPath,
-    codexPermissionHookConfig: permissionHook?.codexConfig,
-  }).command;
+  });
   let session: TerminalSession;
   try {
     session = createSession({
@@ -142,18 +176,20 @@ export async function runAgentTerminal(opts: AgentTerminalOptions): Promise<Agen
       cols: DEFAULT_COLS,
       rows: DEFAULT_ROWS,
       killOnDetach: false,
-      initialCommand: command,
+      initialExecutable: invocation.executable,
+      initialArgs: invocation.args,
       // Advertise a native CSI-u terminal so Codex and Claude Code enable
       // their enhanced keyboard protocol.
       terminalProgram: "WezTerm",
     });
   } catch (error) {
-    await fs.rm(permissionHook.directory, { recursive: true, force: true });
+    if (permissionHook) await fs.rm(permissionHook.directory, { recursive: true, force: true });
     throw error;
   }
   controls.set(session.id, {
     autoSuccess: opts.autoSuccess !== false,
     alwaysEnter: opts.alwaysEnter === true,
+    keepRunningOnInterrupt: opts.keepRunningOnInterrupt === true,
     autoFinishPaused: false,
     manualSuccessRequested: false,
     manualSuccessWaiters: new Set(),
@@ -180,7 +216,7 @@ export async function runAgentTerminal(opts: AgentTerminalOptions): Promise<Agen
       opts.resumeConversation ? resumeOffset : 0,
       opts.onFrame,
       opts.signal,
-      permissionHook.eventsPath,
+      permissionHook?.eventsPath,
     );
     const completion = await waitForManualSuccessIfNeeded(
       session.id,
@@ -215,9 +251,18 @@ export async function runAgentTerminal(opts: AgentTerminalOptions): Promise<Agen
       /* already closed */
     }
     opts.onFrame?.({ type: "status", status: "exited" });
+    let persistedConversationSessionId = conversationSessionId;
+    if (
+      opts.kind === "codex-cli" &&
+      requestedConversationSessionId &&
+      requestedConversationSessionId !== conversationSessionId
+    ) {
+      await reassignCodexSessionId(conversationSessionId, requestedConversationSessionId);
+      persistedConversationSessionId = requestedConversationSessionId;
+    }
     return {
       sessionId: session.id,
-      conversationSessionId,
+      conversationSessionId: persistedConversationSessionId,
       content: structuredAnswer.trim(),
       transcript,
       changedFiles: metadata.changedFiles,
@@ -240,7 +285,7 @@ export async function runAgentTerminal(opts: AgentTerminalOptions): Promise<Agen
   } finally {
     opts.signal?.removeEventListener("abort", onAbort);
     controls.delete(session.id);
-    await fs.rm(permissionHook.directory, { recursive: true, force: true });
+    if (permissionHook) await fs.rm(permissionHook.directory, { recursive: true, force: true });
   }
 }
 
@@ -278,6 +323,10 @@ function handleAgentSessionEvent(
     }
     return;
   }
+  control.autoFinishPaused = agentAutoFinishPausedAfterEventForTest(
+    event,
+    control.autoFinishPaused,
+  );
   control.lastCompletionState = "empty";
   onFrame?.({ type: "status", status: "prompt-sent" });
 }
@@ -305,8 +354,14 @@ async function waitForAgentSessionCompletion(
         permissionFilePath,
         signal: localAbort.signal,
         onEvent: (event) => handleAgentSessionEvent(session, event, onFrame),
-        acceptCompletion: () => {
-          if (!control.autoFinishPaused) return true;
+        acceptCompletion: (event) => {
+          const decision = agentCompletionDecisionForTest(event, control);
+          if (decision === "continue-interrupted") {
+            control.lastCompletionState = "empty";
+            onFrame?.({ type: "status", status: "prompt-sent" });
+            return false;
+          }
+          if (decision === "accept") return true;
           control.lastCompletionState = "ready-for-success";
           onFrame?.({ type: "status", status: "ready-for-success" });
           return false;
@@ -511,6 +566,7 @@ export function createAgentTerminalControlForTest(
   controls.set(sessionId, {
     autoSuccess: true,
     alwaysEnter: false,
+    keepRunningOnInterrupt: false,
     autoFinishPaused: false,
     manualSuccessRequested: false,
     manualSuccessWaiters: new Set(),
@@ -549,7 +605,6 @@ export function buildAgentTerminalCommand(
     resumeConversation?: boolean;
     prompt?: string;
     settingsPath?: string;
-    codexPermissionHookConfig?: string;
   } = {},
 ): { command: string } {
   const base = kind === "codex-cli" ? "codex" : "claude";
@@ -578,10 +633,6 @@ export function buildAgentTerminalCommand(
       codexResumeSessionId = options.conversationSessionId;
     }
     args.push(...codexPermissionArgs(options.codexApproval, options.codexSandbox));
-    if (options.codexPermissionHookConfig) {
-      args.push("--dangerously-bypass-hook-trust");
-      args.push("-c", quoteCodexHookConfig(options.codexPermissionHookConfig));
-    }
     const effort = agentEffortCliValue(kind, options.effort);
     if (effort) args.push("-c", quoteCodexConfig(`model_reasoning_effort="${effort}"`));
   }
@@ -589,6 +640,80 @@ export function buildAgentTerminalCommand(
   if (codexResumeSessionId) args.push(quoteShell(codexResumeSessionId));
   if (options.prompt) args.push(quoteShell(options.prompt));
   return { command: [base, ...args].join(" ") };
+}
+
+/** Build an agent invocation as raw argv, avoiding shell quoting entirely. */
+export function buildAgentTerminalInvocation(
+  kind: CliProviderKind,
+  model: string,
+  options: {
+    claudePermissionMode?: ClaudePermissionMode;
+    mode?: AgentMode;
+    codexApproval?: CodexApproval;
+    codexSandbox?: CodexSandbox;
+    effort?: AgentEffort;
+    conversationSessionId?: string;
+    resumeConversation?: boolean;
+    prompt?: string;
+    settingsPath?: string;
+  } = {},
+): { executable: string; args: string[] } {
+  const args: string[] = [];
+  let codexResumeSessionId = "";
+  if (kind === "claude-cli") {
+    args.push(
+      "--permission-mode",
+      options.mode === "plan"
+        ? "plan"
+        : normalizeClaudePermissionMode(options.claudePermissionMode),
+    );
+    if (options.resumeConversation && options.conversationSessionId) {
+      args.push("--resume", options.conversationSessionId);
+    } else if (options.conversationSessionId) {
+      args.push("--session-id", options.conversationSessionId);
+    }
+    const effort = agentEffortCliValue(kind, options.effort);
+    if (effort) args.push("--effort", effort);
+    if (options.settingsPath) args.push("--settings", options.settingsPath);
+  } else {
+    if (options.resumeConversation && options.conversationSessionId) {
+      args.push("resume");
+      codexResumeSessionId = options.conversationSessionId;
+    }
+    args.push(...codexPermissionArgs(options.codexApproval, options.codexSandbox));
+    const effort = agentEffortCliValue(kind, options.effort);
+    if (effort) args.push("-c", `model_reasoning_effort="${effort}"`);
+  }
+  if (model && model !== "default") args.push("--model", model);
+  if (codexResumeSessionId) args.push(codexResumeSessionId);
+  if (options.prompt) args.push(options.prompt);
+  const executable = resolveAgentExecutable(kind);
+  return { executable: executable.executable, args: [...executable.prefixArgs, ...args] };
+}
+
+function resolveAgentExecutable(kind: CliProviderKind): {
+  executable: string;
+  prefixArgs: string[];
+} {
+  const name = kind === "codex-cli" ? "codex" : "claude";
+  const detected = detectAiCli(name);
+  if (kind === "codex-cli" && platform === "windows" && detected.path) {
+    // npm installs Codex as a .cmd/.ps1 shim. Launch its JS entrypoint with
+    // Node so argv is forwarded without another shell parsing JSON.
+    const script = path.join(
+      path.dirname(detected.path),
+      "node_modules",
+      "@openai",
+      "codex",
+      "bin",
+      "codex.js",
+    );
+    if (fsSync.existsSync(script)) return { executable: process.execPath, prefixArgs: [script] };
+  }
+  return {
+    executable: detected.path ?? (platform === "windows" ? `${name}.exe` : name),
+    prefixArgs: [],
+  };
 }
 
 function normalizeClaudePermissionMode(mode: ClaudePermissionMode | undefined): string {
@@ -599,15 +724,6 @@ interface ClaudePermissionHookRuntime {
   directory: string;
   settingsPath: string;
   eventsPath: string;
-  codexConfig?: undefined;
-}
-
-interface CodexPermissionHookRuntime {
-  directory: string;
-  eventsPath: string;
-  codexConfig: string;
-  windowsCommandPath?: string;
-  settingsPath?: undefined;
 }
 
 const CLAUDE_PERMISSION_HOOK_SOURCE = `import { appendFile } from "node:fs/promises";
@@ -661,51 +777,6 @@ export async function createClaudePermissionHookRuntimeForTest(): Promise<Claude
   return createClaudePermissionHookRuntime();
 }
 
-const CODEX_PERMISSION_HOOK_SOURCE = `import { appendFile } from "node:fs/promises";
-
-try {
-  let input = "";
-  for await (const chunk of process.stdin) input += chunk;
-  const payload = JSON.parse(input);
-  await appendFile(process.argv[2], JSON.stringify({
-    osheep_event: "codex-permission-request",
-    payload: {
-      session_id: payload.session_id,
-      turn_id: payload.turn_id,
-      hook_event_name: payload.hook_event_name,
-      tool_use_id: payload.tool_use_id ?? payload.toolUseId,
-      tool_name: payload.tool_name ?? payload.toolName,
-    },
-  }) + "\\n", "utf8");
-} catch {
-  // A notification hook must never interfere with Codex.
-}
-`;
-
-async function createCodexPermissionHookRuntime(): Promise<CodexPermissionHookRuntime> {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "osheep-codex-hook-"));
-  const hookPath = path.join(directory, "permission-hook.mjs");
-  const eventsPath = path.join(directory, "permission-events.jsonl");
-  const command = [process.execPath, hookPath, eventsPath].map(quoteHookCommandArg).join(" ");
-  const tomlCommand = `'${command.replace(/'/g, "''")}'`;
-  let windowsCommandPath: string | undefined;
-  let windowsField = "";
-  if (platform === "windows") {
-    windowsCommandPath = path.join(directory, "permission-hook.cmd");
-    const batch = `@echo off\r\n>>"%~dp0permission-events.jsonl" echo {"osheep_event":"codex-permission-request","payload":{"hook_event_name":"PermissionRequest"}}\r\nexit /b 0\r\n`;
-    await fs.writeFile(windowsCommandPath, batch, "utf8");
-    const commandWindows = `"${windowsCommandPath}"`;
-    windowsField = `, commandWindows='${commandWindows.replace(/'/g, "''")}'`;
-  }
-  const codexConfig = `hooks.PermissionRequest=[{ hooks=[{ type="command", command=${tomlCommand}${windowsField} }] }]`;
-  await fs.writeFile(hookPath, CODEX_PERMISSION_HOOK_SOURCE, "utf8");
-  return { directory, eventsPath, codexConfig, windowsCommandPath };
-}
-
-export async function createCodexPermissionHookRuntimeForTest(): Promise<CodexPermissionHookRuntime> {
-  return createCodexPermissionHookRuntime();
-}
-
 function quoteHookCommandArg(value: string): string {
   return `"${value.replace(/"/g, '\\"')}"`;
 }
@@ -742,13 +813,6 @@ function agentEffortCliValue(
 
 function quoteCodexConfig(value: string): string {
   return `'${value.replace(/'/g, platform === "windows" ? "''" : "'\\''")}'`;
-}
-
-function quoteCodexHookConfig(value: string): string {
-  if (platform !== "windows") return quoteCodexConfig(value);
-  const nativeArgument = value.replace(/"/g, '\\"');
-  const encoded = Buffer.from(nativeArgument, "utf8").toString("base64");
-  return `$([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}')))`;
 }
 
 function quoteShell(value: string): string {

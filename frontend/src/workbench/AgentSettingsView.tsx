@@ -1,9 +1,11 @@
 import { lazy, type ReactNode, Suspense, useState } from "react";
+import { useUiPreferences } from "../i18n/UiPreferences";
 import { AgentAdvancedSettingsView } from "./AgentAdvancedSettingsView";
 import { AgentSessionsView } from "./AgentSessionsView";
 import type { AgentSessionSummary } from "./api";
 import { ClaudePluginsView } from "./ClaudePluginsView";
 import { CodexPluginsView } from "./CodexPluginsView";
+import { SkillsView } from "./SkillsView";
 
 const AiSettingsView = lazy(() =>
   import("./AiSettingsView").then((module) => ({ default: module.AiSettingsView })),
@@ -15,13 +17,21 @@ interface AgentSection<T extends string> {
   hidden?: boolean;
 }
 
-type ClaudeCodeSection = "api-model" | "sessions" | "plugins" | "hooks" | "mcp" | "environment";
-type CodexSection = "api-model" | "sessions" | "plugins" | "permissions" | "environment";
+type ClaudeCodeSection =
+  | "api-model"
+  | "sessions"
+  | "plugins"
+  | "skills"
+  | "hooks"
+  | "mcp"
+  | "environment";
+type CodexSection = "api-model" | "sessions" | "plugins" | "skills" | "permissions" | "environment";
 
 const CLAUDE_CODE_SECTIONS: AgentSection<ClaudeCodeSection>[] = [
   { id: "api-model", label: "API & Model" },
   { id: "sessions", label: "Sessions" },
   { id: "plugins", label: "Plugins" },
+  { id: "skills", label: "Skills" },
   { id: "hooks", label: "Hooks", hidden: true },
   { id: "mcp", label: "MCP", hidden: true },
   { id: "environment", label: "Environment", hidden: true },
@@ -31,6 +41,7 @@ const CODEX_SECTIONS: AgentSection<CodexSection>[] = [
   { id: "api-model", label: "API & Model" },
   { id: "sessions", label: "Sessions" },
   { id: "plugins", label: "Plugins" },
+  { id: "skills", label: "Skills" },
   { id: "permissions", label: "Permissions", hidden: true },
   { id: "environment", label: "Environment", hidden: true },
 ];
@@ -62,6 +73,8 @@ export function ClaudeCodeAgentView(props: AgentViewProps) {
         />
       ) : section === "plugins" ? (
         <ClaudePluginsView />
+      ) : section === "skills" ? (
+        <SkillsView agent="claude" />
       ) : section === "hooks" ? (
         <AgentAdvancedSettingsView app="claude" section="hooks" />
       ) : section === "mcp" ? (
@@ -95,6 +108,8 @@ export function CodexAgentView(props: AgentViewProps) {
         />
       ) : section === "plugins" ? (
         <CodexPluginsView />
+      ) : section === "skills" ? (
+        <SkillsView agent="codex" />
       ) : section === "permissions" ? (
         <AgentAdvancedSettingsView app="codex" section="permissions" />
       ) : (
@@ -117,6 +132,7 @@ function AgentShell<T extends string>({
   onSelect: (section: T) => void;
   children: ReactNode;
 }) {
+  const { t } = useUiPreferences();
   return (
     <div className="agent-settings side-view">
       <div className="side-view__header agent-settings__header">
@@ -135,7 +151,7 @@ function AgentShell<T extends string>({
               aria-selected={activeSection === section.id}
               onClick={() => onSelect(section.id)}
             >
-              <span>{section.label}</span>
+              <span>{section.id === "skills" ? t("skills.title") : section.label}</span>
             </button>
           ))}
       </div>

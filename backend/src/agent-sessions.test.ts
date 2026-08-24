@@ -10,7 +10,34 @@ import {
   isAgentSessionInProject,
   listAgentSessions,
   readAgentSessionUsage,
+  reassignCodexSessionId,
 } from "./agent-sessions.js";
+
+test("Codex sessions can be persisted under a requested UUID", async () => {
+  const fixture = await makeFixture();
+  const currentId = "10000000-2222-4333-8444-555555555555";
+  const requestedId = "20000000-2222-4333-8444-555555555555";
+  const currentFile = codexSessionPath(fixture.roots, currentId, "09-00-00");
+  try {
+    await writeLines(currentFile, [codexMetadata(currentId, fixture.projectPath)]);
+    await reassignCodexSessionId(currentId, requestedId, fixture.roots);
+
+    const sessions = await listAgentSessions("codex", fixture.roots);
+    assert.deepEqual(
+      sessions.map((session) => session.id),
+      [requestedId],
+    );
+    await assert.rejects(fs.stat(currentFile));
+    const text = await fs.readFile(
+      codexSessionPath(fixture.roots, requestedId, "09-00-00"),
+      "utf8",
+    );
+    assert.match(text, new RegExp(requestedId));
+    assert.doesNotMatch(text, new RegExp(currentId));
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
 
 test("project scope filters sessions and batch delete rejects sibling projects", async () => {
   const fixture = await makeFixture();
@@ -218,6 +245,102 @@ test("Claude session usage sums assistant message usage", async () => {
       },
       cost: undefined,
     });
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("Claude session usage reads nested cache creation buckets", async () => {
+  const fixture = await makeFixture();
+  const id = "cccccccc-dddd-4eee-8fff-111111111111";
+  const sessionPath = path.join(
+    fixture.roots.claudeHome,
+    "projects",
+    "fixture-project",
+    `${id}.jsonl`,
+  );
+  try {
+    await writeLines(sessionPath, [
+      {
+        type: "assistant",
+        sessionId: id,
+        cwd: fixture.projectPath,
+        message: {
+          role: "assistant",
+          usage: {
+            input_tokens: 10,
+            output_tokens: 5,
+            cache_creation: {
+              ephemeral_5m_input_tokens: 30,
+              ephemeral_1h_input_tokens: 20,
+            },
+          },
+        },
+      },
+    ]);
+    assert.equal((await readAgentSessionUsage("claude", id, fixture.roots)).tokens?.cacheWrite, 50);
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("Codex session usage accumulates cache writes reported per turn", async () => {
+  const fixture = await makeFixture();
+  const id = "41111111-2222-4333-8444-555555555555";
+  const sessionPath = codexSessionPath(fixture.roots, id, "13-00-00");
+  try {
+    await writeLines(sessionPath, [
+      codexMetadata(id, fixture.projectPath),
+      {
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            total_token_usage: { input_tokens: 100, output_tokens: 10 },
+            last_token_usage: { cacheCreationInputTokens: 25 },
+          },
+        },
+      },
+      {
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            total_token_usage: { input_tokens: 200, output_tokens: 20 },
+            last_token_usage: { cache_write_tokens: 35 },
+          },
+        },
+      },
+    ]);
+    assert.equal((await readAgentSessionUsage("codex", id, fixture.roots)).tokens?.cacheWrite, 60);
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("Codex usage falls back to per-turn cache writes when cumulative value is zero", async () => {
+  const fixture = await makeFixture();
+  const id = "51111111-2222-4333-8444-555555555555";
+  const sessionPath = codexSessionPath(fixture.roots, id, "14-00-00");
+  try {
+    await writeLines(sessionPath, [
+      codexMetadata(id, fixture.projectPath),
+      {
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            total_token_usage: {
+              input_tokens: 100,
+              output_tokens: 10,
+              cache_write_input_tokens: 0,
+            },
+            last_token_usage: { cache_write_input_tokens: 42 },
+          },
+        },
+      },
+    ]);
+    assert.equal((await readAgentSessionUsage("codex", id, fixture.roots)).tokens?.cacheWrite, 42);
   } finally {
     await fs.rm(fixture.root, { recursive: true, force: true });
   }

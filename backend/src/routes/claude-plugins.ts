@@ -22,7 +22,9 @@ export async function registerClaudePluginRoutes(app: FastifyInstance) {
 
   app.post<{ Body: unknown }>("/api/claude-plugins/uninstall", async (req) => {
     const selector = parseRequiredStringField(req.body, "selector");
-    const result = await uninstallClaudePlugin(selector);
+    const body = req.body as { scope?: unknown };
+    const scope = typeof body.scope === "string" ? body.scope : undefined;
+    const result = await uninstallClaudePlugin(selector, { scope });
     return { ok: true, result, snapshot: await getClaudePluginSnapshot() };
   });
 

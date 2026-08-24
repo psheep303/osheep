@@ -9,7 +9,15 @@ export interface WorkspaceInfo {
   path: string;
 }
 
+export interface OpenedProjectInfo {
+  name: string;
+  path: string;
+  openedAt: number;
+}
+
 const WORKSPACE_ID_RE = /^[a-zA-Z0-9._-]{1,64}$/;
+let openedProjectsWrite = Promise.resolve();
+const registeredProjectPaths = new Set<string>();
 
 function isValidWorkspaceId(name: string): boolean {
   return Boolean(name) && !name.startsWith(".") && WORKSPACE_ID_RE.test(name);
@@ -43,7 +51,14 @@ export async function resolveWorkspace(id: string): Promise<WorkspaceInfo> {
     if (error instanceof Error && "statusCode" in error) throw error;
     throw errors.workspaceNotFound(id);
   }
-  return { id, name: id, path: workspacePath };
+  const resolvedPath = await fs.realpath(workspacePath);
+  return { id, name: id, path: resolvedPath };
+}
+
+export async function markWorkspaceOpened(id: string): Promise<WorkspaceInfo> {
+  const workspace = await resolveWorkspace(id);
+  await recordOpenedProject(workspace.name, workspace.path).catch(() => undefined);
+  return workspace;
 }
 
 export async function setWorkspacesRoot(rawPath: string): Promise<string> {
@@ -88,7 +103,88 @@ export async function createWorkspace(name: string): Promise<WorkspaceInfo> {
     throw error;
   }
   await ensureOsheepLayout(workspacePath);
-  return { id, name: id, path: workspacePath };
+  const resolvedPath = await fs.realpath(workspacePath);
+  return { id, name: id, path: resolvedPath };
+}
+
+export async function listOpenedProjects(): Promise<OpenedProjectInfo[]> {
+  const projects = await readOpenedProjects();
+  const available = await Promise.all(
+    projects.map(async (project) => {
+      try {
+        return (await fs.stat(project.path)).isDirectory() ? project : null;
+      } catch {
+        return null;
+      }
+    }),
+  );
+  return available.filter((project): project is OpenedProjectInfo => project !== null);
+}
+
+async function recordOpenedProject(name: string, projectPath: string): Promise<void> {
+  const historyFile = config.openedProjectsFile;
+  const normalizedPath = openedProjectKey(projectPath);
+  const registrationKey = `${openedProjectKey(historyFile)}\0${normalizedPath}`;
+  if (registeredProjectPaths.has(registrationKey)) return;
+  registeredProjectPaths.add(registrationKey);
+  const previous = openedProjectsWrite;
+  const current = previous
+    .catch(() => undefined)
+    .then(async () => {
+      const projects = await readOpenedProjects(historyFile);
+      if (projects.some((project) => openedProjectKey(project.path) === normalizedPath)) return;
+      projects.push({ name, path: projectPath, openedAt: Date.now() });
+      await fs.mkdir(path.dirname(historyFile), { recursive: true });
+      const tempPath = `${historyFile}.${process.pid}.${Date.now()}.tmp`;
+      await fs.writeFile(tempPath, `${JSON.stringify({ projects }, null, 2)}\n`, "utf8");
+      await fs.rename(tempPath, historyFile);
+    });
+  openedProjectsWrite = current;
+  try {
+    await current;
+  } catch (error) {
+    registeredProjectPaths.delete(registrationKey);
+    throw error;
+  }
+}
+
+async function readOpenedProjects(
+  historyFile = config.openedProjectsFile,
+): Promise<OpenedProjectInfo[]> {
+  try {
+    const parsed = JSON.parse(await fs.readFile(historyFile, "utf8")) as {
+      projects?: unknown;
+    };
+    if (!Array.isArray(parsed.projects)) return [];
+    const unique = new Map<string, OpenedProjectInfo>();
+    for (const value of parsed.projects) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+      const project = value as Partial<OpenedProjectInfo>;
+      if (typeof project.path !== "string" || !path.isAbsolute(project.path)) continue;
+      const projectPath = path.resolve(project.path);
+      unique.set(openedProjectKey(projectPath), {
+        name:
+          typeof project.name === "string" && project.name.trim()
+            ? project.name.trim()
+            : path.basename(projectPath),
+        path: projectPath,
+        openedAt:
+          typeof project.openedAt === "number" && Number.isFinite(project.openedAt)
+            ? project.openedAt
+            : 0,
+      });
+    }
+    return [...unique.values()].sort((a, b) => b.openedAt - a.openedAt);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT" || error instanceof SyntaxError)
+      return [];
+    throw error;
+  }
+}
+
+function openedProjectKey(projectPath: string): string {
+  const resolved = path.resolve(projectPath);
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 
 /** Resolve a workspace-relative path without allowing it to escape the root. */
@@ -121,7 +217,6 @@ export function resolveWorkspacePath(workspaceRoot: string, rel: string): string
 export async function ensureOsheepLayout(workspaceRoot: string): Promise<void> {
   const osheepRoot = path.join(workspaceRoot, ".osheep");
   await fs.mkdir(path.join(osheepRoot, "docs"), { recursive: true });
-  await fs.mkdir(path.join(osheepRoot, "plan"), { recursive: true });
   const settingsPath = path.join(osheepRoot, "settings.json");
   try {
     await fs.access(settingsPath);

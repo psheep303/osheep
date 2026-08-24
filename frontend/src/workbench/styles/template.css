@@ -30,6 +30,194 @@
   white-space: nowrap;
 }
 
+.workflow-toolbar__readme:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+.workflow-toolbar__settings {
+  width: 24px;
+  padding: 0;
+  display: inline-grid;
+  place-items: center;
+}
+
+.workflow-toolbar__settings .codicon {
+  font-size: 14px;
+}
+
+.workflow-settings-card {
+  position: absolute;
+  z-index: 35;
+  top: 50%;
+  left: 50%;
+  width: clamp(340px, 50%, 520px);
+  height: clamp(390px, 50%, 500px);
+  max-width: calc(100% - 32px);
+  max-height: calc(100% - 32px);
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--wf-border-strong);
+  border-radius: 8px;
+  background: var(--wf-panel-strong);
+  color: var(--wf-text-soft);
+  box-shadow: 0 20px 64px rgba(0, 0, 0, 0.52);
+}
+
+.workflow-settings-card__header {
+  height: 42px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 9px 0 14px;
+  border-bottom: 1px solid var(--wf-border);
+  background: var(--wf-panel);
+}
+
+.workflow-settings-card__header > .codicon {
+  color: var(--wf-blue);
+}
+
+.workflow-settings-card__header strong {
+  margin-right: auto;
+  color: var(--wf-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.workflow-settings-card__header button {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--wf-muted);
+  cursor: pointer;
+}
+
+.workflow-settings-card__header button:hover {
+  background: var(--wf-muted-surface-strong);
+  color: var(--wf-text);
+}
+
+.workflow-settings-card__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  padding: 16px;
+}
+
+.workflow-settings-card__toggle,
+.workflow-settings-card__number,
+.workflow-settings-card__sounds label {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  font-size: 12px;
+}
+
+.workflow-settings-card input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  margin: 0;
+  accent-color: var(--wf-blue-strong);
+}
+
+.workflow-settings-card__number {
+  justify-content: space-between;
+}
+
+.workflow-settings-card__number > span:first-child {
+  min-width: 0;
+  padding-right: 12px;
+}
+
+.workflow-settings-card__input {
+  width: 132px;
+  height: 30px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--wf-border-strong);
+  border-radius: 5px;
+  background: var(--wf-panel);
+  overflow: hidden;
+}
+
+.workflow-settings-card__input:focus-within {
+  border-color: var(--wf-blue);
+}
+
+.workflow-settings-card__input b {
+  width: 28px;
+  flex: none;
+  color: var(--wf-muted);
+  font-size: 11px;
+  font-weight: 500;
+  text-align: center;
+}
+
+.workflow-settings-card__input input {
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  padding: 0 8px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--wf-text);
+  font: 12px var(--wf-font-mono);
+}
+
+.workflow-settings-card__input input:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+.workflow-settings-card__sounds {
+  display: grid;
+  gap: 11px;
+  margin: 2px 0 0;
+  padding: 13px;
+  border: 1px solid var(--wf-border);
+  border-radius: 6px;
+}
+
+.workflow-settings-card__sounds legend {
+  padding: 0 6px;
+  color: var(--wf-muted);
+  font-size: 11px;
+}
+
+@media (max-width: 620px) {
+  .workflow-settings-card {
+    width: calc(100% - 24px);
+    height: min(460px, calc(100% - 24px));
+    max-width: none;
+    max-height: none;
+  }
+
+  .workflow-settings-card__number {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 7px;
+  }
+
+  .workflow-settings-card__input {
+    width: 100%;
+  }
+}
+
 .workflow-toolbar__template-binding {
   padding: 3px 6px;
   border: 1px solid rgba(167, 139, 250, 0.28);
@@ -291,7 +479,7 @@
 }
 
 .template-sidebar__search:focus-within {
-  border-color: #6b8ebd;
+  border-color: #3b3b3d;
 }
 
 .template-sidebar__search input {
@@ -303,6 +491,10 @@
   color: var(--fg-default);
   font: inherit;
   font-size: 12px;
+}
+
+.template-sidebar__search input:focus-visible {
+  outline: none;
 }
 
 .template-sidebar__cards {

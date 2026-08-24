@@ -1,6 +1,6 @@
 /* ==== Main / Editor ==== */
 
-.main {
+.workbench-main {
   flex: 1 1 auto;
   display: flex;
   flex-direction: column;
@@ -33,10 +33,47 @@
   overflow-x: auto;
   overflow-y: hidden;
   min-width: 0;
+  scrollbar-width: none;
 }
 
 .tabs__list::-webkit-scrollbar {
-  height: 3px;
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+
+.tabs__viewport {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+.tabs__scrollbar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  z-index: 2;
+  opacity: 0;
+  pointer-events: none;
+  background: var(--border-edge);
+}
+
+.tabs__scrollbar.is-visible {
+  opacity: 1;
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.tabs__scrollbar-thumb {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: var(--fg-muted);
+  border-radius: 1px;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--bg-shell) 70%, transparent);
 }
 
 .tabs__trailing {
@@ -54,11 +91,31 @@
   padding: 0 10px 0 12px;
   background: var(--bg-shell);
   font-size: 12px;
-  cursor: pointer;
+  cursor: default;
   white-space: nowrap;
   color: rgba(255, 255, 255, 0.5);
   height: 35px;
   border-right: 1px solid var(--border-faint);
+  user-select: none;
+}
+
+.tab.is-dragging {
+  cursor: grabbing;
+  opacity: 0.45;
+}
+
+.tab__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  color: var(--fg-muted);
+}
+
+.tab.is-active .tab__icon {
+  color: var(--fg-default);
 }
 
 .tab.is-active {
@@ -217,10 +274,123 @@
 .bottom-panel__body {
   flex: 1 1 auto;
   overflow: hidden;
-  display: flex;
-  flex-direction: column;
+  position: relative;
   min-height: 0;
   font-size: 12px;
+}
+
+.bottom-panel__pane {
+  position: absolute;
+  inset: 0;
+  min-width: 0;
+  min-height: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.bottom-panel__pane.is-active {
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.adapter-log {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg-editor);
+}
+
+.adapter-log__summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+  min-height: 30px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--border-faint);
+  color: var(--fg-faint);
+  font-size: 11px;
+}
+
+.adapter-log__connection {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.adapter-log__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--fg-faint);
+}
+
+.adapter-log__connection.is-live .adapter-log__dot {
+  background: #3fb950;
+  box-shadow: 0 0 0 2px rgba(63, 185, 80, 0.15);
+}
+
+.adapter-log__count {
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.adapter-log__events {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 4px 0 10px;
+}
+
+.adapter-log__event {
+  border-bottom: 1px solid var(--border-faint);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.adapter-log__event summary {
+  display: grid;
+  grid-template-columns: minmax(135px, 0.8fr) minmax(110px, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 28px;
+  padding: 0 16px;
+  cursor: default;
+  list-style: none;
+}
+
+.adapter-log__event summary::-webkit-details-marker { display: none; }
+.adapter-log__event summary:hover { background: var(--bg-hover); }
+.adapter-log__event-type { color: var(--fg-default); }
+.adapter-log__event-detail { color: var(--fg-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.adapter-log__event-meta { color: var(--fg-faint); font-size: 10px; white-space: nowrap; }
+.adapter-log__event.is-success .adapter-log__event-type { color: #3fb950; }
+.adapter-log__event.is-error .adapter-log__event-type { color: #f14c4c; }
+.adapter-log__event.is-waiting .adapter-log__event-type { color: #d7ba7d; }
+.adapter-log__event pre {
+  box-sizing: border-box;
+  max-height: 220px;
+  margin: 0 16px 8px;
+  padding: 8px 10px;
+  overflow: auto;
+  color: var(--fg-default);
+  background: var(--surface-2);
+  border: 1px solid var(--border-faint);
+  font-size: 10px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.bottom-panel__log-state {
+  padding: 10px 16px;
+  color: var(--fg-faint);
+  font-size: 12px;
+}
+
+.bottom-panel__log-state.is-error {
+  color: var(--status-error, #d13438);
 }
 
 /* ==== Resizers ==== */

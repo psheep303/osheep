@@ -1,10 +1,30 @@
-import { type CSSProperties, createContext, useContext, useEffect, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+import { createPortal } from "react-dom";
 import { useUiPreferences } from "../i18n/UiPreferences";
 import { ContextMenu, type CtxMenuSection } from "./ContextMenu";
+import { elementsAtDesktopDropPosition, listenDesktopFileDrop } from "./desktop-dnd";
+import { isWindowsDesktopShell } from "./desktop-folder-picker";
 import { FileIcon } from "./FileIcon";
+import type { BrowserDropFile } from "./file-tree-dnd";
+import {
+  FILE_TREE_DRAG_MIME,
+  hasFileTreeDrag,
+  readBrowserDropItems,
+  readFileTreeDragPaths,
+  writeFileTreeDragData,
+} from "./file-tree-dnd";
 import type { FsNode } from "./fs";
 import {
   copyEntryTo,
+  copyExternalEntryTo,
   createDirectory,
   createFile,
   findFreeName,
@@ -12,34 +32,48 @@ import {
   readDirShallow,
   removeEntry,
   renameEntry,
+  writeFileBase64,
 } from "./fs";
-import { type FileDecoration, statusColor } from "./git-decorations";
+import { type FileDecoration, isIgnoredPath, statusColor } from "./git-decorations";
 import { useOsheepOverlay } from "./OsheepOverlay";
 
 type DraftKind = "file" | "folder";
 
-interface ClipboardItem {
-  kind: "copy" | "cut";
+interface ClipboardEntry {
   path: string;
   name: string;
   entryKind: "file" | "directory";
+}
+
+interface ClipboardState {
+  kind: "copy" | "cut";
+  entries: ClipboardEntry[];
 }
 
 interface TreeContextValue {
   workspaceId: string;
   treeVersion: number;
   bumpTree: () => void;
-  selectedPath: string | null;
-  onSelect: (path: string | null) => void;
+  selectedPaths: ReadonlySet<string>;
+  selectNode: (node: FsNode, additive: boolean) => void;
+  registerNode: (node: FsNode) => void;
+  actionNodesFor: (node: FsNode) => FsNode[];
   onOpenFile: (node: FsNode) => void;
   openMenu: (x: number, y: number, ctx: MenuCtx) => void;
-  clipboard: ClipboardItem | null;
-  setClipboard: (c: ClipboardItem | null) => void;
+  clipboard: ClipboardState | null;
+  deleteEntries: (entries: FsNode[]) => Promise<void>;
+  storeEntries: (kind: ClipboardState["kind"], entries: FsNode[]) => void;
+  pasteEntries: (targetDir: string) => Promise<void>;
   onPathRenamed: (oldPath: string, newPath: string) => void;
-  onPathDeleted: (path: string) => void;
   dropTarget: string | null;
   setDropTarget: (path: string | null) => void;
-  onDropMove: (srcPath: string, destDir: string) => Promise<void>;
+  onDropMove: (srcPaths: string[], destDir: string) => Promise<void>;
+  copyBrowserFiles: (files: BrowserDropFile[], destDir: string) => Promise<void>;
+  setRootDropActive: (active: boolean) => void;
+  pointerDragFallback: boolean;
+  pointerDragPaths: ReadonlySet<string>;
+  beginPointerDrag: (node: FsNode, event: React.PointerEvent) => void;
+  consumePointerClick: () => boolean;
   decorations: Map<string, FileDecoration>;
 }
 
@@ -50,14 +84,13 @@ const useTreeCtx = () => {
   return v;
 };
 
-const DRAG_MIME = "application/x-osheep-path";
-
 interface FileTreeProps {
   workspaceId: string;
   workspaceName: string;
   selectedPath: string | null;
   onSelect: (path: string | null) => void;
   onOpenFile: (node: FsNode) => void;
+  onDropFileToTab?: (path: string, index: number) => void;
   onPathRenamed: (oldPath: string, newPath: string) => void;
   onPathDeleted: (path: string) => void;
   decorations: Map<string, FileDecoration>;
@@ -81,12 +114,41 @@ function parentOf(p: string): string {
 }
 
 function basename(p: string): string {
-  const i = p.lastIndexOf("/");
-  return i >= 0 ? p.slice(i + 1) : p;
+  const normalized = p.replace(/\\/g, "/");
+  const i = normalized.lastIndexOf("/");
+  return i >= 0 ? normalized.slice(i + 1) : normalized;
+}
+
+function isExternalAbsolutePath(value: string): boolean {
+  return /^[a-zA-Z]:[\\/]/.test(value) || value.startsWith("\\\\") || value.startsWith("/");
+}
+
+async function fileToBase64(file: File): Promise<string> {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return btoa(binary);
 }
 
 function isAncestorOrSelf(maybeAncestor: string, descendant: string): boolean {
   return maybeAncestor === descendant || descendant.startsWith(`${maybeAncestor}/`);
+}
+
+function topLevelPaths(paths: Iterable<string>): string[] {
+  const unique = [...new Set(paths)].sort((a, b) => a.length - b.length || a.localeCompare(b));
+  return unique.filter(
+    (path, index) => !unique.slice(0, index).some((parent) => isAncestorOrSelf(parent, path)),
+  );
+}
+
+function topLevelEntries(entries: FsNode[]): FsNode[] {
+  const byPath = new Map(entries.map((entry) => [entry.path, entry]));
+  return topLevelPaths(byPath.keys())
+    .map((path) => byPath.get(path))
+    .filter((entry): entry is FsNode => !!entry);
 }
 
 export function FileTree({
@@ -95,6 +157,7 @@ export function FileTree({
   selectedPath,
   onSelect,
   onOpenFile,
+  onDropFileToTab,
   onPathRenamed,
   onPathDeleted,
   decorations,
@@ -102,14 +165,35 @@ export function FileTree({
   refreshSignal,
 }: FileTreeProps) {
   const { t } = useUiPreferences();
-  const { notify } = useOsheepOverlay();
+  const { confirm, notify } = useOsheepOverlay();
   const [children, setChildren] = useState<FsNode[]>([]);
   const [draft, setDraft] = useState<DraftKind | null>(null);
   const [treeVersion, setTreeVersion] = useState(0);
   const [menu, setMenu] = useState<MenuState | null>(null);
-  const [clipboard, setClipboard] = useState<ClipboardItem | null>(null);
+  const [clipboard, setClipboard] = useState<ClipboardState | null>(null);
+  const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
+  const nodesByPathRef = useRef(new Map<string, FsNode>());
+  const treeRootRef = useRef<HTMLDivElement>(null);
+  const treeKeyboardActiveRef = useRef(false);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const [rootDropActive, setRootDropActive] = useState(false);
+  const pointerDragFallback = isWindowsDesktopShell();
+  const pointerDragRef = useRef<{
+    entries: FsNode[];
+    pointerId: number;
+    captureElement: HTMLElement;
+    startX: number;
+    startY: number;
+    active: boolean;
+  } | null>(null);
+  const [pointerDragPaths, setPointerDragPaths] = useState<Set<string>>(new Set());
+  const [pointerDragActive, setPointerDragActive] = useState(false);
+  const [pointerDragPreview, setPointerDragPreview] = useState<{
+    x: number;
+    y: number;
+    entries: FsNode[];
+  } | null>(null);
+  const suppressClickRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -121,6 +205,75 @@ export function FileTree({
       cancelled = true;
     };
   }, [workspaceId, treeVersion]);
+
+  useEffect(() => {
+    setSelectedPaths(new Set());
+    setClipboard(null);
+    nodesByPathRef.current.clear();
+  }, [workspaceId]);
+
+  useEffect(() => {
+    setSelectedPaths((current) => {
+      if (!selectedPath) return current.size === 0 ? current : new Set();
+      if (current.has(selectedPath)) return current;
+      return new Set([selectedPath]);
+    });
+  }, [selectedPath]);
+
+  const registerNode = useCallback((node: FsNode) => {
+    nodesByPathRef.current.set(node.path, node);
+  }, []);
+  const actionNodesFor = (node: FsNode): FsNode[] => {
+    const paths = selectedPaths.has(node.path) ? topLevelPaths(selectedPaths) : [node.path];
+    return paths
+      .map((path) => (path === node.path ? node : nodesByPathRef.current.get(path)))
+      .filter((entry): entry is FsNode => !!entry);
+  };
+  const selectNode = (node: FsNode, additive: boolean) => {
+    registerNode(node);
+    if (!additive) {
+      setSelectedPaths(new Set([node.path]));
+      onSelect(node.path);
+      return;
+    }
+    const next = new Set(selectedPaths);
+    if (next.has(node.path)) next.delete(node.path);
+    else next.add(node.path);
+    setSelectedPaths(next);
+    const nextPrimary = next.has(node.path) ? node.path : (next.values().next().value ?? null);
+    if (selectedPath === node.path || next.has(node.path)) onSelect(nextPrimary);
+  };
+  const clearSelection = () => {
+    setSelectedPaths(new Set());
+    onSelect(null);
+  };
+
+  const updatePointerTarget = (path: string | null) => {
+    setDropTarget((current) => (current === path ? current : path));
+  };
+  const beginPointerDrag = (node: FsNode, event: React.PointerEvent) => {
+    if (
+      !pointerDragFallback ||
+      event.button !== 0 ||
+      (event.target as HTMLElement).closest("button, input, textarea, select, a, [contenteditable]")
+    )
+      return;
+    const captureElement = event.currentTarget as HTMLElement;
+    captureElement.setPointerCapture(event.pointerId);
+    pointerDragRef.current = {
+      entries: actionNodesFor(node),
+      pointerId: event.pointerId,
+      captureElement,
+      startX: event.clientX,
+      startY: event.clientY,
+      active: false,
+    };
+  };
+  const consumePointerClick = () => {
+    if (!suppressClickRef.current) return false;
+    suppressClickRef.current = false;
+    return true;
+  };
 
   const bumpTree = () => {
     setTreeVersion((v) => v + 1);
@@ -162,44 +315,323 @@ export function FileTree({
     }
   };
 
-  const doRootPaste = async () => {
-    if (!clipboard) return;
-    try {
-      const targetName = await findFreeName(workspaceId, "", clipboard.name, clipboard.entryKind);
-      if (clipboard.kind === "cut") {
-        if (parentOf(clipboard.path) === "") {
-          setClipboard(null);
-          return;
-        }
-        await moveEntryTo(workspaceId, clipboard.path, targetName);
-        onPathRenamed(clipboard.path, targetName);
-      } else {
-        await copyEntryTo(workspaceId, clipboard.path, targetName);
+  const deleteEntries = async (entries: FsNode[]) => {
+    const targets = topLevelEntries(entries);
+    if (targets.length === 0) return;
+    const ok = await confirm({
+      message:
+        targets.length === 1
+          ? t("confirm.deleteFile", { name: targets[0].name })
+          : t("confirm.deleteItems", { count: targets.length }),
+      confirmLabel: t("confirm.delete"),
+      reminderKey: "delete-file-or-folder",
+    });
+    if (!ok) return;
+    let changed = false;
+    let firstError: Error | null = null;
+    const failedEntries: FsNode[] = [];
+    for (const entry of targets) {
+      try {
+        await removeEntry(workspaceId, entry.path);
+        onPathDeleted(entry.path);
+        changed = true;
+      } catch (error) {
+        firstError ??= error as Error;
+        failedEntries.push(entry);
       }
-      setClipboard(null);
-      bumpTree();
-    } catch (err) {
-      notify.error(t("notification.pasteFailed", { detail: (err as Error).message }));
     }
+    setSelectedPaths(new Set(failedEntries.map((entry) => entry.path)));
+    onSelect(failedEntries[0]?.path ?? null);
+    if (changed) bumpTree();
+    if (firstError) notify.error(firstError.message);
   };
 
-  const onDropMove = async (srcPath: string, destDir: string) => {
-    if (isAncestorOrSelf(srcPath, joinPath(destDir, basename(srcPath)))) {
-      // Don't move a folder into itself / its descendant
+  const storeEntries = (kind: ClipboardState["kind"], entries: FsNode[]) => {
+    const targets = topLevelEntries(entries);
+    if (targets.length === 0) return;
+    setClipboard({
+      kind,
+      entries: targets.map((entry) => ({
+        path: entry.path,
+        name: entry.name,
+        entryKind: entry.kind,
+      })),
+    });
+  };
+
+  const pasteEntries = async (targetDir: string) => {
+    if (!clipboard) return;
+    if (
+      clipboard.entries.some(
+        (entry) => entry.entryKind === "directory" && isAncestorOrSelf(entry.path, targetDir),
+      )
+    ) {
       notify.error(t("notification.invalidMove"));
       return;
     }
-    if (parentOf(srcPath) === destDir) return; // already there
-    try {
-      const targetName = basename(srcPath);
-      const dest = joinPath(destDir, targetName);
-      await moveEntryTo(workspaceId, srcPath, dest);
-      onPathRenamed(srcPath, dest);
-      bumpTree();
-    } catch (err) {
-      notify.error(t("notification.moveFailed", { detail: (err as Error).message }));
+    let changed = false;
+    let firstError: Error | null = null;
+    const failedCutEntries: ClipboardEntry[] = [];
+    const nextSelection: string[] = [];
+    for (const entry of clipboard.entries) {
+      if (clipboard.kind === "cut" && parentOf(entry.path) === targetDir) {
+        nextSelection.push(entry.path);
+        continue;
+      }
+      try {
+        const targetName = await findFreeName(workspaceId, targetDir, entry.name, entry.entryKind);
+        const destPath = joinPath(targetDir, targetName);
+        if (clipboard.kind === "cut") {
+          await moveEntryTo(workspaceId, entry.path, destPath);
+          onPathRenamed(entry.path, destPath);
+        } else {
+          await copyEntryTo(workspaceId, entry.path, destPath);
+        }
+        nextSelection.push(destPath);
+        changed = true;
+      } catch (error) {
+        firstError ??= error as Error;
+        nextSelection.push(entry.path);
+        if (clipboard.kind === "cut") failedCutEntries.push(entry);
+      }
+    }
+    setSelectedPaths(new Set(nextSelection));
+    onSelect(nextSelection[0] ?? null);
+    if (clipboard.kind === "cut") {
+      setClipboard(failedCutEntries.length > 0 ? { kind: "cut", entries: failedCutEntries } : null);
+    }
+    if (changed) bumpTree();
+    if (firstError) {
+      notify.error(t("notification.pasteFailed", { detail: firstError.message }));
     }
   };
+
+  const copyBrowserFiles = async (files: BrowserDropFile[], destDir: string) => {
+    let changed = false;
+    let firstError: Error | null = null;
+    const nextSelection: string[] = [];
+    for (const entry of files) {
+      const file = entry.file;
+      const name = entry.relativePath || basename(file.name) || "dropped-file";
+      try {
+        const targetPath = joinPath(destDir, name.replace(/\\/g, "/"));
+        await writeFileBase64(workspaceId, targetPath, await fileToBase64(file));
+        nextSelection.push(targetPath);
+        changed = true;
+      } catch (error) {
+        firstError ??= error as Error;
+      }
+    }
+    if (nextSelection.length > 0) {
+      setSelectedPaths(new Set(nextSelection));
+      onSelect(nextSelection[0]);
+    }
+    if (changed) bumpTree();
+    if (firstError) notify.error(t("notification.moveFailed", { detail: firstError.message }));
+  };
+
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    void listenDesktopFileDrop((payload) => {
+      const elements = elementsAtDesktopDropPosition(payload.position);
+      const element =
+        elements.find((candidate) => {
+          const row = candidate.closest<HTMLElement>("[data-file-tree-node-kind]");
+          return row?.dataset.fileTreeNodeKind === "directory";
+        }) ?? elements.find((candidate) => candidate.closest("[data-file-tree-root]"));
+      const root = element?.closest<HTMLElement>("[data-file-tree-root]");
+      if (!root) return;
+      const row = element?.closest<HTMLElement>("[data-file-tree-node-kind]");
+      if (row && row.dataset.fileTreeNodeKind !== "directory") return;
+      const targetDir =
+        row?.dataset.fileTreeNodeKind === "directory" ? (row.dataset.fileTreeDropPath ?? "") : "";
+      void Promise.all(
+        payload.paths.map(async (sourcePath) => {
+          const name = basename(sourcePath);
+          const targetName = await findFreeName(workspaceId, targetDir, name, "file").catch(
+            () => name,
+          );
+          await copyExternalEntryTo(workspaceId, sourcePath, joinPath(targetDir, targetName));
+        }),
+      )
+        .then(() => bumpTree())
+        .catch((error) => notify.error((error as Error).message));
+    }).then((cleanup) => {
+      unlisten = cleanup;
+    });
+    return () => unlisten?.();
+  }, [bumpTree, notify, workspaceId]);
+
+  const onDropMove = async (srcPaths: string[], destDir: string) => {
+    const sources = topLevelPaths(srcPaths);
+    if (sources.some((srcPath) => isAncestorOrSelf(srcPath, destDir))) {
+      notify.error(t("notification.invalidMove"));
+      return;
+    }
+    let changed = false;
+    let firstError: Error | null = null;
+    const nextSelection: string[] = [];
+    for (const srcPath of sources) {
+      if (parentOf(srcPath) === destDir) {
+        nextSelection.push(srcPath);
+        continue;
+      }
+      const dest = joinPath(destDir, basename(srcPath));
+      try {
+        if (isExternalAbsolutePath(srcPath)) {
+          await copyExternalEntryTo(workspaceId, srcPath, dest);
+        } else {
+          await moveEntryTo(workspaceId, srcPath, dest);
+          onPathRenamed(srcPath, dest);
+        }
+        nextSelection.push(dest);
+        changed = true;
+      } catch (error) {
+        firstError ??= error as Error;
+        nextSelection.push(srcPath);
+      }
+    }
+    setSelectedPaths(new Set(nextSelection));
+    if (nextSelection[0]) onSelect(nextSelection[0]);
+    if (changed) bumpTree();
+    if (firstError) {
+      notify.error(t("notification.moveFailed", { detail: firstError.message }));
+    }
+  };
+
+  const onDropMoveRef = useRef(onDropMove);
+  onDropMoveRef.current = onDropMove;
+  const onDropFileToTabRef = useRef(onDropFileToTab);
+  onDropFileToTabRef.current = onDropFileToTab;
+
+  useEffect(() => {
+    const onPointerDown = (event: PointerEvent) => {
+      treeKeyboardActiveRef.current = !!treeRootRef.current?.contains(event.target as Node);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!treeKeyboardActiveRef.current) return;
+      if (!(event.target instanceof HTMLElement)) return;
+      if (event.target !== document.body && !treeRootRef.current?.contains(event.target)) return;
+      if (event.target.closest("input, textarea, select, [contenteditable]")) return;
+      const entries = topLevelPaths(selectedPaths)
+        .map((path) => nodesByPathRef.current.get(path))
+        .filter((entry): entry is FsNode => !!entry);
+      const modifier = event.ctrlKey || event.metaKey;
+      if (modifier && event.key.toLowerCase() === "c" && entries.length > 0) {
+        event.preventDefault();
+        storeEntries("copy", entries);
+      } else if (modifier && event.key.toLowerCase() === "x" && entries.length > 0) {
+        event.preventDefault();
+        storeEntries("cut", entries);
+      } else if (modifier && event.key.toLowerCase() === "v" && clipboard) {
+        event.preventDefault();
+        const primary = selectedPath ? nodesByPathRef.current.get(selectedPath) : null;
+        const targetDir = primary
+          ? primary.kind === "directory"
+            ? primary.path
+            : parentOf(primary.path)
+          : "";
+        void pasteEntries(targetDir);
+      } else if (event.key === "Delete" && entries.length > 0) {
+        event.preventDefault();
+        void deleteEntries(entries);
+      }
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown, true);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [clipboard, selectedPath, selectedPaths]);
+
+  useEffect(() => {
+    if (!pointerDragFallback) return;
+
+    const targetAtPoint = (x: number, y: number): string | null => {
+      const element = document.elementFromPoint(x, y);
+      if (!(element instanceof Element)) return null;
+      const row = element.closest<HTMLElement>("[data-file-tree-node-kind]");
+      if (row) {
+        return row.dataset.fileTreeNodeKind === "directory"
+          ? (row.dataset.fileTreeDropPath ?? null)
+          : null;
+      }
+      return element.closest("[data-file-tree-root]") ? "" : null;
+    };
+    const resetPointerDrag = () => {
+      const drag = pointerDragRef.current;
+      if (drag?.captureElement.hasPointerCapture(drag.pointerId)) {
+        drag.captureElement.releasePointerCapture(drag.pointerId);
+      }
+      pointerDragRef.current = null;
+      setPointerDragActive(false);
+      setPointerDragPaths(new Set());
+      setPointerDragPreview(null);
+      updatePointerTarget(null);
+    };
+    const finishPointerDrag = (event: PointerEvent) => {
+      const drag = pointerDragRef.current;
+      if (drag && event.pointerId !== drag.pointerId) return;
+      if (!drag?.active) {
+        resetPointerDrag();
+        return;
+      }
+      const target = targetAtPoint(event.clientX, event.clientY);
+      const element = document.elementFromPoint(event.clientX, event.clientY);
+      const tab = element?.closest<HTMLElement>("[data-workbench-tab-index]");
+      const editor = element?.closest<HTMLElement>("[data-workbench-editor-drop]");
+      const tabStrip = element?.closest<HTMLElement>("[data-workbench-tabs-drop]");
+      resetPointerDrag();
+      if ((tab || editor || tabStrip) && onDropFileToTabRef.current) {
+        const index = Number(
+          tab?.dataset.workbenchTabIndex ??
+            editor?.dataset.workbenchDropIndex ??
+            tabStrip?.dataset.workbenchDropIndex,
+        );
+        const file = drag.entries.find((entry) => entry.kind === "file");
+        if (file && Number.isInteger(index)) onDropFileToTabRef.current(file.path, index);
+      } else if (target !== null) {
+        void onDropMoveRef.current(
+          drag.entries.map((entry) => entry.path),
+          target,
+        );
+      }
+      window.setTimeout(() => {
+        suppressClickRef.current = false;
+      }, 0);
+    };
+    const onPointerMove = (event: PointerEvent) => {
+      const drag = pointerDragRef.current;
+      if (!drag || event.pointerId !== drag.pointerId) return;
+      if (!drag.active) {
+        if (Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 6) return;
+        drag.active = true;
+        suppressClickRef.current = true;
+        setPointerDragActive(true);
+        setPointerDragPaths(new Set(drag.entries.map((entry) => entry.path)));
+        setSelectedPaths(new Set(drag.entries.map((entry) => entry.path)));
+        onSelect(drag.entries[0]?.path ?? null);
+      }
+      event.preventDefault();
+      setPointerDragPreview({ x: event.clientX, y: event.clientY, entries: drag.entries });
+      updatePointerTarget(targetAtPoint(event.clientX, event.clientY));
+    };
+    const cancelPointerDrag = (event: PointerEvent) => {
+      const drag = pointerDragRef.current;
+      if (!drag || event.pointerId !== drag.pointerId) return;
+      suppressClickRef.current = false;
+      resetPointerDrag();
+    };
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", finishPointerDrag);
+    window.addEventListener("pointercancel", cancelPointerDrag);
+    return () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", finishPointerDrag);
+      window.removeEventListener("pointercancel", cancelPointerDrag);
+    };
+  }, [pointerDragFallback]);
 
   const onRootContextMenu = (e: React.MouseEvent) => {
     // Only fire if user right-clicked on the body itself, not a row.
@@ -210,6 +642,7 @@ export function FileTree({
       y: e.clientY,
       ctx: {
         node: { name: workspaceName, path: "", kind: "directory" },
+        selectionCount: 0,
         startRename: () => {
           /* root not renameable */
         },
@@ -222,7 +655,7 @@ export function FileTree({
         doCopy: () => {
           /* root not copyable */
         },
-        doPaste: doRootPaste,
+        doPaste: () => pasteEntries(""),
         startDraft: async (kind) => {
           setDraft(kind === "folder" ? "folder" : "file");
         },
@@ -232,47 +665,62 @@ export function FileTree({
   };
 
   const onRootDragOver = (e: React.DragEvent) => {
-    if (!e.dataTransfer.types.includes(DRAG_MIME)) return;
+    if (!hasFileTreeDrag(e.dataTransfer.types)) return;
     e.preventDefault();
-    e.dataTransfer.dropEffect = "move";
+    e.dataTransfer.dropEffect = e.dataTransfer.getData(FILE_TREE_DRAG_MIME) ? "move" : "copy";
     setRootDropActive(true);
   };
 
   const onRootDragLeave = (e: React.DragEvent) => {
-    if (e.currentTarget === e.target) setRootDropActive(false);
+    const nextTarget = e.relatedTarget;
+    if (!(nextTarget instanceof Node) || !e.currentTarget.contains(nextTarget)) {
+      setRootDropActive(false);
+    }
   };
 
   const onRootDrop = (e: React.DragEvent) => {
-    if (!e.dataTransfer.types.includes(DRAG_MIME)) return;
+    if (!hasFileTreeDrag(e.dataTransfer.types)) return;
     e.preventDefault();
     setRootDropActive(false);
     setDropTarget(null);
-    const src = e.dataTransfer.getData(DRAG_MIME);
-    if (!src) return;
-    void onDropMove(src, "");
+    if (!e.dataTransfer.getData(FILE_TREE_DRAG_MIME)) {
+      void readBrowserDropItems(e.dataTransfer.items).then((files) => copyBrowserFiles(files, ""));
+      return;
+    }
+    const sources = readFileTreeDragPaths(e.dataTransfer);
+    if (sources.length > 0) void onDropMove(sources, "");
   };
 
   const ctxValue: TreeContextValue = {
     workspaceId,
     treeVersion,
     bumpTree,
-    selectedPath,
-    onSelect,
+    selectedPaths,
+    selectNode,
+    registerNode,
+    actionNodesFor,
     onOpenFile,
     openMenu: (x, y, ctx) => setMenu({ x, y, ctx }),
     clipboard,
-    setClipboard,
+    deleteEntries,
+    storeEntries,
+    pasteEntries,
     onPathRenamed,
-    onPathDeleted,
     dropTarget,
     setDropTarget,
     onDropMove,
+    copyBrowserFiles,
+    setRootDropActive,
+    pointerDragFallback,
+    pointerDragPaths,
+    beginPointerDrag,
+    consumePointerClick,
     decorations,
   };
 
   return (
     <TreeCtx.Provider value={ctxValue}>
-      <div className="side-view" onClick={() => onSelect(null)}>
+      <div className="side-view" onClick={clearSelection}>
         <div className="side-view__header">
           <span className="side-view__title">{workspaceName}</span>
           <span className="side-view__actions">
@@ -288,12 +736,23 @@ export function FileTree({
           </span>
         </div>
         <div
-          className={`side-view__body file-tree${rootDropActive ? " is-drop-target-root" : ""}`}
-          onClick={(e) => e.stopPropagation()}
+          ref={treeRootRef}
+          className={`side-view__body file-tree${rootDropActive || (pointerDragActive && dropTarget === "") ? " is-drop-target-root" : ""}${pointerDragActive ? " is-pointer-dragging" : ""}`}
+          data-file-tree-root
+          role="tree"
+          aria-multiselectable="true"
+          onClick={(event) => {
+            event.stopPropagation();
+            if (!(event.target as Element).closest(".tree-row")) clearSelection();
+          }}
           onContextMenu={onRootContextMenu}
           onDragOver={onRootDragOver}
           onDragLeave={onRootDragLeave}
           onDrop={onRootDrop}
+          onDragEnd={() => {
+            setRootDropActive(false);
+            setDropTarget(null);
+          }}
         >
           {draft && (
             <DraftRow
@@ -315,6 +774,8 @@ export function FileTree({
             onClose={() => setMenu(null)}
           />
         )}
+        {pointerDragPreview &&
+          createPortal(<FileTreeDragPreview {...pointerDragPreview} />, document.body)}
       </div>
     </TreeCtx.Provider>
   );
@@ -322,6 +783,7 @@ export function FileTree({
 
 interface MenuCtx {
   node: FsNode;
+  selectionCount: number;
   startRename: () => void;
   doDelete: () => Promise<void>;
   doCut: () => void;
@@ -331,13 +793,42 @@ interface MenuCtx {
   isRoot?: boolean;
 }
 
+function FileTreeDragPreview({ x, y, entries }: { x: number; y: number; entries: FsNode[] }) {
+  const visibleEntries = entries.slice(0, 3);
+  const previewWidth = 240;
+  const previewHeight = visibleEntries.length * 22 + 10;
+  const left = Math.max(8, Math.min(x + 14, window.innerWidth - previewWidth - 8));
+  const top = Math.max(8, Math.min(y + 16, window.innerHeight - previewHeight - 8));
+  return (
+    <div
+      className="file-tree-drag-preview"
+      style={{ transform: `translate3d(${left}px, ${top}px, 0)` }}
+      aria-hidden="true"
+    >
+      {visibleEntries.map((entry) => (
+        <div className="file-tree-drag-preview__item" key={entry.path}>
+          {entry.kind === "directory" ? (
+            <i className="codicon codicon-folder" />
+          ) : (
+            <FileIcon name={entry.name} />
+          )}
+          <span>{entry.name}</span>
+        </div>
+      ))}
+      {entries.length > 1 && (
+        <span className="file-tree-drag-preview__count">{entries.length}</span>
+      )}
+    </div>
+  );
+}
+
 interface MenuState {
   x: number;
   y: number;
   ctx: MenuCtx;
 }
 
-function buildMenuSections(ctx: MenuCtx, clipboard: ClipboardItem | null): CtxMenuSection[] {
+function buildMenuSections(ctx: MenuCtx, clipboard: ClipboardState | null): CtxMenuSection[] {
   const sections: CtxMenuSection[] = [];
 
   if (ctx.node.kind === "directory") {
@@ -375,7 +866,12 @@ function buildMenuSections(ctx: MenuCtx, clipboard: ClipboardItem | null): CtxMe
   if (!ctx.isRoot) {
     sections.push({
       items: [
-        { label: "重命名", shortcut: "F2", onSelect: ctx.startRename },
+        {
+          label: "重命名",
+          shortcut: "F2",
+          disabled: ctx.selectionCount > 1,
+          onSelect: ctx.startRename,
+        },
         {
           label: "删除",
           shortcut: "Delete",
@@ -396,12 +892,15 @@ interface TreeNodeProps {
 
 function TreeNode({ node, depth }: TreeNodeProps) {
   const ctx = useTreeCtx();
-  const { t } = useUiPreferences();
-  const { confirm, notify } = useOsheepOverlay();
+  const { notify } = useOsheepOverlay();
   const [expanded, setExpanded] = useState(false);
   const [children, setChildren] = useState<FsNode[] | undefined>();
   const [draft, setDraft] = useState<DraftKind | null>(null);
   const [renaming, setRenaming] = useState(false);
+
+  useEffect(() => {
+    ctx.registerNode(node);
+  }, [ctx.registerNode, node]);
 
   const reload = async () => {
     if (node.kind !== "directory") return;
@@ -424,7 +923,10 @@ function TreeNode({ node, depth }: TreeNodeProps) {
 
   const onRowClick = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    ctx.onSelect(node.path);
+    if (ctx.consumePointerClick()) return;
+    const additive = e.ctrlKey || e.metaKey;
+    ctx.selectNode(node, additive);
+    if (additive) return;
     if (node.kind === "file") {
       ctx.onOpenFile(node);
       return;
@@ -457,70 +959,30 @@ function TreeNode({ node, depth }: TreeNodeProps) {
     }
   };
 
-  const doDelete = async () => {
-    const ok = await confirm({
-      message: t("confirm.deleteFile", { name: node.name }),
-      confirmLabel: t("confirm.delete"),
-      reminderKey: "delete-file-or-folder",
-    });
-    if (!ok) return;
-    try {
-      await removeEntry(ctx.workspaceId, node.path);
-      ctx.onPathDeleted(node.path);
-      ctx.bumpTree();
-    } catch (err) {
-      notify.error((err as Error).message);
-    }
-  };
+  const actionNodes = () => ctx.actionNodesFor(node);
+  const doDelete = async () => ctx.deleteEntries(actionNodes());
 
   const doCut = () => {
-    ctx.setClipboard({
-      kind: "cut",
-      path: node.path,
-      name: node.name,
-      entryKind: node.kind,
-    });
+    ctx.storeEntries("cut", actionNodes());
   };
 
   const doCopy = () => {
-    ctx.setClipboard({
-      kind: "copy",
-      path: node.path,
-      name: node.name,
-      entryKind: node.kind,
-    });
+    ctx.storeEntries("copy", actionNodes());
   };
 
   const doPaste = async () => {
-    const cb = ctx.clipboard;
-    if (!cb) return;
     const targetDir = node.kind === "directory" ? node.path : parentOf(node.path);
-    if (cb.kind === "cut" && parentOf(cb.path) === targetDir) {
-      ctx.setClipboard(null);
-      return;
-    }
-    try {
-      const targetName = await findFreeName(ctx.workspaceId, targetDir, cb.name, cb.entryKind);
-      const destPath = joinPath(targetDir, targetName);
-      if (cb.kind === "cut") {
-        await moveEntryTo(ctx.workspaceId, cb.path, destPath);
-        ctx.onPathRenamed(cb.path, destPath);
-      } else {
-        await copyEntryTo(ctx.workspaceId, cb.path, destPath);
-      }
-      ctx.setClipboard(null);
-      ctx.bumpTree();
-    } catch (err) {
-      notify.error(t("notification.pasteFailed", { detail: (err as Error).message }));
-    }
+    await ctx.pasteEntries(targetDir);
   };
 
   const onContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    ctx.onSelect(node.path);
+    if (!ctx.selectedPaths.has(node.path)) ctx.selectNode(node, false);
+    const selectionCount = ctx.selectedPaths.has(node.path) ? ctx.selectedPaths.size : 1;
     ctx.openMenu(e.clientX, e.clientY, {
       node,
+      selectionCount,
       startRename: () => setRenaming(true),
       doDelete,
       doCut,
@@ -551,17 +1013,18 @@ function TreeNode({ node, depth }: TreeNodeProps) {
 
   const onDragStart = (e: React.DragEvent) => {
     e.stopPropagation();
-    e.dataTransfer.setData(DRAG_MIME, node.path);
-    e.dataTransfer.setData("text/plain", node.path);
-    e.dataTransfer.effectAllowed = "move";
+    const paths = actionNodes().map((entry) => entry.path);
+    writeFileTreeDragData(e.dataTransfer, paths);
+    e.dataTransfer.effectAllowed = "copyMove";
   };
 
   const onDragOver = (e: React.DragEvent) => {
-    if (!e.dataTransfer.types.includes(DRAG_MIME)) return;
+    if (!hasFileTreeDrag(e.dataTransfer.types)) return;
     if (node.kind !== "directory") return;
     e.preventDefault();
     e.stopPropagation();
-    e.dataTransfer.dropEffect = "move";
+    e.dataTransfer.dropEffect = e.dataTransfer.getData(FILE_TREE_DRAG_MIME) ? "move" : "copy";
+    ctx.setRootDropActive(false);
     if (ctx.dropTarget !== node.path) ctx.setDropTarget(node.path);
   };
 
@@ -571,19 +1034,35 @@ function TreeNode({ node, depth }: TreeNodeProps) {
   };
 
   const onDrop = (e: React.DragEvent) => {
-    if (!e.dataTransfer.types.includes(DRAG_MIME)) return;
-    if (node.kind !== "directory") return;
+    if (!hasFileTreeDrag(e.dataTransfer.types)) return;
+    if (node.kind !== "directory") {
+      ctx.setRootDropActive(false);
+      ctx.setDropTarget(null);
+      return;
+    }
     e.preventDefault();
     e.stopPropagation();
-    const src = e.dataTransfer.getData(DRAG_MIME);
+    const sources = readFileTreeDragPaths(e.dataTransfer);
     ctx.setDropTarget(null);
-    if (!src) return;
-    void ctx.onDropMove(src, node.path);
+    ctx.setRootDropActive(false);
+    if (!e.dataTransfer.getData(FILE_TREE_DRAG_MIME)) {
+      void readBrowserDropItems(e.dataTransfer.items).then((files) =>
+        ctx.copyBrowserFiles(files, node.path),
+      );
+    } else if (sources.length > 0) void ctx.onDropMove(sources, node.path);
   };
 
-  const isSelected = ctx.selectedPath === node.path;
-  const isCut = ctx.clipboard?.kind === "cut" && ctx.clipboard.path === node.path;
+  const onPointerDown = (event: React.PointerEvent) => {
+    ctx.beginPointerDrag(node, event);
+  };
+
+  const isSelected = ctx.selectedPaths.has(node.path);
+  const isCut =
+    ctx.clipboard?.kind === "cut" &&
+    ctx.clipboard.entries.some((entry) => entry.path === node.path);
+  const isPointerDragging = ctx.pointerDragPaths.has(node.path);
   const isDropTarget = ctx.dropTarget === node.path;
+  const isIgnored = isIgnoredPath(ctx.decorations, node.path);
 
   const deco = ctx.decorations.get(node.path);
   const nameColor =
@@ -599,16 +1078,25 @@ function TreeNode({ node, depth }: TreeNodeProps) {
           "tree-row" +
           (isSelected ? " is-selected" : "") +
           (isCut ? " is-cut" : "") +
+          (isPointerDragging ? " is-pointer-dragging" : "") +
+          (isIgnored ? " is-ignored" : "") +
           (isDropTarget ? " is-drop-target" : "")
         }
         style={{ paddingLeft: 8 + depth * 12 }}
+        data-file-tree-node-kind={node.kind}
+        data-file-tree-drop-path={node.kind === "directory" ? node.path : undefined}
+        role="treeitem"
+        aria-selected={isSelected}
+        aria-expanded={node.kind === "directory" ? expanded : undefined}
         onClick={onRowClick}
+        onPointerDown={onPointerDown}
         onContextMenu={onContextMenu}
-        draggable={!renaming}
+        draggable={!renaming && !ctx.pointerDragFallback}
         onDragStart={onDragStart}
         onDragOver={onDragOver}
         onDragLeave={onDragLeave}
         onDrop={onDrop}
+        onDragEnd={() => ctx.setDropTarget(null)}
       >
         <span
           className={

@@ -50,6 +50,75 @@ export async function findAgentSessionFilePath(
   return (await findAgentSessionRecord(app, id, roots))?.filePath ?? null;
 }
 
+export async function reassignCodexSessionId(
+  currentId: string,
+  requestedId: string,
+  roots: AgentSessionRoots = getAgentSessionRoots(),
+): Promise<void> {
+  if (currentId === requestedId) return;
+  if (!SESSION_ID_RE.test(currentId) || !SESSION_ID_RE.test(requestedId)) {
+    throw new Error("Codex session ID is invalid.");
+  }
+  if (await findCodexSessionRecord(roots, requestedId)) {
+    throw new Error(`Codex session ${requestedId} already exists.`);
+  }
+  const record = await findCodexSessionRecord(roots, currentId);
+  if (!record) throw new Error(`Codex session ${currentId} was not found.`);
+
+  const text = await fs.readFile(record.filePath, "utf8");
+  const lines = text.split(/\r?\n/);
+  let changed = false;
+  const rewritten = lines.map((line) => {
+    if (changed || !line.trim()) return line;
+    try {
+      const value = JSON.parse(line) as Record<string, unknown>;
+      if (stringValue(value.type) !== "session_meta") return line;
+      const payload = objectValue(value.payload);
+      if (stringValue(payload.id) === currentId) payload.id = requestedId;
+      if (stringValue(payload.session_id) === currentId) payload.session_id = requestedId;
+      changed = true;
+      return JSON.stringify(value);
+    } catch {
+      return line;
+    }
+  });
+  if (!changed) throw new Error(`Codex session ${currentId} has no session metadata.`);
+
+  const currentName = path.basename(record.filePath);
+  const suffix = `-${currentId}.jsonl`;
+  const nextName = currentName.endsWith(suffix)
+    ? `${currentName.slice(0, -suffix.length)}-${requestedId}.jsonl`
+    : `rollout-${Date.now()}-${requestedId}.jsonl`;
+  const nextPath = path.join(path.dirname(record.filePath), nextName);
+  await fs.writeFile(nextPath, rewritten.join("\n"), { encoding: "utf8", flag: "wx" });
+  try {
+    await unlinkCodexSessionAfterExit(record.filePath);
+  } catch (error) {
+    await fs.rm(nextPath, { force: true }).catch(() => undefined);
+    throw error;
+  }
+  // The title index is a cache and can be held briefly by Codex on Windows.
+  await reassignCodexTitleIndexEntry(roots.codexHome, currentId, requestedId).catch(
+    () => undefined,
+  );
+}
+
+async function unlinkCodexSessionAfterExit(filePath: string): Promise<void> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    try {
+      await fs.unlink(filePath);
+      return;
+    } catch (error) {
+      lastError = error;
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "EBUSY" && code !== "EACCES" && code !== "EPERM") throw error;
+      await new Promise((resolve) => setTimeout(resolve, 25 * (attempt + 1)));
+    }
+  }
+  throw lastError;
+}
+
 interface CodexTitle {
   title: string;
   updatedAt: number | null;
@@ -97,6 +166,7 @@ export async function readAgentSessionUsage(
   let sawOutput = false;
   let sawCacheRead = false;
   let sawCacheWrite = false;
+  const seenClaudeMessages = new Set<string>();
   for (const line of text.split(/\r?\n/)) {
     if (!line.trim()) continue;
     let value: unknown;
@@ -110,14 +180,26 @@ export async function readAgentSessionUsage(
     if (app === "codex") {
       model = stringValue(payload.model ?? root.model) || model;
       const info = objectValue(payload.info);
-      const usage = objectValue(info.total_token_usage);
+      const usage = firstNonEmptyObject(
+        info.total_token_usage,
+        info.totalTokenUsage,
+        payload.total_token_usage,
+        payload.usage,
+        root.usage,
+      );
       const nextInput = numberValue(usage.input_tokens ?? usage.inputTokens);
       const nextOutput = numberValue(usage.output_tokens ?? usage.outputTokens);
       const nextCacheRead = numberValue(
-        usage.cached_input_tokens ?? usage.cache_read_input_tokens ?? usage.cacheRead,
+        usage.cached_input_tokens ??
+          usage.cachedInputTokens ??
+          usage.cache_read_input_tokens ??
+          usage.cacheReadInputTokens ??
+          usage.cache_read_tokens ??
+          usage.cacheRead,
       );
-      const nextCacheWrite = numberValue(
-        usage.cache_write_input_tokens ?? usage.cache_creation_input_tokens ?? usage.cacheWrite,
+      const totalCacheWrite = cacheWriteTokenValue(usage);
+      const lastCacheWrite = cacheWriteTokenValue(
+        firstNonEmptyObject(info.last_token_usage, info.lastTokenUsage),
       );
       const nextTotal = numberValue(usage.total_tokens ?? usage.totalTokens);
       if (nextInput !== undefined) {
@@ -132,8 +214,16 @@ export async function readAgentSessionUsage(
         cacheRead = nextCacheRead;
         sawCacheRead = true;
       }
-      if (nextCacheWrite !== undefined) {
-        cacheWrite = nextCacheWrite;
+      if (
+        totalCacheWrite !== undefined &&
+        (totalCacheWrite > 0 || (lastCacheWrite === undefined && !sawCacheWrite))
+      ) {
+        cacheWrite = totalCacheWrite;
+        sawCacheWrite = true;
+      } else if (lastCacheWrite !== undefined) {
+        // Some Codex releases keep the cumulative cache-write field at zero
+        // while exposing the per-turn value in last_token_usage.
+        cacheWrite += lastCacheWrite;
         sawCacheWrite = true;
       }
       if (nextTotal !== undefined) total = nextTotal;
@@ -143,33 +233,56 @@ export async function readAgentSessionUsage(
       const nestedUsage = objectValue(message.usage);
       const directUsage = objectValue(root.usage);
       const usage = Object.keys(nestedUsage).length > 0 ? nestedUsage : directUsage;
+      const messageId = stringValue(message.id) || stringValue(root.message_id);
+      const duplicateUsage = messageId !== "" && seenClaudeMessages.has(messageId);
+      if (messageId) seenClaudeMessages.add(messageId);
+      const inputDetails = firstNonEmptyObject(
+        usage.input_tokens_details,
+        usage.inputTokensDetails,
+        usage.prompt_tokens_details,
+        usage.promptTokensDetails,
+      );
       const nextInput = numberValue(usage.input_tokens ?? usage.inputTokens);
       const nextOutput = numberValue(usage.output_tokens ?? usage.outputTokens);
       const nextCacheRead = numberValue(
-        usage.cache_read_input_tokens ?? usage.cached_input_tokens ?? usage.cacheRead,
+        usage.cache_read_input_tokens ??
+          usage.cacheReadInputTokens ??
+          usage.cached_input_tokens ??
+          usage.cachedInputTokens ??
+          usage.cache_read_tokens ??
+          usage.cacheRead ??
+          usage.cached_tokens ??
+          usage.cachedTokens ??
+          inputDetails.cached_tokens ??
+          inputDetails.cachedTokens,
       );
-      const nextCacheWrite = numberValue(
-        usage.cache_creation_input_tokens ?? usage.cache_write_input_tokens ?? usage.cacheWrite,
-      );
-      if (nextInput !== undefined) {
+      const nextCacheWrite = cacheWriteTokenValue(usage);
+      if (!duplicateUsage && nextInput !== undefined) {
         input += nextInput;
         sawInput = true;
       }
-      if (nextOutput !== undefined) {
+      if (!duplicateUsage && nextOutput !== undefined) {
         output += nextOutput;
         sawOutput = true;
       }
-      if (nextCacheRead !== undefined) {
+      if (!duplicateUsage && nextCacheRead !== undefined) {
         cacheRead += nextCacheRead;
         sawCacheRead = true;
       }
-      if (nextCacheWrite !== undefined) {
+      if (!duplicateUsage && nextCacheWrite !== undefined) {
         cacheWrite += nextCacheWrite;
         sawCacheWrite = true;
       }
     }
     const nextCost = numberValue(
-      root.cost_usd ?? root.total_cost_usd ?? payload.cost_usd ?? payload.total_cost_usd,
+      root.cost_usd ??
+        root.total_cost_usd ??
+        payload.cost_usd ??
+        payload.total_cost_usd ??
+        objectValue(root.message).cost_usd ??
+        objectValue(root.message).total_cost_usd ??
+        objectValue(objectValue(root.message).usage).cost_usd ??
+        objectValue(objectValue(root.message).usage).total_cost_usd,
     );
     if (nextCost !== undefined) cost = nextCost;
   }
@@ -496,6 +609,38 @@ async function readCodexTitleIndex(codexHome: string): Promise<Map<string, Codex
   return result;
 }
 
+async function reassignCodexTitleIndexEntry(
+  codexHome: string,
+  currentId: string,
+  requestedId: string,
+): Promise<void> {
+  const indexPath = path.join(codexHome, "session_index.jsonl");
+  let text: string;
+  try {
+    text = await fs.readFile(indexPath, "utf8");
+  } catch (error) {
+    if (isMissing(error)) return;
+    throw error;
+  }
+  let changed = false;
+  const lines = text.split(/\r?\n/).map((line) => {
+    if (!line.trim()) return line;
+    try {
+      const value = JSON.parse(line) as Record<string, unknown>;
+      if (stringValue(value.id) !== currentId) return line;
+      value.id = requestedId;
+      changed = true;
+      return JSON.stringify(value);
+    } catch {
+      return line;
+    }
+  });
+  if (!changed) return;
+  const tempPath = `${indexPath}.${process.pid}.${Date.now()}.tmp`;
+  await fs.writeFile(tempPath, lines.join("\n"), "utf8");
+  await fs.rename(tempPath, indexPath);
+}
+
 async function removeCodexTitleIndexEntry(codexHome: string, id: string): Promise<void> {
   const indexPath = path.join(codexHome, "session_index.jsonl");
   let text: string;
@@ -648,6 +793,49 @@ function numberValue(value: unknown): number | undefined {
   const number =
     typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
   return Number.isFinite(number) ? number : undefined;
+}
+
+function firstNonEmptyObject(...values: unknown[]): Record<string, unknown> {
+  for (const value of values) {
+    const object = objectValue(value);
+    if (Object.keys(object).length > 0) return object;
+  }
+  return {};
+}
+
+function cacheWriteTokenValue(usage: Record<string, unknown>): number | undefined {
+  const direct = numberValue(
+    usage.cache_creation_input_tokens ??
+      usage.cache_creation_input_token_count ??
+      usage.cacheCreationInputTokens ??
+      usage.cache_write_input_tokens ??
+      usage.cache_write_input_token_count ??
+      usage.cacheWriteInputTokens ??
+      usage.cache_creation_tokens ??
+      usage.cache_write_tokens ??
+      usage.cache_write_token_count ??
+      usage.cacheWriteTokens ??
+      usage.cacheWriteTokenCount ??
+      usage.cache_write ??
+      usage.cacheWrite,
+  );
+  if (direct !== undefined) return direct;
+  const creation = objectValue(usage.cache_creation ?? usage.cacheCreation);
+  const values = Object.entries(creation)
+    .filter(([key]) => /(?:input_?tokens?|tokens?)$/i.test(key))
+    .map(([, value]) => numberValue(value))
+    .filter((value): value is number => value !== undefined);
+  if (values.length > 0) return values.reduce((sum, value) => sum + value, 0);
+
+  // Providers occasionally wrap usage in a `cache` object. Keep this
+  // deliberately narrow so unrelated token counters are not mistaken for
+  // cache writes.
+  const cache = objectValue(usage.cache);
+  if (cache !== usage) {
+    const nested = numberValue(cache.write ?? cache.write_tokens ?? cache.creation);
+    if (nested !== undefined) return nested;
+  }
+  return undefined;
 }
 
 function parseTimestamp(value: unknown): number | null {

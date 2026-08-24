@@ -688,3 +688,23 @@ test("workflow Codex plugin selection updates enabled state without installing p
   assert.match(config, /\[plugins\."alpha@market"\][\s\S]*?enabled\s*=\s*false/);
   assert.match(config, /\[plugins\."beta@market"\][\s\S]*?enabled\s*=\s*true/);
 });
+
+test("workflow Codex plugin selection ignores available plugins that are not installed", async () => {
+  const paths = await makeFixturePaths();
+  const runCli = async (args: string[]) => {
+    if (args.join(" ") === "plugin list --available --json") {
+      return JSON.stringify({
+        installed: [{ selector: "alpha@market", name: "alpha", enabled: true }],
+        available: [{ selector: "future@market", name: "future", enabled: false }],
+      });
+    }
+    if (args.join(" ") === "plugin marketplace list --json") {
+      return JSON.stringify({ marketplaces: [] });
+    }
+    throw new Error(`unexpected CLI call: ${args.join(" ")}`);
+  };
+
+  await applyCodexPluginSelection(["future@market"], { paths, runCli });
+  const config = await fs.readFile(paths.codexConfig, "utf8");
+  assert.doesNotMatch(config, /future@market/);
+});

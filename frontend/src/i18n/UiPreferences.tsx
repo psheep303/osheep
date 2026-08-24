@@ -141,6 +141,11 @@ export function UiPreferencesProvider({ children }: { children: ReactNode }) {
         if (!cancelled) {
           setPreferences(parseUiPreferences(JSON.stringify(value) ?? null));
           setRemoteLoaded(true);
+          try {
+            localStorage.removeItem(UI_PREFERENCES_STORAGE_KEY);
+          } catch {
+            // The backend copy is authoritative even when browser cleanup is unavailable.
+          }
         }
       })
       .catch(() => {
@@ -150,14 +155,6 @@ export function UiPreferencesProvider({ children }: { children: ReactNode }) {
       cancelled = true;
     };
   }, []);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(UI_PREFERENCES_STORAGE_KEY, JSON.stringify(preferences));
-    } catch {
-      // Preferences remain active for this session when storage is unavailable.
-    }
-  }, [preferences]);
 
   useEffect(() => {
     if (remoteLoaded) void putUiPreferences(preferences).catch(() => undefined);
