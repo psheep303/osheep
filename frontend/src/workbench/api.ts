@@ -1683,6 +1683,7 @@ export interface WorkflowTemplateSummary {
   source: TemplateSource;
   title: string;
   description: string;
+  version?: string;
   icon?: string;
   updatedAt: number;
   nodeCount: number;
@@ -1693,6 +1694,7 @@ export interface WorkflowTemplate {
   source: TemplateSource;
   title: string;
   description: string;
+  version?: string;
   readme: string;
   icon?: string;
   createdAt: number;
@@ -1701,12 +1703,35 @@ export interface WorkflowTemplate {
   edges: WorkflowEdge[];
 }
 
+export interface TemplateMarketspaceEntry {
+  id: string;
+  name: string;
+  description: string;
+  source: { type: "github" | "cdn"; repo: string; path?: string };
+  version: string;
+}
+
 export async function listWorkflowTemplates(): Promise<{
   system: WorkflowTemplateSummary[];
   user: WorkflowTemplateSummary[];
   developerMode: boolean;
 }> {
   return await http.get("/api/templates");
+}
+
+export async function listLocalWorkflowTemplates(): Promise<{
+  system: WorkflowTemplateSummary[];
+  user: WorkflowTemplateSummary[];
+  developerMode: boolean;
+}> {
+  return await http.get("/api/templates/local");
+}
+
+export async function listTemplateMarketspace(): Promise<{
+  version: string;
+  templates: TemplateMarketspaceEntry[];
+}> {
+  return await http.get("/api/templates/marketspace");
 }
 
 export async function getTemplateCapabilities(): Promise<{

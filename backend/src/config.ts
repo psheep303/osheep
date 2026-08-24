@@ -15,6 +15,8 @@ export interface Config {
   authToken?: string;
   templatesRoot: string;
   systemTemplatesRoot: string;
+  templateRegistryUrl: string;
+  templateCdnBaseUrl: string;
   developerMode: boolean;
   frontendRoot?: string;
   allowExternalWorkspacePaths: boolean;
@@ -70,6 +72,10 @@ export const config: Config = {
     process.env.OSHEEP_SYSTEM_TEMPLATES_ROOT ??
       path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "template-library", "system"),
   ),
+  templateRegistryUrl:
+    process.env.OSHEEP_TEMPLATE_REGISTRY_URL ??
+    "https://raw.githubusercontent.com/psheep303/osheep-template-registry/main/registry.json",
+  templateCdnBaseUrl: process.env.OSHEEP_TEMPLATE_CDN_BASE_URL ?? "https://cdn.jsdelivr.net/gh",
   developerMode: /^(1|true|yes)$/i.test(process.env.OSHEEP_DEVELOPER_MODE ?? ""),
   frontendRoot: process.env.OSHEEP_FRONTEND_ROOT?.trim()
     ? path.resolve(process.env.OSHEEP_FRONTEND_ROOT)

@@ -3,9 +3,13 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { config } from "./config.js";
 import { errors } from "./errors.js";
+import {
+  installRegistryTemplate,
+  loadTemplateRegistry,
+} from "./template-registry.js";
 import type { WorkflowEdge, WorkflowNode, WorkflowRecord } from "./workflows.js";
 
-const TEMPLATE_ID_RE = /^tpl_[a-z0-9]{8,32}$/;
+const TEMPLATE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const TEMPLATE_FILE = "template.json";
 const MAX_ICON_BYTES = 2 * 1024 * 1024;
 
@@ -16,6 +20,7 @@ export interface WorkflowTemplate {
   source: TemplateSource;
   title: string;
   description: string;
+  version?: string;
   readme: string;
   icon?: string;
   createdAt: number;
@@ -33,6 +38,7 @@ export interface WorkflowTemplateSummary {
   source: TemplateSource;
   title: string;
   description: string;
+  version?: string;
   icon?: string;
   updatedAt: number;
   nodeCount: number;
@@ -50,6 +56,11 @@ function options(value: TemplateStoreOptions = {}): Required<TemplateStoreOption
     systemSourceRoot: value.systemSourceRoot ?? config.systemTemplatesRoot,
     developerMode: value.developerMode ?? config.developerMode,
   };
+}
+
+function usesDefaultMarketspace(opts: Required<TemplateStoreOptions>): boolean {
+  return path.resolve(opts.root) === path.resolve(config.templatesRoot) &&
+    path.resolve(opts.systemSourceRoot) === path.resolve(config.systemTemplatesRoot);
 }
 
 function randomPart(length: number): string {
@@ -118,6 +129,7 @@ function sanitizeStoredTemplate(
         : source === "system"
           ? "Built-in workflow template"
           : "Custom workflow template",
+    version: typeof value.version === "string" ? value.version : undefined,
     readme: typeof value.readme === "string" ? value.readme : "",
     iconFile,
     createdAt,
@@ -133,6 +145,7 @@ function publicTemplate(template: StoredWorkflowTemplate): WorkflowTemplate {
     source: template.source,
     title: template.title,
     description: template.description,
+    version: template.version,
     readme: template.readme,
     icon: template.iconFile
       ? `/api/templates/${template.source}/${encodeURIComponent(template.id)}/icon?v=${template.updatedAt}`
@@ -151,6 +164,7 @@ function summary(template: StoredWorkflowTemplate): WorkflowTemplateSummary {
     source: view.source,
     title: view.title,
     description: view.description,
+    version: view.version,
     icon: view.icon,
     updatedAt: view.updatedAt,
     nodeCount: view.nodes.length,
@@ -273,7 +287,16 @@ async function syncBundledSystemTemplatesOnce(
   systemSourceRoot: string,
 ): Promise<void> {
   const signature = await sourceSignature(systemSourceRoot);
-  if (!signature) return;
+  if (!signature) {
+    // The bundled system library was replaced by the remote marketspace. Remove
+    // stale runtime copies when an upgrade leaves the source directory empty.
+    if (path.resolve(systemSourceRoot) === path.resolve(config.systemTemplatesRoot)) {
+      await fs.rm(sourceDir(root, "system"), { recursive: true, force: true });
+      await fs.mkdir(sourceDir(root, "system"), { recursive: true });
+      await fs.rm(path.join(root, ".system-sync.json"), { force: true });
+    }
+    return;
+  }
 
   const markerFile = path.join(root, ".system-sync.json");
   try {
@@ -365,7 +388,10 @@ function storedFromWorkflow(
   };
 }
 
-export async function listWorkflowTemplates(value: TemplateStoreOptions = {}): Promise<{
+async function listWorkflowTemplatesInternal(
+  value: TemplateStoreOptions = {},
+  includeMarketspace = true,
+): Promise<{
   system: WorkflowTemplateSummary[];
   user: WorkflowTemplateSummary[];
   developerMode: boolean;
@@ -374,6 +400,7 @@ export async function listWorkflowTemplates(value: TemplateStoreOptions = {}): P
   return withTemplateLibrary(opts, async () => {
     const readSource = async (source: TemplateSource) => {
       const result: WorkflowTemplateSummary[] = [];
+      await fs.mkdir(sourceDir(opts.root, source), { recursive: true });
       const entries = await fs.readdir(sourceDir(opts.root, source), { withFileTypes: true });
       for (const entry of entries) {
         if (!entry.isDirectory() || !TEMPLATE_ID_RE.test(entry.name)) continue;
@@ -386,12 +413,51 @@ export async function listWorkflowTemplates(value: TemplateStoreOptions = {}): P
       result.sort((a, b) => b.updatedAt - a.updatedAt || a.title.localeCompare(b.title));
       return result;
     };
+    const [localSystem, user] = await Promise.all([readSource("system"), readSource("user")]);
+    let system = localSystem;
+    if (includeMarketspace && usesDefaultMarketspace(opts)) {
+      try {
+        const registry = await loadTemplateRegistry();
+        const installed = new Map(system.map((item) => [item.id, item]));
+        const marketspace = registry.templates.map((entry) => {
+          const cached = installed.get(entry.id);
+          return cached
+            ? {
+                ...cached,
+                title: entry.name,
+                description: entry.description,
+                version: entry.version,
+              }
+            : {
+                id: entry.id,
+                source: "system" as const,
+                title: entry.name,
+                description: entry.description,
+                version: entry.version,
+                updatedAt: 0,
+                nodeCount: 0,
+            };
+        });
+        const registryIds = new Set(registry.templates.map((entry) => entry.id));
+        system = [...marketspace, ...system.filter((item) => !registryIds.has(item.id))];
+      } catch {
+        // A cached local marketspace remains usable when the registry is offline.
+      }
+    }
     return {
-      system: await readSource("system"),
-      user: await readSource("user"),
+      system,
+      user,
       developerMode: opts.developerMode,
     };
   });
+}
+
+export async function listWorkflowTemplates(value: TemplateStoreOptions = {}) {
+  return listWorkflowTemplatesInternal(value, true);
+}
+
+export async function listLocalWorkflowTemplates(value: TemplateStoreOptions = {}) {
+  return listWorkflowTemplatesInternal(value, false);
 }
 
 export async function getWorkflowTemplate(
@@ -400,9 +466,35 @@ export async function getWorkflowTemplate(
   value: TemplateStoreOptions = {},
 ): Promise<WorkflowTemplate> {
   const opts = options(value);
-  return withTemplateLibrary(opts, async () =>
-    publicTemplate(await readStoredTemplate(source, id, opts)),
-  );
+  return withTemplateLibrary(opts, async () => {
+    try {
+      const stored = await readStoredTemplate(source, id, opts);
+      if (source === "system" && usesDefaultMarketspace(opts)) {
+        try {
+          const entry = (await loadTemplateRegistry()).templates.find((item) => item.id === id);
+          if (entry && stored.version !== entry.version) {
+            await installRegistryTemplate(entry);
+            await syncBundledSystemTemplatesOnce(opts.root, opts.systemSourceRoot);
+            return publicTemplate(await readStoredTemplate(source, id, opts));
+          }
+        } catch {
+          // A cached installed template remains usable while the registry is offline.
+        }
+      }
+      return publicTemplate(stored);
+    } catch (error) {
+      const missing =
+        error && typeof error === "object" &&
+        (error as { statusCode?: number }).statusCode === 404;
+      if (!missing || source !== "system" || !usesDefaultMarketspace(opts)) throw error;
+      const registry = await loadTemplateRegistry();
+      const entry = registry.templates.find((item) => item.id === id);
+      if (!entry) throw error;
+      await installRegistryTemplate(entry);
+      await syncBundledSystemTemplatesOnce(opts.root, opts.systemSourceRoot);
+      return publicTemplate(await readStoredTemplate(source, id, opts));
+    }
+  });
 }
 
 export async function saveWorkflowAsTemplate(

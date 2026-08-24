@@ -5,7 +5,8 @@ import {
   createWorkflow,
   editWorkflowTemplate,
   getWorkflowTemplate,
-  listWorkflowTemplates,
+  listLocalWorkflowTemplates,
+  listTemplateMarketspace,
   type TemplateSource,
   updateWorkflowTemplateIcon,
   type WorkflowNode,
@@ -56,10 +57,42 @@ export function TemplateView({
     setLoading(true);
     setError(null);
     try {
-      setTemplates(await listWorkflowTemplates());
+      const local = await listLocalWorkflowTemplates();
+      setTemplates(local);
+      setLoading(false);
+      void listTemplateMarketspace()
+        .then((marketspace) => {
+          setTemplates((current) => {
+            const installed = new Map(current.system.map((item) => [item.id, item]));
+            const registryIds = new Set(marketspace.templates.map((item) => item.id));
+            const system = marketspace.templates.map((entry) => {
+              const cached = installed.get(entry.id);
+              return cached
+                ? {
+                    ...cached,
+                    title: entry.name,
+                    description: entry.description,
+                    version: entry.version,
+                  }
+                : {
+                    id: entry.id,
+                    source: "system" as const,
+                    title: entry.name,
+                    description: entry.description,
+                    version: entry.version,
+                    updatedAt: 0,
+                    nodeCount: 0,
+                  };
+            });
+            return {
+              ...current,
+              system: [...system, ...current.system.filter((item) => !registryIds.has(item.id))],
+            };
+          });
+        })
+        .catch((cause) => setError((cause as Error).message));
     } catch (cause) {
       setError((cause as Error).message);
-    } finally {
       setLoading(false);
     }
   }, []);
@@ -109,7 +142,7 @@ export function TemplateView({
           className={section === "system" ? "is-active" : ""}
           onClick={() => setSection("system")}
         >
-          System templates
+          {t("template.marketspace")}
           <span>{templates.system.length}</span>
         </button>
         <button
@@ -121,7 +154,7 @@ export function TemplateView({
         </button>
       </div>
       <div className="template-sidebar__heading">
-        <span>{section === "system" ? "BUILT IN" : "CUSTOM"}</span>
+        <span>{section === "system" ? t("template.section.marketspace") : "CUSTOM"}</span>
         <button
           onClick={() => void reload()}
           title="Refresh templates"
@@ -146,7 +179,7 @@ export function TemplateView({
             ? "No matching templates"
             : section === "user"
               ? "No custom templates yet"
-              : "No templates"}
+              : t("template.empty.marketspace")}
         </div>
       )}
       <div className="template-sidebar__cards">
@@ -172,7 +205,6 @@ export function TemplateView({
             <span className="template-card__copy">
               <strong>{template.title}</strong>
               <small>{template.description}</small>
-              <span>{template.nodeCount} blocks</span>
             </span>
           </button>
         ))}
@@ -185,7 +217,8 @@ export function TemplateView({
             {
               items: [
                 {
-                  label: menu.source === "system" ? "删除内置模板" : "删除模板",
+                  label:
+                    menu.source === "system" ? t("template.deleteMarketspace") : "删除模板",
                   danger: true,
                   onSelect: () => void deleteTemplate(menu.source, menu.templateId, menu.title),
                 },
@@ -221,6 +254,7 @@ export function TemplateDetail({
   developerMode,
   onTemplateChanged,
 }: TemplateDetailProps) {
+  const { t } = useUiPreferences();
   const [template, setTemplate] = useState<WorkflowTemplate | null>(null);
   const [loading, setLoading] = useState(true);
   const [using, setUsing] = useState(false);
@@ -330,12 +364,15 @@ export function TemplateDetail({
         />
         <div className="template-detail__identity">
           <span className="template-detail__eyebrow">
-            {template.source === "system" ? "SYSTEM TEMPLATE" : "USER TEMPLATE"}
+            {template.source === "system"
+              ? t("template.eyebrow.marketspace")
+              : "USER TEMPLATE"}
           </span>
           <h1>{template.title}</h1>
           <p>{template.description}</p>
           <div className="template-detail__meta">
             <span>{template.nodes.length} blocks</span>
+            {template.version && <span>v{template.version}</span>}
             <span>Reusable across workspaces</span>
           </div>
           <button
