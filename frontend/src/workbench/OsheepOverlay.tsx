@@ -10,6 +10,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { useUiPreferences } from "../i18n/UiPreferences";
+import { getDismissedConfirmations, putDismissedConfirmations } from "./api";
 
 const DISMISSED_CONFIRMATIONS_KEY = "osheep.dismissedConfirmations.v1";
 
@@ -51,7 +52,7 @@ interface OsheepOverlayContextValue {
 
 const OsheepOverlayContext = createContext<OsheepOverlayContextValue | null>(null);
 
-function readDismissedConfirmations(): Set<string> {
+function readLegacyDismissedConfirmations(): Set<string> {
   try {
     const raw = localStorage.getItem(DISMISSED_CONFIRMATIONS_KEY);
     const values = raw ? (JSON.parse(raw) as unknown) : [];
@@ -63,22 +64,30 @@ function readDismissedConfirmations(): Set<string> {
   }
 }
 
-function rememberConfirmation(key: string) {
-  const values = readDismissedConfirmations();
-  values.add(key);
-  try {
-    localStorage.setItem(DISMISSED_CONFIRMATIONS_KEY, JSON.stringify([...values]));
-  } catch {
-    // The choice still applies to the current action when storage is unavailable.
-  }
-}
-
 export function OsheepOverlayProvider({ children }: { children: ReactNode }) {
   const { t } = useUiPreferences();
   const [confirmations, setConfirmations] = useState<ConfirmRequest[]>([]);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const nextId = useRef(1);
   const timers = useRef(new Map<number, number>());
+  const dismissedConfirmations = useRef(new Set<string>());
+
+  useEffect(() => {
+    let cancelled = false;
+    const legacy = readLegacyDismissedConfirmations();
+    void getDismissedConfirmations()
+      .then(async (stored) => {
+        if (cancelled) return;
+        const merged = new Set([...stored, ...legacy]);
+        dismissedConfirmations.current = merged;
+        if (legacy.size > 0) await putDismissedConfirmations([...merged]);
+        localStorage.removeItem(DISMISSED_CONFIRMATIONS_KEY);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const dismissToast = useCallback((id: number) => {
     const timer = timers.current.get(id);
@@ -111,7 +120,7 @@ export function OsheepOverlayProvider({ children }: { children: ReactNode }) {
   );
 
   const confirm = useCallback((options: ConfirmOptions) => {
-    if (options.reminderKey && readDismissedConfirmations().has(options.reminderKey)) {
+    if (options.reminderKey && dismissedConfirmations.current.has(options.reminderKey)) {
       return Promise.resolve(true);
     }
     return new Promise<boolean>((resolve) => {
@@ -119,16 +128,16 @@ export function OsheepOverlayProvider({ children }: { children: ReactNode }) {
     });
   }, []);
   const resetConfirmations = useCallback(() => {
-    try {
-      localStorage.removeItem(DISMISSED_CONFIRMATIONS_KEY);
-    } catch {
-      // There is nothing else to reset when storage is unavailable.
-    }
+    dismissedConfirmations.current.clear();
+    void putDismissedConfirmations([]).catch(() => undefined);
   }, []);
 
   const finishConfirmation = useCallback(
     (request: ConfirmRequest, confirmed: boolean, remember: boolean) => {
-      if (confirmed && remember && request.reminderKey) rememberConfirmation(request.reminderKey);
+      if (confirmed && remember && request.reminderKey) {
+        dismissedConfirmations.current.add(request.reminderKey);
+        void putDismissedConfirmations([...dismissedConfirmations.current]).catch(() => undefined);
+      }
       request.resolve(confirmed);
       setConfirmations((current) => current.filter((item) => item.id !== request.id));
     },

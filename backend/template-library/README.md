@@ -3,7 +3,7 @@
 English | [简体中文](README.zh-CN.md)
 
 Built-in templates live in `system/<template-id>/template.json`. User templates are stored at
-runtime under `~/.osheep/templates/user`.
+runtime under `backend/.osheep/templates/user`.
 
 ## Design Principles
 

@@ -399,6 +399,17 @@ export async function putUiPreferences(value: unknown): Promise<void> {
   await http.put("/api/ui-preferences", value);
 }
 
+export async function getDismissedConfirmations(): Promise<string[]> {
+  const result = await http.get<{ values?: unknown }>("/api/dismissed-confirmations");
+  return Array.isArray(result.values)
+    ? result.values.filter((value): value is string => typeof value === "string")
+    : [];
+}
+
+export async function putDismissedConfirmations(values: string[]): Promise<void> {
+  await http.put("/api/dismissed-confirmations", { values });
+}
+
 export interface ClaudeOnboardingStatus {
   enabled: boolean;
   path: string;

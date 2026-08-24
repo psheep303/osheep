@@ -1,7 +1,7 @@
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
 import type { FastifyInstance } from "fastify";
-import { readAppSettings, writeAppSettings } from "../app-settings.js";
+import { readAppSettings, updateAppSettings } from "../app-settings.js";
 import { config } from "../config.js";
 import { errors } from "../errors.js";
 import {
@@ -37,12 +37,11 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
   );
 
   app.put<{ Body: unknown }>("/api/settings", async (req) => {
-    const current = await readAppSettings<Record<string, unknown>>({});
-    const next =
-      req.body && typeof req.body === "object" && !Array.isArray(req.body)
-        ? { ...current, ...(req.body as Record<string, unknown>) }
-        : current;
-    await writeAppSettings(next);
+    await updateAppSettings((settings) => {
+      if (req.body && typeof req.body === "object" && !Array.isArray(req.body)) {
+        Object.assign(settings, req.body as Record<string, unknown>);
+      }
+    });
     return { ok: true };
   });
 
@@ -57,9 +56,40 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
   });
 
   app.put<{ Body: unknown }>("/api/ui-preferences", async (req) => {
-    const settings = await readAppSettings<Record<string, unknown>>({});
-    settings.ui = req.body;
-    await writeAppSettings(settings);
+    await updateAppSettings((settings) => {
+      settings.ui = req.body;
+    });
+    return { ok: true };
+  });
+
+  app.get("/api/dismissed-confirmations", async () => {
+    const settings = await readAppSettings<{ uiState?: { dismissedConfirmations?: unknown } }>({});
+    const values = settings.uiState?.dismissedConfirmations;
+    return {
+      values: Array.isArray(values)
+        ? values.filter((value): value is string => typeof value === "string")
+        : [],
+    };
+  });
+
+  app.put<{ Body: { values?: unknown } }>("/api/dismissed-confirmations", async (req) => {
+    const values = Array.isArray(req.body?.values)
+      ? [
+          ...new Set(
+            req.body.values
+              .filter((value): value is string => typeof value === "string")
+              .map((value) => value.trim())
+              .filter(Boolean),
+          ),
+        ].slice(0, 200)
+      : [];
+    await updateAppSettings((settings) => {
+      const current =
+        settings.uiState && typeof settings.uiState === "object" && !Array.isArray(settings.uiState)
+          ? (settings.uiState as Record<string, unknown>)
+          : {};
+      settings.uiState = { ...current, dismissedConfirmations: values };
+    });
     return { ok: true };
   });
 

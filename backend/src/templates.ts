@@ -264,6 +264,9 @@ async function withTemplateLibrary<T>(
     await fs.mkdir(sourceDir(opts.root, "system"), { recursive: true });
     await fs.mkdir(sourceDir(opts.root, "user"), { recursive: true });
     await migrateLegacyUserTemplates(opts.root);
+    if (usesDefaultMarketspace(opts)) {
+      await seedBundledUserTemplates(opts.root, opts.systemSourceRoot);
+    }
     await syncBundledSystemTemplatesOnce(opts.root, opts.systemSourceRoot);
     return callback();
   });
@@ -279,6 +282,26 @@ async function withTemplateLibrary<T>(
     if (templateLibraryQueues.get(destinationKey) === tail) {
       templateLibraryQueues.delete(destinationKey);
     }
+  }
+}
+
+async function seedBundledUserTemplates(root: string, systemSourceRoot: string): Promise<void> {
+  const bundledRoot = path.join(path.dirname(systemSourceRoot), "user");
+  const entries = await fs.readdir(bundledRoot, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !TEMPLATE_ID_RE.test(entry.name)) continue;
+    const source = path.join(bundledRoot, entry.name);
+    const destination = templateDir(root, "user", entry.name);
+    const sourceValid = await fs.access(path.join(source, TEMPLATE_FILE)).then(
+      () => true,
+      () => false,
+    );
+    if (!sourceValid) continue;
+    const destinationExists = await fs.access(destination).then(
+      () => true,
+      () => false,
+    );
+    if (!destinationExists) await fs.cp(source, destination, { recursive: true });
   }
 }
 

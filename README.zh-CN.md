@@ -153,7 +153,7 @@ npx tauri info
 | `AGENT_STALL_TIMEOUT_MS` | `1800000` | AI CLI 无输出超时，`0` 表示禁用 |
 | `CORS_ORIGIN` | 本地回环来源 | 逗号分隔的额外可信前端来源 |
 | `OSHEEP_AUTH_TOKEN` | 本地随机生成 | 非本地监听时必需的共享访问令牌 |
-| `OSHEEP_TEMPLATES_ROOT` | `~/.osheep/templates` | 运行时模板目录 |
+| `OSHEEP_TEMPLATES_ROOT` | `backend/.osheep/templates` | 运行时模板目录 |
 | `OSHEEP_CLAUDE_CONFIG_DIR` | `~/.claude` | Claude Code 配置目录 |
 | `OSHEEP_CODEX_CONFIG_DIR` | `~/.codex` | Codex 配置目录 |
 

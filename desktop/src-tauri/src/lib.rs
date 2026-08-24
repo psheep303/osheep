@@ -8,7 +8,7 @@ use std::{
     process::{Child, Command, Stdio},
     sync::{Arc, Mutex},
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{webview::PageLoadEvent, Manager, WebviewUrl, WebviewWindowBuilder};
 
@@ -346,6 +346,133 @@ fn require_file(path: &Path, label: &str) -> io::Result<()> {
     }
 }
 
+fn files_match(left: &Path, right: &Path) -> io::Result<bool> {
+    let left_metadata = fs::metadata(left)?;
+    let right_metadata = fs::metadata(right)?;
+    if left_metadata.len() != right_metadata.len() {
+        return Ok(false);
+    }
+    Ok(fs::read(left)? == fs::read(right)?)
+}
+
+fn copy_file_verified(source: &Path, destination: &Path) -> io::Result<()> {
+    let parent = destination.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "migration destination has no parent",
+        )
+    })?;
+    fs::create_dir_all(parent)?;
+    let temporary = parent.join(format!(
+        ".osheep-migrate-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    fs::copy(source, &temporary)?;
+    if !files_match(source, &temporary)? {
+        let _ = fs::remove_file(&temporary);
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("migration verification failed: {}", source.display()),
+        ));
+    }
+    match fs::rename(&temporary, destination) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let _ = fs::remove_file(&temporary);
+            Err(error)
+        }
+    }
+}
+
+fn merge_verified_directory(source: &Path, destination: &Path, conflicts: &Path) -> io::Result<()> {
+    if !source.is_dir() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+        let conflict_path = conflicts.join(entry.file_name());
+        if file_type.is_dir() {
+            merge_verified_directory(&source_path, &destination_path, &conflict_path)?;
+            if fs::read_dir(&source_path)?.next().is_none() {
+                fs::remove_dir(&source_path)?;
+            }
+        } else if file_type.is_file() {
+            if !destination_path.exists() {
+                copy_file_verified(&source_path, &destination_path)?;
+            } else if !files_match(&source_path, &destination_path)? {
+                copy_file_verified(&source_path, &conflict_path)?;
+            }
+            fs::remove_file(&source_path)?;
+        }
+    }
+    Ok(())
+}
+
+fn rewrite_default_workspace_root(
+    config_path: &Path,
+    legacy_workspaces: &Path,
+    target_workspaces: &Path,
+) -> io::Result<()> {
+    if !config_path.is_file() {
+        return Ok(());
+    }
+    let text = fs::read_to_string(config_path)?;
+    let legacy = legacy_workspaces.to_string_lossy();
+    let target = target_workspaces.to_string_lossy();
+    let legacy_json = legacy.replace('\\', "\\\\");
+    let target_json = target.replace('\\', "\\\\");
+    let replaced = text
+        .replace(&legacy_json, &target_json)
+        .replace(legacy.as_ref(), target.as_ref());
+    if replaced != text {
+        fs::write(config_path, replaced)?;
+    }
+    Ok(())
+}
+
+fn migrate_desktop_persistent_data(legacy_data: &Path, backend_data: &Path) -> io::Result<()> {
+    fs::create_dir_all(backend_data)?;
+    let legacy_workspaces = legacy_data.join("workspaces");
+    let target_workspaces = backend_data.join("workspaces");
+    let migration_id = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let conflicts = backend_data
+        .join("migration-conflicts")
+        .join(format!("desktop-appdata-{migration_id}"));
+    merge_verified_directory(
+        &legacy_workspaces,
+        &target_workspaces,
+        &conflicts.join("workspaces"),
+    )?;
+    if legacy_workspaces.is_dir() && fs::read_dir(&legacy_workspaces)?.next().is_none() {
+        fs::remove_dir(&legacy_workspaces)?;
+    }
+
+    let legacy_config = legacy_data.join("workspace-root.json");
+    let target_config = backend_data.join("workspace-root.json");
+    if legacy_config.is_file() {
+        if !target_config.exists() {
+            copy_file_verified(&legacy_config, &target_config)?;
+        } else if !files_match(&legacy_config, &target_config)? {
+            copy_file_verified(&legacy_config, &conflicts.join("workspace-root.json"))?;
+        }
+        rewrite_default_workspace_root(&target_config, &legacy_workspaces, &target_workspaces)?;
+        fs::remove_file(&legacy_config)?;
+    } else {
+        rewrite_default_workspace_root(&target_config, &legacy_workspaces, &target_workspaces)?;
+    }
+    Ok(())
+}
+
 fn startup_theme(app: &tauri::AppHandle) -> &'static str {
     let settings = local_backend_paths(app)
         .ok()
@@ -409,8 +536,10 @@ fn local_backend_command(app: &tauri::AppHandle, port: u16) -> io::Result<Comman
     require_file(&frontend_root.join("index.html"), "frontend entry point")?;
 
     let data_dir = node_path(&app.path().app_local_data_dir().map_err(io::Error::other)?);
+    let backend_data = working_dir.join(".osheep");
     let log_dir = app.path().app_log_dir().map_err(io::Error::other)?;
-    fs::create_dir_all(data_dir.join("workspaces"))?;
+    migrate_desktop_persistent_data(&data_dir, &backend_data)?;
+    fs::create_dir_all(backend_data.join("workspaces"))?;
     fs::create_dir_all(&log_dir)?;
     let _ = fs::write(
         log_dir.join("startup-command.log"),
@@ -442,14 +571,18 @@ fn local_backend_command(app: &tauri::AppHandle, port: u16) -> io::Result<Comman
         )
         .env(
             "WORKSPACES_ROOT",
-            data_dir.join("workspaces").to_string_lossy().as_ref(),
+            backend_data.join("workspaces").to_string_lossy().as_ref(),
         )
         .env(
             "OSHEEP_WORKSPACE_ROOT_CONFIG",
-            data_dir
+            backend_data
                 .join("workspace-root.json")
                 .to_string_lossy()
                 .as_ref(),
+        )
+        .env(
+            "OSHEEP_TEMPLATES_ROOT",
+            backend_data.join("templates").to_string_lossy().as_ref(),
         )
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
@@ -772,6 +905,77 @@ mod tests {
             fs::read(&runtime).expect("read runtime"),
             b"existing runtime"
         );
+        fs::remove_dir_all(root).expect("remove test directory");
+    }
+
+    #[test]
+    fn desktop_persistent_data_is_merged_verified_and_removed_from_appdata() {
+        let root = unique_temp_dir("persistent-data-migration");
+        let legacy = root.join("appdata");
+        let target = root.join("install/backend/.osheep");
+        let legacy_workspaces = legacy.join("workspaces");
+        let target_workspaces = target.join("workspaces");
+        fs::create_dir_all(legacy_workspaces.join("new-project/.osheep"))
+            .expect("create legacy workspace");
+        fs::create_dir_all(legacy_workspaces.join("conflict-project"))
+            .expect("create legacy conflict");
+        fs::create_dir_all(target_workspaces.join("conflict-project"))
+            .expect("create target conflict");
+        fs::write(
+            legacy_workspaces.join("new-project/.osheep/settings.json"),
+            b"new",
+        )
+        .expect("write legacy workspace");
+        fs::write(
+            legacy_workspaces.join("conflict-project/data.json"),
+            b"legacy",
+        )
+        .expect("write legacy conflict");
+        fs::write(
+            target_workspaces.join("conflict-project/data.json"),
+            b"current",
+        )
+        .expect("write target conflict");
+        fs::write(
+            legacy.join("workspace-root.json"),
+            format!(
+                "{{\n  \"root\": \"{}\"\n}}",
+                legacy_workspaces.to_string_lossy().replace('\\', "\\\\")
+            ),
+        )
+        .expect("write workspace config");
+
+        migrate_desktop_persistent_data(&legacy, &target).expect("migrate desktop data");
+
+        assert_eq!(
+            fs::read(target_workspaces.join("new-project/.osheep/settings.json"))
+                .expect("read migrated workspace"),
+            b"new"
+        );
+        assert_eq!(
+            fs::read(target_workspaces.join("conflict-project/data.json"))
+                .expect("read current conflict"),
+            b"current"
+        );
+        let conflict_files = fs::read_dir(target.join("migration-conflicts"))
+            .expect("read conflict root")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("read conflict entries");
+        assert_eq!(conflict_files.len(), 1);
+        assert_eq!(
+            fs::read(
+                conflict_files[0]
+                    .path()
+                    .join("workspaces/conflict-project/data.json")
+            )
+            .expect("read preserved legacy conflict"),
+            b"legacy"
+        );
+        let config = fs::read_to_string(target.join("workspace-root.json"))
+            .expect("read migrated workspace config");
+        assert!(config.contains(&target_workspaces.to_string_lossy().replace('\\', "\\\\")));
+        assert!(!legacy_workspaces.exists());
+        assert!(!legacy.join("workspace-root.json").exists());
         fs::remove_dir_all(root).expect("remove test directory");
     }
 

@@ -153,7 +153,7 @@ The backend reads its runtime configuration from environment variables. You can 
 | `AGENT_STALL_TIMEOUT_MS` | `1800000` | AI CLI no-output timeout, `0` disables it |
 | `CORS_ORIGIN` | Loopback origins | Comma-separated additional trusted frontend origins |
 | `OSHEEP_AUTH_TOKEN` | Random local value | Shared access token required for non-loopback listening |
-| `OSHEEP_TEMPLATES_ROOT` | `~/.osheep/templates` | Runtime template directory |
+| `OSHEEP_TEMPLATES_ROOT` | `backend/.osheep/templates` | Runtime template directory |
 | `OSHEEP_CLAUDE_CONFIG_DIR` | `~/.claude` | Claude Code configuration directory |
 | `OSHEEP_CODEX_CONFIG_DIR` | `~/.codex` | Codex configuration directory |
 

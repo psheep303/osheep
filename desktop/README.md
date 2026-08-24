@@ -104,10 +104,13 @@ can select a dedicated release runtime.
 
 ## Runtime Data
 
-Desktop workspaces default to Tauri's per-user local application data
-directory, not the installation directory. The workspace picker can replace
-that default with another local `workspaces` root; the selected path is saved
-in the app's local data and restored at the next start. The existing
-`~/.osheep`, `~/.codex`, and `~/.claude` locations remain available to the Node
-backend, so Codex and Claude Code are discovered from the user's current
-installation and `PATH`.
+Desktop persistent Osheep data lives under the installed
+`backend/.osheep` directory. The default workspaces root is
+`backend/.osheep/workspaces`; the workspace picker can select another local
+root, and that selection is stored in `backend/.osheep/workspace-root.json`.
+Legacy workspaces and the root selection are copied from Tauri local app data,
+verified, and then removed on first startup. WebView caches, logs, and the
+versioned bundled Node runtime remain in Tauri local app data.
+
+The existing `~/.codex`, `~/.claude`, `.agents`, and personal plugin locations
+remain external because they belong to the underlying CLIs rather than Osheep.

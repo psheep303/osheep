@@ -2,7 +2,7 @@
 
 [English](README.md) | 简体中文
 
-内置模板位于 `system/<template-id>/template.json`，用户模板位于运行时目录 `~/.osheep/templates/user`。
+内置模板位于 `system/<template-id>/template.json`，用户模板位于运行时目录 `backend/.osheep/templates/user`。
 
 ## 内置模板设计原则
 

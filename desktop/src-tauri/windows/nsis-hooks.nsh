@@ -16,4 +16,11 @@
 
 !macro NSIS_HOOK_PREUNINSTALL
   !insertmacro StopLegacyBundledNode
+  ; Persistent Osheep data now lives under the installed backend. Keep it when
+  ; the user chooses to preserve application data, and never remove it during
+  ; an update. Tauri's checkbox state is available before this hook runs.
+  ${If} $DeleteAppDataCheckboxState = 1
+  ${AndIf} $UpdateMode <> 1
+    RMDir /r "$INSTDIR\backend\.osheep"
+  ${EndIf}
 !macroend

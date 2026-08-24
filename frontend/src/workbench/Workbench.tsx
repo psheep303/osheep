@@ -191,22 +191,13 @@ const BOTTOM_THRESHOLD = 60;
 const SIDE_MAX = 600;
 const SIDEBAR_WIDTH_STORAGE_KEY = "osheep.sidebarWidth.v1";
 
-function readStoredSidebarWidth(): number | null {
-  if (typeof window === "undefined") return null;
+function readLegacySidebarWidth(): number | null {
   try {
     const raw = window.localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY);
     const value = raw ? Number(raw) : NaN;
     return Number.isFinite(value) && value >= 180 && value <= SIDE_MAX ? Math.round(value) : null;
   } catch {
     return null;
-  }
-}
-
-function storeSidebarWidth(width: number) {
-  try {
-    window.localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(width));
-  } catch {
-    // Backend settings remain the durable fallback when browser storage is unavailable.
   }
 }
 
@@ -294,7 +285,7 @@ export function Workbench() {
     };
   }, [activeView, notify, workspaceId, statusVersion]);
 
-  const [leftWidth, setLeftWidth] = useState(() => readStoredSidebarWidth() ?? DEFAULT_LEFT_WIDTH);
+  const [leftWidth, setLeftWidth] = useState(DEFAULT_LEFT_WIDTH);
   const [bottomHeight, setBottomHeight] = useState(0);
   // BottomPanel keeps mounting across collapse so terminals survive.
   // Toggling visibility or drag-collapse leaves this true; only an explicit
@@ -314,13 +305,24 @@ export function Workbench() {
 
   useEffect(() => {
     let cancelled = false;
-    void loadGlobalOsheepSettings().then((s) => {
+    void loadGlobalOsheepSettings().then(async (s) => {
       if (!cancelled) {
-        setSettings(s);
-        const width = readStoredSidebarWidth() ?? s.layout.sidebarWidth;
+        const legacyWidth = readLegacySidebarWidth();
+        const width = legacyWidth ?? s.layout.sidebarWidth;
+        const migrated =
+          legacyWidth === null ? s : { ...s, layout: { ...s.layout, sidebarWidth: legacyWidth } };
+        setSettings(migrated);
         setLeftWidth(width);
         lastLeftWidthRef.current = width;
         settingsLoadedRef.current = true;
+        if (legacyWidth !== null) {
+          try {
+            await saveGlobalOsheepSettings(migrated);
+            window.localStorage.removeItem(SIDEBAR_WIDTH_STORAGE_KEY);
+          } catch {
+            // Retry migration on the next launch when the backend is unavailable.
+          }
+        }
       }
     });
     return () => {
@@ -336,7 +338,6 @@ export function Workbench() {
   useEffect(() => {
     if (!settingsLoadedRef.current || leftWidth <= 0) return;
     const width = Math.max(180, Math.min(SIDE_MAX, Math.round(leftWidth)));
-    storeSidebarWidth(width);
     if (settings.layout.sidebarWidth === width) return;
     const next = { ...settings, layout: { ...settings.layout, sidebarWidth: width } };
     setSettings(next);
