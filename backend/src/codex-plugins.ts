@@ -175,6 +175,9 @@ export function resolveCodexPluginPaths(
 export async function runCodexPluginCli(args: string[]): Promise<string> {
   const bin = detectAiCli("codex").command;
   try {
+    // Windows arguments pass through toWindowsCmdCommandLine, which rejects expansion/control
+    // metacharacters and quotes every token; codex-plugins.test.ts executes the resulting line.
+    // codeql[js/command-line-injection]
     const result = await execFileAsync(
       process.platform === "win32" ? "cmd.exe" : bin,
       process.platform === "win32" ? ["/d", "/s", "/c", toWindowsCmdCommandLine(bin, args)] : args,

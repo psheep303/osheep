@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { toWindowsCmdCommandLine } from "./codex-plugins.js";
 import { platform } from "./config.js";
 import { detectAiCli } from "./runtime-tools.js";
 
@@ -51,6 +52,9 @@ export async function runCliChat(opts: CliChatOptions): Promise<CliChatResult> {
   const parser = new CliOutputParser(opts.onDelta);
 
   return await new Promise<CliChatResult>((resolve, reject) => {
+    // The executable is discovered locally and Windows cmd arguments are quoted after rejecting
+    // every expansion/control metacharacter in toWindowsCmdCommandLine; see ai-cli.test.ts.
+    // codeql[js/command-line-injection]
     const child = spawn(invocation.command, invocation.args, {
       cwd: opts.workspaceRoot,
       env: {
@@ -60,6 +64,7 @@ export async function runCliChat(opts: CliChatOptions): Promise<CliChatResult> {
         FORCE_COLOR: "0",
       },
       windowsHide: true,
+      windowsVerbatimArguments: invocation.windowsVerbatimArguments,
     });
 
     let stderr = "";
@@ -229,17 +234,19 @@ function finalizeContent(
   return joined;
 }
 
-function normalizeInvocation(invocation: { command: string; args: string[] }): {
+export function normalizeInvocation(invocation: { command: string; args: string[] }): {
   command: string;
   args: string[];
+  windowsVerbatimArguments: boolean;
 } {
   if (platform === "windows" && /\.(?:cmd|bat)$/i.test(invocation.command)) {
     return {
-      command: process.env.ComSpec ?? "cmd.exe",
-      args: ["/d", "/s", "/c", invocation.command, ...invocation.args],
+      command: "cmd.exe",
+      args: ["/d", "/s", "/c", toWindowsCmdCommandLine(invocation.command, invocation.args)],
+      windowsVerbatimArguments: true,
     };
   }
-  return invocation;
+  return { ...invocation, windowsVerbatimArguments: false };
 }
 
 export function buildCliPrompt(kind: CliProviderKind, messages: CliChatMessage[]): string {

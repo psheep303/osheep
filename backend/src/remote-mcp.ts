@@ -1,3 +1,7 @@
+import { lookup } from "node:dns/promises";
+import { request as httpsRequest } from "node:https";
+import { BlockList, isIP } from "node:net";
+import { Readable } from "node:stream";
 import { errors } from "./errors.js";
 
 export interface RemoteMcpTool {
@@ -124,6 +128,16 @@ interface RemoteMcpSession {
   close(): void;
 }
 
+interface ResolvedRemoteMcpTarget {
+  url: URL;
+  address: string;
+  family: 4 | 6;
+}
+
+export type RemoteMcpDnsResolver = (
+  hostname: string,
+) => Promise<Array<{ address: string; family: 4 | 6 }>>;
+
 class McpTransportError extends Error {
   constructor(
     message: string,
@@ -137,7 +151,8 @@ async function withRemoteMcpSession<T>(
   options: RemoteMcpRequestOptions,
   fn: (session: RemoteMcpSession) => Promise<T>,
 ): Promise<T> {
-  const sse = new RemoteMcpSseSession(options);
+  const target = await resolveRemoteMcpTarget(options.remoteLink);
+  const sse = new RemoteMcpSseSession(options, target);
   try {
     await sse.connect();
     await initializeRemoteMcpSession(sse);
@@ -149,7 +164,7 @@ async function withRemoteMcpSession<T>(
     }
   }
 
-  const http = new RemoteMcpHttpSession(options);
+  const http = new RemoteMcpHttpSession(options, target);
   try {
     await http.connect();
     await initializeRemoteMcpSession(http);
@@ -213,15 +228,18 @@ class RemoteMcpSseSession implements RemoteMcpSession {
   private closed = false;
   private resolvedPostUrl = "";
 
-  constructor(options: RemoteMcpRequestOptions) {
-    this.remoteLink = normalizeRemoteLink(options.remoteLink);
+  constructor(
+    options: RemoteMcpRequestOptions,
+    private readonly target: ResolvedRemoteMcpTarget,
+  ) {
+    this.remoteLink = target.url.toString();
     this.headers = {
       ...DEFAULT_PROTOCOL_HEADERS,
       ...buildAuthHeaders(options.headers, options.apiKey),
     };
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     if (options.postUrl) {
-      this.resolvedPostUrl = resolveEndpointUrl(this.remoteLink, options.postUrl);
+      this.resolvedPostUrl = resolveRemoteMcpEndpoint(this.remoteLink, options.postUrl);
     }
   }
 
@@ -230,14 +248,19 @@ class RemoteMcpSseSession implements RemoteMcpSession {
   }
 
   async connect(): Promise<void> {
-    const response = await fetch(this.remoteLink, {
-      method: "GET",
-      headers: withDefaults(this.headers, {
-        accept: "text/event-stream",
-        "cache-control": "no-cache",
-      }),
-      signal: this.abort.signal,
-    });
+    const response = await requestRemoteMcp(
+      this.target,
+      this.remoteLink,
+      {
+        method: "GET",
+        headers: withDefaults(this.headers, {
+          accept: "text/event-stream",
+          "cache-control": "no-cache",
+        }),
+        signal: this.abort.signal,
+      },
+      this.timeoutMs,
+    );
     if (!response.ok) {
       throw new McpTransportError(
         `MCP SSE connect failed (${response.status}): ${await response.text().catch(() => "")}`,
@@ -262,15 +285,20 @@ class RemoteMcpSseSession implements RemoteMcpSession {
     }
 
     const wait = this.waitForResponse(id);
-    const response = await fetch(this.resolvedPostUrl, {
-      method: "POST",
-      headers: withDefaults(this.headers, {
-        accept: "application/json, text/event-stream",
-        "content-type": "application/json",
-      }),
-      body: JSON.stringify(payload),
-      signal: this.abort.signal,
-    });
+    const response = await requestRemoteMcp(
+      this.target,
+      this.resolvedPostUrl,
+      {
+        method: "POST",
+        headers: withDefaults(this.headers, {
+          accept: "application/json, text/event-stream",
+          "content-type": "application/json",
+        }),
+        body: JSON.stringify(payload),
+        signal: this.abort.signal,
+      },
+      this.timeoutMs,
+    );
     if (!response.ok) {
       this.rejectPending(id, `MCP POST failed (${response.status})`);
       throw errors.upstreamFailed(
@@ -283,15 +311,20 @@ class RemoteMcpSseSession implements RemoteMcpSession {
   }
 
   async notify(payload: JsonRpcNotification): Promise<void> {
-    const response = await fetch(this.resolvedPostUrl, {
-      method: "POST",
-      headers: withDefaults(this.headers, {
-        accept: "application/json, text/event-stream",
-        "content-type": "application/json",
-      }),
-      body: JSON.stringify(payload),
-      signal: this.abort.signal,
-    });
+    const response = await requestRemoteMcp(
+      this.target,
+      this.resolvedPostUrl,
+      {
+        method: "POST",
+        headers: withDefaults(this.headers, {
+          accept: "application/json, text/event-stream",
+          "content-type": "application/json",
+        }),
+        body: JSON.stringify(payload),
+        signal: this.abort.signal,
+      },
+      this.timeoutMs,
+    );
     if (!response.ok) {
       throw new McpTransportError(
         `MCP notification failed (${response.status}): ${await response.text().catch(() => "")}`,
@@ -392,7 +425,7 @@ class RemoteMcpSseSession implements RemoteMcpSession {
         this.endpoint.reject(new Error("MCP endpoint event did not include a URL"));
         return;
       }
-      const url = resolveEndpointUrl(this.remoteLink, endpoint);
+      const url = resolveRemoteMcpEndpoint(this.remoteLink, endpoint);
       this.resolvedPostUrl = url;
       this.endpoint.resolve(this.resolvedPostUrl);
       return;
@@ -441,8 +474,11 @@ class RemoteMcpHttpSession implements RemoteMcpSession {
   private readonly abort = new AbortController();
   private sessionId = "";
 
-  constructor(options: RemoteMcpRequestOptions) {
-    this.remoteLink = normalizeRemoteLink(options.remoteLink);
+  constructor(
+    options: RemoteMcpRequestOptions,
+    private readonly target: ResolvedRemoteMcpTarget,
+  ) {
+    this.remoteLink = target.url.toString();
     this.headers = {
       ...DEFAULT_PROTOCOL_HEADERS,
       ...buildAuthHeaders(options.headers, options.apiKey),
@@ -459,12 +495,17 @@ class RemoteMcpHttpSession implements RemoteMcpSession {
   }
 
   async request(payload: JsonRpcRequest): Promise<JsonRpcResponse> {
-    const response = await fetch(this.remoteLink, {
-      method: "POST",
-      headers: this.requestHeaders(),
-      body: JSON.stringify(payload),
-      signal: this.abort.signal,
-    });
+    const response = await requestRemoteMcp(
+      this.target,
+      this.remoteLink,
+      {
+        method: "POST",
+        headers: this.requestHeaders(),
+        body: JSON.stringify(payload),
+        signal: this.abort.signal,
+      },
+      this.timeoutMs,
+    );
     if (!response.ok) {
       throw new McpTransportError(
         `MCP Streamable HTTP request failed (${response.status}): ${await response.text().catch(() => "")}`,
@@ -482,12 +523,17 @@ class RemoteMcpHttpSession implements RemoteMcpSession {
   }
 
   async notify(payload: JsonRpcNotification): Promise<void> {
-    const response = await fetch(this.remoteLink, {
-      method: "POST",
-      headers: this.requestHeaders(),
-      body: JSON.stringify(payload),
-      signal: this.abort.signal,
-    });
+    const response = await requestRemoteMcp(
+      this.target,
+      this.remoteLink,
+      {
+        method: "POST",
+        headers: this.requestHeaders(),
+        body: JSON.stringify(payload),
+        signal: this.abort.signal,
+      },
+      this.timeoutMs,
+    );
     if (!response.ok) {
       throw new McpTransportError(
         `MCP Streamable HTTP notification failed (${response.status}): ${await response.text().catch(() => "")}`,
@@ -516,7 +562,57 @@ class RemoteMcpHttpSession implements RemoteMcpSession {
   }
 }
 
-function normalizeRemoteLink(value: string): string {
+const BLOCKED_REMOTE_IPV4_ADDRESSES = new BlockList();
+for (const [network, prefix] of [
+  ["0.0.0.0", 8],
+  ["10.0.0.0", 8],
+  ["100.64.0.0", 10],
+  ["127.0.0.0", 8],
+  ["169.254.0.0", 16],
+  ["172.16.0.0", 12],
+  ["192.0.0.0", 24],
+  ["192.0.2.0", 24],
+  ["192.168.0.0", 16],
+  ["198.18.0.0", 15],
+  ["198.51.100.0", 24],
+  ["203.0.113.0", 24],
+  ["224.0.0.0", 4],
+  ["240.0.0.0", 4],
+] as const) {
+  BLOCKED_REMOTE_IPV4_ADDRESSES.addSubnet(network, prefix, "ipv4");
+}
+const BLOCKED_REMOTE_IPV6_ADDRESSES = new BlockList();
+for (const [network, prefix] of [
+  ["::", 96],
+  ["::ffff:0:0", 96],
+  ["64:ff9b::", 96],
+  ["64:ff9b:1::", 48],
+  ["100::", 64],
+  ["2001::", 32],
+  ["2001:2::", 48],
+  ["2001:db8::", 32],
+  ["2002::", 16],
+  ["fc00::", 7],
+  ["fe80::", 10],
+  ["ff00::", 8],
+] as const) {
+  BLOCKED_REMOTE_IPV6_ADDRESSES.addSubnet(network, prefix, "ipv6");
+}
+
+const defaultRemoteMcpResolver: RemoteMcpDnsResolver = async (hostname) => {
+  const records = await lookup(hostname, { all: true, verbatim: true });
+  return records
+    .filter(
+      (record): record is { address: string; family: 4 | 6 } =>
+        record.family === 4 || record.family === 6,
+    )
+    .map(({ address, family }) => ({ address, family }));
+};
+
+export async function resolveRemoteMcpTarget(
+  value: string,
+  resolver: RemoteMcpDnsResolver = defaultRemoteMcpResolver,
+): Promise<ResolvedRemoteMcpTarget> {
   if (typeof value !== "string" || !value.trim()) {
     throw errors.invalidQuery("Remote MCP Link is required");
   }
@@ -526,10 +622,93 @@ function normalizeRemoteLink(value: string): string {
   } catch {
     throw errors.invalidQuery("Remote MCP Link must be a valid URL");
   }
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw errors.invalidQuery("Remote MCP Link must use http or https");
+  if (url.protocol !== "https:") {
+    throw errors.invalidQuery("Remote MCP Link must use https");
   }
-  return url.toString();
+  if (url.username || url.password) {
+    throw errors.invalidQuery("Remote MCP Link must not include credentials");
+  }
+  const hostname = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (!hostname || hostname === "localhost" || hostname.endsWith(".localhost")) {
+    throw errors.invalidQuery("Remote MCP Link must use a public host");
+  }
+  const literalFamily = isIP(hostname);
+  let addresses: Array<{ address: string; family: 4 | 6 }>;
+  try {
+    addresses = literalFamily
+      ? [{ address: hostname, family: literalFamily as 4 | 6 }]
+      : await resolver(hostname);
+  } catch {
+    throw errors.upstreamFailed("Remote MCP host could not be resolved");
+  }
+  if (
+    !addresses.length ||
+    addresses.some(({ address, family }) => !isPublicAddress(address, family))
+  ) {
+    throw errors.invalidQuery("Remote MCP Link must resolve only to public IP addresses");
+  }
+  return { url, ...addresses[0]! };
+}
+
+function isPublicAddress(address: string, family: 4 | 6): boolean {
+  if (isIP(address) !== family) return false;
+  return family === 4
+    ? !BLOCKED_REMOTE_IPV4_ADDRESSES.check(address, "ipv4")
+    : !BLOCKED_REMOTE_IPV6_ADDRESSES.check(address, "ipv6");
+}
+
+interface RemoteMcpHttpOptions {
+  method: "GET" | "POST";
+  headers: Record<string, string>;
+  body?: string;
+  signal: AbortSignal;
+}
+
+function requestRemoteMcp(
+  target: ResolvedRemoteMcpTarget,
+  value: string,
+  options: RemoteMcpHttpOptions,
+  timeoutMs: number,
+): Promise<Response> {
+  const url = new URL(value);
+  if (url.origin !== target.url.origin) {
+    throw errors.upstreamFailed("MCP endpoint must use the Remote MCP origin");
+  }
+  return new Promise((resolve, reject) => {
+    // The connection uses the DNS-pinned address returned by resolveRemoteMcpTarget after every
+    // DNS answer is checked against non-public ranges. TLS still verifies the original host.
+    // codeql[js/request-forgery]
+    const request = httpsRequest(
+      {
+        protocol: url.protocol,
+        hostname: target.address,
+        family: target.family,
+        port: url.port || undefined,
+        path: `${url.pathname}${url.search}`,
+        method: options.method,
+        headers: { ...options.headers, host: url.host },
+        servername: isIP(url.hostname.replace(/^\[|\]$/g, "")) ? undefined : url.hostname,
+        signal: options.signal,
+      },
+      (incoming) => {
+        const headers = new Headers();
+        for (const [name, raw] of Object.entries(incoming.headers)) {
+          for (const item of Array.isArray(raw) ? raw : raw === undefined ? [] : [raw]) {
+            headers.append(name, item);
+          }
+        }
+        const status = incoming.statusCode ?? 502;
+        const body = [101, 204, 205, 304].includes(status)
+          ? null
+          : (Readable.toWeb(incoming) as ReadableStream<Uint8Array>);
+        resolve(new Response(body, { status, statusText: incoming.statusMessage, headers }));
+      },
+    );
+    request.setTimeout(timeoutMs, () => request.destroy(new Error("Remote MCP request timed out")));
+    request.once("error", reject);
+    if (options.body) request.write(options.body);
+    request.end();
+  });
 }
 
 function buildAuthHeaders(
@@ -577,14 +756,15 @@ function endpointFromData(data: string): string {
   return trimmed;
 }
 
-function resolveEndpointUrl(remoteLink: string, endpoint: string): string {
+export function resolveRemoteMcpEndpoint(remoteLink: string, endpoint: string): string {
   try {
     const remote = new URL(remoteLink);
     const resolved = new URL(endpoint, remoteLink);
-    if (resolved.origin === remote.origin) {
-      for (const [key, value] of remote.searchParams) {
-        if (!resolved.searchParams.has(key)) resolved.searchParams.set(key, value);
-      }
+    if (resolved.origin !== remote.origin) {
+      throw new Error("cross-origin endpoint");
+    }
+    for (const [key, value] of remote.searchParams) {
+      if (!resolved.searchParams.has(key)) resolved.searchParams.set(key, value);
     }
     return resolved.toString();
   } catch {

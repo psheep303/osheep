@@ -461,6 +461,9 @@ async function runNpx(args: string[], extraEnv?: Record<string, string>): Promis
   if (!command)
     throw new ApiError(409, "NPX_NOT_FOUND", "Node.js/npx is required to manage skills");
   try {
+    // The executable is resolved locally and toSkillsWindowsCommandLine delegates to the tested
+    // cmd sanitizer, which rejects expansion/control metacharacters and quotes every token.
+    // codeql[js/command-line-injection]
     const result = await execFileAsync(
       platform === "windows" ? (process.env.ComSpec ?? "cmd.exe") : command,
       platform === "windows" ? ["/d", "/s", "/c", toSkillsWindowsCommandLine(command, args)] : args,
