@@ -194,6 +194,14 @@ test("syncBuiltInUserSkills seeds both agents without overwriting user skills", 
     const source = path.join(sourceRoot, "osheep-json");
     await fs.mkdir(source, { recursive: true });
     await fs.writeFile(path.join(source, "SKILL.md"), "description: built-in\n", "utf8");
+    const workflowSource = path.join(sourceRoot, "generate-osheep-workflow");
+    await fs.mkdir(workflowSource, { recursive: true });
+    await fs.writeFile(
+      path.join(workflowSource, "SKILL.md"),
+      "description: workflow generator\n",
+      "utf8",
+    );
+    await fs.writeFile(path.join(workflowSource, ".osheep-built-in"), "built-in\n", "utf8");
     const existing = path.join(stagingRoots.codex, "osheep-json");
     await fs.mkdir(existing, { recursive: true });
     await fs.writeFile(path.join(existing, "SKILL.md"), "description: user version\n", "utf8");
@@ -208,6 +216,18 @@ test("syncBuiltInUserSkills seeds both agents without overwriting user skills", 
       await fs.readFile(path.join(existing, "SKILL.md"), "utf8"),
       "description: user version\n",
     );
+    for (const agent of ["claude", "codex"] as const) {
+      const generated = path.join(stagingRoots[agent], "generate-osheep-workflow");
+      assert.equal(
+        await fs.readFile(path.join(generated, "SKILL.md"), "utf8"),
+        "description: workflow generator\n",
+      );
+      await fs.access(path.join(generated, ".osheep-built-in"));
+      const manifest = JSON.parse(
+        await fs.readFile(path.join(stagingRoots[agent], "manifest.json"), "utf8"),
+      ) as Record<string, { builtIn?: boolean }>;
+      assert.equal(manifest["generate-osheep-workflow"]?.builtIn, true);
+    }
   } finally {
     await fs.rm(base, { recursive: true, force: true });
   }

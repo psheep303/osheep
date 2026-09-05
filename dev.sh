@@ -29,7 +29,7 @@ for argument in "$@"; do
   esac
 done
 
-for command_name in node npm; do
+for command_name in cargo rustc node npm; do
   if ! command -v "$command_name" >/dev/null 2>&1; then
     printf 'Required command not found: %s\n' "$command_name" >&2
     exit 1
@@ -57,12 +57,11 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 if (( start_backend )); then
-  install_project "$repo_root/backend"
   printf '[backend] http://127.0.0.1:%s\n' "${OSHEEP_PORT:-4178}"
   (
-    cd "$repo_root/backend"
+    cd "$repo_root"
     if (( developer_mode )); then export OSHEEP_DEVELOPER_MODE=1; fi
-    exec npm run dev
+    exec cargo run -p osheep-server
   ) &
   pids+=("$!")
 fi

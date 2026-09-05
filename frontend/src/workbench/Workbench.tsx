@@ -33,6 +33,11 @@ import { isWindowsDesktopShell } from "./desktop-folder-picker";
 import type { EditorCursorStatus, GotoTarget } from "./EditorPane";
 import { FileIcon } from "./FileIcon";
 import {
+  completeFileOpenTrace,
+  type FileOpenTrace,
+  startFileOpenTrace,
+} from "./file-open-performance";
+import {
   FILE_TREE_DRAG_MIME,
   hasFileTreeDrag,
   readFileTreeDragFiles,
@@ -42,7 +47,7 @@ import {
   type FsNode,
   findFreeImageName,
   loadGlobalOsheepSettings,
-  readFileText,
+  readFileTextWithTrace,
   saveGlobalOsheepSettings,
   writeFileBase64,
   writeFileText,
@@ -101,6 +106,7 @@ interface FileTab {
   externalName?: string;
   imageDataUrl?: string;
   goto?: GotoTarget | null;
+  fileOpenTrace?: FileOpenTrace;
 }
 
 interface FileSaveSnapshot {
@@ -458,6 +464,7 @@ export function Workbench() {
 
   const openFilePath = useCallback(
     async (filePath: string, goto?: GotoTarget, insertionIndex?: number) => {
+      const clickedAt = performance.now();
       if (!workspaceId) return;
       const existing = tabs.find((tab) => tab.kind === "file" && tab.path === filePath);
       if (existing) {
@@ -486,8 +493,11 @@ export function Workbench() {
         };
       } else {
         let text: string;
+        let fileOpenTrace = startFileOpenTrace(clickedAt);
         try {
-          text = await readFileText(workspaceId, filePath);
+          const result = await readFileTextWithTrace(workspaceId, filePath, fileOpenTrace);
+          text = result.content;
+          fileOpenTrace = result.trace;
         } catch (e) {
           notify.error(t("error.readFile", { detail: (e as Error).message }));
           return;
@@ -501,6 +511,7 @@ export function Workbench() {
           deleted: false,
           previewMode: false,
           goto,
+          fileOpenTrace,
         };
       }
       setTabs((prev) => {
@@ -1677,6 +1688,11 @@ export function Workbench() {
                         onPasteImage={pasteImageIntoMarkdown}
                         goto={activeFileTab.goto ?? null}
                         onCursorStatus={setCursorStatus}
+                        onInteractive={() => {
+                          if (activeFileTab.fileOpenTrace) {
+                            completeFileOpenTrace(activeFileTab.fileOpenTrace);
+                          }
+                        }}
                       />
                     </div>
                   )

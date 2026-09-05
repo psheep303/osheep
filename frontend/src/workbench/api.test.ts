@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { http, resetApiSession } from "./api.ts";
+import { http, readFile, resetApiSession } from "./api.ts";
 
 function isSessionRequest(input: RequestInfo | URL): boolean {
   return String(input) === "/api/auth/session";
@@ -109,6 +109,40 @@ test("an expired session is renewed once before retrying the API request", async
       "/api/auth/session",
       "/api/session-renewal",
     ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("file reads carry the trace id and expose response timing metadata", async () => {
+  const originalFetch = globalThis.fetch;
+  let requestUrl = "";
+  let requestHeaders = new Headers();
+  resetApiSession();
+  globalThis.fetch = async (input, init) => {
+    if (isSessionRequest(input)) return new Response(JSON.stringify({ ok: true }));
+    requestUrl = String(input);
+    requestHeaders = new Headers(init?.headers);
+    return new Response(JSON.stringify({ content: "hello", size: 5, mtime: 123 }), {
+      headers: {
+        "content-type": "application/json",
+        "server-timing": "osheep-file-read;dur=1.25",
+        "x-osheep-file-cache": "miss",
+      },
+    });
+  };
+
+  try {
+    const result = await readFile("demo", "hello world.txt", "trace-api-test");
+    assert.equal(
+      requestUrl,
+      "/api/workspaces/demo/fs/file?path=hello+world.txt",
+    );
+    assert.equal(requestHeaders.get("x-osheep-file-open-id"), "trace-api-test");
+    assert.equal(result.content, "hello");
+    assert.equal(result.responseMetadata?.headers.get("server-timing"), "osheep-file-read;dur=1.25");
+    assert.equal(typeof result.responseMetadata?.requestStartedAt, "number");
+    assert.equal(typeof result.responseMetadata?.bodyReceivedAt, "number");
   } finally {
     globalThis.fetch = originalFetch;
   }

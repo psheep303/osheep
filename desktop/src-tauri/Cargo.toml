@@ -17,10 +17,9 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 rfd = "0.15"
-
-[profile.release]
-codegen-units = 1
-lto = true
-opt-level = "s"
-panic = "abort"
-strip = true
+osheep-contract = { path = "../../crates/osheep-contract" }
+osheep-instance = { path = "../../crates/osheep-instance" }
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+windows-sys.workspace = true

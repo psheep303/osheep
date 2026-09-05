@@ -1,0 +1,32 @@
+[package]
+name = "osheep-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+axum.workspace = true
+futures-util.workspace = true
+mime_guess.workspace = true
+osheep-contract = { path = "../osheep-contract" }
+osheep-core = { path = "../osheep-core" }
+osheep-instance = { path = "../osheep-instance" }
+osheep-pty = { path = "../osheep-pty" }
+percent-encoding.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+url.workspace = true
+uuid.workspace = true
+windows-sys.workspace = true
+
+[dev-dependencies]
+reqwest.workspace = true
+tokio-tungstenite.workspace = true
+tower.workspace = true

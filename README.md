@@ -15,7 +15,7 @@
   <a href="https://github.com/psheep303/osheep/releases"><img src="https://img.shields.io/badge/version-v0.2.1-2ea44f?style=flat-square" alt="版本：v0.2.1"></a>
   <a href="https://react.dev/"><img src="https://img.shields.io/badge/React-18-20232a?style=flat-square&logo=react&logoColor=61dafb" alt="React 18"></a>
   <a href="https://vite.dev/"><img src="https://img.shields.io/badge/Vite-5-646cff?style=flat-square&logo=vite&logoColor=white" alt="Vite 5"></a>
-  <a href="https://fastify.dev/"><img src="https://img.shields.io/badge/Fastify-5-202020?style=flat-square&logo=fastify&logoColor=white" alt="Fastify 5"></a>
+  <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-server-000000?style=flat-square&logo=rust&logoColor=white" alt="Rust server"></a>
   <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-5.6-3178c6?style=flat-square&logo=typescript&logoColor=white" alt="TypeScript 5.6"></a>
   <a href="https://tauri.app/"><img src="https://img.shields.io/badge/Tauri-2-24c8db?style=flat-square&logo=tauri&logoColor=white" alt="Tauri 2"></a>
   <a href="docs/README.md"><img src="https://img.shields.io/badge/文档-README-4c566a?style=flat-square" alt="项目文档"></a>
@@ -51,12 +51,11 @@ Osheep 是轻量、本地优先的 AI 工作流工作台。把 Agent、终端命
 
 ## 两分钟开始
 
-安装 Node.js 20+、npm 和 Git。安装并登录 Agent CLI 是可选的，但要运行对应 Agent 块则需要它。
+安装 Rust stable/Cargo、Node.js 20+、npm 和 Git。安装并登录 Agent CLI 是可选的，但要运行对应 Agent 块则需要它。
 
 ```bash
 git clone https://github.com/psheep303/osheep.git
 cd osheep
-npm --prefix backend ci
 npm --prefix frontend ci
 ```
 
@@ -103,20 +102,20 @@ React + Vite 工作台
         |
         | HTTP / WebSocket
         v
-Fastify 运行时 ----> 文件、Git、PTY、MCP、Adapter
+Rust osheep-server ----> 文件、Git、PTY、MCP、Adapter
         ^
         |
 Tauri 2 + WebView2（Windows 桌面版）
 ```
 
-Windows 桌面版会以 sidecar 方式启动本地后端。Web 版支持 Linux 与 Windows；桌面壳目前面向 Windows。
+Windows 桌面版会以 sidecar 方式启动共享的 Rust 服务。Web 版支持 Linux 与 Windows；桌面壳目前面向 Windows。
 
 ## 环境要求
 
 - Node.js 20 或更高版本、npm
 - Git
-- Linux：编译 `node-pty` 所需的 Python 3 和 `build-essential`
-- Windows：编译 `node-pty` 所需的 C++ 构建工具
+- Linux：Rust/Cargo 与 `build-essential`
+- Windows：Rust/Cargo；桌面构建还需要 MSVC Build Tools 和 WebView2 Runtime
 - 可选：已安装并登录的受支持 Agent CLI
 
 Windows 桌面版还需要 Rust stable、Visual Studio 2022 Build Tools（“使用 C++ 的桌面开发”工作负载）和 Microsoft Edge WebView2 Runtime，见 [desktop/README.md](desktop/README.md)。
@@ -143,9 +142,9 @@ Osheep 默认只监听本机回环地址。本地 API 与终端 WebSocket 使用
 提交 PR 前运行：
 
 ```bash
-npm --prefix backend run lint
-npm --prefix backend run typecheck
-npm --prefix backend test
+cargo fmt --all --check
+cargo clippy --workspace --locked -- -D warnings
+cargo test --workspace --locked
 npm --prefix frontend run lint
 npm --prefix frontend run typecheck
 npm --prefix frontend test

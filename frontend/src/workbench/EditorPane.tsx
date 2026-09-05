@@ -29,6 +29,7 @@ interface EditorPaneProps {
   goto?: GotoTarget | null;
   onCursorStatus?: (status: EditorCursorStatus) => void;
   onPasteImage?: (file: File) => Promise<string | null>;
+  onInteractive?: () => void;
 }
 
 function defineMonacoTheme(monaco: typeof import("monaco-editor"), theme: "light" | "dark") {
@@ -51,6 +52,7 @@ export function EditorPane({
   goto,
   onCursorStatus,
   onPasteImage,
+  onInteractive,
 }: EditorPaneProps) {
   const { resolvedTheme } = useUiPreferences();
   const onSaveRef = useRef(onSave);
@@ -59,6 +61,8 @@ export function EditorPane({
   onCursorStatusRef.current = onCursorStatus;
   const onPasteImageRef = useRef(onPasteImage);
   onPasteImageRef.current = onPasteImage;
+  const onInteractiveRef = useRef(onInteractive);
+  onInteractiveRef.current = onInteractive;
 
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
   const monacoRef = useRef<typeof import("monaco-editor") | null>(null);
@@ -149,6 +153,7 @@ export function EditorPane({
       // Defer until next tick so the model is fully attached.
       window.setTimeout(() => applyGoto(goto), 0);
     }
+    window.requestAnimationFrame(() => onInteractiveRef.current?.());
     return () => document.removeEventListener("paste", handlePaste, true);
   };
 

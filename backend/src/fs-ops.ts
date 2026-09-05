@@ -27,6 +27,7 @@ export async function listTree(
   workspaceRoot: string,
   relPath: string,
   includeHidden: boolean,
+  includeMetadata = false,
 ): Promise<FsEntry[]> {
   const abs = resolveWorkspacePath(workspaceRoot, relPath);
   let stat: Awaited<ReturnType<typeof fs.stat>>;
@@ -48,7 +49,7 @@ export async function listTree(
       path: childRel,
       kind: isDir ? "directory" : "file",
     };
-    if (!isDir) {
+    if (includeMetadata && !isDir) {
       try {
         const s = await fs.stat(path.join(abs, e.name));
         entry.size = s.size;

@@ -41,6 +41,7 @@ export async function buildServer() {
 
   await app.register(cors, {
     credentials: true,
+    exposedHeaders: ["server-timing", "x-osheep-file-open-id", "x-osheep-file-cache"],
     origin: (origin, callback) => callback(null, security.isTrustedOrigin(origin)),
   });
   await app.register(websocket);

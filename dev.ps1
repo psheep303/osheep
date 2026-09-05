@@ -58,17 +58,8 @@ Write-Host "==> osheep dev launch ($modeLabel)" -ForegroundColor Cyan
 if ($Backend) {
   Write-Host "[backend] free port $BackendPort" -ForegroundColor Cyan
   Stop-PortOwner $BackendPort
-  $beDir = Join-Path $root 'backend'
-  if (-not (Test-Path (Join-Path $beDir 'node_modules'))) {
-    Write-Host "[backend] node_modules missing, running npm install" -ForegroundColor Yellow
-    Push-Location $beDir
-    try { npm install } finally { Pop-Location }
-  }
-  $beCommand = if ($Developer) {
-    "`$env:OSHEEP_DEVELOPER_MODE='1'; npm run dev"
-  } else {
-    'npm run dev'
-  }
+  $beDir = $root
+  $beCommand = if ($Developer) { "`$env:OSHEEP_DEVELOPER_MODE='1'; cargo run -p osheep-server" } else { 'cargo run -p osheep-server' }
   $beTitle = if ($Developer) { 'osheep-backend [developer]' } else { 'osheep-backend' }
   Start-DevWindow $beTitle $beDir $beCommand
 }

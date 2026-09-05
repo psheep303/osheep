@@ -5,7 +5,7 @@ param(
 
 $target = [IO.Path]::GetFullPath($ExecutablePath)
 
-Get-Process -Name 'node' -ErrorAction SilentlyContinue | ForEach-Object {
+Get-Process -Name 'osheep-server' -ErrorAction SilentlyContinue | ForEach-Object {
   try {
     $candidate = [IO.Path]::GetFullPath($_.Path)
     if ([StringComparer]::OrdinalIgnoreCase.Equals($candidate, $target)) {
@@ -13,6 +13,6 @@ Get-Process -Name 'node' -ErrorAction SilentlyContinue | ForEach-Object {
       $_.WaitForExit(5000) | Out-Null
     }
   } catch {
-    # Ignore inaccessible and already-exited processes. They cannot hold the file.
+    # Ignore inaccessible and already-exited processes.
   }
 }

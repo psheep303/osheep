@@ -63,9 +63,14 @@ export async function ensureApiSession(): Promise<void> {
   return apiSessionPromise;
 }
 
-async function apiFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+async function apiFetch(
+  input: RequestInfo | URL,
+  init: RequestInit = {},
+  onRequestStart?: () => void,
+): Promise<Response> {
   await ensureApiSession();
   const requestInit = { ...init, credentials: "same-origin" as const };
+  onRequestStart?.();
   let response = await fetch(input, requestInit);
   if (response.status !== 401) return response;
 
@@ -75,24 +80,63 @@ async function apiFetch(input: RequestInfo | URL, init: RequestInit = {}): Promi
   return response;
 }
 
-async function request<T>(method: string, url: string, body?: unknown): Promise<T> {
+export interface HttpResponseMetadata {
+  headers: Headers;
+  requestStartedAt: number;
+  headersReceivedAt: number;
+  bodyReceivedAt: number;
+  revalidated: boolean;
+}
+
+interface RequestOptions {
+  headers?: HeadersInit;
+}
+
+async function requestWithMetadata<T>(
+  method: string,
+  url: string,
+  body?: unknown,
+  options: RequestOptions = {},
+): Promise<{ data: T; metadata: HttpResponseMetadata }> {
   const init: RequestInit = { method };
   const cached = method === "GET" ? etagCache.get(url) : undefined;
+  const headers = new Headers(options.headers);
   if (cached) {
-    init.headers = { "if-none-match": cached.etag };
+    headers.set("if-none-match", cached.etag);
   }
   if (body !== undefined) {
-    init.headers = { "content-type": "application/json" };
+    headers.set("content-type", "application/json");
     init.body = JSON.stringify(body);
   }
+  if ([...headers].length > 0) init.headers = headers;
 
-  let res = await apiFetch(url, init);
+  let requestStartedAt = performance.now();
+  let res = await apiFetch(url, init, () => {
+    requestStartedAt = performance.now();
+  });
+  let headersReceivedAt = performance.now();
+  let revalidated = false;
   if (res.status === 304) {
-    if (cached) return cached.body as T;
+    if (cached) {
+      revalidated = true;
+      const bodyReceivedAt = performance.now();
+      return {
+        data: cached.body as T,
+        metadata: {
+          headers: res.headers,
+          requestStartedAt,
+          headersReceivedAt,
+          bodyReceivedAt,
+          revalidated,
+        },
+      };
+    }
     res = await apiFetch(url, { method: "GET" });
+    headersReceivedAt = performance.now();
   }
 
   const text = await res.text();
+  const bodyReceivedAt = performance.now();
   let parsed: unknown = null;
   if (text) {
     try {
@@ -113,11 +157,26 @@ async function request<T>(method: string, url: string, body?: unknown): Promise<
     const etag = res.headers.get("etag");
     if (etag) etagCache.set(url, { etag, body: parsed });
   }
-  return parsed as T;
+  return {
+    data: parsed as T,
+    metadata: {
+      headers: res.headers,
+      requestStartedAt,
+      headersReceivedAt,
+      bodyReceivedAt,
+      revalidated,
+    },
+  };
+}
+
+async function request<T>(method: string, url: string, body?: unknown): Promise<T> {
+  return (await requestWithMetadata<T>(method, url, body)).data;
 }
 
 export const http = {
   get: <T>(url: string) => request<T>("GET", url),
+  getWithMetadata: <T>(url: string, headers?: HeadersInit) =>
+    requestWithMetadata<T>("GET", url, undefined, { headers }),
   post: <T>(url: string, body?: unknown) => request<T>("POST", url, body ?? {}),
   put: <T>(url: string, body?: unknown) => request<T>("PUT", url, body ?? {}),
   patch: <T>(url: string, body?: unknown) => request<T>("PATCH", url, body ?? {}),
@@ -258,9 +317,11 @@ export async function listTree(
   workspaceId: string,
   path: string,
   includeHidden = false,
+  metadata = false,
 ): Promise<FsEntry[]> {
   const q: Record<string, string> = { path };
   if (includeHidden) q.includeHidden = "true";
+  if (metadata) q.metadata = "true";
   const { entries } = await http.get<{ entries: FsEntry[] }>(wsUrl(workspaceId, "/tree", q));
   return entries;
 }
@@ -268,8 +329,19 @@ export async function listTree(
 export async function readFile(
   workspaceId: string,
   path: string,
-): Promise<{ content: string; size: number; mtime: number }> {
-  return await http.get(wsUrl(workspaceId, "/file", { path }));
+  traceId?: string,
+): Promise<{
+  content: string;
+  size: number;
+  mtime: number;
+  responseMetadata?: HttpResponseMetadata;
+}> {
+  const url = wsUrl(workspaceId, "/file", { path });
+  if (!traceId) return await http.get(url);
+  const response = await http.getWithMetadata<{ content: string; size: number; mtime: number }>(url, {
+    "x-osheep-file-open-id": traceId,
+  });
+  return { ...response.data, responseMetadata: response.metadata };
 }
 
 export async function resolveExternalFilePath(workspaceId: string, path: string): Promise<string> {

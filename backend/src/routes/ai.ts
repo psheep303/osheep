@@ -624,7 +624,7 @@ export async function registerAiRoutes(app: FastifyInstance) {
     }
     if (body.kind === "list") {
       const p = typeof body.path === "string" ? body.path : "";
-      const entries = await listTree(ws.path, p, body.includeHidden === true);
+      const entries = await listTree(ws.path, p, body.includeHidden === true, true);
       return { kind: "list", path: p, entries };
     }
     if (body.kind === "search") {

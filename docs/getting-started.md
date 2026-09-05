@@ -4,18 +4,17 @@
 
 ## 1. 启动 Osheep
 
-安装 Node.js 20+、npm 与 Git，然后安装前后端依赖：
+安装 Rust stable、Cargo、Node.js 20+、npm 与 Git，然后安装前端依赖：
 
 ```bash
 git clone https://github.com/psheep303/osheep.git
 cd osheep
-npm --prefix backend ci
 npm --prefix frontend ci
 ```
 
 Linux 运行 `./dev.sh`，Windows 运行 `.\dev.ps1`，再打开 <http://127.0.0.1:5173>。
 
-Linux 还需要 Python 3 与 `build-essential` 来编译 `node-pty`；Windows 需要 `node-pty` 所需的 C++ 构建工具。
+Linux 还需要 `build-essential`；Windows 桌面版还需要 MSVC Build Tools 与 WebView2 Runtime。
 
 ## 2. 选择工作区
 

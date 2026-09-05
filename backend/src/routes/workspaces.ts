@@ -130,22 +130,46 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
 
   app.get<{
     Params: { id: string };
-    Querystring: { path?: string; includeHidden?: string };
+    Querystring: { path?: string; includeHidden?: string; metadata?: string };
   }>("/api/workspaces/:id/fs/tree", async (req) => {
     const ws = await resolveWorkspace(req.params.id);
     await ensureOsheepLayout(ws.path);
     const includeHidden = req.query.includeHidden === "true";
-    const entries = await listTree(ws.path, req.query.path ?? "", includeHidden);
+    const includeMetadata = req.query.metadata === "true";
+    const entries = await listTree(ws.path, req.query.path ?? "", includeHidden, includeMetadata);
     return { entries };
   });
 
   app.get<{
     Params: { id: string };
     Querystring: { path?: string };
-  }>("/api/workspaces/:id/fs/file", async (req) => {
+    Headers: { "x-osheep-file-open-id"?: string };
+  }>("/api/workspaces/:id/fs/file", async (req, reply) => {
+    const startedAt = performance.now();
     const ws = await resolveWorkspace(req.params.id);
     if (req.query.path === undefined) throw errors.invalidPath("缺少 path 参数");
-    return await readFileText(ws.path, req.query.path);
+    const file = await readFileText(ws.path, req.query.path);
+    const readDurationMs = performance.now() - startedAt;
+    const suppliedTraceId = req.headers["x-osheep-file-open-id"];
+    const traceId =
+      typeof suppliedTraceId === "string" && /^[a-zA-Z0-9_-]{1,128}$/.test(suppliedTraceId)
+        ? suppliedTraceId
+        : req.id;
+    reply.header("server-timing", `osheep-file-read;dur=${readDurationMs.toFixed(2)}`);
+    reply.header("x-osheep-file-open-id", traceId);
+    reply.header("x-osheep-file-cache", "miss");
+    req.log.info(
+      {
+        event: "file_open_read",
+        traceId,
+        fileSizeBytes: file.size,
+        cacheStatus: "miss",
+        serverRequestToReadCompleteMs: Number(readDurationMs.toFixed(2)),
+        processRssBytes: process.memoryUsage().rss,
+      },
+      "file open read complete",
+    );
+    return file;
   });
 
   app.post<{

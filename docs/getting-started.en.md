@@ -4,19 +4,18 @@
 
 ## 1. Start Osheep
 
-Install Node.js 20+, npm, and Git. Then install the backend and frontend dependencies:
+Install Rust stable/Cargo, Node.js 20+, npm, and Git. Then install the frontend dependencies:
 
 ```bash
 git clone https://github.com/psheep303/osheep.git
 cd osheep
-npm --prefix backend ci
 npm --prefix frontend ci
 ```
 
 Run `./dev.sh` on Linux or `.\dev.ps1` on Windows. Open <http://127.0.0.1:5173>.
 
-Linux also needs Python 3 and `build-essential` for `node-pty`. Windows needs the C++ build tools
-required by `node-pty`.
+Linux also needs `build-essential`. Windows desktop builds additionally require MSVC Build Tools
+and the WebView2 Runtime.
 
 ## 2. Choose A Workspace
 

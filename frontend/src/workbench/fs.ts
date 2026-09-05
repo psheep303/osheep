@@ -20,6 +20,7 @@ import {
   writeFileBase64 as apiWriteFileBase64,
   type FsEntry,
 } from "./api";
+import { attachFileResponse, type FileOpenTrace } from "./file-open-performance";
 import { DEFAULT_SETTINGS, mergeSettings, type OsheepSettings } from "./settings";
 
 export interface FsNode {
@@ -40,6 +41,20 @@ export async function readDirShallow(workspaceId: string, dirPath: string): Prom
 export async function readFileText(workspaceId: string, filePath: string): Promise<string> {
   const { content } = await apiReadFile(workspaceId, filePath);
   return content;
+}
+
+export async function readFileTextWithTrace(
+  workspaceId: string,
+  filePath: string,
+  trace: FileOpenTrace,
+): Promise<{ content: string; trace: FileOpenTrace }> {
+  const result = await apiReadFile(workspaceId, filePath, trace.id);
+  return {
+    content: result.content,
+    trace: result.responseMetadata
+      ? attachFileResponse(trace, result.responseMetadata, result.size)
+      : trace,
+  };
 }
 
 export async function writeFileText(
