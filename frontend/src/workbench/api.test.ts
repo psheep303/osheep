@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { http, readFile, resetApiSession } from "./api.ts";
+import { ensureApiSession, http, readFile, resetApiSession } from "./api.ts";
 
 function isSessionRequest(input: RequestInfo | URL): boolean {
   return String(input) === "/api/auth/session";
@@ -109,6 +109,28 @@ test("an expired session is renewed once before retrying the API request", async
       "/api/auth/session",
       "/api/session-renewal",
     ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("session setup retries a transient server failure while the backend starts", async () => {
+  const originalFetch = globalThis.fetch;
+  let attempts = 0;
+  resetApiSession();
+  globalThis.fetch = async (input) => {
+    assert.equal(String(input), "/api/auth/session");
+    attempts += 1;
+    return attempts === 1
+      ? new Response(JSON.stringify({ error: { code: "INTERNAL", message: "backend starting" } }), {
+          status: 503,
+        })
+      : new Response(JSON.stringify({ ok: true }));
+  };
+
+  try {
+    await ensureApiSession();
+    assert.equal(attempts, 2);
   } finally {
     globalThis.fetch = originalFetch;
   }

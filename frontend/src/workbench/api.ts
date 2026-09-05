@@ -17,6 +17,10 @@ export class ApiClientError extends Error {
 
 const etagCache = new Map<string, { etag: string; body: unknown }>();
 let apiSessionPromise: Promise<void> | null = null;
+// Vite returns a 5xx while a cold `cargo run` is still compiling the local backend.
+const sessionRetryDelaysMs = [
+  250, 500, 1_000, 2_000, 4_000, 8_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000,
+];
 
 export function resetApiSession(): void {
   apiSessionPromise = null;
@@ -43,12 +47,31 @@ export async function ensureApiSession(): Promise<void> {
   const token = fragmentAccessToken();
   apiSessionPromise = (async () => {
     const headers = token ? { authorization: `Bearer ${token}` } : undefined;
-    const response = await fetch("/api/auth/session", {
-      method: "POST",
-      credentials: "same-origin",
-      headers,
-    });
-    if (response.ok) return;
+    let response: Response | undefined;
+    let requestError: unknown;
+    for (let attempt = 0; attempt <= sessionRetryDelaysMs.length; attempt += 1) {
+      try {
+        response = await fetch("/api/auth/session", {
+          method: "POST",
+          credentials: "same-origin",
+          headers,
+        });
+        requestError = undefined;
+      } catch (error) {
+        response = undefined;
+        requestError = error;
+      }
+      if (response?.ok) return;
+      if ((response && response.status < 500) || attempt === sessionRetryDelaysMs.length) break;
+      await new Promise<void>((resolve) => setTimeout(resolve, sessionRetryDelaysMs[attempt]));
+    }
+    if (!response) {
+      throw new ApiClientError(
+        503,
+        "SESSION_UNAVAILABLE",
+        requestError instanceof Error ? requestError.message : "无法连接到 Osheep 服务",
+      );
+    }
 
     const parsed = (await response.json().catch(() => null)) as ApiErrorBody | null;
     throw new ApiClientError(
