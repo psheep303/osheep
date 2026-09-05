@@ -60,6 +60,15 @@ impl StateStore {
         read_json_or(&self.root.join("settings.json"), fallback).await
     }
 
+    pub async fn read_value(&self, filename: &str, fallback: Value) -> Result<Value, StateError> {
+        read_json_or(&self.root.join(filename), fallback).await
+    }
+
+    pub async fn write_value(&self, filename: &str, value: Value) -> Result<(), StateError> {
+        let _guard = self.writes.lock().await;
+        atomic_write_json(self.root.join(filename), value).await
+    }
+
     pub async fn merge_settings(&self, patch: &Value) -> Result<(), StateError> {
         let _guard = self.writes.lock().await;
         let path = self.root.join("settings.json");

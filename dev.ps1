@@ -59,7 +59,12 @@ if ($Backend) {
   Write-Host "[backend] free port $BackendPort" -ForegroundColor Cyan
   Stop-PortOwner $BackendPort
   $beDir = $root
-  $beCommand = if ($Developer) { "`$env:OSHEEP_DEVELOPER_MODE='1'; cargo run -p osheep-server" } else { 'cargo run -p osheep-server' }
+  # Keep Rust web development on the same state/workspace roots as the legacy
+  # TypeScript backend. This preserves recent projects and workspace-root.json.
+  $dataRoot = Join-Path $root 'backend\.osheep'
+  $workspacesRoot = Join-Path $root 'backend\workspaces'
+  $envPrefix = "`$env:OSHEEP_DATA_ROOT='$dataRoot'; `$env:WORKSPACES_ROOT='$workspacesRoot'; `$env:OSHEEP_ALLOW_EXTERNAL_WORKSPACE_PATHS='1'; "
+  $beCommand = if ($Developer) { $envPrefix + "`$env:OSHEEP_DEVELOPER_MODE='1'; cargo run -p osheep-server" } else { $envPrefix + 'cargo run -p osheep-server' }
   $beTitle = if ($Developer) { 'osheep-backend [developer]' } else { 'osheep-backend' }
   Start-DevWindow $beTitle $beDir $beCommand
 }

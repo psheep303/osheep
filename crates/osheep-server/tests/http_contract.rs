@@ -515,6 +515,27 @@ async fn shared_state_routes_match_settings_and_workspace_contracts() {
         serde_json::from_slice(&to_bytes(workspaces.into_body(), usize::MAX).await.unwrap())
             .unwrap();
     assert_eq!(workspaces["workspaces"][0]["id"], "demo");
+    let workspace_root = app
+        .clone()
+        .oneshot(
+            Request::get("/api/workspaces/root")
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let workspace_root: serde_json::Value = serde_json::from_slice(
+        &to_bytes(workspace_root.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        workspace_root["path"],
+        root.to_string_lossy().as_ref(),
+        "the configured workspace path must not expose canonicalization internals"
+    );
     let opened = app
         .clone()
         .oneshot(
@@ -2220,5 +2241,95 @@ async fn claude_onboarding_route_matches_node_validation_contract() {
     let body: serde_json::Value =
         serde_json::from_slice(&to_bytes(invalid.into_body(), usize::MAX).await.unwrap()).unwrap();
     assert_eq!(body["error"]["code"], "INVALID_QUERY");
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[tokio::test]
+async fn ai_settings_routes_preserve_rendering_and_provider_contracts() {
+    let root = temp_path("ai-settings-contract");
+    let app = build_app(test_config(root.clone(), None), Arc::new(ContractRuntime))
+        .await
+        .unwrap();
+    let auth = app
+        .clone()
+        .oneshot(
+            Request::post("/api/auth/session")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let cookie = auth
+        .headers()
+        .get(header::SET_COOKIE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+
+    let snapshot = app
+        .clone()
+        .oneshot(
+            Request::get("/api/ai-settings")
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(snapshot.status(), StatusCode::OK);
+    let snapshot: serde_json::Value =
+        serde_json::from_slice(&to_bytes(snapshot.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert!(snapshot["paths"]["claude"]["settings"].is_string());
+    assert!(snapshot["paths"]["codex"]["config"].is_string());
+    assert!(snapshot["state"]["apps"]["claude"]["providers"].is_object());
+
+    let provider = serde_json::json!({
+        "app": "codex",
+        "provider": {
+            "id": "contract-provider",
+            "name": "Contract provider",
+            "settingsConfig": {"auth": {}, "config": ""}
+        }
+    });
+    let saved = app
+        .clone()
+        .oneshot(
+            Request::post("/api/ai-settings/providers")
+                .header(header::COOKIE, &cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_vec(&provider).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(saved.status(), StatusCode::OK);
+    let saved: serde_json::Value =
+        serde_json::from_slice(&to_bytes(saved.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(
+        saved["state"]["apps"]["codex"]["current"],
+        "contract-provider"
+    );
+
+    let switched = app
+        .clone()
+        .oneshot(
+            Request::post("/api/ai-settings/switch")
+                .header(header::COOKIE, &cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"app":"codex","id":"contract-provider"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(switched.status(), StatusCode::OK);
+    let persisted: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(root.join(".state/ai-settings.json")).expect("persisted AI settings"),
+    )
+    .unwrap();
+    assert_eq!(persisted["apps"]["codex"]["current"], "contract-provider");
     std::fs::remove_dir_all(root).ok();
 }

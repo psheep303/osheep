@@ -85,7 +85,7 @@ pub async fn build_app_with_runtime(
     )?);
     let workspaces = Arc::new(WorkspaceResolver::new(config.workspaces_root));
     workspaces.ensure_root().await?;
-    let store = Arc::new(StateStore::new(config.data_root));
+    let store = Arc::new(StateStore::new(config.data_root.clone()));
     store.initialize().await?;
     let files = Arc::new(FileService::new(FileServiceConfig {
         max_file_size: config.max_file_size_bytes,
@@ -97,6 +97,12 @@ pub async fn build_app_with_runtime(
     let agent_sessions = Arc::new(AgentSessionService::new());
     let agents = Arc::new(AgentService::new());
     let claude_onboarding = Arc::new(ClaudeOnboardingService::new());
+    let ai_settings_paths = ai_settings_paths(&config.data_root);
+    let ai_settings_state = normalize_ai_settings_state(
+        store
+            .read_value("ai-settings.json", default_ai_settings_state())
+            .await?,
+    );
     let state = AppState {
         security: security.clone(),
         workspaces,
@@ -115,7 +121,7 @@ pub async fn build_app_with_runtime(
         frontend_root: config.frontend_root,
         runtime,
         p6_state: Arc::new(Mutex::new(serde_json::json!({
-            "aiSettings": {"state": {"version": 1, "apps": {"claude": {"providers": {}, "current": ""}, "codex": {"providers": {}, "current": ""}}}, "paths": {}},
+            "aiSettings": {"state": ai_settings_state, "paths": ai_settings_paths},
             "skills": {"enabled": [], "user": [], "paths": {"claude": [], "codex": []}},
             "claudePlugins": {"plugins": [], "marketplaces": [], "warnings": [], "paths": {}},
             "codexPlugins": {"plugins": [], "marketplaces": [], "warnings": [], "paths": {}},
@@ -245,7 +251,7 @@ pub async fn build_app_with_runtime(
             "/api/ai-settings/providers/{id}",
             put(upsert_ai_provider).delete(delete_ai_provider),
         )
-        .route("/api/ai-settings/switch", post(p6_ok))
+        .route("/api/ai-settings/switch", post(switch_ai_provider))
         .route("/api/ai/cli-status", get(ai_cli_status))
         .route("/api/ai/cli-tools", get(ai_cli_tools))
         .route("/api/ai/cli-tools/{name}/action", post(p6_ok))
@@ -507,7 +513,9 @@ async fn create_workspace(
 
 async fn workspaces_root(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
     Ok(Json(serde_json::json!({
-        "path": state.workspaces.canonical_root().await?
+        // Keep the public path in the same form users configured. On Windows,
+        // `canonicalize` exposes an implementation-only `\\\\?\\` prefix.
+        "path": state.workspaces.root().await
     })))
 }
 
@@ -2099,20 +2107,88 @@ async fn p6_ok() -> Json<Value> {
     Json(serde_json::json!({"ok": true}))
 }
 
+fn default_ai_settings_state() -> Value {
+    serde_json::json!({"version": 1, "apps": {
+        "claude": {"providers": {}, "current": ""},
+        "codex": {"providers": {}, "current": ""}
+    }})
+}
+
+fn normalize_ai_settings_state(mut value: Value) -> Value {
+    if !value.is_object() {
+        return default_ai_settings_state();
+    }
+    value["version"] = Value::from(1);
+    if !value["apps"].is_object() {
+        value["apps"] = serde_json::json!({});
+    }
+    for app in ["claude", "codex"] {
+        if !value["apps"][app].is_object() {
+            value["apps"][app] = serde_json::json!({});
+        }
+        let manager = &mut value["apps"][app];
+        if !manager["providers"].is_object() {
+            manager["providers"] = serde_json::json!({});
+        }
+        if !manager["current"].is_string() {
+            manager["current"] = Value::String(String::new());
+        }
+    }
+    value
+}
+
+async fn persist_ai_settings(state: &AppState, root: &Value) -> Result<(), ApiError> {
+    state
+        .store
+        .write_value("ai-settings.json", root["aiSettings"]["state"].clone())
+        .await?;
+    Ok(())
+}
+
+fn ai_settings_paths(data_root: &Path) -> Value {
+    let home = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| data_root.to_path_buf());
+    let claude_dir = std::env::var_os("CLAUDE_CONFIG_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".claude"));
+    let codex_dir = std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".codex"));
+    let claude_settings = claude_dir.join("settings.json");
+    let codex_auth = codex_dir.join("auth.json");
+    let codex_config = codex_dir.join("config.toml");
+    serde_json::json!({
+        "store": data_root.join("ai-settings.json"),
+        "claude": {"dir": claude_dir, "settings": claude_settings, "exists": claude_settings.exists()},
+        "codex": {"dir": codex_dir, "auth": codex_auth, "config": codex_config, "authExists": codex_auth.exists(), "configExists": codex_config.exists()}
+    })
+}
+
 async fn ai_settings(State(state): State<AppState>) -> Json<Value> {
     Json(state.p6_state.lock().await["aiSettings"].clone())
 }
 
-async fn update_ai_settings(State(state): State<AppState>, Json(body): Json<Value>) -> Json<Value> {
-    state.p6_state.lock().await["aiSettings"] = body;
-    ai_settings(State(state)).await
+async fn update_ai_settings(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let next_state = normalize_ai_settings_state(body);
+    let mut root = state.p6_state.lock().await;
+    root["aiSettings"]["state"] = next_state;
+    persist_ai_settings(&state, &root).await?;
+    Ok(Json(root["aiSettings"].clone()))
 }
 
 async fn ai_live_settings(AxumPath(app): AxumPath<String>) -> Json<Value> {
     Json(serde_json::json!({"app": app, "settingsConfig": {}}))
 }
 
-async fn upsert_ai_provider(State(state): State<AppState>, Json(body): Json<Value>) -> Json<Value> {
+async fn upsert_ai_provider(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
     let app = body.get("app").and_then(Value::as_str).unwrap_or("claude");
     let id = body
         .get("id")
@@ -2131,22 +2207,46 @@ async fn upsert_ai_provider(State(state): State<AppState>, Json(body): Json<Valu
         .get("provider")
         .cloned()
         .unwrap_or_else(|| serde_json::json!({}));
-    item["providers"][id] = provider;
-    Json(root["aiSettings"].clone())
+    let provider_id = provider
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or(&id)
+        .to_owned();
+    item["providers"][&provider_id] = provider;
+    if item["current"].as_str().unwrap_or("").is_empty() {
+        item["current"] = Value::String(provider_id);
+    }
+    persist_ai_settings(&state, &root).await?;
+    Ok(Json(root["aiSettings"].clone()))
 }
 
 async fn delete_ai_provider(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
-) -> Json<Value> {
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<Value>, ApiError> {
     let mut root = state.p6_state.lock().await;
-    for app in ["claude", "codex"] {
-        if let Some(values) = root["aiSettings"]["state"]["apps"][app]["providers"].as_object_mut()
-        {
-            values.remove(&id);
-        }
+    let app = query.get("app").map(String::as_str).unwrap_or("claude");
+    if let Some(values) = root["aiSettings"]["state"]["apps"][app]["providers"].as_object_mut() {
+        values.remove(&id);
     }
-    Json(root["aiSettings"].clone())
+    persist_ai_settings(&state, &root).await?;
+    Ok(Json(root["aiSettings"].clone()))
+}
+
+async fn switch_ai_provider(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let app = body.get("app").and_then(Value::as_str).unwrap_or("claude");
+    let id = body.get("id").and_then(Value::as_str).unwrap_or("");
+    let mut root = state.p6_state.lock().await;
+    let manager = &mut root["aiSettings"]["state"]["apps"][app];
+    if manager["providers"].get(id).is_some() {
+        manager["current"] = Value::String(id.to_owned());
+    }
+    persist_ai_settings(&state, &root).await?;
+    Ok(Json(root["aiSettings"].clone()))
 }
 
 async fn ai_cli_status() -> Json<Value> {
