@@ -2333,3 +2333,284 @@ async fn ai_settings_routes_preserve_rendering_and_provider_contracts() {
     assert_eq!(persisted["apps"]["codex"]["current"], "contract-provider");
     std::fs::remove_dir_all(root).ok();
 }
+
+#[tokio::test]
+async fn template_and_workflow_routes_preserve_rendering_contracts() {
+    let root = temp_path("template-workflow-contract");
+    std::fs::create_dir_all(root.join("demo")).unwrap();
+    let state_root = root.join(".state/templates");
+    for (source, id, title) in [
+        ("system", "system-contract", "System contract template"),
+        ("user", "user-contract", "User contract template"),
+    ] {
+        let directory = state_root.join(source).join(id);
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("template.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "id": id,
+                "source": source,
+                "title": title,
+                "description": "A template used by the HTTP contract suite.",
+                "version": "1.0.0",
+                "readme": "# Contract template",
+                "createdAt": 1,
+                "updatedAt": 2,
+                "nodes": [],
+                "edges": []
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+    let app = build_app(test_config(root.clone(), None), Arc::new(ContractRuntime))
+        .await
+        .unwrap();
+    let auth = app
+        .clone()
+        .oneshot(
+            Request::post("/api/auth/session")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let cookie = auth.headers()[header::SET_COOKIE]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+
+    let local = app
+        .clone()
+        .oneshot(
+            Request::get("/api/templates/local")
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let local: serde_json::Value =
+        serde_json::from_slice(&to_bytes(local.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(local["system"][0]["id"], "system-contract");
+    assert_eq!(local["user"][0]["id"], "user-contract");
+
+    let marketspace = app
+        .clone()
+        .oneshot(
+            Request::get("/api/templates/marketspace")
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let marketspace: serde_json::Value =
+        serde_json::from_slice(&to_bytes(marketspace.into_body(), usize::MAX).await.unwrap())
+            .unwrap();
+    assert_eq!(
+        marketspace["templates"][0]["name"],
+        "System contract template"
+    );
+    assert!(marketspace["templates"][0]["source"].is_object());
+
+    let created = app
+        .clone()
+        .oneshot(
+            Request::post("/api/workspaces/demo/workflows")
+                .header(header::COOKIE, &cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{"title":"Workflow contract","nodes":[{"id":"node_start","kind":"trigger","title":"Start","providerKind":"claude-cli","model":"","prompt":"","x":0,"y":0,"status":"idle"}],"edges":[]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(created.status(), StatusCode::OK);
+    let created: serde_json::Value =
+        serde_json::from_slice(&to_bytes(created.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let workflow_id = created["id"].as_str().unwrap().to_owned();
+
+    let loaded = app
+        .clone()
+        .oneshot(
+            Request::get(format!("/api/workspaces/demo/workflows/{workflow_id}"))
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(loaded.status(), StatusCode::OK);
+
+    let started = app
+        .clone()
+        .oneshot(
+            Request::post(format!("/api/workspaces/demo/workflows/{workflow_id}/run"))
+                .header(header::COOKIE, &cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"language":"en"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(started.status(), StatusCode::OK);
+    let started: serde_json::Value =
+        serde_json::from_slice(&to_bytes(started.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(started["workflow"]["runs"][0]["status"], "running");
+    let mut completed = None;
+    for _ in 0..40 {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::get(format!("/api/workspaces/demo/workflows/{workflow_id}"))
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let workflow: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        if workflow["runs"][0]["status"] == "success" {
+            completed = Some(workflow);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    let completed = completed.expect("workflow run should complete");
+    assert_eq!(completed["nodes"][0]["status"], "success");
+    assert_eq!(completed["runs"][0]["trace"][0]["status"], "success");
+
+    let template = app
+        .clone()
+        .oneshot(
+            Request::post(format!(
+                "/api/workspaces/demo/workflows/{workflow_id}/template"
+            ))
+            .header(header::COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let template: serde_json::Value =
+        serde_json::from_slice(&to_bytes(template.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(template["source"], "user");
+    let template_id = template["id"].as_str().unwrap();
+
+    let icon = app
+        .clone()
+        .oneshot(
+            Request::put(format!("/api/templates/user/{template_id}/icon"))
+                .header(header::COOKIE, &cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{"icon":"data:image/gif;base64,R0lGODlhAQABAAAAACw="}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(icon.status(), StatusCode::OK);
+    let icon: serde_json::Value =
+        serde_json::from_slice(&to_bytes(icon.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert!(icon["icon"].as_str().unwrap().contains("/icon?v="));
+    assert!(icon["nodes"].is_array());
+    assert!(icon["readme"].is_string());
+
+    let editor = app
+        .oneshot(
+            Request::post(format!(
+                "/api/workspaces/demo/templates/user/{template_id}/edit"
+            ))
+            .header(header::COOKIE, cookie)
+            .body(Body::empty())
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let editor: serde_json::Value =
+        serde_json::from_slice(&to_bytes(editor.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(editor["templateBinding"]["id"], template_id);
+    assert_eq!(editor["templateBinding"]["source"], "user");
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[tokio::test]
+async fn skills_routes_seed_built_ins_and_return_a_library_contract() {
+    let root = temp_path("skills-contract");
+    let built_in = root.join("template-library/user-skills/contract-built-in");
+    std::fs::create_dir_all(&built_in).unwrap();
+    std::fs::write(
+        built_in.join("SKILL.md"),
+        "---\nname: contract-built-in\ndescription: Contract built-in skill.\n---\n",
+    )
+    .unwrap();
+    std::fs::write(built_in.join(".osheep-built-in"), "").unwrap();
+    let app = build_app(test_config(root.clone(), None), Arc::new(ContractRuntime))
+        .await
+        .unwrap();
+    let auth = app
+        .clone()
+        .oneshot(
+            Request::post("/api/auth/session")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let cookie = auth.headers()[header::SET_COOKIE]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+
+    let snapshot = app
+        .clone()
+        .oneshot(
+            Request::get("/api/skills")
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let snapshot: serde_json::Value =
+        serde_json::from_slice(&to_bytes(snapshot.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let staged = snapshot["user"].as_array().unwrap();
+    assert!(staged.iter().any(|skill| {
+        skill["name"] == "contract-built-in"
+            && skill["agent"] == "claude"
+            && skill["builtIn"] == true
+    }));
+    assert!(staged.iter().any(|skill| {
+        skill["name"] == "contract-built-in"
+            && skill["agent"] == "codex"
+            && skill["builtIn"] == true
+    }));
+    assert!(snapshot["paths"]["claude"].is_array());
+    assert!(snapshot["paths"]["codex"].is_array());
+
+    let library = app
+        .oneshot(
+            Request::get("/api/skills/library?q=frontend")
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let library: serde_json::Value =
+        serde_json::from_slice(&to_bytes(library.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(library["skills"][0]["name"], "frontend-design");
+    assert!(library["skills"][0]["installCount"].is_number());
+    std::fs::remove_dir_all(root).ok();
+}

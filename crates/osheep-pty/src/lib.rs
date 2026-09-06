@@ -801,7 +801,15 @@ fn detect_profiles() -> Vec<NativeShellProfile> {
                 "powershell",
                 "PowerShell",
                 executable,
-                &["-NoLogo"],
+                // Keep the embedded terminal independent from a user profile's
+                // inaccessible PSReadLine history file. The shell stays fully
+                // interactive and command history remains available in-session.
+                &[
+                    "-NoLogo",
+                    "-NoExit",
+                    "-Command",
+                    "Set-PSReadLineOption -HistorySaveStyle SaveNothing",
+                ],
             ));
         }
         if let Some(executable) = find_executable("cmd.exe") {

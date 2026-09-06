@@ -2,6 +2,7 @@ use crate::config::ServerConfig;
 use crate::error::ApiError;
 use crate::runtime::{RuntimeClientError, RuntimeControl};
 use crate::security::{require_origin, require_session, Security, SecurityError};
+use crate::skills_library::SkillsLibrary;
 use crate::static_site;
 use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{DefaultBodyLimit, Path as AxumPath, Query, State, WebSocketUpgrade};
@@ -54,6 +55,8 @@ pub struct AppState {
     frontend_root: Option<PathBuf>,
     runtime: Option<Arc<RuntimeControl>>,
     p6_state: Arc<Mutex<Value>>,
+    skills_library: SkillsLibrary,
+    workflow_runtime: crate::workflow_runtime::WorkflowRuntime,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -98,6 +101,7 @@ pub async fn build_app_with_runtime(
     let agents = Arc::new(AgentService::new());
     let claude_onboarding = Arc::new(ClaudeOnboardingService::new());
     let ai_settings_paths = ai_settings_paths(&config.data_root);
+    let skills_library_service = SkillsLibrary::new(&config.data_root).await;
     let ai_settings_state = normalize_ai_settings_state(
         store
             .read_value("ai-settings.json", default_ai_settings_state())
@@ -120,6 +124,8 @@ pub async fn build_app_with_runtime(
         pty,
         frontend_root: config.frontend_root,
         runtime,
+        skills_library: skills_library_service,
+        workflow_runtime: crate::workflow_runtime::WorkflowRuntime::default(),
         p6_state: Arc::new(Mutex::new(serde_json::json!({
             "aiSettings": {"state": ai_settings_state, "paths": ai_settings_paths},
             "skills": {"enabled": [], "user": [], "paths": {"claude": [], "codex": []}},
@@ -231,6 +237,10 @@ pub async fn build_app_with_runtime(
             post(batch_delete_agent_sessions),
         )
         .route(
+            "/api/agent-sessions/{app}/{id}/terminal",
+            post(create_agent_session_terminal),
+        )
+        .route(
             "/api/claude/onboarding-skip",
             get(claude_onboarding_status).put(update_claude_onboarding),
         )
@@ -245,7 +255,10 @@ pub async fn build_app_with_runtime(
         .route("/api/model-prices/sync", post(p6_ok))
         .route("/api/ai-settings", get(ai_settings).put(update_ai_settings))
         .route("/api/ai-settings/live/{app}", get(ai_live_settings))
-        .route("/api/ai-settings/import-live", post(p6_ok))
+        .route(
+            "/api/ai-settings/import-live",
+            post(import_ai_live_provider),
+        )
         .route("/api/ai-settings/providers", post(upsert_ai_provider))
         .route(
             "/api/ai-settings/providers/{id}",
@@ -279,39 +292,51 @@ pub async fn build_app_with_runtime(
         .route("/api/workspaces/{id}/mcp/call", post(p6_ok))
         .route("/api/adapters", get(adapters))
         .route("/api/adapter-events", get(adapter_events))
-        .route("/api/skills", get(skills).post(p6_ok))
+        .route("/api/skills", get(skills))
         .route("/api/skills/library", get(skills_library))
         .route("/api/skills/install", post(skill_mutation))
         .route("/api/skills/import", post(skill_mutation))
-        .route("/api/skills/enable", post(skill_mutation))
-        .route("/api/skills/disable", post(skill_mutation))
+        .route("/api/skills/enable", post(enable_skill))
+        .route("/api/skills/disable", post(disable_skill))
         .route("/api/skills/apply", post(skill_mutation))
-        .route("/api/skills/delete", post(skill_mutation))
+        .route("/api/skills/delete", post(delete_skill))
         .route("/api/claude-plugins", get(claude_plugins))
-        .route("/api/claude-plugins/install", post(plugin_mutation))
-        .route("/api/claude-plugins/uninstall", post(plugin_mutation))
-        .route("/api/claude-plugins/enable", post(plugin_mutation))
-        .route("/api/claude-plugins/disable", post(plugin_mutation))
-        .route("/api/claude-plugins/marketplaces", post(plugin_mutation))
+        .route("/api/claude-plugins/install", post(claude_plugin_install))
+        .route(
+            "/api/claude-plugins/uninstall",
+            post(claude_plugin_uninstall),
+        )
+        .route("/api/claude-plugins/enable", post(claude_plugin_enable))
+        .route("/api/claude-plugins/disable", post(claude_plugin_disable))
+        .route(
+            "/api/claude-plugins/marketplaces",
+            post(claude_marketplace_add),
+        )
         .route("/api/codex-plugins", get(codex_plugins))
-        .route("/api/codex-plugins/install", post(plugin_mutation))
-        .route("/api/codex-plugins/uninstall", post(plugin_mutation))
+        .route("/api/codex-plugins/install", post(codex_plugin_install))
+        .route("/api/codex-plugins/uninstall", post(codex_plugin_uninstall))
         .route("/api/codex-plugins/local", post(plugin_mutation))
         .route("/api/codex-plugins/import-local", post(plugin_mutation))
         .route("/api/codex-plugins/local/{name}", delete(plugin_mutation))
-        .route("/api/codex-plugins/marketplaces", post(plugin_mutation))
+        .route(
+            "/api/codex-plugins/marketplaces",
+            post(codex_marketplace_add),
+        )
         .route("/api/templates/capabilities", get(template_capabilities))
-        .route("/api/templates", get(templates).post(p6_ok))
+        .route("/api/templates", get(templates))
         .route("/api/templates/local", get(templates))
         .route("/api/templates/marketspace", get(template_marketspace))
-        .route("/api/templates/marketspace/{id}/install", post(p6_ok))
+        .route(
+            "/api/templates/marketspace/{id}/install",
+            post(template_marketspace_install),
+        )
         .route(
             "/api/templates/{source}/{tid}",
-            get(template_get).delete(p6_ok),
+            get(template_get).delete(delete_template),
         )
         .route(
             "/api/templates/{source}/{tid}/icon",
-            get(template_icon).put(p6_ok),
+            get(template_icon).put(update_template_icon),
         )
         .route("/api/workflow-usage", get(workflow_usage))
         .route(
@@ -321,7 +346,7 @@ pub async fn build_app_with_runtime(
         .route("/api/workspaces/{id}/workflows/usage", get(workflow_usage))
         .route(
             "/api/workspaces/{id}/workflows/{wid}",
-            get(workflow_get).put(workflow_save).delete(p6_ok),
+            get(workflow_get).put(workflow_save).delete(delete_workflow),
         )
         .route(
             "/api/workspaces/{id}/workflows/{wid}/content",
@@ -335,32 +360,41 @@ pub async fn build_app_with_runtime(
             "/api/workspaces/{id}/workflows/{wid}/run",
             post(workflow_run),
         )
-        .route("/api/workspaces/{id}/workflows/{wid}/pause", post(p6_ok))
-        .route("/api/workspaces/{id}/workflows/{wid}/stop", post(p6_ok))
+        .route(
+            "/api/workspaces/{id}/workflows/{wid}/pause",
+            post(workflow_pause),
+        )
+        .route(
+            "/api/workspaces/{id}/workflows/{wid}/stop",
+            post(workflow_stop),
+        )
         .route(
             "/api/workspaces/{id}/workflows/{wid}/events",
             get(workflow_events),
         )
         .route(
             "/api/workspaces/{id}/workflows/{wid}/nodes/{nodeId}/approval",
-            post(p6_ok),
+            post(resolve_workflow_approval),
         )
         .route(
             "/api/workspaces/{id}/workflows/{wid}/nodes/{nodeId}/input",
-            post(p6_ok),
+            post(resolve_workflow_input),
         )
         .route(
             "/api/workspaces/{id}/workflows/{wid}/nodes/{nodeId}/retry-now",
             post(p6_ok),
         )
-        .route("/api/workspaces/{id}/workflows/{wid}/template", post(p6_ok))
+        .route(
+            "/api/workspaces/{id}/workflows/{wid}/template",
+            post(save_workflow_as_template),
+        )
         .route(
             "/api/workspaces/{id}/workflows/{wid}/system-template",
-            post(p6_ok),
+            post(save_workflow_as_system_template),
         )
         .route(
             "/api/workspaces/{id}/templates/{source}/{tid}/edit",
-            post(p6_ok),
+            post(edit_template_workflow),
         )
         .route_layer(middleware::from_fn_with_state(
             security.clone(),
@@ -798,6 +832,91 @@ async fn batch_delete_agent_sessions(
     Ok(Json(
         serde_json::json!({"deleted": deleted, "failed": failed.into_iter().map(|(id,message)| serde_json::json!({"id":id,"message":message})).collect::<Vec<_>>() }),
     ))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentSessionTerminalBody {
+    workspace_id: Option<String>,
+    shell: Option<String>,
+    cols: Option<u16>,
+    rows: Option<u16>,
+}
+
+async fn create_agent_session_terminal(
+    State(state): State<AppState>,
+    AxumPath((app, id)): AxumPath<(String, String)>,
+    Json(body): Json<AgentSessionTerminalBody>,
+) -> Result<Json<CreateTerminalResponse>, ApiError> {
+    let app = AgentSessionApp::parse(&app)?;
+    let workspace_id = body
+        .workspace_id
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "INVALID_QUERY",
+                "workspaceId is required",
+            )
+        })?;
+    let shell = body.shell.ok_or_else(|| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "UNSUPPORTED_SHELL",
+            "服务器未探测到 shell: undefined",
+        )
+    })?;
+    let workspace = state.workspaces.resolve(&workspace_id).await?;
+    let agent_session = state
+        .agent_sessions
+        .get_in_project(app, &id, &workspace.path)
+        .await?;
+    let cwd = PathBuf::from(&agent_session.cwd);
+    if !tokio::fs::metadata(&cwd)
+        .await
+        .map(|meta| meta.is_dir())
+        .unwrap_or(false)
+    {
+        return Err(ApiError::not_found(format!(
+            "Session working directory no longer exists: {}",
+            agent_session.cwd
+        )));
+    }
+    let session = state
+        .pty
+        .spawn(SpawnRequest {
+            workspace_id: format!(
+                "agent-{}-{}",
+                match app {
+                    AgentSessionApp::Claude => "claude",
+                    AgentSessionApp::Codex => "codex",
+                },
+                agent_session.id
+            ),
+            cwd: cwd.clone(),
+            workspaces_root: cwd,
+            shell,
+            cols: body.cols.unwrap_or(80),
+            rows: body.rows.unwrap_or(24),
+            kill_on_detach: true,
+        })
+        .await?;
+    let resume = match app {
+        AgentSessionApp::Claude => format!("claude --resume {}\r", agent_session.id),
+        AgentSessionApp::Codex if cfg!(windows) => {
+            format!("codex.cmd resume {}\r", agent_session.id)
+        }
+        AgentSessionApp::Codex => format!("codex resume {}\r", agent_session.id),
+    };
+    session.input(resume).await?;
+    let summary = session.summary();
+    Ok(Json(CreateTerminalResponse {
+        id: summary.id.clone(),
+        shell: summary.shell,
+        cols: summary.cols,
+        rows: summary.rows,
+        ws_url: format!("/api/terminals/{}/io", summary.id),
+    }))
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -2185,6 +2304,75 @@ async fn ai_live_settings(AxumPath(app): AxumPath<String>) -> Json<Value> {
     Json(serde_json::json!({"app": app, "settingsConfig": {}}))
 }
 
+async fn import_ai_live_provider(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let app = body.get("app").and_then(Value::as_str).unwrap_or("");
+    if !matches!(app, "claude" | "codex") {
+        return Err(ApiError::invalid_path("app must be claude or codex"));
+    }
+    let paths = state.p6_state.lock().await["aiSettings"]["paths"].clone();
+    let settings_config = match app {
+        "claude" => {
+            let path = paths["claude"]["settings"]
+                .as_str()
+                .map(PathBuf::from)
+                .ok_or_else(|| ApiError::not_found("Claude live settings not found"))?;
+            let text = tokio::fs::read_to_string(path)
+                .await
+                .map_err(|_| ApiError::not_found("Claude live settings not found"))?;
+            serde_json::from_str(&text)
+                .map_err(|_| ApiError::invalid_path("Claude settings JSON is invalid"))?
+        }
+        "codex" => {
+            let mut value = serde_json::Map::new();
+            for field in ["auth", "config"] {
+                if let Some(path) = paths["codex"][field].as_str() {
+                    if let Ok(text) = tokio::fs::read_to_string(path).await {
+                        value.insert(
+                            field.to_owned(),
+                            if field == "auth" {
+                                serde_json::from_str(&text).unwrap_or(Value::String(text))
+                            } else {
+                                Value::String(text)
+                            },
+                        );
+                    }
+                }
+            }
+            if value.is_empty() {
+                return Err(ApiError::not_found("Codex live settings not found"));
+            }
+            Value::Object(value)
+        }
+        _ => unreachable!(),
+    };
+    let mut root = state.p6_state.lock().await;
+    let manager = &mut root["aiSettings"]["state"]["apps"][app];
+    let providers = manager["providers"]
+        .as_object_mut()
+        .expect("normalized providers");
+    let requested = body
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("live");
+    let mut id = requested.to_owned();
+    let mut suffix = 2;
+    while providers.contains_key(&id) {
+        id = format!("{requested}-{suffix}");
+        suffix += 1;
+    }
+    providers.insert(id.clone(), serde_json::json!({
+        "id": id, "name": body.get("name").and_then(Value::as_str).unwrap_or(if app == "claude" { "Claude live" } else { "Codex live" }),
+        "category": "custom", "settingsConfig": settings_config, "createdAt": now_ms()
+    }));
+    manager["current"] = Value::String(id);
+    persist_ai_settings(&state, &root).await?;
+    Ok(Json(root["aiSettings"].clone()))
+}
+
 async fn upsert_ai_provider(
     State(state): State<AppState>,
     Json(body): Json<Value>,
@@ -2250,15 +2438,21 @@ async fn switch_ai_provider(
 }
 
 async fn ai_cli_status() -> Json<Value> {
-    Json(
-        serde_json::json!({"claude": {"installed": false, "path": null, "command": "claude"}, "codex": {"installed": false, "path": null, "command": "codex"}}),
-    )
+    let claude = find_path_executable("claude");
+    let codex = find_path_executable("codex");
+    Json(serde_json::json!({
+        "claude": {"installed":claude.is_some(),"path":claude,"command":"claude"},
+        "codex": {"installed":codex.is_some(),"path":codex,"command":"codex"}
+    }))
 }
 
 async fn ai_cli_tools() -> Json<Value> {
-    Json(
-        serde_json::json!({"tools": [{"name": "claude", "installed": false}, {"name": "codex", "installed": false}]}),
-    )
+    let claude = find_path_executable("claude");
+    let codex = find_path_executable("codex");
+    Json(serde_json::json!({"tools": [
+        {"name":"claude","installed":claude.is_some(),"path":claude},
+        {"name":"codex","installed":codex.is_some(),"path":codex}
+    ]}))
 }
 
 async fn adapters() -> Json<Value> {
@@ -2277,105 +2471,1196 @@ async fn adapter_events(ws: WebSocketUpgrade) -> Response {
     })
 }
 
-async fn skills(State(state): State<AppState>) -> Json<Value> {
-    Json(state.p6_state.lock().await["skills"].clone())
+async fn skills(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
+    Ok(Json(skills_snapshot(&state).await?))
 }
 
 async fn skills_library(
+    State(state): State<AppState>,
     Query(query): Query<std::collections::HashMap<String, String>>,
 ) -> Json<Value> {
-    let _ = query;
-    Json(serde_json::json!({"skills": []}))
+    let skills = state
+        .skills_library
+        .search(query.get("q").map(String::as_str).unwrap_or(""))
+        .await;
+    Json(serde_json::json!({"skills": skills}))
 }
 
-async fn skill_mutation(State(state): State<AppState>, Json(_body): Json<Value>) -> Json<Value> {
-    Json(serde_json::json!({"ok": true, "snapshot": state.p6_state.lock().await["skills"].clone()}))
+async fn skill_mutation(
+    State(state): State<AppState>,
+    Json(_body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    Ok(Json(
+        serde_json::json!({"ok": true, "snapshot": skills_snapshot(&state).await?}),
+    ))
+}
+
+fn skill_staging_root(state: &AppState, agent: &str) -> Result<PathBuf, ApiError> {
+    if !matches!(agent, "claude" | "codex") {
+        return Err(ApiError::invalid_path("agent must be claude or codex"));
+    }
+    Ok(state.store.root().join("skills").join(agent))
+}
+
+fn skill_dir(root: &Path, name: &str) -> Result<PathBuf, ApiError> {
+    if !valid_name(name) {
+        return Err(ApiError::invalid_path("skill name is invalid"));
+    }
+    Ok(root.join(name))
+}
+
+async fn move_skill_directory(source: &Path, destination: &Path) -> Result<(), ApiError> {
+    if !tokio::fs::try_exists(source.join("SKILL.md"))
+        .await
+        .unwrap_or(false)
+    {
+        return Err(ApiError::not_found("skill not found"));
+    }
+    if let Some(parent) = destination.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    if tokio::fs::try_exists(destination).await.unwrap_or(false) {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "ENTRY_EXISTS",
+            "a skill with the same name already exists",
+        ));
+    }
+    match tokio::fs::rename(source, destination).await {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            copy_directory_if_missing(source, destination).await?;
+            tokio::fs::remove_dir_all(source).await?;
+            Ok(())
+        }
+    }
+}
+
+async fn enable_skill(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let agent = body.get("agent").and_then(Value::as_str).unwrap_or("");
+    let name = body.get("name").and_then(Value::as_str).unwrap_or("");
+    let source = skill_dir(&skill_staging_root(&state, agent)?, name)?;
+    let target_root = skill_live_roots(agent)
+        .into_iter()
+        .next()
+        .expect("agent skill root");
+    let target = skill_dir(&target_root, name)?;
+    move_skill_directory(&source, &target).await?;
+    Ok(Json(
+        serde_json::json!({"snapshot": skills_snapshot(&state).await?}),
+    ))
+}
+
+async fn disable_skill(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let agent = body.get("agent").and_then(Value::as_str).unwrap_or("");
+    let name = body.get("name").and_then(Value::as_str).unwrap_or("");
+    let target = skill_dir(&skill_staging_root(&state, agent)?, name)?;
+    let source = skill_live_roots(agent)
+        .into_iter()
+        .filter_map(|root| skill_dir(&root, name).ok())
+        .find(|path| path.join("SKILL.md").exists())
+        .ok_or_else(|| ApiError::not_found("skill not found"))?;
+    move_skill_directory(&source, &target).await?;
+    Ok(Json(
+        serde_json::json!({"snapshot": skills_snapshot(&state).await?}),
+    ))
+}
+
+async fn delete_skill(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let agent = body.get("agent").and_then(Value::as_str).unwrap_or("");
+    let name = body.get("name").and_then(Value::as_str).unwrap_or("");
+    let path = skill_dir(&skill_staging_root(&state, agent)?, name)?;
+    if tokio::fs::try_exists(path.join(".osheep-built-in"))
+        .await
+        .unwrap_or(false)
+    {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "BUILT_IN_SKILL",
+            "Built-in skills cannot be deleted",
+        ));
+    }
+    tokio::fs::remove_dir_all(&path).await.map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            ApiError::not_found("skill not found")
+        } else {
+            error.into()
+        }
+    })?;
+    Ok(Json(
+        serde_json::json!({"snapshot": skills_snapshot(&state).await?}),
+    ))
 }
 
 async fn claude_plugins(State(state): State<AppState>) -> Json<Value> {
-    Json(state.p6_state.lock().await["claudePlugins"].clone())
+    let snapshot = crate::plugin_catalog::claude_snapshot().await;
+    state.p6_state.lock().await["claudePlugins"] = snapshot.clone();
+    Json(snapshot)
 }
 
 async fn codex_plugins(State(state): State<AppState>) -> Json<Value> {
-    Json(state.p6_state.lock().await["codexPlugins"].clone())
+    let snapshot = crate::plugin_catalog::codex_snapshot().await;
+    state.p6_state.lock().await["codexPlugins"] = snapshot.clone();
+    Json(snapshot)
 }
 
 async fn plugin_mutation(State(_state): State<AppState>, Json(_body): Json<Value>) -> Json<Value> {
     Json(serde_json::json!({"ok": true, "result": {}}))
 }
 
-async fn template_capabilities() -> Json<Value> {
-    Json(serde_json::json!({"developerMode": false}))
-}
-
-async fn templates() -> Json<Value> {
-    Json(serde_json::json!({"system": [], "user": []}))
-}
-
-async fn template_marketspace() -> Json<Value> {
-    Json(serde_json::json!({"templates": [], "updatedAt": now_ms()}))
-}
-
-async fn template_get(
-    AxumPath((_source, _tid)): AxumPath<(String, String)>,
+async fn claude_plugin_install(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
 ) -> Result<Json<Value>, ApiError> {
-    Err(ApiError::not_found("template not found"))
+    let selector = plugin_selector(&body)?;
+    run_plugin_cli("claude", &["plugin", "install", selector]).await?;
+    plugin_snapshot_response(&state, "claude").await
 }
 
-async fn template_icon(
-    AxumPath((_source, _tid)): AxumPath<(String, String)>,
-) -> Result<Response, ApiError> {
-    Err(ApiError::not_found("template icon not found"))
+async fn claude_plugin_uninstall(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let selector = plugin_selector(&body)?;
+    let mut args = vec!["plugin", "uninstall", selector, "--yes"];
+    if let Some(scope) = body.get("scope").and_then(Value::as_str) {
+        args.extend(["--scope", scope]);
+    }
+    run_plugin_cli("claude", &args).await?;
+    plugin_snapshot_response(&state, "claude").await
 }
 
-async fn workflow_usage() -> Json<Value> {
-    Json(serde_json::json!({"runs": [], "totalCost": 0, "totalTokens": 0}))
+async fn claude_plugin_enable(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let selector = plugin_selector(&body)?;
+    run_plugin_cli("claude", &["plugin", "enable", selector]).await?;
+    plugin_snapshot_response(&state, "claude").await
 }
 
-async fn workflows(AxumPath(_id): AxumPath<String>) -> Json<Value> {
-    Json(serde_json::json!({"workflows": []}))
+async fn claude_plugin_disable(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let selector = plugin_selector(&body)?;
+    run_plugin_cli("claude", &["plugin", "disable", selector]).await?;
+    plugin_snapshot_response(&state, "claude").await
 }
 
-async fn workflow_create(AxumPath(_id): AxumPath<String>, Json(body): Json<Value>) -> Json<Value> {
-    let id = format!("wf_{}", uuid::Uuid::new_v4().simple());
+async fn claude_marketplace_add(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let source = plugin_source(&body)?;
+    run_plugin_cli("claude", &["plugin", "marketplace", "add", source]).await?;
+    plugin_snapshot_response(&state, "claude").await
+}
+
+async fn codex_plugin_install(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let selector = plugin_selector(&body)?;
+    run_plugin_cli("codex", &["plugin", "add", selector, "--json"]).await?;
+    plugin_snapshot_response(&state, "codex").await
+}
+
+async fn codex_plugin_uninstall(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let selector = plugin_selector(&body)?;
+    run_plugin_cli("codex", &["plugin", "remove", selector, "--json"]).await?;
+    plugin_snapshot_response(&state, "codex").await
+}
+
+async fn codex_marketplace_add(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let source = plugin_source(&body)?;
+    run_plugin_cli("codex", &["plugin", "marketplace", "add", source, "--json"]).await?;
+    plugin_snapshot_response(&state, "codex").await
+}
+
+fn plugin_selector(body: &Value) -> Result<&str, ApiError> {
+    body.get("selector")
+        .and_then(Value::as_str)
+        .filter(|value| {
+            !value.is_empty()
+                && value.len() <= 200
+                && !value.chars().any(char::is_control)
+                && !value.chars().any(char::is_whitespace)
+        })
+        .ok_or_else(|| ApiError::invalid_path("plugin selector is invalid"))
+}
+
+fn plugin_source(body: &Value) -> Result<&str, ApiError> {
+    body.get("source")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && value.len() <= 2048)
+        .ok_or_else(|| ApiError::invalid_path("plugin marketplace source is invalid"))
+}
+
+async fn plugin_snapshot_response(state: &AppState, app: &str) -> Result<Json<Value>, ApiError> {
+    let snapshot = if app == "claude" {
+        crate::plugin_catalog::claude_snapshot().await
+    } else {
+        crate::plugin_catalog::codex_snapshot().await
+    };
+    state.p6_state.lock().await[if app == "claude" {
+        "claudePlugins"
+    } else {
+        "codexPlugins"
+    }] = snapshot.clone();
+    Ok(Json(serde_json::json!({"snapshot":snapshot})))
+}
+
+async fn run_plugin_cli(program: &str, args: &[&str]) -> Result<(), ApiError> {
+    let executable = find_path_executable(program).ok_or_else(|| {
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "CLI_NOT_FOUND",
+            format!("{program} is not installed or not on PATH"),
+        )
+    })?;
+    let extension = executable
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("");
+    let output =
+        if cfg!(windows) && matches!(extension.to_ascii_lowercase().as_str(), "cmd" | "bat") {
+            tokio::process::Command::new("cmd.exe")
+                .args(["/D", "/S", "/C"])
+                .arg(executable)
+                .args(args)
+                .output()
+                .await
+        } else if cfg!(windows) && extension.eq_ignore_ascii_case("ps1") {
+            tokio::process::Command::new("powershell.exe")
+                .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-File"])
+                .arg(executable)
+                .args(args)
+                .output()
+                .await
+        } else {
+            tokio::process::Command::new(executable)
+                .args(args)
+                .output()
+                .await
+        }
+        .map_err(ApiError::from)?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    Err(ApiError::new(
+        StatusCode::BAD_GATEWAY,
+        "PLUGIN_CLI_FAILED",
+        if stderr.is_empty() { stdout } else { stderr },
+    ))
+}
+
+fn find_path_executable(program: &str) -> Option<PathBuf> {
+    let path = Path::new(program);
+    if path.components().count() > 1 && path.is_file() {
+        return Some(path.to_owned());
+    }
+    let path_env = std::env::var_os("PATH")?;
+    #[cfg(windows)]
+    let extensions = ["", ".exe", ".cmd", ".bat", ".ps1"];
+    #[cfg(not(windows))]
+    let extensions = [""];
+    for directory in std::env::split_paths(&path_env) {
+        for extension in extensions {
+            let candidate = directory.join(format!("{program}{extension}"));
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+async fn template_capabilities() -> Json<Value> {
     Json(
-        serde_json::json!({"id": id, "title": body.get("title").cloned().unwrap_or_else(|| serde_json::json!("Untitled")), "nodes": [], "edges": [], "runs": []}),
+        serde_json::json!({"developerMode": std::env::var("OSHEEP_DEVELOPER_MODE").ok().as_deref() == Some("1")}),
     )
 }
 
-async fn workflow_get(
-    AxumPath((_id, wid)): AxumPath<(String, String)>,
+async fn templates(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
+    Ok(Json(list_templates(&state).await?))
+}
+
+async fn template_marketspace(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
+    let local = list_templates(&state).await?;
+    let entries = local["system"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|template| {
+            serde_json::json!({
+                "id": template["id"],
+                "name": template["title"],
+                "description": template["description"],
+                "source": {"type": "github", "repo": "local/osheep-templates"},
+                "version": template.get("version").and_then(Value::as_str).unwrap_or("local")
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(Json(
+        serde_json::json!({"version": "local", "templates": entries}),
+    ))
+}
+
+async fn template_get(
+    State(state): State<AppState>,
+    AxumPath((source, tid)): AxumPath<(String, String)>,
 ) -> Result<Json<Value>, ApiError> {
-    Err(ApiError::not_found(format!("workflow not found: {wid}")))
+    Ok(Json(read_template(&state, &source, &tid).await?))
+}
+
+async fn template_icon(
+    State(state): State<AppState>,
+    AxumPath((source, tid)): AxumPath<(String, String)>,
+) -> Result<Response, ApiError> {
+    let template = read_template(&state, &source, &tid).await?;
+    let file = template
+        .get("iconFile")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ApiError::not_found("template icon not found"))?;
+    let path = template_dir(&state, &source, &tid)?.join(file);
+    let data = tokio::fs::read(&path)
+        .await
+        .map_err(|_| ApiError::not_found("template icon not found"))?;
+    Ok((
+        [(
+            header::CONTENT_TYPE,
+            mime_guess::from_path(path).first_or_octet_stream().as_ref(),
+        )],
+        data,
+    )
+        .into_response())
+}
+
+async fn workflow_usage() -> Json<Value> {
+    Json(empty_workflow_usage(0))
+}
+
+async fn workflows(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<Value>, ApiError> {
+    let root = resolve_workspace_path(&state, &id).await?;
+    let directory = root.join(".osheep/workflows");
+    let mut items = Vec::new();
+    let mut entries = match tokio::fs::read_dir(directory).await {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Json(serde_json::json!({"workflows": []})))
+        }
+        Err(error) => return Err(error.into()),
+    };
+    while let Some(entry) = entries.next_entry().await? {
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        if let Ok(value) = read_json(&path).await {
+            if valid_workflow_id(value.get("id").and_then(Value::as_str).unwrap_or("")) {
+                items.push(workflow_summary(&value));
+            }
+        }
+    }
+    items.sort_by(|left, right| right["updatedAt"].as_u64().cmp(&left["updatedAt"].as_u64()));
+    Ok(Json(serde_json::json!({"workflows": items})))
+}
+
+async fn workflow_create(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let root = resolve_workspace_path(&state, &id).await?;
+    let now = now_ms();
+    let workflow_id = format!("wf_{}", uuid::Uuid::new_v4().simple());
+    let mut record = body;
+    record["id"] = Value::String(workflow_id.clone());
+    record["title"] = Value::String(
+        record
+            .get("title")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("Untitled")
+            .to_owned(),
+    );
+    record["readme"] = Value::String(
+        record
+            .get("readme")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned(),
+    );
+    record["createdAt"] = Value::from(now);
+    record["updatedAt"] = Value::from(now);
+    if !record["nodes"].is_array() {
+        record["nodes"] = default_workflow_nodes();
+    }
+    if !record["edges"].is_array() {
+        record["edges"] = Value::Array(vec![]);
+    }
+    if !record["runs"].is_array() {
+        record["runs"] = Value::Array(vec![]);
+    }
+    write_workflow(&root, &workflow_id, &record).await?;
+    Ok(Json(record))
+}
+
+async fn workflow_get(
+    State(state): State<AppState>,
+    AxumPath((id, wid)): AxumPath<(String, String)>,
+) -> Result<Json<Value>, ApiError> {
+    let root = resolve_workspace_path(&state, &id).await?;
+    Ok(Json(read_workflow(&root, &wid).await?))
 }
 
 async fn workflow_save(
-    AxumPath((_id, wid)): AxumPath<(String, String)>,
+    State(state): State<AppState>,
+    AxumPath((id, wid)): AxumPath<(String, String)>,
     Json(mut body): Json<Value>,
-) -> Json<Value> {
-    if body.get("id").is_none() {
-        body["id"] = Value::String(wid);
+) -> Result<Json<Value>, ApiError> {
+    let root = resolve_workspace_path(&state, &id).await?;
+    let mut current = read_workflow(&root, &wid).await?;
+    if body.get("nodes").is_none() && body.get("title").is_some() {
+        current["title"] = body["title"].clone();
+        body = current.clone();
     }
-    Json(body)
+    if body
+        .get("id")
+        .and_then(Value::as_str)
+        .is_some_and(|value| value != wid)
+    {
+        return Err(ApiError::invalid_path("workflow id does not match URL"));
+    }
+    body["id"] = Value::String(wid.clone());
+    body["createdAt"] = current
+        .get("createdAt")
+        .cloned()
+        .unwrap_or_else(|| Value::from(now_ms()));
+    body["updatedAt"] = Value::from(now_ms());
+    write_workflow(&root, &wid, &body).await?;
+    Ok(Json(body))
 }
 
-async fn workflow_run(AxumPath((_id, wid)): AxumPath<(String, String)>) -> Json<Value> {
-    Json(serde_json::json!({"ok": true, "workflowId": wid, "status": "queued"}))
+async fn workflow_run(
+    State(state): State<AppState>,
+    AxumPath((id, wid)): AxumPath<(String, String)>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let root = resolve_workspace_path(&state, &id).await?;
+    let path = workflow_path(&root, &wid)?;
+    let _ = read_workflow(&root, &wid).await?;
+    let requested = body.get("nodeIds").and_then(Value::as_array).map(|items| {
+        items
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    });
+    let key = workflow_runtime_key(&root, &wid);
+    let (run_id, workflow) = state
+        .workflow_runtime
+        .start(key, path, root, requested)
+        .await
+        .map_err(workflow_runtime_error)?;
+    Ok(Json(
+        serde_json::json!({"runId":run_id,"workflow":workflow}),
+    ))
+}
+
+async fn delete_workflow(
+    State(state): State<AppState>,
+    AxumPath((id, wid)): AxumPath<(String, String)>,
+) -> Result<Json<Value>, ApiError> {
+    let root = resolve_workspace_path(&state, &id).await?;
+    let path = workflow_path(&root, &wid)?;
+    tokio::fs::remove_file(path).await.map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            ApiError::not_found(format!("workflow not found: {wid}"))
+        } else {
+            error.into()
+        }
+    })?;
+    Ok(Json(serde_json::json!({"ok": true})))
+}
+
+async fn workflow_pause(
+    State(state): State<AppState>,
+    AxumPath((id, wid)): AxumPath<(String, String)>,
+) -> Result<Json<Value>, ApiError> {
+    let root = resolve_workspace_path(&state, &id).await?;
+    let _ = read_workflow(&root, &wid).await?;
+    state
+        .workflow_runtime
+        .stop(&workflow_runtime_key(&root, &wid))
+        .await;
+    Ok(Json(serde_json::json!({"ok": true, "paused": true})))
+}
+
+async fn workflow_stop(
+    State(state): State<AppState>,
+    AxumPath((id, wid)): AxumPath<(String, String)>,
+) -> Result<Json<Value>, ApiError> {
+    let root = resolve_workspace_path(&state, &id).await?;
+    let _ = read_workflow(&root, &wid).await?;
+    state
+        .workflow_runtime
+        .stop(&workflow_runtime_key(&root, &wid))
+        .await;
+    Ok(Json(serde_json::json!({"ok": true, "stopped": true})))
+}
+
+async fn template_marketspace_install(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<Value>, ApiError> {
+    read_template(&state, "system", &id).await.map(Json)
+}
+
+fn developer_mode() -> bool {
+    std::env::var("OSHEEP_DEVELOPER_MODE").ok().as_deref() == Some("1")
+}
+
+fn require_template_source(source: &str) -> Result<(), ApiError> {
+    if !matches!(source, "system" | "user") {
+        return Err(ApiError::invalid_path("template source is invalid"));
+    }
+    if source == "system" && !developer_mode() {
+        return Err(ApiError::invalid_path(
+            "system templates can only be edited in developer mode",
+        ));
+    }
+    Ok(())
+}
+
+async fn save_workflow_template(
+    state: &AppState,
+    workspace_id: &str,
+    workflow_id: &str,
+    source: &str,
+) -> Result<Json<Value>, ApiError> {
+    require_template_source(source)?;
+    let root = resolve_workspace_path(state, workspace_id).await?;
+    let workflow = read_workflow(&root, workflow_id).await?;
+    let now = now_ms();
+    let template_id = format!("tpl_{}", uuid::Uuid::new_v4().simple());
+    let record = serde_json::json!({
+        "id": template_id,
+        "source": source,
+        "title": workflow.get("title").and_then(Value::as_str).unwrap_or("Workflow template"),
+        "description": if source == "system" { "Built-in workflow template" } else { "Custom workflow template" },
+        "readme": workflow.get("readme").and_then(Value::as_str).unwrap_or(""),
+        "createdAt": now,
+        "updatedAt": now,
+        "nodes": workflow.get("nodes").cloned().unwrap_or_else(|| Value::Array(vec![])),
+        "edges": workflow.get("edges").cloned().unwrap_or_else(|| Value::Array(vec![]))
+    });
+    write_json_atomic(
+        template_dir(state, source, &template_id)?.join("template.json"),
+        &record,
+    )
+    .await?;
+    Ok(Json(read_template(state, source, &template_id).await?))
+}
+
+async fn save_workflow_as_template(
+    State(state): State<AppState>,
+    AxumPath((workspace_id, workflow_id)): AxumPath<(String, String)>,
+) -> Result<Json<Value>, ApiError> {
+    save_workflow_template(&state, &workspace_id, &workflow_id, "user").await
+}
+
+async fn save_workflow_as_system_template(
+    State(state): State<AppState>,
+    AxumPath((workspace_id, workflow_id)): AxumPath<(String, String)>,
+) -> Result<Json<Value>, ApiError> {
+    save_workflow_template(&state, &workspace_id, &workflow_id, "system").await
+}
+
+async fn edit_template_workflow(
+    State(state): State<AppState>,
+    AxumPath((workspace_id, source, template_id)): AxumPath<(String, String, String)>,
+) -> Result<Json<Value>, ApiError> {
+    require_template_source(&source)?;
+    let root = resolve_workspace_path(&state, &workspace_id).await?;
+    let template = read_template(&state, &source, &template_id).await?;
+    let directory = root.join(".osheep/workflows");
+    let mut entries = tokio::fs::read_dir(&directory).await.ok();
+    while let Some(entries) = entries.as_mut() {
+        let Some(entry) = entries.next_entry().await? else {
+            break;
+        };
+        if let Ok(existing) = read_json(&entry.path()).await {
+            if existing["templateBinding"]["source"].as_str() == Some(source.as_str())
+                && existing["templateBinding"]["id"].as_str() == Some(template_id.as_str())
+            {
+                let id = existing["id"].as_str().unwrap_or_default().to_owned();
+                if valid_workflow_id(&id) {
+                    let mut updated = existing;
+                    updated["title"] = template["title"].clone();
+                    updated["readme"] = template["readme"].clone();
+                    updated["nodes"] = template["nodes"].clone();
+                    updated["edges"] = template["edges"].clone();
+                    updated["runs"] = Value::Array(vec![]);
+                    updated["updatedAt"] = Value::from(now_ms());
+                    write_workflow(&root, &id, &updated).await?;
+                    return Ok(Json(updated));
+                }
+            }
+        }
+    }
+    let workflow_id = format!("wf_{}", uuid::Uuid::new_v4().simple());
+    let now = now_ms();
+    let record = serde_json::json!({
+        "id": workflow_id,
+        "title": template["title"],
+        "readme": template["readme"],
+        "templateBinding": {"source": source, "id": template_id},
+        "nodes": template["nodes"],
+        "edges": template["edges"],
+        "runs": [],
+        "createdAt": now,
+        "updatedAt": now
+    });
+    let id = record["id"].as_str().expect("created workflow id");
+    write_workflow(&root, id, &record).await?;
+    Ok(Json(record))
+}
+
+async fn delete_template(
+    State(state): State<AppState>,
+    AxumPath((source, tid)): AxumPath<(String, String)>,
+) -> Result<Json<Value>, ApiError> {
+    require_template_source(&source)?;
+    let path = template_dir(&state, &source, &tid)?;
+    tokio::fs::remove_dir_all(&path).await.map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            ApiError::not_found("template not found")
+        } else {
+            error.into()
+        }
+    })?;
+    Ok(Json(serde_json::json!({"ok": true})))
+}
+
+async fn update_template_icon(
+    State(state): State<AppState>,
+    AxumPath((source, tid)): AxumPath<(String, String)>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    require_template_source(&source)?;
+    let mut template = read_template(&state, &source, &tid).await?;
+    let icon = body
+        .get("icon")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ApiError::invalid_path("icon is required"))?;
+    let (header_value, content) = icon
+        .split_once(',')
+        .ok_or_else(|| ApiError::invalid_path("icon must be a data URL"))?;
+    let mime = header_value
+        .strip_prefix("data:")
+        .and_then(|value| value.strip_suffix(";base64"))
+        .ok_or_else(|| ApiError::invalid_path("icon must be a base64 data URL"))?;
+    let bytes = decode_base64(content)?;
+    if bytes.len() > 2 * 1024 * 1024 {
+        return Err(ApiError::invalid_path("icon is too large"));
+    }
+    let ext = match mime {
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "image/svg+xml" => "svg",
+        "image/webp" => "webp",
+        "image/gif" => "gif",
+        _ => return Err(ApiError::invalid_path("unsupported icon type")),
+    };
+    let file = format!("icon.{ext}");
+    let directory = template_dir(&state, &source, &tid)?;
+    tokio::fs::write(directory.join(&file), bytes).await?;
+    template["iconFile"] = Value::String(file);
+    template["updatedAt"] = Value::from(now_ms());
+    write_json_atomic(directory.join("template.json"), &template).await?;
+    Ok(Json(read_template(&state, &source, &tid).await?))
+}
+
+fn empty_workflow_usage(project_count: u64) -> Value {
+    serde_json::json!({"generatedAt": now_ms(), "range": "30d", "projectCount": project_count,
+        "totals": {"runs":0,"inputTokens":0,"outputTokens":0,"cacheReadTokens":0,"cacheWriteTokens":0,"totalTokens":0,"cost":0},
+        "daily": [], "workflows": [], "models": [], "recentRuns": []})
+}
+
+fn valid_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
+fn valid_workflow_id(value: &str) -> bool {
+    value.starts_with("wf_")
+        && value.len() >= 11
+        && value.len() <= 40
+        && value[3..]
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+}
+
+fn workflow_path(root: &Path, id: &str) -> Result<PathBuf, ApiError> {
+    if !valid_workflow_id(id) {
+        return Err(ApiError::invalid_path("workflow id is invalid"));
+    }
+    Ok(root.join(".osheep/workflows").join(format!("{id}.json")))
+}
+
+async fn read_json(path: &Path) -> Result<Value, ApiError> {
+    let content = tokio::fs::read(path).await?;
+    serde_json::from_slice(&content).map_err(|_| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "IO_ERROR",
+            "JSON file parse failed",
+        )
+    })
+}
+
+async fn write_json_atomic(path: PathBuf, value: &Value) -> Result<(), ApiError> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| ApiError::invalid_path("file has no parent directory"))?
+        .to_path_buf();
+    tokio::fs::create_dir_all(&parent).await?;
+    let temporary = parent.join(format!(
+        ".osheep-write-{}.tmp",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let mut data = serde_json::to_vec_pretty(value).map_err(|error| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "IO_ERROR",
+            error.to_string(),
+        )
+    })?;
+    data.push(b'\n');
+    tokio::fs::write(&temporary, data).await?;
+    match tokio::fs::rename(&temporary, &path).await {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            tokio::fs::copy(&temporary, &path).await?;
+            let _ = tokio::fs::remove_file(&temporary).await;
+            Ok(())
+        }
+    }
+}
+
+async fn read_workflow(root: &Path, id: &str) -> Result<Value, ApiError> {
+    let path = workflow_path(root, id)?;
+    read_json(&path).await.map_err(|error| {
+        if path.exists() {
+            error
+        } else {
+            ApiError::not_found(format!("workflow not found: {id}"))
+        }
+    })
+}
+
+async fn write_workflow(root: &Path, id: &str, record: &Value) -> Result<(), ApiError> {
+    write_json_atomic(workflow_path(root, id)?, record).await
+}
+
+fn workflow_summary(record: &Value) -> Value {
+    let runs = record.get("runs").and_then(Value::as_array);
+    serde_json::json!({
+        "id": record.get("id").and_then(Value::as_str).unwrap_or_default(),
+        "title": record.get("title").and_then(Value::as_str).unwrap_or("Untitled"),
+        "createdAt": record.get("createdAt").and_then(Value::as_u64).unwrap_or(0),
+        "updatedAt": record.get("updatedAt").and_then(Value::as_u64).unwrap_or(0),
+        "nodeCount": record.get("nodes").and_then(Value::as_array).map_or(0, Vec::len),
+        "edgeCount": record.get("edges").and_then(Value::as_array).map_or(0, Vec::len),
+        "status": runs.and_then(|items| items.last()).and_then(|item| item.get("status")).and_then(Value::as_str).unwrap_or("idle")
+    })
+}
+
+fn default_workflow_nodes() -> Value {
+    serde_json::json!([
+        {"id": format!("node_{}", uuid::Uuid::new_v4().simple().to_string()[..8].to_string()), "kind":"trigger", "title":"Start", "providerKind":"claude-cli", "model":"", "prompt":"", "x":80, "y":120, "status":"idle"},
+        {"id": format!("node_{}", uuid::Uuid::new_v4().simple().to_string()[..8].to_string()), "kind":"agent", "title":"Agent", "providerKind":"claude-cli", "model":"", "prompt":"", "x":360, "y":120, "status":"idle"}
+    ])
+}
+
+fn template_dir(state: &AppState, source: &str, id: &str) -> Result<PathBuf, ApiError> {
+    if !matches!(source, "system" | "user") || !valid_name(id) {
+        return Err(ApiError::invalid_path("template id is invalid"));
+    }
+    Ok(state.store.templates_root().join(source).join(id))
+}
+
+async fn read_template(state: &AppState, source: &str, id: &str) -> Result<Value, ApiError> {
+    let path = template_dir(state, source, id)?.join("template.json");
+    let mut value = read_json(&path).await.map_err(|error| {
+        if path.exists() {
+            error
+        } else {
+            ApiError::not_found(format!("template not found: {id}"))
+        }
+    })?;
+    if !value.is_object() {
+        return Err(ApiError::invalid_path("template is invalid"));
+    }
+    value["id"] = Value::String(id.to_owned());
+    value["source"] = Value::String(source.to_owned());
+    value["title"] = Value::String(
+        value
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or(id)
+            .to_owned(),
+    );
+    value["description"] = Value::String(
+        value
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned(),
+    );
+    value["readme"] = Value::String(
+        value
+            .get("readme")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned(),
+    );
+    value["createdAt"] = Value::from(value.get("createdAt").and_then(Value::as_u64).unwrap_or(0));
+    value["updatedAt"] = Value::from(value.get("updatedAt").and_then(Value::as_u64).unwrap_or(0));
+    if !value["nodes"].is_array() {
+        value["nodes"] = Value::Array(vec![]);
+    }
+    if !value["edges"].is_array() {
+        value["edges"] = Value::Array(vec![]);
+    }
+    if let Some(icon) = value
+        .get("iconFile")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+    {
+        value["icon"] = Value::String(format!(
+            "/api/templates/{source}/{id}/icon?v={}",
+            value["updatedAt"]
+        ));
+        value["iconFile"] = Value::String(icon);
+    }
+    Ok(value)
+}
+
+fn public_template(value: Value) -> Value {
+    serde_json::json!({
+        "id": value["id"], "source": value["source"], "title": value["title"],
+        "description": value["description"], "version": value.get("version").cloned(),
+        "icon": value.get("icon").cloned(), "updatedAt": value["updatedAt"],
+        "nodeCount": value.get("nodes").and_then(Value::as_array).map_or(0, Vec::len)
+    })
+}
+
+async fn list_templates(state: &AppState) -> Result<Value, ApiError> {
+    let mut system = Vec::new();
+    let mut user = Vec::new();
+    for (source, destination) in [("system", &mut system), ("user", &mut user)] {
+        let root = state.store.templates_root().join(source);
+        let mut entries = match tokio::fs::read_dir(&root).await {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
+        while let Some(entry) = entries.next_entry().await? {
+            let id = entry.file_name().to_string_lossy().into_owned();
+            if !entry.file_type().await?.is_dir() || !valid_name(&id) {
+                continue;
+            }
+            if let Ok(template) = read_template(state, source, &id).await {
+                destination.push(public_template(template));
+            }
+        }
+        destination.sort_by(|left, right| left["title"].as_str().cmp(&right["title"].as_str()));
+    }
+    Ok(serde_json::json!({"system": system, "user": user,
+        "developerMode": std::env::var("OSHEEP_DEVELOPER_MODE").ok().as_deref() == Some("1")}))
+}
+
+fn user_home() -> PathBuf {
+    std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn skill_live_roots(agent: &str) -> Vec<PathBuf> {
+    let home = user_home();
+    let shared = std::env::var_os("OSHEEP_AGENTS_SKILLS_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".agents/skills"));
+    let app_root = match agent {
+        "claude" => std::env::var_os("CLAUDE_CONFIG_DIR")
+            .or_else(|| std::env::var_os("OSHEEP_CLAUDE_CONFIG_DIR"))
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".claude")),
+        _ => std::env::var_os("CODEX_HOME")
+            .or_else(|| std::env::var_os("OSHEEP_CODEX_CONFIG_DIR"))
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".codex")),
+    };
+    vec![app_root.join("skills"), shared]
+}
+
+async fn copy_directory_if_missing(source: &Path, destination: &Path) -> Result<(), ApiError> {
+    if tokio::fs::try_exists(destination.join("SKILL.md"))
+        .await
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+    tokio::fs::create_dir_all(destination).await?;
+    let mut entries = tokio::fs::read_dir(source).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+        if entry.file_type().await?.is_dir() {
+            Box::pin(copy_directory_if_missing(&source_path, &destination_path)).await?;
+        } else {
+            tokio::fs::copy(source_path, destination_path).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn skill_description(directory: &Path) -> Option<String> {
+    let content = tokio::fs::read_to_string(directory.join("SKILL.md"))
+        .await
+        .ok()?;
+    content
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("description:")
+                .map(|value| value.trim().trim_matches(['\"', '\'']).to_owned())
+        })
+        .filter(|value| !value.is_empty())
+}
+
+async fn skills_snapshot(state: &AppState) -> Result<Value, ApiError> {
+    let built_in_root = state
+        .store
+        .root()
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("template-library/user-skills");
+    for agent in ["claude", "codex"] {
+        let staging = state.store.root().join("skills").join(agent);
+        let mut entries = match tokio::fs::read_dir(&built_in_root).await {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
+        while let Some(entry) = entries.next_entry().await? {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if entry.file_type().await?.is_dir()
+                && valid_name(&name)
+                && tokio::fs::try_exists(entry.path().join("SKILL.md"))
+                    .await
+                    .unwrap_or(false)
+            {
+                let live = skill_live_roots(agent)
+                    .into_iter()
+                    .any(|root| root.join(&name).join("SKILL.md").exists());
+                if !live {
+                    copy_directory_if_missing(&entry.path(), &staging.join(name)).await?;
+                }
+            }
+        }
+    }
+    let mut enabled_by_path = std::collections::BTreeMap::<PathBuf, Value>::new();
+    let mut user = Vec::new();
+    for agent in ["claude", "codex"] {
+        let roots = skill_live_roots(agent);
+        for root in &roots {
+            let mut entries = match tokio::fs::read_dir(root).await {
+                Ok(entries) => entries,
+                Err(_) => continue,
+            };
+            while let Some(entry) = entries.next_entry().await? {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if entry.file_type().await?.is_dir()
+                    && valid_name(&name)
+                    && tokio::fs::try_exists(entry.path().join("SKILL.md"))
+                        .await
+                        .unwrap_or(false)
+                {
+                    let path = entry.path();
+                    if let Some(existing) = enabled_by_path.get_mut(&path) {
+                        if let Some(agents) = existing["agents"].as_array_mut() {
+                            agents.push(Value::String(agent.to_owned()));
+                        }
+                    } else {
+                        enabled_by_path.insert(path.clone(), serde_json::json!({"name":name,"description":skill_description(&path).await,"path":path,"agents":[agent],"source":"local","builtIn":tokio::fs::try_exists(entry.path().join(".osheep-built-in")).await.unwrap_or(false)}));
+                    }
+                }
+            }
+        }
+        let staging = state.store.root().join("skills").join(agent);
+        let mut entries = match tokio::fs::read_dir(&staging).await {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        while let Some(entry) = entries.next_entry().await? {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if entry.file_type().await?.is_dir()
+                && valid_name(&name)
+                && tokio::fs::try_exists(entry.path().join("SKILL.md"))
+                    .await
+                    .unwrap_or(false)
+            {
+                user.push(serde_json::json!({"name":name,"description":skill_description(&entry.path()).await,"path":entry.path(),"agent":agent,"origin":"manual","builtIn":tokio::fs::try_exists(entry.path().join(".osheep-built-in")).await.unwrap_or(false)}));
+            }
+        }
+    }
+    let mut enabled = enabled_by_path.into_values().collect::<Vec<_>>();
+    enabled.sort_by(|left, right| left["name"].as_str().cmp(&right["name"].as_str()));
+    user.sort_by(|left, right| left["name"].as_str().cmp(&right["name"].as_str()));
+    Ok(
+        serde_json::json!({"enabled":enabled,"user":user,"paths":{"claude":skill_live_roots("claude"),"codex":skill_live_roots("codex")}}),
+    )
 }
 
 async fn workflow_events(
+    State(state): State<AppState>,
     ws: WebSocketUpgrade,
-    AxumPath((_id, wid)): AxumPath<(String, String)>,
-) -> Response {
-    ws.on_upgrade(move |mut socket| async move {
-        let _ = socket
+    AxumPath((id, wid)): AxumPath<(String, String)>,
+) -> Result<Response, ApiError> {
+    let root = resolve_workspace_path(&state, &id).await?;
+    let _ = read_workflow(&root, &wid).await?;
+    let mut events = state
+        .workflow_runtime
+        .subscribe(&workflow_runtime_key(&root, &wid))
+        .await;
+    Ok(ws.on_upgrade(move |socket| async move {
+        let (mut sender, mut receiver) = socket.split();
+        if sender
             .send(Message::Text(
                 serde_json::json!({"type":"ready","workflowId":wid,"updatedAt":now_ms()})
                     .to_string()
                     .into(),
             ))
-            .await;
-    })
+            .await
+            .is_err()
+        {
+            return;
+        }
+        let mut heartbeat = tokio::time::interval(Duration::from_secs(20));
+        loop {
+            tokio::select! {
+                event = events.recv() => match event {
+                    Ok(event) => {
+                        if sender.send(Message::Text(event.to_string().into())).await.is_err() { break; }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => break,
+                },
+                message = receiver.next() => match message {
+                    Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
+                    Some(Ok(Message::Ping(bytes))) => {
+                        if sender.send(Message::Pong(bytes)).await.is_err() { break; }
+                    }
+                    _ => {}
+                },
+                _ = heartbeat.tick() => {
+                    if sender.send(Message::Ping(Vec::new().into())).await.is_err() { break; }
+                }
+            }
+        }
+    }))
+}
+
+async fn resolve_workflow_approval(
+    State(state): State<AppState>,
+    AxumPath((id, wid, node_id)): AxumPath<(String, String, String)>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let root = resolve_workspace_path(&state, &id).await?;
+    let _ = read_workflow(&root, &wid).await?;
+    let approved = body
+        .get("approved")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    state
+        .workflow_runtime
+        .resolve(
+            &workflow_runtime_key(&root, &wid),
+            &node_id,
+            Value::Bool(approved),
+        )
+        .await
+        .map_err(workflow_runtime_error)?;
+    Ok(Json(serde_json::json!({"ok":true})))
+}
+
+async fn resolve_workflow_input(
+    State(state): State<AppState>,
+    AxumPath((id, wid, node_id)): AxumPath<(String, String, String)>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let root = resolve_workspace_path(&state, &id).await?;
+    let _ = read_workflow(&root, &wid).await?;
+    let value = body
+        .get("value")
+        .cloned()
+        .unwrap_or_else(|| Value::String(String::new()));
+    state
+        .workflow_runtime
+        .resolve(&workflow_runtime_key(&root, &wid), &node_id, value)
+        .await
+        .map_err(workflow_runtime_error)?;
+    Ok(Json(serde_json::json!({"ok":true})))
+}
+
+fn workflow_runtime_key(root: &Path, workflow_id: &str) -> String {
+    format!("{}\0{workflow_id}", root.display())
+}
+
+fn workflow_runtime_error(error: crate::workflow_runtime::RuntimeError) -> ApiError {
+    match error {
+        crate::workflow_runtime::RuntimeError::AlreadyRunning => {
+            ApiError::new(StatusCode::CONFLICT, "WORKFLOW_RUNNING", error.to_string())
+        }
+        crate::workflow_runtime::RuntimeError::NotWaiting => ApiError::new(
+            StatusCode::CONFLICT,
+            "WORKFLOW_NOT_WAITING",
+            error.to_string(),
+        ),
+        _ => ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "WORKFLOW_RUNTIME_ERROR",
+            error.to_string(),
+        ),
+    }
 }
 
 fn now_ms() -> u64 {

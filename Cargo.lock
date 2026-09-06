@@ -2638,6 +2638,7 @@ dependencies = [
  "osheep-instance",
  "osheep-pty",
  "percent-encoding",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",

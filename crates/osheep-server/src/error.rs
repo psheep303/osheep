@@ -62,6 +62,16 @@ impl IntoResponse for ApiError {
     }
 }
 
+impl From<std::io::Error> for ApiError {
+    fn from(error: std::io::Error) -> Self {
+        Self::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "IO_ERROR",
+            error.to_string(),
+        )
+    }
+}
+
 impl From<WorkspaceError> for ApiError {
     fn from(error: WorkspaceError) -> Self {
         match error {

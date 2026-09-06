@@ -137,6 +137,19 @@ impl AgentSessionService {
         self.delete_file(app, &record).await?;
         Ok(record)
     }
+    pub async fn get_in_project(
+        &self,
+        app: AgentSessionApp,
+        id: &str,
+        project: &Path,
+    ) -> Result<AgentSessionSummary, AgentSessionError> {
+        validate_id(id)?;
+        let root = std::fs::canonicalize(project).unwrap_or_else(|_| project.to_path_buf());
+        self.find(app, id)
+            .await?
+            .filter(|session| within(&root, Path::new(&session.cwd)))
+            .ok_or(AgentSessionError::NotFound)
+    }
     pub async fn batch_delete(
         &self,
         app: AgentSessionApp,
