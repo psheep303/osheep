@@ -1,4 +1,5 @@
 pub mod app;
+mod condition_expression;
 pub mod config;
 pub mod error;
 mod plugin_catalog;

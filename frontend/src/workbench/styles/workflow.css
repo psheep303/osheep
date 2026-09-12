@@ -1905,6 +1905,31 @@
   line-height: 1.6;
 }
 
+.workflow-run-details__finished-terminal {
+  margin: 0 0 14px;
+  border: 1px solid var(--wf-border);
+  background: var(--surface-2);
+}
+
+.workflow-run-details__finished-terminal summary {
+  padding: 8px 10px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.workflow-run-details__finished-terminal pre {
+  max-height: 260px;
+  overflow: auto;
+  margin: 0;
+  padding: 10px;
+  border-top: 1px solid var(--wf-border);
+  color: var(--fg-default);
+  font: 11px/1.45 "Cascadia Mono", Consolas, "Courier New", monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .workflow-observability {
   width: min(430px, 42vw);
   overflow-y: auto;

@@ -46,6 +46,9 @@ pub struct SpawnRequest {
     pub cols: u16,
     pub rows: u16,
     pub kill_on_detach: bool,
+    pub initial_executable: Option<PathBuf>,
+    pub initial_args: Vec<String>,
+    pub terminal_program: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -341,8 +344,10 @@ impl PtyRuntime for NativePtyRuntime {
             .profiles
             .iter()
             .find(|profile| profile.public.id == request.shell)
-            .cloned()
-            .ok_or_else(|| PtyError::UnsupportedShell(request.shell.clone()))?;
+            .cloned();
+        if request.initial_executable.is_none() && profile.is_none() {
+            return Err(PtyError::UnsupportedShell(request.shell.clone()));
+        }
 
         let pair = native_pty_system()
             .openpty(PtySize {
@@ -352,10 +357,28 @@ impl PtyRuntime for NativePtyRuntime {
                 pixel_height: 0,
             })
             .map_err(|error| PtyError::Spawn(error.to_string()))?;
-        let mut command = CommandBuilder::new(&profile.public.executable);
-        command.args(profile.args);
+        let executable = request.initial_executable.clone().unwrap_or_else(|| {
+            PathBuf::from(
+                &profile
+                    .as_ref()
+                    .expect("profile checked above")
+                    .public
+                    .executable,
+            )
+        });
+        let args = if request.initial_executable.is_some() {
+            request.initial_args.clone()
+        } else {
+            profile
+                .as_ref()
+                .expect("profile checked above")
+                .args
+                .clone()
+        };
+        let mut command = CommandBuilder::new(platform_shell_path(&executable));
+        command.args(args);
         command.cwd(platform_shell_path(&request.cwd));
-        for (key, value) in terminal_environment() {
+        for (key, value) in terminal_environment(request.terminal_program.as_deref()) {
             command.env(key, value);
         }
         let mut child = pair
@@ -767,7 +790,7 @@ fn validate_size(cols: u16, rows: u16) -> Result<(), PtyError> {
     }
 }
 
-fn terminal_environment() -> Vec<(String, String)> {
+fn terminal_environment(program: Option<&str>) -> Vec<(String, String)> {
     let mut values: Vec<(String, String)> = env::vars()
         .filter(|(key, _)| {
             !key.starts_with("VSCODE_")
@@ -776,7 +799,10 @@ fn terminal_environment() -> Vec<(String, String)> {
         })
         .collect();
     values.push(("TERM".into(), "xterm-256color".into()));
-    values.push(("TERM_PROGRAM".into(), "WezTerm".into()));
+    values.push((
+        "TERM_PROGRAM".into(),
+        program.unwrap_or("WezTerm").to_owned(),
+    ));
     values
 }
 
@@ -808,12 +834,23 @@ fn detect_profiles() -> Vec<NativeShellProfile> {
                     "-NoLogo",
                     "-NoExit",
                     "-Command",
-                    "Set-PSReadLineOption -HistorySaveStyle SaveNothing",
+                    // Windows PowerShell otherwise writes through the active
+                    // OEM/ANSI code page (GBK on zh-CN). The PTY stream is
+                    // decoded as UTF-8, so establish UTF-8 before any command
+                    // output, including Codex/Claude startup errors.
+                    "try { chcp 65001 > $null } catch {}; try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; [Console]::InputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}; Set-PSReadLineOption -HistorySaveStyle SaveNothing",
                 ],
             ));
         }
         if let Some(executable) = find_executable("cmd.exe") {
-            profiles.push(profile("cmd", "Command Prompt", executable, &[]));
+            // Keep cmd interactive while switching its console code page to
+            // UTF-8 before the first prompt or agent command is emitted.
+            profiles.push(profile(
+                "cmd",
+                "Command Prompt",
+                executable,
+                &["/D", "/K", "chcp 65001>nul"],
+            ));
         }
         for candidate in [
             r"C:\Program Files\Git\bin\bash.exe",
@@ -1024,6 +1061,9 @@ mod tests {
                     cols: 80,
                     rows: 24,
                     kill_on_detach: true,
+                    initial_executable: None,
+                    initial_args: Vec::new(),
+                    terminal_program: None,
                 })
                 .await
                 .unwrap();
@@ -1106,6 +1146,9 @@ mod tests {
                 cols: 80,
                 rows: 24,
                 kill_on_detach: false,
+                initial_executable: None,
+                initial_args: Vec::new(),
+                terminal_program: None,
             })
             .await
             .unwrap();

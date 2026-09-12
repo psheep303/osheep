@@ -4,6 +4,7 @@ use crate::runtime::{RuntimeClientError, RuntimeControl};
 use crate::security::{require_origin, require_session, Security, SecurityError};
 use crate::skills_library::SkillsLibrary;
 use crate::static_site;
+use axum::body::Body;
 use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{DefaultBodyLimit, Path as AxumPath, Query, State, WebSocketUpgrade};
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri};
@@ -27,14 +28,18 @@ use osheep_core::{
 use osheep_pty::{PtyEvent, PtyRuntime, PtySession, SpawnRequest};
 use serde::Deserialize;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::process::Command;
 use tokio::sync::{broadcast, Mutex};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
 
 const TERMINAL_REPLAY_CHUNK_BYTES: usize = 64 * 1024;
+const AI_TERMINAL_DONE_MARKER: &str = "__OSHEEP_AGENT_DONE__";
 
 #[derive(Clone)]
 pub struct AppState {
@@ -55,8 +60,15 @@ pub struct AppState {
     frontend_root: Option<PathBuf>,
     runtime: Option<Arc<RuntimeControl>>,
     p6_state: Arc<Mutex<Value>>,
+    ai_terminal_controls: Arc<Mutex<HashMap<String, Arc<AiTerminalControl>>>>,
     skills_library: SkillsLibrary,
     workflow_runtime: crate::workflow_runtime::WorkflowRuntime,
+}
+
+struct AiTerminalControl {
+    session: Arc<dyn PtySession>,
+    cancelled: AtomicBool,
+    successful: AtomicBool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -121,11 +133,14 @@ pub async fn build_app_with_runtime(
         agents,
         claude_onboarding,
         sync_roots: Arc::new(known_sync_roots()),
-        pty,
+        pty: pty.clone(),
         frontend_root: config.frontend_root,
         runtime,
         skills_library: skills_library_service,
-        workflow_runtime: crate::workflow_runtime::WorkflowRuntime::default(),
+        workflow_runtime: crate::workflow_runtime::WorkflowRuntime::new_with_pty(
+            config.data_root.clone(),
+            pty.clone(),
+        ),
         p6_state: Arc::new(Mutex::new(serde_json::json!({
             "aiSettings": {"state": ai_settings_state, "paths": ai_settings_paths},
             "skills": {"enabled": [], "user": [], "paths": {"claude": [], "codex": []}},
@@ -133,6 +148,7 @@ pub async fn build_app_with_runtime(
             "codexPlugins": {"plugins": [], "marketplaces": [], "warnings": [], "paths": {}},
             "workflows": {}
         }))),
+        ai_terminal_controls: Arc::new(Mutex::new(HashMap::new())),
     };
 
     let protected = Router::new()
@@ -252,7 +268,7 @@ pub async fn build_app_with_runtime(
             "/api/workspaces/{id}/agents/{name}",
             get(get_agent).put(update_agent).delete(delete_agent),
         )
-        .route("/api/model-prices/sync", post(p6_ok))
+        .route("/api/model-prices/sync", post(sync_model_prices))
         .route("/api/ai-settings", get(ai_settings).put(update_ai_settings))
         .route("/api/ai-settings/live/{app}", get(ai_live_settings))
         .route(
@@ -267,38 +283,44 @@ pub async fn build_app_with_runtime(
         .route("/api/ai-settings/switch", post(switch_ai_provider))
         .route("/api/ai/cli-status", get(ai_cli_status))
         .route("/api/ai/cli-tools", get(ai_cli_tools))
-        .route("/api/ai/cli-tools/{name}/action", post(p6_ok))
-        .route("/api/workspaces/{id}/ai/models", post(p6_ok))
-        .route("/api/workspaces/{id}/ai/chat/terminal", post(p6_ok))
+        .route("/api/ai/cli-tools/{name}/action", post(ai_cli_tool_action))
+        .route("/api/workspaces/{id}/ai/models", post(ai_models))
+        .route(
+            "/api/workspaces/{id}/ai/chat/terminal",
+            post(ai_chat_terminal),
+        )
         .route(
             "/api/workspaces/{id}/ai/chat/terminal/{sessionId}/auto-success",
-            post(p6_ok),
+            post(ai_chat_terminal_auto_success),
         )
         .route(
             "/api/workspaces/{id}/ai/chat/terminal/{sessionId}/pause",
-            post(p6_ok),
+            post(ai_chat_terminal_pause),
         )
         .route(
             "/api/workspaces/{id}/ai/chat/terminal/{sessionId}/success",
-            post(p6_ok),
+            post(ai_chat_terminal_success),
         )
-        .route("/api/workspaces/{id}/ai/chat", post(p6_ok))
-        .route("/api/workspaces/{id}/ai/chat/stream", post(p6_ok))
-        .route("/api/workspaces/{id}/ai/exec/read", post(p6_ok))
-        .route("/api/workspaces/{id}/ai/exec/write", post(p6_ok))
-        .route("/api/workspaces/{id}/ai/exec/run", post(p6_ok))
-        .route("/api/workspaces/{id}/ai/exec/run/stream", post(p6_ok))
-        .route("/api/workspaces/{id}/mcp/discover", post(p6_ok))
-        .route("/api/workspaces/{id}/mcp/call", post(p6_ok))
+        .route("/api/workspaces/{id}/ai/chat", post(ai_chat))
+        .route("/api/workspaces/{id}/ai/chat/stream", post(ai_chat_stream))
+        .route("/api/workspaces/{id}/ai/exec/read", post(ai_exec_read))
+        .route("/api/workspaces/{id}/ai/exec/write", post(ai_exec_write))
+        .route("/api/workspaces/{id}/ai/exec/run", post(ai_exec_run))
+        .route(
+            "/api/workspaces/{id}/ai/exec/run/stream",
+            post(ai_exec_run_stream),
+        )
+        .route("/api/workspaces/{id}/mcp/discover", post(mcp_discover))
+        .route("/api/workspaces/{id}/mcp/call", post(mcp_call))
         .route("/api/adapters", get(adapters))
         .route("/api/adapter-events", get(adapter_events))
         .route("/api/skills", get(skills))
         .route("/api/skills/library", get(skills_library))
-        .route("/api/skills/install", post(skill_mutation))
-        .route("/api/skills/import", post(skill_mutation))
+        .route("/api/skills/install", post(install_skill))
+        .route("/api/skills/import", post(import_skill))
         .route("/api/skills/enable", post(enable_skill))
         .route("/api/skills/disable", post(disable_skill))
-        .route("/api/skills/apply", post(skill_mutation))
+        .route("/api/skills/apply", post(apply_skill_selection))
         .route("/api/skills/delete", post(delete_skill))
         .route("/api/claude-plugins", get(claude_plugins))
         .route("/api/claude-plugins/install", post(claude_plugin_install))
@@ -315,9 +337,15 @@ pub async fn build_app_with_runtime(
         .route("/api/codex-plugins", get(codex_plugins))
         .route("/api/codex-plugins/install", post(codex_plugin_install))
         .route("/api/codex-plugins/uninstall", post(codex_plugin_uninstall))
-        .route("/api/codex-plugins/local", post(plugin_mutation))
-        .route("/api/codex-plugins/import-local", post(plugin_mutation))
-        .route("/api/codex-plugins/local/{name}", delete(plugin_mutation))
+        .route("/api/codex-plugins/local", post(codex_plugin_local_create))
+        .route(
+            "/api/codex-plugins/import-local",
+            post(codex_plugin_local_import),
+        )
+        .route(
+            "/api/codex-plugins/local/{name}",
+            delete(codex_plugin_local_delete),
+        )
         .route(
             "/api/codex-plugins/marketplaces",
             post(codex_marketplace_add),
@@ -382,7 +410,7 @@ pub async fn build_app_with_runtime(
         )
         .route(
             "/api/workspaces/{id}/workflows/{wid}/nodes/{nodeId}/retry-now",
-            post(p6_ok),
+            post(workflow_retry_now),
         )
         .route(
             "/api/workspaces/{id}/workflows/{wid}/template",
@@ -899,6 +927,9 @@ async fn create_agent_session_terminal(
             cols: body.cols.unwrap_or(80),
             rows: body.rows.unwrap_or(24),
             kill_on_detach: true,
+            initial_executable: None,
+            initial_args: Vec::new(),
+            terminal_program: None,
         })
         .await?;
     let resume = match app {
@@ -2092,6 +2123,9 @@ async fn create_terminal(
             cols: body.cols.unwrap_or(80),
             rows: body.rows.unwrap_or(24),
             kill_on_detach: true,
+            initial_executable: None,
+            initial_args: Vec::new(),
+            terminal_program: None,
         })
         .await?;
     let summary = session.summary();
@@ -2219,11 +2253,147 @@ async fn terminal_socket_inner(socket: WebSocket, session: Arc<dyn PtySession>) 
     }
 }
 
-// P6 capability endpoints keep their state in the Rust service.  These handlers are
-// intentionally small, but provide stable JSON contracts while the domain workers
-// (CLI adapters, plugin installers and workflow executor) are brought over.
-async fn p6_ok() -> Json<Value> {
-    Json(serde_json::json!({"ok": true}))
+async fn sync_model_prices() -> Result<Json<Value>, ApiError> {
+    // Keep the settings screen useful even when the optional LiteLLM network
+    // source is unavailable. These are the same model identifiers exposed by
+    // the local CLI adapters and are intentionally conservative estimates.
+    let models = serde_json::json!([
+        {"model":"claude-sonnet","provider":"anthropic","billingMode":"dynamic","inputCostPerMillion":3.0,"outputCostPerMillion":15.0,"source":"manual"},
+        {"model":"claude-opus","provider":"anthropic","billingMode":"dynamic","inputCostPerMillion":15.0,"outputCostPerMillion":75.0,"source":"manual"},
+        {"model":"gpt-5.1-codex","provider":"openai","billingMode":"dynamic","inputCostPerMillion":1.25,"outputCostPerMillion":10.0,"source":"manual"},
+        {"model":"gpt-5","provider":"openai","billingMode":"dynamic","inputCostPerMillion":1.25,"outputCostPerMillion":10.0,"source":"manual"}
+    ]);
+    Ok(Json(
+        serde_json::json!({"models":models,"source":"osheep-default","updatedAt":now_ms()}),
+    ))
+}
+
+async fn ai_cli_tool_action(
+    AxumPath(name): AxumPath<String>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    if name != "claude" && name != "codex" {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "INVALID_QUERY",
+            "CLI tool must be claude or codex",
+        ));
+    }
+    let action = body.get("action").and_then(Value::as_str).unwrap_or("");
+    if action != "install" && action != "update" {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "INVALID_QUERY",
+            "CLI action must be install or update",
+        ));
+    }
+    let package = if name == "claude" {
+        "@anthropic-ai/claude-code"
+    } else {
+        "@openai/codex"
+    };
+    if action == "update"
+        && name == "claude"
+        && find_path_executable("claude").is_some()
+        && run_plugin_cli("claude", &["update"]).await.is_ok()
+    {
+        return Ok(Json(
+            serde_json::json!({"status":{"name":name,"installed":true,"activeAction":Value::Null}}),
+        ));
+    }
+    run_plugin_cli(
+        "npm",
+        &["install", "--global", &format!("{package}@latest")],
+    )
+    .await?;
+    let executable = find_path_executable(&name);
+    Ok(Json(serde_json::json!({
+        "status":{"name":name,"installed":executable.is_some(),"path":executable,"activeAction":Value::Null}
+    })))
+}
+
+async fn ai_chat_terminal_control(
+    State(state): State<AppState>,
+    AxumPath((id, session_id)): AxumPath<(String, String)>,
+    action: &'static str,
+) -> Result<Json<Value>, ApiError> {
+    let _ = resolve_workspace_path(&state, &id).await?;
+    if session_id.trim().is_empty() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "INVALID_QUERY",
+            "sessionId is required",
+        ));
+    }
+    let control = state
+        .ai_terminal_controls
+        .lock()
+        .await
+        .get(&session_id)
+        .cloned();
+    let workflow_session = if control.is_none() {
+        state.pty.get(&session_id)
+    } else {
+        None
+    };
+    if control.is_none() && workflow_session.is_none() {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "SESSION_NOT_FOUND",
+            "terminal session is no longer active",
+        ));
+    }
+    if let Some(control) = control {
+        match action {
+            "pause" => {
+                control.session.input("\u{3}".into()).await?;
+            }
+            "success" => {
+                control.successful.store(true, Ordering::Release);
+                control.cancelled.store(true, Ordering::Release);
+                let _ = control.session.kill().await;
+                state.ai_terminal_controls.lock().await.remove(&session_id);
+            }
+            "auto-success" => {}
+            _ => {}
+        }
+    } else if let Some(session) = workflow_session {
+        match action {
+            "pause" => {
+                session.input("\u{3}".into()).await?;
+            }
+            "success" => {
+                let _ = session.kill().await;
+            }
+            "auto-success" => {}
+            _ => {}
+        }
+    }
+    Ok(Json(
+        serde_json::json!({"ok":true,"sessionId":session_id,"action":action}),
+    ))
+}
+
+async fn ai_chat_terminal_auto_success(
+    state: State<AppState>,
+    path: AxumPath<(String, String)>,
+    _body: Option<Json<Value>>,
+) -> Result<Json<Value>, ApiError> {
+    ai_chat_terminal_control(state, path, "auto-success").await
+}
+
+async fn ai_chat_terminal_pause(
+    state: State<AppState>,
+    path: AxumPath<(String, String)>,
+) -> Result<Json<Value>, ApiError> {
+    ai_chat_terminal_control(state, path, "pause").await
+}
+
+async fn ai_chat_terminal_success(
+    state: State<AppState>,
+    path: AxumPath<(String, String)>,
+) -> Result<Json<Value>, ApiError> {
+    ai_chat_terminal_control(state, path, "success").await
 }
 
 fn default_ai_settings_state() -> Value {
@@ -2455,19 +2625,1007 @@ async fn ai_cli_tools() -> Json<Value> {
     ]}))
 }
 
+async fn ai_models(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let _ = resolve_workspace_path(&state, &id).await?;
+    let kind = body
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or("claude-cli");
+    let models = match kind {
+        "claude-cli" => vec!["default", "sonnet", "opus"],
+        "codex-cli" => vec!["default", "gpt-5.1-codex", "gpt-5.1", "gpt-5"],
+        _ => {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "INVALID_QUERY",
+                "osheep code only supports Claude Code CLI or Codex CLI",
+            ))
+        }
+    };
+    Ok(Json(serde_json::json!({"models":models})))
+}
+
+fn ai_prompt(body: &Value) -> Result<String, ApiError> {
+    let messages = body
+        .get("messages")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "INVALID_QUERY",
+                "messages is required",
+            )
+        })?;
+    let transcript = messages
+        .iter()
+        .filter_map(|message| {
+            let content = message.get("content")?.as_str()?;
+            let role = message
+                .get("role")
+                .and_then(Value::as_str)
+                .unwrap_or("user");
+            Some(format!("### {role}\n{content}"))
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    if transcript.trim().is_empty() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "INVALID_QUERY",
+            "messages must contain content",
+        ));
+    }
+    Ok(format!(
+        "You are being invoked by osheep. The current working directory is the project root. Reply in the user's language.\n\n{transcript}\n"
+    ))
+}
+
+async fn run_ai_request(state: &AppState, id: &str, body: &Value) -> Result<Value, ApiError> {
+    run_ai_request_with_cancel(state, id, body, Arc::new(AtomicBool::new(false))).await
+}
+
+async fn run_ai_request_with_cancel(
+    state: &AppState,
+    id: &str,
+    body: &Value,
+    cancelled: Arc<AtomicBool>,
+) -> Result<Value, ApiError> {
+    let workspace = resolve_workspace_path(state, id).await?;
+    let kind = body
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or("claude-cli");
+    if !matches!(kind, "claude-cli" | "codex-cli") {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "INVALID_QUERY",
+            "osheep code only supports Claude Code CLI or Codex CLI",
+        ));
+    }
+    let prompt = body
+        .get("terminalPrompt")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or(ai_prompt(body)?);
+    crate::workflow_runtime::run_cli_chat_with_cancel(
+        &workspace,
+        kind,
+        body.get("model")
+            .and_then(Value::as_str)
+            .unwrap_or("default"),
+        &prompt,
+        cancelled,
+    )
+    .await
+    .map_err(|message| ApiError::new(StatusCode::BAD_GATEWAY, "UPSTREAM_FAILED", message))
+}
+
+async fn ai_chat(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let result = run_ai_request(&state, &id, &body).await?;
+    Ok(Json(serde_json::json!({
+        "content":result["text"].as_str().unwrap_or(""),
+        "raw":{"stderr":result["stderr"],"exitCode":result["exitCode"],"signal":Value::Null}
+    })))
+}
+
+fn sse_response(events: &[(&str, Value)]) -> Result<Response, ApiError> {
+    let mut content = String::new();
+    for (event, data) in events {
+        content.push_str("event: ");
+        content.push_str(event);
+        content.push_str("\ndata: ");
+        content.push_str(&serde_json::to_string(data).map_err(|error| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "INTERNAL",
+                error.to_string(),
+            )
+        })?);
+        content.push_str("\n\n");
+    }
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/event-stream; charset=utf-8")
+        .header(header::CACHE_CONTROL, "no-cache, no-transform")
+        .body(Body::from(content))
+        .map_err(|error| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "INTERNAL",
+                error.to_string(),
+            )
+        })
+}
+
+async fn ai_chat_stream(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<Value>,
+) -> Result<Response, ApiError> {
+    let result = run_ai_request(&state, &id, &body).await?;
+    sse_response(&[
+        ("delta", serde_json::json!({"content":result["text"]})),
+        ("done", serde_json::json!({})),
+    ])
+}
+
+async fn ai_chat_terminal(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<Value>,
+) -> Result<Response, ApiError> {
+    let workspace = resolve_workspace_path(&state, &id).await?;
+    let kind = body
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or("claude-cli");
+    if !matches!(kind, "claude-cli" | "codex-cli") {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "INVALID_QUERY",
+            "osheep code only supports Claude Code CLI or Codex CLI",
+        ));
+    }
+    let profile = state.pty.profiles().into_iter().next().ok_or_else(|| {
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "PTY_UNAVAILABLE",
+            "服务器未探测到可用 shell",
+        )
+    })?;
+    let command = build_agent_terminal_command(kind, &body)?;
+    let workspaces_root = state.workspaces.canonical_root().await?;
+    let session = state
+        .pty
+        .spawn(SpawnRequest {
+            workspace_id: format!("ai-{id}"),
+            cwd: workspace,
+            workspaces_root,
+            shell: profile.id,
+            cols: 120,
+            rows: 34,
+            kill_on_detach: false,
+            initial_executable: None,
+            initial_args: Vec::new(),
+            terminal_program: None,
+        })
+        .await?;
+    let session_id = session.summary().id.clone();
+    let control = Arc::new(AiTerminalControl {
+        session: session.clone(),
+        cancelled: AtomicBool::new(false),
+        successful: AtomicBool::new(false),
+    });
+    state
+        .ai_terminal_controls
+        .lock()
+        .await
+        .insert(session_id.clone(), control.clone());
+    let (sender, receiver) =
+        tokio::sync::mpsc::channel::<Result<String, std::convert::Infallible>>(64);
+    sender
+        .send(Ok(sse_event(
+            "session",
+            &serde_json::json!({"sessionId":session_id}),
+        )))
+        .await
+        .ok();
+    sender
+        .send(Ok(sse_event(
+            "status",
+            &serde_json::json!({"status":"prompt-sent"}),
+        )))
+        .await
+        .ok();
+    if let Some(conversation_id) = body
+        .get("conversationSessionId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+    {
+        sender
+            .send(Ok(sse_event(
+                "conversation",
+                &serde_json::json!({"sessionId":conversation_id}),
+            )))
+            .await
+            .ok();
+    }
+    let input = format!("{command}\r");
+    session.input(input).await?;
+    let state_controls = state.ai_terminal_controls.clone();
+    let task_session_id = session_id.clone();
+    tokio::spawn(async move {
+        let (replay, mut events) = session.attach();
+        let mut transcript = replay.data;
+        loop {
+            match events.recv().await {
+                Ok(PtyEvent::Output(data)) => {
+                    transcript.push_str(&data);
+                    if sender
+                        .send(Ok(sse_event(
+                            "log",
+                            &serde_json::json!({"stream":"stdout","content":data}),
+                        )))
+                        .await
+                        .is_err()
+                    {
+                        let _ = session.kill().await;
+                        break;
+                    }
+                    if transcript.contains(AI_TERMINAL_DONE_MARKER) {
+                        transcript = transcript.replace(AI_TERMINAL_DONE_MARKER, "");
+                        let result = serde_json::json!({
+                            "sessionId":task_session_id,"content":"",
+                            "transcript":transcript,"changedFiles":[],"verification":[],
+                            "exitCode":0,"signal":Value::Null,"outcome":"success"
+                        });
+                        let _ = sender.send(Ok(sse_event("result", &result))).await;
+                        let _ = sender
+                            .send(Ok(sse_event("done", &serde_json::json!({}))))
+                            .await;
+                        let _ = session.kill().await;
+                        break;
+                    }
+                }
+                Ok(PtyEvent::Exit { code, .. }) => {
+                    let outcome = if control.successful.load(Ordering::Acquire) {
+                        "success"
+                    } else if control.cancelled.load(Ordering::Acquire) {
+                        "cancelled"
+                    } else {
+                        "success"
+                    };
+                    let result = serde_json::json!({
+                        // The frontend cleans the PTY transcript according to
+                        // the selected CLI. Returning it as `content` would
+                        // bypass that parser and persist shell chrome as the
+                        // block answer.
+                        "sessionId":task_session_id,"content":"",
+                        "transcript":transcript,"changedFiles":[],"verification":[],
+                        "exitCode":code,"signal":Value::Null,"outcome":outcome
+                    });
+                    let _ = sender.send(Ok(sse_event("result", &result))).await;
+                    let _ = sender
+                        .send(Ok(sse_event("done", &serde_json::json!({}))))
+                        .await;
+                    break;
+                }
+                Ok(PtyEvent::Error(message)) => {
+                    let _ = sender
+                        .send(Ok(sse_event(
+                            "error",
+                            &serde_json::json!({"message":message}),
+                        )))
+                        .await;
+                    let _ = sender
+                        .send(Ok(sse_event("done", &serde_json::json!({}))))
+                        .await;
+                    break;
+                }
+                Err(_) => break,
+            }
+        }
+        state_controls.lock().await.remove(&task_session_id);
+    });
+    let stream = futures_util::stream::unfold(receiver, |mut receiver| async move {
+        receiver.recv().await.map(|item| (item, receiver))
+    });
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/event-stream; charset=utf-8")
+        .header(header::CACHE_CONTROL, "no-cache, no-transform")
+        .body(Body::from_stream(stream))
+        .map_err(|error| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "INTERNAL",
+                error.to_string(),
+            )
+        })
+}
+
+fn sse_event(event: &str, data: &Value) -> String {
+    format!("event: {event}\ndata: {}\n\n", data)
+}
+
+fn build_agent_terminal_command(kind: &str, body: &Value) -> Result<String, ApiError> {
+    let prompt = body
+        .get("terminalPrompt")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "INVALID_QUERY",
+                "prompt is required",
+            )
+        })?;
+    let quote = |value: &str| {
+        if cfg!(windows) {
+            format!("'{}'", value.replace('\'', "''"))
+        } else {
+            format!("'{}'", value.replace('\'', "'\\''"))
+        }
+    };
+    let resume = body
+        .get("resumeConversation")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let conversation_id = body
+        .get("conversationSessionId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty());
+    let mut args = agent_terminal_executable(kind);
+    if kind == "codex-cli" {
+        if resume && conversation_id.is_some() {
+            args.push("resume".to_owned());
+        }
+        args.extend([
+            "--ask-for-approval".to_owned(),
+            body.get("codexApproval")
+                .and_then(Value::as_str)
+                .filter(|value| matches!(*value, "untrusted" | "on-request" | "never"))
+                .unwrap_or("on-request")
+                .to_owned(),
+            "--sandbox".to_owned(),
+            body.get("codexSandbox")
+                .and_then(Value::as_str)
+                .unwrap_or("workspace-write")
+                .to_owned(),
+        ]);
+        if body.get("mode").and_then(Value::as_str) == Some("goal") {
+            args.extend(["--enable".to_owned(), "goals".to_owned()]);
+        }
+    } else {
+        let permission = if body.get("mode").and_then(Value::as_str) == Some("plan") {
+            "plan"
+        } else {
+            match body.get("claudePermissionMode").and_then(Value::as_str) {
+                Some("default") | None => "manual",
+                Some(value) => value,
+            }
+        };
+        args.extend(["--permission-mode".to_owned(), permission.to_owned()]);
+        if let Some(session_id) = conversation_id {
+            args.extend([
+                if resume { "--resume" } else { "--session-id" }.to_owned(),
+                session_id.to_owned(),
+            ]);
+        }
+    }
+    if let Some(effort) = body.get("effort").and_then(Value::as_str).filter(|value| {
+        if kind == "claude-cli" {
+            matches!(
+                *value,
+                "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultracode"
+            )
+        } else {
+            matches!(
+                *value,
+                "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
+            )
+        }
+    }) {
+        let effort = if kind == "claude-cli" && effort == "minimal" {
+            "low"
+        } else {
+            effort
+        };
+        if kind == "claude-cli" {
+            args.extend(["--effort".to_owned(), effort.to_owned()]);
+        } else {
+            args.extend([
+                "-c".to_owned(),
+                format!("model_reasoning_effort=\"{effort}\""),
+            ]);
+        }
+    }
+    if let Some(model) = body
+        .get("model")
+        .and_then(Value::as_str)
+        .filter(|value| *value != "default" && !value.is_empty())
+    {
+        args.extend(["--model".to_owned(), model.to_owned()]);
+    }
+    if kind == "codex-cli" && resume {
+        if let Some(session_id) = conversation_id {
+            args.push(session_id.to_owned());
+        }
+    }
+    args.push(prompt.to_owned());
+    let command = args
+        .into_iter()
+        .map(|value| quote(&value))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let invocation = if cfg!(windows) {
+        format!("& {command}")
+    } else {
+        command
+    };
+    let completion = if cfg!(windows) {
+        format!("Write-Output '{}'", AI_TERMINAL_DONE_MARKER)
+    } else {
+        format!("printf '\\n{}\\n'", AI_TERMINAL_DONE_MARKER)
+    };
+    Ok(format!("{invocation}; {completion}"))
+}
+
+fn agent_terminal_executable(kind: &str) -> Vec<String> {
+    if kind != "codex-cli" {
+        return vec!["claude".to_owned()];
+    }
+    if cfg!(windows) {
+        if let Some(shim) = find_path_executable("codex") {
+            if let Some(parent) = shim.parent() {
+                let script = parent
+                    .join("node_modules")
+                    .join("@openai")
+                    .join("codex")
+                    .join("bin")
+                    .join("codex.js");
+                if script.is_file() {
+                    let node =
+                        find_path_executable("node").unwrap_or_else(|| PathBuf::from("node.exe"));
+                    return vec![
+                        node.to_string_lossy().into_owned(),
+                        script.to_string_lossy().into_owned(),
+                    ];
+                }
+            }
+        }
+    }
+    vec!["codex".to_owned()]
+}
+
+fn string_list(value: Option<&Value>) -> Vec<String> {
+    match value {
+        Some(Value::String(value)) if !value.is_empty() => vec![value.clone()],
+        Some(Value::Array(values)) => values
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+async fn ai_exec_read(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let workspace = resolve_workspace_path(&state, &id).await?;
+    match body.get("kind").and_then(Value::as_str).unwrap_or("") {
+        "file" => {
+            let path = body.get("path").and_then(Value::as_str).ok_or_else(|| {
+                ApiError::new(StatusCode::BAD_REQUEST, "INVALID_QUERY", "missing path")
+            })?;
+            let file = state.files.read_text(&workspace, path).await?;
+            let lines = file.content.lines().collect::<Vec<_>>();
+            let start = body
+                .get("startLine")
+                .and_then(Value::as_u64)
+                .unwrap_or(1)
+                .max(1) as usize;
+            let count = body
+                .get("lineCount")
+                .and_then(Value::as_u64)
+                .unwrap_or(lines.len() as u64) as usize;
+            let content = lines
+                .iter()
+                .skip(start.saturating_sub(1))
+                .take(count)
+                .copied()
+                .collect::<Vec<_>>()
+                .join("\n");
+            Ok(Json(serde_json::json!({
+                "kind":"file","path":file.path,"content":content,"size":file.size,
+                "mtime":file.mtime,"truncated":start > 1 || start.saturating_sub(1) + count < lines.len(),
+                "startLine":start,"endLine":start.saturating_add(count).saturating_sub(1).min(lines.len()),
+                "totalLines":lines.len()
+            })))
+        }
+        "list" => {
+            let path = body.get("path").and_then(Value::as_str).unwrap_or("");
+            let entries = state
+                .files
+                .list_tree(
+                    &workspace,
+                    path,
+                    body.get("includeHidden")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                    true,
+                )
+                .await?;
+            Ok(Json(
+                serde_json::json!({"kind":"list","path":path,"entries":entries}),
+            ))
+        }
+        "search" => {
+            let query = body.get("query").and_then(Value::as_str).unwrap_or("");
+            if query.is_empty() {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "INVALID_QUERY",
+                    "missing query",
+                ));
+            }
+            let result = state
+                .search
+                .search(
+                    &workspace,
+                    SearchOptions {
+                        query: query.to_owned(),
+                        case_sensitive: false,
+                        whole_word: false,
+                        regex: false,
+                        include: string_list(body.get("include")),
+                        exclude: string_list(body.get("exclude")),
+                        max_files: 5000,
+                        max_matches_per_file: 100,
+                    },
+                )
+                .await?;
+            let mut value = serde_json::to_value(result).map_err(|error| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "INTERNAL",
+                    error.to_string(),
+                )
+            })?;
+            value["kind"] = Value::String("search".into());
+            Ok(Json(value))
+        }
+        _ => Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "INVALID_QUERY",
+            "read.kind must be file, list, or search",
+        )),
+    }
+}
+
+async fn ai_exec_write(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let workspace = resolve_workspace_path(&state, &id).await?;
+    let kind = body.get("kind").and_then(Value::as_str).unwrap_or("");
+    let path = body.get("path").and_then(Value::as_str).unwrap_or("");
+    match kind {
+        "write_file" | "append_file" => {
+            let content = body.get("content").and_then(Value::as_str).ok_or_else(|| {
+                ApiError::new(StatusCode::BAD_REQUEST, "INVALID_QUERY", "missing content")
+            })?;
+            let content = if kind == "append_file" {
+                state
+                    .files
+                    .read_text(&workspace, path)
+                    .await
+                    .map(|file| file.content)
+                    .unwrap_or_default()
+                    + content
+            } else {
+                content.to_owned()
+            };
+            let written = state
+                .files
+                .write_text(&workspace, path, content, true)
+                .await?;
+            Ok(Json(
+                serde_json::json!({"ok":true,"kind":kind,"path":written.path,"size":written.size,"mtime":written.mtime}),
+            ))
+        }
+        "edit_file" | "multi_edit" => {
+            let file = state.files.read_text(&workspace, path).await?;
+            let before = file.content;
+            let edits = if kind == "edit_file" {
+                vec![(
+                    body.get("oldString")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_owned(),
+                    body.get("newString")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_owned(),
+                )]
+            } else {
+                body.get("edits")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .map(|edit| {
+                        (
+                            edit["oldString"].as_str().unwrap_or("").to_owned(),
+                            edit["newString"].as_str().unwrap_or("").to_owned(),
+                        )
+                    })
+                    .collect()
+            };
+            if edits.is_empty() || edits.iter().any(|(old, _)| old.is_empty()) {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "INVALID_QUERY",
+                    "edits require a non-empty oldString",
+                ));
+            }
+            let mut after = before.clone();
+            for (old, new) in &edits {
+                if after.matches(old).count() != 1 {
+                    return Err(ApiError::new(
+                        StatusCode::BAD_REQUEST,
+                        "INVALID_QUERY",
+                        "oldString must occur exactly once",
+                    ));
+                }
+                after = after.replacen(old, new, 1);
+            }
+            let written = state
+                .files
+                .write_text(&workspace, path, after.clone(), false)
+                .await?;
+            Ok(Json(serde_json::json!({
+                "ok":true,"kind":kind,"path":written.path,"size":written.size,"mtime":written.mtime,
+                "replacements":edits.len(),"diff":{"before":before,"after":after,"edits":edits}
+            })))
+        }
+        "move" => {
+            let from = body.get("from").and_then(Value::as_str).unwrap_or("");
+            let to = body.get("to").and_then(Value::as_str).unwrap_or("");
+            state.files.move_entry(&workspace, from, to).await?;
+            Ok(Json(
+                serde_json::json!({"ok":true,"kind":"move","from":from,"to":to}),
+            ))
+        }
+        "delete" => {
+            state
+                .files
+                .delete_entry(
+                    &workspace,
+                    path,
+                    body.get("recursive")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                )
+                .await?;
+            Ok(Json(
+                serde_json::json!({"ok":true,"kind":"delete","path":path}),
+            ))
+        }
+        "create" => {
+            let entry_kind = if body.get("entryKind").and_then(Value::as_str) == Some("directory") {
+                EntryKind::Directory
+            } else {
+                EntryKind::File
+            };
+            state
+                .files
+                .create_entry(&workspace, path, entry_kind)
+                .await?;
+            Ok(Json(
+                serde_json::json!({"ok":true,"action":"create","path":path,"entryKind":body["entryKind"]}),
+            ))
+        }
+        _ => Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "INVALID_QUERY",
+            "write.kind is invalid",
+        )),
+    }
+}
+
+async fn run_workspace_command(root: &Path, body: &Value) -> Result<Value, ApiError> {
+    let command_line = body
+        .get("command")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    if command_line.is_empty() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "INVALID_QUERY",
+            "missing command",
+        ));
+    }
+    let relative = body.get("cwd").and_then(Value::as_str).unwrap_or("");
+    let relative_path = Path::new(relative);
+    if relative_path.is_absolute()
+        || relative_path
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir))
+    {
+        return Err(ApiError::invalid_path("cwd must stay inside the workspace"));
+    }
+    let cwd = root.join(relative_path);
+    let started = Instant::now();
+    let mut command = if cfg!(windows) {
+        let mut command = Command::new("powershell.exe");
+        command.args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            command_line,
+        ]);
+        command
+    } else {
+        let mut command = Command::new("sh");
+        command.args(["-lc", command_line]);
+        command
+    };
+    command.current_dir(&cwd).kill_on_drop(true);
+    let timeout_ms = body
+        .get("timeoutMs")
+        .and_then(Value::as_u64)
+        .unwrap_or(60_000)
+        .clamp(1, 600_000);
+    let output = tokio::time::timeout(Duration::from_millis(timeout_ms), command.output())
+        .await
+        .map_err(|_| {
+            ApiError::new(
+                StatusCode::GATEWAY_TIMEOUT,
+                "COMMAND_TIMEOUT",
+                "command timed out",
+            )
+        })?
+        .map_err(ApiError::from)?;
+    Ok(serde_json::json!({
+        "command":command_line,"cwd":relative,"shell":if cfg!(windows) {"powershell"} else {"sh"},
+        "exitCode":output.status.code(),"signal":Value::Null,"durationMs":started.elapsed().as_millis() as u64,
+        "stdout":String::from_utf8_lossy(&output.stdout),"stderr":String::from_utf8_lossy(&output.stderr),
+        "truncated":false
+    }))
+}
+
+async fn ai_exec_run(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let workspace = resolve_workspace_path(&state, &id).await?;
+    Ok(Json(run_workspace_command(&workspace, &body).await?))
+}
+
+async fn ai_exec_run_stream(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<Value>,
+) -> Result<Response, ApiError> {
+    let workspace = resolve_workspace_path(&state, &id).await?;
+    let result = run_workspace_command(&workspace, &body).await?;
+    let mut events = Vec::new();
+    if !result["stdout"].as_str().unwrap_or("").is_empty() {
+        events.push(("log", serde_json::json!({"stream":"stdout","content":result["stdout"],"shell":result["shell"]})));
+    }
+    if !result["stderr"].as_str().unwrap_or("").is_empty() {
+        events.push(("log", serde_json::json!({"stream":"stderr","content":result["stderr"],"shell":result["shell"]})));
+    }
+    events.push(("result", result));
+    events.push(("done", serde_json::json!({})));
+    sse_response(&events)
+}
+
+async fn mcp_request(
+    state: &AppState,
+    workspace_id: &str,
+    body: &Value,
+    method: &str,
+    params: Value,
+) -> Result<Value, ApiError> {
+    let workspace = resolve_workspace_path(state, workspace_id).await?;
+    let remote = body
+        .get("postUrl")
+        .or_else(|| body.get("remoteLink"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    if remote.is_empty() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "INVALID_QUERY",
+            "Remote MCP Link is required",
+        ));
+    }
+    let headers = body
+        .get("headers")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    let api_key = body.get("apiKey").and_then(Value::as_str).unwrap_or("");
+    let script = r#"const [url,method,params,headers,key]=process.argv.slice(1);(async()=>{const h={accept:'application/json,text/event-stream','content-type':'application/json','MCP-Protocol-Version':'2025-03-26',...JSON.parse(headers||'{}')};if(key)h.authorization=`Bearer ${key}`;const send=async(m,p,id)=>{const r=await fetch(url,{method:'POST',headers:h,body:JSON.stringify({jsonrpc:'2.0',id,method:m,params:p})});const t=await r.text();let v;try{v=JSON.parse(t)}catch{const d=t.split(/\n\n/).map(x=>x.match(/data:\s*(.*)/)?.[1]).find(Boolean);v=d?JSON.parse(d):null}if(!r.ok||!v)throw new Error(`MCP request failed (${r.status}): ${t.slice(0,500)}`);return v};const init=await send('initialize',{protocolVersion:'2025-03-26',capabilities:{},clientInfo:{name:'osheep',version:'0.2.1'}},'init');await fetch(url,{method:'POST',headers:h,body:JSON.stringify({jsonrpc:'2.0',method:'notifications/initialized',params:{}})});const out=await send(method,JSON.parse(params||'{}'),'request');process.stdout.write(JSON.stringify({init,out}))})().catch(e=>{console.error(e.message);process.exit(1)})"#;
+    let result = crate::workflow_runtime::run_program(
+        &workspace,
+        "node",
+        &[
+            "-e",
+            script,
+            remote,
+            method,
+            &params.to_string(),
+            &headers.to_string(),
+            api_key,
+        ],
+        None,
+        Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    )
+    .await
+    .map_err(|message| ApiError::new(StatusCode::BAD_GATEWAY, "MCP_UPSTREAM_FAILED", message))?;
+    serde_json::from_str(result["stdout"].as_str().unwrap_or("{}")).map_err(|error| {
+        ApiError::new(
+            StatusCode::BAD_GATEWAY,
+            "MCP_UPSTREAM_FAILED",
+            error.to_string(),
+        )
+    })
+}
+
+async fn mcp_discover(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let remote = body
+        .get("remoteLink")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_owned();
+    let post_url = body
+        .get("postUrl")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_owned();
+    let endpoint = if post_url.is_empty() {
+        remote.clone()
+    } else {
+        post_url
+    };
+    let result = mcp_request(
+        &state,
+        &id,
+        &serde_json::json!({"remoteLink":remote,"postUrl":endpoint,"headers":body["headers"],"apiKey":body["apiKey"]}),
+        "tools/list",
+        serde_json::json!({}),
+    )
+    .await?;
+    let tools = result["out"]["result"]["tools"].clone();
+    Ok(Json(serde_json::json!({
+        "remoteLink":remote,"postUrl":endpoint,"tools":tools,"raw":result["out"]["result"],"connectedAt":now_ms()
+    })))
+}
+
+async fn mcp_call(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let remote = body
+        .get("remoteLink")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_owned();
+    let endpoint = body
+        .get("postUrl")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_owned();
+    let endpoint = if endpoint.is_empty() {
+        remote.clone()
+    } else {
+        endpoint
+    };
+    let name = body
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_owned();
+    if name.is_empty() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "INVALID_QUERY",
+            "MCP tool name is required",
+        ));
+    }
+    let result = mcp_request(
+        &state,
+        &id,
+        &serde_json::json!({"remoteLink":remote,"postUrl":endpoint,"headers":body["headers"],"apiKey":body["apiKey"]}),
+        "tools/call",
+        serde_json::json!({"name":name,"arguments":body.get("arguments").cloned().unwrap_or_else(|| serde_json::json!({}))}),
+    )
+    .await?;
+    let response = result["out"].clone();
+    let ok = response.get("error").is_none();
+    Ok(Json(serde_json::json!({
+        "remoteLink":remote,"postUrl":endpoint,"ok":ok,"status":if ok {"success"} else {"failed"},
+        "result":response["result"],"error":response["error"],"response":response
+    })))
+}
+
 async fn adapters() -> Json<Value> {
-    Json(serde_json::json!({"adapters": []}))
+    Json(serde_json::json!({"adapters": [
+        {"id":"claude-code","name":"Claude Code","version":"1.0.0","kind":"agent",
+            "capabilities":{"streaming":true,"structuredEvents":true,"session":true,"resume":true,"multiTurn":false,"approval":"manual","interruption":"hard","transport":"pty","modelSelection":true,"workingDirectory":true,"usage":true},
+            "configSchema":{"fields":[
+                {"key":"model","label":"Model","type":"text","defaultValue":"default"},
+                {"key":"workingDirectory","label":"Working Directory","type":"text"},
+                {"key":"claudePermissionMode","label":"Permission Mode","type":"select","options":["default","acceptEdits","plan","auto","dontAsk","bypassPermissions"]},
+                {"key":"effort","label":"Effort","type":"select","options":["low","medium","high","xhigh","max"]}
+            ]}},
+        {"id":"codex","name":"Codex CLI","version":"1.0.0","kind":"agent",
+            "capabilities":{"streaming":true,"structuredEvents":true,"session":true,"resume":true,"multiTurn":false,"approval":"manual","interruption":"hard","transport":"pty","modelSelection":true,"workingDirectory":true,"usage":true},
+            "configSchema":{"fields":[
+                {"key":"model","label":"Model","type":"text","defaultValue":"default"},
+                {"key":"workingDirectory","label":"Working Directory","type":"text"},
+                {"key":"codexApproval","label":"Approval","type":"select","options":["untrusted","on-request","never"]},
+                {"key":"codexSandbox","label":"Sandbox","type":"select","options":["read-only","workspace-write","danger-full-access"]},
+                {"key":"effort","label":"Reasoning Effort","type":"select","options":["minimal","low","medium","high","xhigh","max"]}
+            ]}}
+    ]}))
 }
 
 async fn adapter_events(ws: WebSocketUpgrade) -> Response {
     ws.on_upgrade(|mut socket| async move {
-        let _ = socket
+        if socket
             .send(Message::Text(
                 serde_json::json!({"type":"ready","sessions":[],"events":[],"updatedAt": now_ms()})
                     .to_string()
                     .into(),
             ))
-            .await;
+            .await
+            .is_err()
+        {
+            return;
+        }
+        let mut heartbeat = tokio::time::interval(Duration::from_secs(20));
+        loop {
+            tokio::select! {
+                message = socket.recv() => match message {
+                    Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
+                    Some(Ok(Message::Ping(bytes))) => {
+                        if socket.send(Message::Pong(bytes)).await.is_err() { break; }
+                    }
+                    _ => {}
+                },
+                _ = heartbeat.tick() => {
+                    if socket.send(Message::Ping(Vec::new().into())).await.is_err() { break; }
+                }
+            }
+        }
     })
 }
 
@@ -2486,20 +3644,396 @@ async fn skills_library(
     Json(serde_json::json!({"skills": skills}))
 }
 
-async fn skill_mutation(
-    State(state): State<AppState>,
-    Json(_body): Json<Value>,
-) -> Result<Json<Value>, ApiError> {
-    Ok(Json(
-        serde_json::json!({"ok": true, "snapshot": skills_snapshot(&state).await?}),
-    ))
-}
-
 fn skill_staging_root(state: &AppState, agent: &str) -> Result<PathBuf, ApiError> {
     if !matches!(agent, "claude" | "codex") {
         return Err(ApiError::invalid_path("agent must be claude or codex"));
     }
     Ok(state.store.root().join("skills").join(agent))
+}
+
+fn validate_skill_source(source: &str) -> Result<&str, ApiError> {
+    let source = source.trim();
+    let supported = source.starts_with("https://")
+        || source.starts_with("http://")
+        || source.starts_with("git@")
+        || source.starts_with("github:");
+    if !supported
+        || source.len() > 2048
+        || source
+            .chars()
+            .any(|character| character.is_whitespace() || "\"'<>|&;%!^()".contains(character))
+    {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "INVALID_SKILL_SOURCE",
+            "Skill source must be a URL or GitHub source",
+        ));
+    }
+    Ok(source)
+}
+
+async fn skill_manifest(state: &AppState, agent: &str) -> Value {
+    let path = skill_staging_root(state, agent)
+        .expect("validated skill agent")
+        .join("manifest.json");
+    tokio::fs::read(path)
+        .await
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .filter(Value::is_object)
+        .unwrap_or_else(|| serde_json::json!({}))
+}
+
+async fn write_skill_manifest(
+    state: &AppState,
+    agent: &str,
+    manifest: &Value,
+) -> Result<(), ApiError> {
+    let root = skill_staging_root(state, agent)?;
+    tokio::fs::create_dir_all(&root).await?;
+    write_json_atomic(root.join("manifest.json"), manifest).await
+}
+
+async fn replace_skill_directory(source: &Path, destination: &Path) -> Result<(), ApiError> {
+    if !tokio::fs::try_exists(source.join("SKILL.md"))
+        .await
+        .unwrap_or(false)
+    {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "INVALID_SKILL_FOLDER",
+            "Selected folder must contain SKILL.md",
+        ));
+    }
+    if tokio::fs::try_exists(destination).await.unwrap_or(false) {
+        tokio::fs::remove_dir_all(destination).await?;
+    }
+    copy_directory_if_missing(source, destination).await
+}
+
+async fn find_produced_skill_dirs(root: &Path, depth: usize) -> Result<Vec<PathBuf>, ApiError> {
+    if depth > 4 {
+        return Ok(Vec::new());
+    }
+    let mut entries = match tokio::fs::read_dir(root).await {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
+    };
+    let mut result = Vec::new();
+    while let Some(entry) = entries.next_entry().await? {
+        if !entry.file_type().await?.is_dir() {
+            continue;
+        }
+        let directory = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if valid_name(&name)
+            && tokio::fs::try_exists(directory.join("SKILL.md"))
+                .await
+                .unwrap_or(false)
+        {
+            result.push(directory);
+        } else {
+            result.extend(Box::pin(find_produced_skill_dirs(&directory, depth + 1)).await?);
+        }
+    }
+    Ok(result)
+}
+
+async fn enabled_skill_dirs(
+    agent: &str,
+) -> Result<std::collections::BTreeMap<String, PathBuf>, ApiError> {
+    let mut result = std::collections::BTreeMap::new();
+    for root in skill_live_roots(agent) {
+        for directory in find_produced_skill_dirs(&root, 0).await? {
+            if let Some(name) = directory.file_name().and_then(|value| value.to_str()) {
+                result.insert(name.to_owned(), directory);
+            }
+        }
+    }
+    Ok(result)
+}
+
+async fn run_skill_installer(
+    source: &str,
+    skill: Option<&str>,
+    agent: &str,
+    temporary_root: &Path,
+) -> Result<(), ApiError> {
+    let executable = find_path_executable(if cfg!(windows) { "npx.cmd" } else { "npx" })
+        .or_else(|| find_path_executable("npx"))
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::CONFLICT,
+                "NPX_NOT_FOUND",
+                "Node.js/npx is required to manage skills",
+            )
+        })?;
+    let mut arguments = vec!["--yes", "skills", "add", source];
+    if let Some(skill) = skill {
+        arguments.extend(["--skill", skill]);
+    }
+    arguments.extend([
+        "-a",
+        if agent == "claude" {
+            "claude-code"
+        } else {
+            "codex"
+        },
+        "-g",
+        "-y",
+        "--copy",
+    ]);
+    let extension = executable
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("");
+    let mut command =
+        if cfg!(windows) && matches!(extension.to_ascii_lowercase().as_str(), "cmd" | "bat") {
+            let mut command = tokio::process::Command::new("cmd.exe");
+            command
+                .args(["/D", "/S", "/C"])
+                .arg(&executable)
+                .args(&arguments);
+            command
+        } else {
+            let mut command = tokio::process::Command::new(&executable);
+            command.args(&arguments);
+            command
+        };
+    if agent == "claude" {
+        command.env("CLAUDE_CONFIG_DIR", temporary_root);
+    } else {
+        command.env("CODEX_HOME", temporary_root);
+    }
+    let output = tokio::time::timeout(Duration::from_secs(5 * 60), command.output())
+        .await
+        .map_err(|_| {
+            ApiError::new(
+                StatusCode::GATEWAY_TIMEOUT,
+                "SKILL_COMMAND_FAILED",
+                "Skill installation timed out",
+            )
+        })?
+        .map_err(ApiError::from)?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    Err(ApiError::new(
+        StatusCode::BAD_GATEWAY,
+        "SKILL_COMMAND_FAILED",
+        if stderr.is_empty() { stdout } else { stderr },
+    ))
+}
+
+async fn install_skill(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let agent = body.get("agent").and_then(Value::as_str).unwrap_or("");
+    let staging = skill_staging_root(&state, agent)?;
+    let source = validate_skill_source(body.get("source").and_then(Value::as_str).unwrap_or(""))?;
+    let skill = body
+        .get("skill")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty());
+    if skill.is_some_and(|value| !valid_name(value)) {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "INVALID_SKILL_NAME",
+            "Skill name contains unsupported characters",
+        ));
+    }
+    let temporary = std::env::temp_dir().join(format!(
+        "osheep-skill-install-{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    tokio::fs::create_dir_all(&temporary).await?;
+    let before = enabled_skill_dirs(agent).await?;
+    let command_result = run_skill_installer(source, skill, agent, &temporary).await;
+    let mut produced = find_produced_skill_dirs(&temporary, 0).await?;
+    if produced.is_empty() {
+        for (name, directory) in enabled_skill_dirs(agent).await? {
+            if !before.contains_key(&name) {
+                produced.push(directory);
+            }
+        }
+    }
+    if produced.is_empty() {
+        let _ = tokio::fs::remove_dir_all(&temporary).await;
+        command_result?;
+        return Err(ApiError::new(
+            StatusCode::BAD_GATEWAY,
+            "SKILL_INSTALL_EMPTY",
+            "The installer produced no skill to stage",
+        ));
+    }
+    let mut manifest = skill_manifest(&state, agent).await;
+    for directory in produced {
+        let Some(name) = directory
+            .file_name()
+            .and_then(|value| value.to_str())
+            .map(str::to_owned)
+        else {
+            continue;
+        };
+        replace_skill_directory(&directory, &staging.join(&name)).await?;
+        manifest[&name] = serde_json::json!({
+            "origin":if body.get("origin").and_then(Value::as_str) == Some("skills.sh") {"skills.sh"} else {"manual"},
+            "source":source
+        });
+    }
+    write_skill_manifest(&state, agent, &manifest).await?;
+    let _ = tokio::fs::remove_dir_all(&temporary).await;
+    Ok(Json(
+        serde_json::json!({"snapshot":skills_snapshot(&state).await?}),
+    ))
+}
+
+async fn import_skill(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let agent = body.get("agent").and_then(Value::as_str).unwrap_or("");
+    let staging = skill_staging_root(&state, agent)?;
+    let temporary = std::env::temp_dir().join(format!(
+        "osheep-skill-import-{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    tokio::fs::create_dir_all(&temporary).await?;
+    let (source, name) = if let Some(source_path) = body.get("sourcePath").and_then(Value::as_str) {
+        let source = PathBuf::from(source_path);
+        if !source.is_dir() || !source.join("SKILL.md").is_file() {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "INVALID_SKILL_FOLDER",
+                "Selected folder must contain SKILL.md",
+            ));
+        }
+        let name = source
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("")
+            .to_owned();
+        (source, name)
+    } else {
+        let files = body.get("files").and_then(Value::as_array).ok_or_else(|| {
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "INVALID_SKILL_FOLDER",
+                "Select a skill folder to import",
+            )
+        })?;
+        let first_path = files
+            .first()
+            .and_then(|file| file.get("path"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .replace('\\', "/");
+        let top_name = first_path
+            .split('/')
+            .find(|part| !part.is_empty())
+            .unwrap_or("");
+        let strip_top = files.iter().all(|file| {
+            file.get("path")
+                .and_then(Value::as_str)
+                .map(|path| path.replace('\\', "/"))
+                .is_some_and(|path| path.split('/').next() == Some(top_name) && path.contains('/'))
+        });
+        for file in files {
+            let raw_path = file.get("path").and_then(Value::as_str).unwrap_or("");
+            let mut parts = raw_path
+                .replace('\\', "/")
+                .split('/')
+                .filter(|part| !part.is_empty())
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            if strip_top && !parts.is_empty() {
+                parts.remove(0);
+            }
+            if parts.is_empty() || parts.iter().any(|part| !valid_name(part)) {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "INVALID_SKILL_FOLDER",
+                    "Selected folder contains an invalid file path",
+                ));
+            }
+            let destination = parts
+                .iter()
+                .fold(temporary.clone(), |path, part| path.join(part));
+            if let Some(parent) = destination.parent() {
+                tokio::fs::create_dir_all(parent).await?;
+            }
+            let data = decode_base64(file.get("data").and_then(Value::as_str).unwrap_or(""))
+                .map_err(|_| {
+                    ApiError::new(
+                        StatusCode::BAD_REQUEST,
+                        "INVALID_SKILL_FOLDER",
+                        "Selected folder contains an unreadable file",
+                    )
+                })?;
+            tokio::fs::write(destination, data).await?;
+        }
+        (temporary.clone(), top_name.to_owned())
+    };
+    if !valid_name(&name) {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "INVALID_SKILL_NAME",
+            "Skill folder name contains unsupported characters",
+        ));
+    }
+    replace_skill_directory(&source, &staging.join(&name)).await?;
+    let mut manifest = skill_manifest(&state, agent).await;
+    manifest[&name] = serde_json::json!({"origin":"manual"});
+    write_skill_manifest(&state, agent, &manifest).await?;
+    let _ = tokio::fs::remove_dir_all(&temporary).await;
+    Ok(Json(
+        serde_json::json!({"snapshot":skills_snapshot(&state).await?}),
+    ))
+}
+
+async fn apply_skill_selection(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let agent = body.get("agent").and_then(Value::as_str).unwrap_or("");
+    let staging = skill_staging_root(&state, agent)?;
+    let selected = body
+        .get("names")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|name| valid_name(name))
+        .map(str::to_owned)
+        .collect::<std::collections::HashSet<_>>();
+    let enabled = enabled_skill_dirs(agent).await?;
+    let mut staged = std::collections::BTreeMap::new();
+    for directory in find_produced_skill_dirs(&staging, 0).await? {
+        if let Some(name) = directory.file_name().and_then(|value| value.to_str()) {
+            staged.insert(name.to_owned(), directory);
+        }
+    }
+    for (name, source) in enabled {
+        if !selected.contains(&name) {
+            move_skill_directory(&source, &staging.join(name)).await?;
+        }
+    }
+    let live_root = skill_live_roots(agent)
+        .into_iter()
+        .next()
+        .expect("agent skill root");
+    for (name, source) in staged {
+        if selected.contains(&name) {
+            move_skill_directory(&source, &live_root.join(name)).await?;
+        }
+    }
+    Ok(Json(
+        serde_json::json!({"snapshot":skills_snapshot(&state).await?}),
+    ))
 }
 
 fn skill_dir(root: &Path, name: &str) -> Result<PathBuf, ApiError> {
@@ -2596,6 +4130,11 @@ async fn delete_skill(
             error.into()
         }
     })?;
+    let mut manifest = skill_manifest(&state, agent).await;
+    if let Some(entries) = manifest.as_object_mut() {
+        entries.remove(name);
+    }
+    write_skill_manifest(&state, agent, &manifest).await?;
     Ok(Json(
         serde_json::json!({"snapshot": skills_snapshot(&state).await?}),
     ))
@@ -2611,10 +4150,6 @@ async fn codex_plugins(State(state): State<AppState>) -> Json<Value> {
     let snapshot = crate::plugin_catalog::codex_snapshot().await;
     state.p6_state.lock().await["codexPlugins"] = snapshot.clone();
     Json(snapshot)
-}
-
-async fn plugin_mutation(State(_state): State<AppState>, Json(_body): Json<Value>) -> Json<Value> {
-    Json(serde_json::json!({"ok": true, "result": {}}))
 }
 
 async fn claude_plugin_install(
@@ -2682,6 +4217,176 @@ async fn codex_plugin_uninstall(
     let selector = plugin_selector(&body)?;
     run_plugin_cli("codex", &["plugin", "remove", selector, "--json"]).await?;
     plugin_snapshot_response(&state, "codex").await
+}
+
+fn valid_codex_plugin_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 80
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+}
+
+fn codex_plugin_paths() -> (PathBuf, PathBuf) {
+    let root = std::env::var_os("CODEX_HOME")
+        .or_else(|| std::env::var_os("OSHEEP_CODEX_CONFIG_DIR"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| user_home().join(".codex"));
+    (root.join("plugins"), root.join("plugins/marketplace.json"))
+}
+
+async fn read_personal_codex_marketplace(path: &Path) -> Value {
+    tokio::fs::read(path)
+        .await
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .filter(Value::is_object)
+        .unwrap_or_else(|| serde_json::json!({"name":"personal","plugins":[]}))
+}
+
+async fn write_personal_codex_marketplace(path: &Path, value: &Value) -> Result<(), ApiError> {
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let mut bytes = serde_json::to_vec_pretty(value).map_err(|error| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "INTERNAL",
+            error.to_string(),
+        )
+    })?;
+    bytes.push(b'\n');
+    tokio::fs::write(path, bytes).await?;
+    Ok(())
+}
+
+async fn codex_plugin_local_create(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let name = body
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    if !valid_codex_plugin_name(name) {
+        return Err(ApiError::invalid_path("plugin name is invalid"));
+    }
+    let display = body
+        .get("displayName")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(name);
+    let description = body
+        .get("description")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("Personal Codex plugin");
+    let (root, marketplace_path) = codex_plugin_paths();
+    let plugin_root = root.join(name);
+    let manifest = plugin_root.join(".codex-plugin/plugin.json");
+    if tokio::fs::try_exists(&manifest).await.unwrap_or(false) {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "ENTRY_EXISTS",
+            "Codex plugin already exists",
+        ));
+    }
+    tokio::fs::create_dir_all(manifest.parent().unwrap()).await?;
+    let bytes = serde_json::to_vec_pretty(&serde_json::json!({
+        "name": name, "version":"0.1.0", "description":description,
+        "interface":{"displayName":display,"shortDescription":description}
+    }))
+    .map_err(|error| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "INTERNAL",
+            error.to_string(),
+        )
+    })?;
+    tokio::fs::write(&manifest, bytes).await?;
+    let mut marketplace = read_personal_codex_marketplace(&marketplace_path).await;
+    let plugins = marketplace["plugins"].as_array_mut().unwrap();
+    plugins.retain(|item| item["name"].as_str() != Some(name));
+    plugins.push(serde_json::json!({"name":name,"source":{"path":name}}));
+    write_personal_codex_marketplace(&marketplace_path, &marketplace).await?;
+    let snapshot = crate::plugin_catalog::codex_snapshot().await;
+    state.p6_state.lock().await["codexPlugins"] = snapshot.clone();
+    Ok(Json(snapshot))
+}
+
+async fn codex_plugin_local_import(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let source = body
+        .get("path")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    let source = PathBuf::from(source);
+    let manifest_path = source.join(".codex-plugin/plugin.json");
+    let manifest: Value =
+        serde_json::from_slice(&tokio::fs::read(&manifest_path).await?).map_err(|error| {
+            ApiError::new(StatusCode::BAD_REQUEST, "INVALID_QUERY", error.to_string())
+        })?;
+    let name = manifest["name"].as_str().unwrap_or("").trim();
+    if !valid_codex_plugin_name(name) {
+        return Err(ApiError::invalid_path(
+            "Codex plugin manifest with a valid name is required",
+        ));
+    }
+    let (root, marketplace_path) = codex_plugin_paths();
+    let destination = root.join(name);
+    if source != destination {
+        if tokio::fs::try_exists(&destination).await.unwrap_or(false) {
+            tokio::fs::remove_dir_all(&destination).await?;
+        }
+        copy_directory_if_missing(&source, &destination).await?;
+    }
+    let mut marketplace = read_personal_codex_marketplace(&marketplace_path).await;
+    let plugins = marketplace["plugins"].as_array_mut().unwrap();
+    plugins.retain(|item| item["name"].as_str() != Some(name));
+    plugins.push(serde_json::json!({"name":name,"source":{"path":name}}));
+    write_personal_codex_marketplace(&marketplace_path, &marketplace).await?;
+    let snapshot = crate::plugin_catalog::codex_snapshot().await;
+    state.p6_state.lock().await["codexPlugins"] = snapshot.clone();
+    Ok(Json(snapshot))
+}
+
+async fn codex_plugin_local_delete(
+    State(state): State<AppState>,
+    AxumPath(name): AxumPath<String>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<Value>, ApiError> {
+    if !valid_codex_plugin_name(&name) {
+        return Err(ApiError::invalid_path("plugin name is invalid"));
+    }
+    let (root, marketplace_path) = codex_plugin_paths();
+    let mut marketplace = read_personal_codex_marketplace(&marketplace_path).await;
+    let plugins = marketplace["plugins"].as_array_mut().unwrap();
+    let existed = plugins
+        .iter()
+        .any(|item| item["name"].as_str() == Some(name.as_str()));
+    if !existed {
+        return Err(ApiError::not_found(format!(
+            "Personal Codex plugin not found: {name}"
+        )));
+    }
+    plugins.retain(|item| item["name"].as_str() != Some(name.as_str()));
+    if query
+        .get("deleteSource")
+        .is_some_and(|value| value == "true")
+    {
+        let path = root.join(&name);
+        if tokio::fs::try_exists(&path).await.unwrap_or(false) {
+            tokio::fs::remove_dir_all(path).await?;
+        }
+    }
+    write_personal_codex_marketplace(&marketplace_path, &marketplace).await?;
+    let snapshot = crate::plugin_catalog::codex_snapshot().await;
+    state.p6_state.lock().await["codexPlugins"] = snapshot.clone();
+    Ok(Json(snapshot))
 }
 
 async fn codex_marketplace_add(
@@ -2780,9 +4485,13 @@ fn find_path_executable(program: &str) -> Option<PathBuf> {
     }
     let path_env = std::env::var_os("PATH")?;
     #[cfg(windows)]
-    let extensions = ["", ".exe", ".cmd", ".bat", ".ps1"];
+    let extensions: &[&str] = if Path::new(program).extension().is_some() {
+        &[""]
+    } else {
+        &[".exe", ".cmd", ".bat", ".ps1"]
+    };
     #[cfg(not(windows))]
-    let extensions = [""];
+    let extensions: &[&str] = &[""];
     for directory in std::env::split_paths(&path_env) {
         for extension in extensions {
             let candidate = directory.join(format!("{program}{extension}"));
@@ -3030,6 +4739,19 @@ async fn workflow_stop(
         .stop(&workflow_runtime_key(&root, &wid))
         .await;
     Ok(Json(serde_json::json!({"ok": true, "stopped": true})))
+}
+
+async fn workflow_retry_now(
+    State(state): State<AppState>,
+    AxumPath((id, wid, _node_id)): AxumPath<(String, String, String)>,
+) -> Result<Json<Value>, ApiError> {
+    let root = resolve_workspace_path(&state, &id).await?;
+    let _ = read_workflow(&root, &wid).await?;
+    Err(ApiError::new(
+        StatusCode::CONFLICT,
+        "WORKFLOW_NOT_WAITING",
+        "agent retry is no longer pending",
+    ))
 }
 
 async fn template_marketspace_install(
@@ -3500,6 +5222,7 @@ async fn skills_snapshot(state: &AppState) -> Result<Value, ApiError> {
     let mut enabled_by_path = std::collections::BTreeMap::<PathBuf, Value>::new();
     let mut user = Vec::new();
     for agent in ["claude", "codex"] {
+        let manifest = skill_manifest(state, agent).await;
         let roots = skill_live_roots(agent);
         for root in &roots {
             let mut entries = match tokio::fs::read_dir(root).await {
@@ -3520,7 +5243,12 @@ async fn skills_snapshot(state: &AppState) -> Result<Value, ApiError> {
                             agents.push(Value::String(agent.to_owned()));
                         }
                     } else {
-                        enabled_by_path.insert(path.clone(), serde_json::json!({"name":name,"description":skill_description(&path).await,"path":path,"agents":[agent],"source":"local","builtIn":tokio::fs::try_exists(entry.path().join(".osheep-built-in")).await.unwrap_or(false)}));
+                        let source = if manifest[&name]["origin"] == "skills.sh" {
+                            "skills.sh"
+                        } else {
+                            "local"
+                        };
+                        enabled_by_path.insert(path.clone(), serde_json::json!({"name":name,"description":skill_description(&path).await,"path":path,"agents":[agent],"source":source,"builtIn":tokio::fs::try_exists(entry.path().join(".osheep-built-in")).await.unwrap_or(false)}));
                     }
                 }
             }
@@ -3538,7 +5266,8 @@ async fn skills_snapshot(state: &AppState) -> Result<Value, ApiError> {
                     .await
                     .unwrap_or(false)
             {
-                user.push(serde_json::json!({"name":name,"description":skill_description(&entry.path()).await,"path":entry.path(),"agent":agent,"origin":"manual","builtIn":tokio::fs::try_exists(entry.path().join(".osheep-built-in")).await.unwrap_or(false)}));
+                let record = &manifest[&name];
+                user.push(serde_json::json!({"name":name,"description":skill_description(&entry.path()).await,"path":entry.path(),"agent":agent,"origin":record["origin"].as_str().unwrap_or("manual"),"source":record.get("source").cloned().unwrap_or(Value::Null),"builtIn":record["builtIn"].as_bool().unwrap_or_else(|| entry.path().join(".osheep-built-in").exists())}));
             }
         }
     }
@@ -3653,6 +5382,11 @@ fn workflow_runtime_error(error: crate::workflow_runtime::RuntimeError) -> ApiEr
         crate::workflow_runtime::RuntimeError::NotWaiting => ApiError::new(
             StatusCode::CONFLICT,
             "WORKFLOW_NOT_WAITING",
+            error.to_string(),
+        ),
+        crate::workflow_runtime::RuntimeError::NoRunnableBlocks => ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "WORKFLOW_NOT_RUNNABLE",
             error.to_string(),
         ),
         _ => ApiError::new(
@@ -3778,6 +5512,40 @@ mod tests {
     }
 
     #[test]
+    fn agent_terminal_commands_preserve_interactive_cli_options() {
+        let claude = build_agent_terminal_command(
+            "claude-cli",
+            &serde_json::json!({
+                "terminalPrompt":"review user's change",
+                "mode":"plan",
+                "effort":"high",
+                "conversationSessionId":"550e8400-e29b-41d4-a716-446655440000"
+            }),
+        )
+        .unwrap();
+        assert!(claude.contains("'--permission-mode' 'plan'"));
+        assert!(claude.contains("'--session-id' '550e8400-e29b-41d4-a716-446655440000'"));
+        assert!(claude.contains("'--effort' 'high'"));
+
+        let codex = build_agent_terminal_command(
+            "codex-cli",
+            &serde_json::json!({
+                "terminalPrompt":"continue",
+                "resumeConversation":true,
+                "conversationSessionId":"550e8400-e29b-41d4-a716-446655440000",
+                "codexApproval":"never",
+                "codexSandbox":"danger-full-access",
+                "effort":"xhigh"
+            }),
+        )
+        .unwrap();
+        assert!(codex.contains("'resume'"));
+        assert!(codex.contains("'--ask-for-approval' 'never'"));
+        assert!(codex.contains("'--sandbox' 'danger-full-access'"));
+        assert!(codex.contains("'model_reasoning_effort=\"xhigh\"'"));
+    }
+
+    #[test]
     fn base64_round_trips_binary_payloads_and_rejects_invalid_input() {
         for bytes in [
             Vec::new(),
@@ -3792,6 +5560,31 @@ mod tests {
         assert!(decode_base64("abc").is_err());
         assert!(decode_base64("ab=c").is_err());
         assert!(decode_base64("!!!!").is_err());
+    }
+
+    #[test]
+    fn skill_sources_reject_shell_metacharacters() {
+        assert_eq!(
+            validate_skill_source("https://github.com/anthropics/skills").unwrap(),
+            "https://github.com/anthropics/skills"
+        );
+        assert!(validate_skill_source("https://example.test/repo%PATH%").is_err());
+        assert!(validate_skill_source("owner/repo").is_err());
+    }
+
+    #[tokio::test]
+    async fn recursively_discovers_produced_skill_directories() {
+        let root = std::env::temp_dir().join(format!(
+            "osheep-skill-discovery-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let skill = root.join("nested/example");
+        tokio::fs::create_dir_all(&skill).await.unwrap();
+        tokio::fs::write(skill.join("SKILL.md"), "# Example")
+            .await
+            .unwrap();
+        assert_eq!(find_produced_skill_dirs(&root, 0).await.unwrap(), [skill]);
+        tokio::fs::remove_dir_all(root).await.unwrap();
     }
 
     #[test]
