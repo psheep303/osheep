@@ -102,6 +102,7 @@ async fn claude_snapshot_from(home: &Path) -> Value {
                         .and_then(|value| value["installPath"].as_str())
                         .map(PathBuf::from)
                 });
+            let icon = load_plugin_icon(item, source_path.as_deref(), name).await;
             plugins.insert(selector.clone(), serde_json::json!({
                 "name": name,
                 "marketplace": marketplace,
@@ -109,6 +110,7 @@ async fn claude_snapshot_from(home: &Path) -> Value {
                 "displayName": item.get("displayName").and_then(Value::as_str).unwrap_or(name),
                 "version": install.and_then(|value| value["version"].as_str()),
                 "description": item.get("description").and_then(Value::as_str),
+                "icon": icon,
                 "scope": install.and_then(|value| value["scope"].as_str()),
                 "status": {"installed":is_installed,"available":true,"enabled":is_enabled,"cached":is_installed,"local":false},
                 "source": {"kind":"marketplace","path":source_path}
@@ -167,6 +169,12 @@ async fn codex_snapshot_from(home: &Path) -> Value {
                 Some(root) => read_json(&root.join(".codex-plugin/plugin.json")).await,
                 None => None,
             };
+            let icon = load_plugin_icon(
+                metadata.as_ref().unwrap_or(item),
+                plugin_root.as_deref(),
+                name,
+            )
+            .await;
             let installed = codex_config_mentions(&config, &selector);
             let enabled = codex_config_enabled(&config, &selector).unwrap_or(installed);
             plugins.insert(selector.clone(), serde_json::json!({
@@ -176,6 +184,7 @@ async fn codex_snapshot_from(home: &Path) -> Value {
                 "displayName": metadata.as_ref().and_then(|value| value["interface"]["displayName"].as_str()).or_else(|| metadata.as_ref().and_then(|value| value["displayName"].as_str())).unwrap_or(name),
                 "version": metadata.as_ref().and_then(|value| value["version"].as_str()),
                 "description": metadata.as_ref().and_then(|value| value["description"].as_str()).or_else(|| item["description"].as_str()),
+                "icon": icon,
                 "status":{"installed":installed,"available":true,"enabled":enabled,"cached":plugin_root.is_some(),"local":false},
                 "source":{"kind":"marketplace","path":plugin_root}
             }));
@@ -203,9 +212,11 @@ async fn codex_snapshot_from(home: &Path) -> Value {
                     .unwrap_or(&codex_dir)
                     .join(path)
             });
+            let icon = load_plugin_icon(item, source_path.as_deref(), name).await;
             let installed = codex_config_mentions(&config, &selector);
             plugins.insert(selector.clone(), serde_json::json!({
                 "name":name,"marketplace":marketplace,"selector":selector,"displayName":name,
+                "icon":icon,
                 "status":{"installed":installed,"available":true,"enabled":codex_config_enabled(&config, &selector).unwrap_or(installed),"cached":source_path.as_ref().is_some_and(|path| path.exists()),"local":true},
                 "source":{"kind":"personal","path":source_path}
             }));
@@ -247,6 +258,94 @@ fn codex_config_enabled(config: &str, selector: &str) -> Option<bool> {
     })
 }
 
+async fn load_plugin_icon(metadata: &Value, plugin_root: Option<&Path>, name: &str) -> String {
+    let candidate = [
+        metadata["icon"].as_str(),
+        metadata["composerIcon"].as_str(),
+        metadata["logo"].as_str(),
+        metadata["interface"]["icon"].as_str(),
+        metadata["interface"]["composerIcon"].as_str(),
+        metadata["interface"]["logo"].as_str(),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|value| !value.trim().is_empty())
+    .unwrap_or("");
+    if candidate.starts_with("data:image/")
+        || candidate.starts_with("http://")
+        || candidate.starts_with("https://")
+    {
+        return candidate.to_owned();
+    }
+    if let Some(root) = plugin_root {
+        let path = root.join(candidate);
+        if !candidate.is_empty() && path.starts_with(root) {
+            if let Ok(bytes) = tokio::fs::read(&path).await {
+                if bytes.len() <= 256 * 1024 {
+                    if let Some(mime) = icon_mime(path.extension().and_then(|value| value.to_str()))
+                    {
+                        return format!("data:{mime};base64,{}", base64_encode(&bytes));
+                    }
+                }
+            }
+        }
+    }
+    fallback_plugin_icon(name)
+}
+
+fn icon_mime(extension: Option<&str>) -> Option<&'static str> {
+    match extension.unwrap_or("").to_ascii_lowercase().as_str() {
+        "svg" => Some("image/svg+xml"),
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        "ico" => Some("image/x-icon"),
+        _ => None,
+    }
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let a = chunk[0] as usize;
+        let b = chunk.get(1).copied().unwrap_or(0) as usize;
+        let c = chunk.get(2).copied().unwrap_or(0) as usize;
+        out.push(TABLE[a >> 2] as char);
+        out.push(TABLE[((a & 3) << 4) | (b >> 4)] as char);
+        out.push(if chunk.len() > 1 {
+            TABLE[((b & 15) << 2) | (c >> 6)] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            TABLE[c & 63] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+fn fallback_plugin_icon(name: &str) -> String {
+    let mut hash = 0u32;
+    for byte in name.bytes() {
+        hash = hash.wrapping_mul(31).wrapping_add(byte as u32);
+    }
+    let colors = [
+        "#2563EB", "#059669", "#7C3AED", "#DC2626", "#0891B2", "#C2410C",
+    ];
+    let color = colors[(hash as usize) % colors.len()];
+    let svg = format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 64 64\"><rect width=\"64\" height=\"64\" rx=\"14\" fill=\"{color}\"/><g fill=\"none\" stroke=\"#fff\" stroke-width=\"4\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M24 18h16a6 6 0 0 1 6 6v16a6 6 0 0 1-6 6H24a6 6 0 0 1-6-6V24a6 6 0 0 1 6-6Z\"/><path d=\"M28 18v-5M36 18v-5M28 51v-5M36 51v-5M18 28h-5M18 36h-5M51 28h-5M51 36h-5\"/></g></svg>"
+    );
+    format!(
+        "data:image/svg+xml;base64,{}",
+        base64_encode(svg.as_bytes())
+    )
+}
+
 fn sort_plugins(plugins: &mut [Value]) {
     plugins.sort_by(|left, right| {
         let left_installed = left["status"]["installed"].as_bool().unwrap_or(false);
@@ -281,6 +380,19 @@ mod tests {
             codex_config_enabled(config, "game-studio@openai-api-curated"),
             Some(true)
         );
+    }
+
+    #[tokio::test]
+    async fn plugin_snapshot_records_always_include_renderable_icons() {
+        let icon = load_plugin_icon(
+            &serde_json::json!({"icon":"https://example.test/icon.png"}),
+            None,
+            "demo",
+        )
+        .await;
+        assert_eq!(icon, "https://example.test/icon.png");
+        let fallback = load_plugin_icon(&serde_json::json!({}), None, "demo").await;
+        assert!(fallback.starts_with("data:image/svg+xml;base64,"));
     }
 
     #[tokio::test]

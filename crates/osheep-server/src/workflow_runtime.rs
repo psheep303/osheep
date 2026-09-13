@@ -83,6 +83,7 @@ impl WorkflowRuntime {
         workflow_path: PathBuf,
         workspace_root: PathBuf,
         requested_ids: Option<Vec<String>>,
+        retry_language: Option<&str>,
     ) -> Result<(String, Value), RuntimeError> {
         let run_id = format!("run_{}", uuid::Uuid::new_v4().simple());
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -150,6 +151,7 @@ impl WorkflowRuntime {
         let runtime = self.clone();
         let task_key = key.clone();
         let task_run_id = run_id.clone();
+        let retry_language = retry_language.map(str::to_owned);
         tokio::spawn(async move {
             runtime
                 .execute(
@@ -159,6 +161,7 @@ impl WorkflowRuntime {
                     task_run_id.clone(),
                     node_ids,
                     cancelled,
+                    retry_language,
                 )
                 .await;
             let mut active = runtime.active.lock().await;
@@ -208,6 +211,7 @@ impl WorkflowRuntime {
         run_id: String,
         node_ids: Vec<String>,
         cancelled: Arc<AtomicBool>,
+        retry_language: Option<String>,
     ) {
         let mut run_error = None;
         let edges = read_json(&workflow_path)
@@ -270,7 +274,11 @@ impl WorkflowRuntime {
                 self.emit_run(&key, &run).await;
             }
 
-            let node = workflow["nodes"][index].clone();
+            let mut node = workflow["nodes"][index].clone();
+            if let Some(language) = retry_language.as_deref() {
+                node["config"]["retryLanguage"] =
+                    Value::String(if language == "zh-CN" { "zh-CN" } else { "en" }.to_owned());
+            }
             let result = self
                 .execute_node(
                     &key,
@@ -385,6 +393,177 @@ impl WorkflowRuntime {
         node: &Value,
         cancelled: Arc<AtomicBool>,
     ) -> Result<Value, String> {
+        let mut resolved_node = node.clone();
+        for key in [
+            "retries",
+            "retryDelaySeconds",
+            "retryForever",
+            "retryStrategy",
+            "retryLanguage",
+        ] {
+            if let Some(value) = resolved_node["config"][key].as_str() {
+                if let Ok(resolved) = resolve_templates(value, workflow) {
+                    resolved_node["config"][key] = if key == "retryForever" {
+                        Value::Bool(matches!(
+                            resolved.trim().to_ascii_lowercase().as_str(),
+                            "true" | "1" | "yes"
+                        ))
+                    } else if matches!(key, "retries" | "retryDelaySeconds") {
+                        resolved
+                            .parse::<f64>()
+                            .map(Value::from)
+                            .unwrap_or(Value::String(resolved))
+                    } else {
+                        Value::String(resolved)
+                    };
+                }
+            }
+        }
+        if let Some(ids) = resolved_node["config"]["retryProviderIds"].as_array_mut() {
+            for id in ids {
+                if let Some(value) = id.as_str() {
+                    if let Ok(resolved) = resolve_templates(value, workflow) {
+                        *id = Value::String(resolved);
+                    }
+                }
+            }
+        }
+        let node = &resolved_node;
+        let retries = agent_retry_count(node);
+        let retry_forever = agent_retry_forever(node);
+        let retry_delay = agent_retry_delay_millis(node);
+        let retry_prompt = agent_retry_prompt(node);
+        let retry_strategy = if retry_forever || retries > 0 {
+            agent_retry_strategy(node).to_owned()
+        } else {
+            "none".to_owned()
+        };
+        let retry_provider_ids = agent_retry_provider_ids(node);
+        let provider_plan =
+            load_agent_provider_plan(&self.data_root, node, &retry_strategy, &retry_provider_ids)
+                .await;
+        let mut attempt = 0usize;
+        let mut current_node = node.clone();
+        let mut attempt_transcripts = Vec::new();
+        let mut retry_reasons = Vec::new();
+
+        loop {
+            if cancelled.load(Ordering::SeqCst) {
+                return Err("Workflow stopped.".to_owned());
+            }
+            if let Some(provider_id) = provider_plan.get(attempt % provider_plan.len().max(1)) {
+                current_node["config"]["providerId"] = Value::String(provider_id.clone());
+                apply_agent_provider(&self.data_root, &current_node, provider_id).await;
+            }
+            let result = self
+                .run_agent_attempt(
+                    key,
+                    workflow_path,
+                    workspace_root,
+                    workflow,
+                    &current_node,
+                    cancelled.clone(),
+                )
+                .await;
+            match result {
+                Ok(mut output) => {
+                    if !attempt_transcripts.is_empty() {
+                        let latest = output_text(&output);
+                        output["retryTranscript"] = Value::String(attempt_transcripts.join("\n\n"));
+                        output["text"] = Value::String(latest);
+                    }
+                    output["retryAttempts"] = Value::from(attempt as u64 + 1);
+                    if let Some(provider_id) = current_node["config"]["providerId"].as_str() {
+                        output["providerId"] = Value::String(provider_id.to_owned());
+                    }
+                    output["retryStrategy"] = Value::String(retry_strategy.clone());
+                    output["retryProviderIds"] = Value::Array(
+                        retry_provider_ids
+                            .iter()
+                            .cloned()
+                            .map(Value::String)
+                            .collect(),
+                    );
+                    if !retry_reasons.is_empty() {
+                        output["retryReasons"] =
+                            Value::Array(retry_reasons.into_iter().map(Value::String).collect());
+                    }
+                    clear_retry_details(workflow_path, node["id"].as_str().unwrap_or("")).await;
+                    return Ok(output);
+                }
+                Err(error) => {
+                    if !should_retry_agent_failure(&error, attempt, retries, retry_forever) {
+                        if !retry_reasons.is_empty() {
+                            persist_retry_reasons(
+                                workflow_path,
+                                node["id"].as_str().unwrap_or(""),
+                                &retry_reasons,
+                            )
+                            .await;
+                        }
+                        clear_retry_details(workflow_path, node["id"].as_str().unwrap_or("")).await;
+                        return Err(if attempt > 0 {
+                            format!(
+                                "{} failed after {} attempts: {}",
+                                node_title(node),
+                                attempt + 1,
+                                error
+                            )
+                        } else {
+                            error
+                        });
+                    }
+                    retry_reasons.push(error.clone());
+                    attempt += 1;
+                    attempt_transcripts.push(format!(
+                        "{error}\n[osheep] retry {attempt}/{}: {retry_prompt}",
+                        if retry_forever {
+                            "infinity".to_owned()
+                        } else {
+                            retries.to_string()
+                        }
+                    ));
+                    set_retry_details(
+                        workflow_path,
+                        node["id"].as_str().unwrap_or(""),
+                        retry_delay,
+                        attempt,
+                        &error,
+                    )
+                    .await;
+                    current_node["prompt"] = Value::String(retry_prompt.to_owned());
+                    current_node["config"]["resumeConversation"] = Value::Bool(true);
+                    let persisted_session_id = read_agent_conversation_id(
+                        workflow_path,
+                        node["id"].as_str().unwrap_or(""),
+                    )
+                    .await;
+                    if let Some(session_id) = persisted_session_id.or_else(|| {
+                        current_node["config"]["conversationSessionId"]
+                            .as_str()
+                            .or_else(|| current_node["config"]["sessionId"].as_str())
+                            .map(str::to_owned)
+                    }) {
+                        current_node["config"]["conversationSessionId"] =
+                            Value::String(session_id.clone());
+                        current_node["config"]["sessionId"] = Value::String(session_id);
+                    }
+                    wait_cancelled(Duration::from_millis(retry_delay), cancelled.clone()).await?;
+                    clear_retry_details(workflow_path, node["id"].as_str().unwrap_or("")).await;
+                }
+            }
+        }
+    }
+
+    async fn run_agent_attempt(
+        &self,
+        key: &str,
+        workflow_path: &Path,
+        workspace_root: &Path,
+        workflow: &Value,
+        node: &Value,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<Value, String> {
         let Some(pty) = self.pty.clone() else {
             return run_agent_process(workspace_root, workflow, node, cancelled).await;
         };
@@ -445,12 +624,24 @@ impl WorkflowRuntime {
         } else {
             AgentSessionApp::Claude
         };
-        let mut conversation_id = node["config"]["sessionId"]
-            .as_str()
-            .filter(|value| !value.trim().is_empty())
-            .map(str::to_owned);
+        let resume_configured = node["config"]["resumeConversation"]
+            .as_bool()
+            .unwrap_or(false);
+        let mut conversation_id = if provider == "codex-cli" && resume_configured {
+            node["config"]["conversationSessionId"]
+                .as_str()
+                .or_else(|| node["config"]["sessionId"].as_str())
+        } else if provider != "codex-cli" {
+            node["config"]["sessionId"].as_str()
+        } else {
+            None
+        }
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_owned);
         let mut session_offset = 0usize;
         let mut final_message = String::new();
+        let mut waiting_for_choice = false;
+        let mut active_codex_turn_id: Option<String> = None;
         if let Some(id) = conversation_id.as_deref() {
             if let Ok(Some(content)) = self
                 .session_service
@@ -478,25 +669,83 @@ impl WorkflowRuntime {
                         if cancelled.load(Ordering::SeqCst) {
                             break Err("Workflow stopped.".to_owned());
                         }
-                        if code != 0 {
-                            let message = if !final_message.trim().is_empty() {
-                                final_message.clone()
-                            } else {
-                                clean_terminal_text(&transcript)
-                            };
-                            if !final_message.trim().is_empty() {
-                                self.persist_agent_details(workflow_path, key, &node_id, &session_id, "error", &final_message, conversation_id.as_deref()).await;
+                        // The interactive CLIs commonly exit with code 0 even when the
+                        // API turn failed (for example Codex's `task_complete.error`).
+                        // Treat the JSONL reducer as the source of truth and give the
+                        // session file a short settle window after the PTY closes.
+                        if conversation_id.is_none() {
+                            if let Ok(sessions) = self.session_service.list_in_project(agent_app, workspace_root).await {
+                                conversation_id = sessions
+                                    .into_iter()
+                                    .find(|item| item.updated_at >= node["startedAt"].as_u64().unwrap_or(0) as f64)
+                                    .map(|item| item.id);
                             }
-                            break Err(if message.is_empty() {
-                                format!("{provider} exited with code {code}.")
-                            } else {
-                                message
-                            });
                         }
-                        let answer = if final_message.trim().is_empty() { clean_terminal_text(&transcript) } else { final_message.clone() };
-                        break Ok(serde_json::json!({"type":provider,"status":if code == 0 {"success"} else {"error"},"stdout":transcript,"stderr":"","text":answer,"transcript":answer,"exitCode":code,"conversationSessionId":conversation_id}));
+                        let mut recovered = None;
+                        for _ in 0..25 {
+                            if let Some(id) = conversation_id.as_deref() {
+                                if let Ok(Some(content)) = self.session_service.read_in_project(agent_app, id, workspace_root).await {
+                                    if let Some(result) = parse_agent_session_result(agent_app, &content) {
+                                        recovered = Some((id.to_owned(), result));
+                                        break;
+                                    }
+                                }
+                            }
+                            sleep(Duration::from_millis(120)).await;
+                        }
+                        if let Some((id, result)) = recovered {
+                            match result {
+                                Ok(answer) => break 'agent_loop Ok(serde_json::json!({"type":provider,"status":"success","stdout":transcript,"stderr":"","text":answer,"transcript":answer,"exitCode":code,"conversationSessionId":id})),
+                                Err(message) => {
+                                    self.persist_agent_details(workflow_path, key, &node_id, &session_id, "error", &message, Some(&id)).await;
+                                    break 'agent_loop Err(message);
+                                }
+                            }
+                        }
+                        let message = if !final_message.trim().is_empty() {
+                            final_message.clone()
+                        } else {
+                            clean_terminal_text(&transcript)
+                        };
+                        if !message.trim().is_empty() {
+                            self.persist_agent_details(workflow_path, key, &node_id, &session_id, "error", &message, conversation_id.as_deref()).await;
+                        }
+                        break Err(if code == 0 {
+                            "Agent exited before the session reported a result.".to_owned()
+                        } else if message.is_empty() {
+                            format!("{provider} exited with code {code}.")
+                        } else {
+                            message
+                        });
                     }
                     Ok(PtyEvent::Error(message)) => {
+                        // A PTY reader can close just after the CLI has flushed its
+                        // JSONL terminal event. Recover that event before surfacing
+                        // the transport error so API failures are classified correctly.
+                        if conversation_id.is_none() {
+                            if let Ok(sessions) = self.session_service.list_in_project(agent_app, workspace_root).await {
+                                conversation_id = sessions
+                                    .into_iter()
+                                    .find(|item| item.updated_at >= node["startedAt"].as_u64().unwrap_or(0) as f64)
+                                    .map(|item| item.id);
+                            }
+                        }
+                        for _ in 0..25 {
+                            if let Some(id) = conversation_id.as_deref() {
+                                if let Ok(Some(content)) = self.session_service.read_in_project(agent_app, id, workspace_root).await {
+                                    if let Some(result) = parse_agent_session_result(agent_app, &content) {
+                                        match result {
+                                            Ok(answer) => break 'agent_loop Ok(serde_json::json!({"type":provider,"status":"success","stdout":transcript,"stderr":"","text":answer,"transcript":answer,"exitCode":0,"conversationSessionId":id})),
+                                            Err(error) => {
+                                                self.persist_agent_details(workflow_path, key, &node_id, &session_id, "error", &error, Some(id)).await;
+                                                break 'agent_loop Err(error);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            sleep(Duration::from_millis(120)).await;
+                        }
                         if !final_message.trim().is_empty() {
                             self.persist_agent_details(workflow_path, key, &node_id, &session_id, "error", &final_message, conversation_id.as_deref()).await;
                         }
@@ -558,10 +807,43 @@ impl WorkflowRuntime {
                             session_offset = content.len();
                             for line in content.get(start..).unwrap_or("").lines() {
                                 let Ok(value) = serde_json::from_str::<Value>(line) else { continue };
+                                if agent_app == AgentSessionApp::Codex {
+                                    let payload = value.get("payload").unwrap_or(&Value::Null);
+                                    let kind = payload["type"]
+                                        .as_str()
+                                        .or_else(|| value["type"].as_str())
+                                        .unwrap_or("");
+                                    let turn_id = payload["turn_id"]
+                                        .as_str()
+                                        .or_else(|| value["turn_id"].as_str())
+                                        .unwrap_or("");
+                                    if matches!(kind, "task_started" | "turn_started") {
+                                        if !turn_id.is_empty() {
+                                            active_codex_turn_id = Some(turn_id.to_owned());
+                                        }
+                                    } else if active_codex_turn_id
+                                        .as_deref()
+                                        .is_some_and(|active| !turn_id.is_empty() && active != turn_id)
+                                    {
+                                        continue;
+                                    }
+                                }
+                                if agent_session_waiting_for_choice(agent_app, &value) {
+                                    waiting_for_choice = true;
+                                    self.persist_agent_details(workflow_path, key, &node_id, &session_id, "waiting-for-choice", &transcript, Some(id)).await;
+                                    continue;
+                                }
+                                if waiting_for_choice && agent_session_resume_event(agent_app, &value) {
+                                    waiting_for_choice = false;
+                                    self.persist_agent_details(workflow_path, key, &node_id, &session_id, "running", &transcript, Some(id)).await;
+                                }
                                 if let Some(message) = agent_session_message(agent_app, &value) {
                                     final_message = message;
                                 }
                                 if let Some((success, message)) = agent_session_completion(agent_app, &value) {
+                                    if waiting_for_choice {
+                                        continue;
+                                    }
                                     if success {
                                         let _ = session.kill().await;
                                         let answer = if final_message.trim().is_empty() { clean_terminal_text(&transcript) } else { final_message.clone() };
@@ -1214,6 +1496,18 @@ fn finish_details(
         if let Some(session_id) = output["conversationSessionId"].as_str() {
             details["conversationSessionId"] = Value::String(session_id.to_owned());
         }
+        for field in [
+            "retryAttempts",
+            "retryStrategy",
+            "retryProviderIds",
+            "retryReasons",
+            "retryTranscript",
+            "providerId",
+        ] {
+            if let Some(value) = output.get(field) {
+                details[field] = value.clone();
+            }
+        }
     }
     if let Some(error) = error {
         let existing_stderr = details["stderr"].as_str().unwrap_or("");
@@ -1443,6 +1737,299 @@ fn incoming_outputs(workflow: &Value, node: &Value) -> Vec<Value> {
 
 fn node_title(node: &Value) -> &str {
     node["title"].as_str().unwrap_or("Workflow block")
+}
+
+fn agent_retry_count(node: &Value) -> usize {
+    node["config"]["retries"]
+        .as_u64()
+        .or_else(|| {
+            node["config"]["retries"]
+                .as_f64()
+                .map(|v| v.max(0.0) as u64)
+        })
+        .or_else(|| {
+            node["config"]["retries"]
+                .as_str()
+                .and_then(|v| v.parse::<f64>().ok())
+                .map(|v| v.max(0.0) as u64)
+        })
+        .unwrap_or(0)
+        .min(100) as usize
+}
+
+fn agent_retry_forever(node: &Value) -> bool {
+    match &node["config"]["retryForever"] {
+        Value::Bool(value) => *value,
+        Value::String(value) => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "true" | "1" | "yes"
+        ),
+        _ => false,
+    }
+}
+
+fn agent_retry_delay_millis(node: &Value) -> u64 {
+    let value = node["config"]["retryDelaySeconds"]
+        .as_f64()
+        .or_else(|| {
+            node["config"]["retryDelaySeconds"]
+                .as_str()
+                .and_then(|v| v.parse().ok())
+        })
+        .unwrap_or(0.0);
+    if value.is_finite() {
+        (value.clamp(0.0, 86_400.0) * 1000.0).round() as u64
+    } else {
+        0
+    }
+}
+
+fn agent_retry_prompt(node: &Value) -> &'static str {
+    let language = node["config"]["retryLanguage"].as_str().unwrap_or("");
+    if language.eq_ignore_ascii_case("en") || language.eq_ignore_ascii_case("english") {
+        "continue"
+    } else {
+        "继续"
+    }
+}
+
+fn agent_retry_strategy(node: &Value) -> &str {
+    let value = node["config"]["retryStrategy"].as_str().unwrap_or("none");
+    if matches!(value, "round-robin" | "lowest-multiplier") {
+        value
+    } else {
+        "none"
+    }
+}
+
+fn agent_retry_provider_ids(node: &Value) -> Vec<String> {
+    let mut seen = HashSet::new();
+    node["config"]["retryProviderIds"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .filter(|id| seen.insert((*id).to_owned()))
+        .map(str::to_owned)
+        .collect()
+}
+
+fn should_retry_agent_failure(
+    message: &str,
+    attempt: usize,
+    retries: usize,
+    retry_forever: bool,
+) -> bool {
+    if !retry_forever && attempt >= retries {
+        return false;
+    }
+    let normalized = message.trim().to_ascii_lowercase();
+    if normalized.is_empty()
+        || normalized.contains("workflow stopped")
+        || normalized.contains("cancel")
+        || normalized.contains("user rejected")
+        || normalized.contains("permission denied")
+        || normalized.contains("pty event stream closed")
+    {
+        return false;
+    }
+    // Match the TypeScript runner: every terminal `error` outcome is retryable
+    // until the configured attempt budget is exhausted. API/network wording is
+    // used separately to rotate providers, not to gate retries.
+    true
+}
+
+async fn set_retry_details(
+    workflow_path: &Path,
+    node_id: &str,
+    delay_seconds: u64,
+    attempt: usize,
+    reason: &str,
+) {
+    let Ok(mut workflow) = read_json(workflow_path).await else {
+        return;
+    };
+    let Some(index) = node_index(&workflow, node_id) else {
+        return;
+    };
+    let node = &mut workflow["nodes"][index];
+    if !node["config"]["runDetails"].is_object() {
+        let started_at = node["startedAt"].as_u64().unwrap_or_else(now_ms);
+        node["config"]["runDetails"] = running_details(node, started_at);
+    }
+    let details = &mut node["config"]["runDetails"];
+    details["status"] = Value::String("running".into());
+    details["terminalStatus"] = Value::String("running".into());
+    details["retryAt"] = Value::from(now_ms().saturating_add(delay_seconds));
+    details["retryAttempt"] = Value::from(attempt as u64);
+    details["retryReason"] = Value::String(reason.to_owned());
+    workflow["updatedAt"] = Value::from(now_ms());
+    let _ = write_json(workflow_path, &workflow).await;
+}
+
+async fn clear_retry_details(workflow_path: &Path, node_id: &str) {
+    let Ok(mut workflow) = read_json(workflow_path).await else {
+        return;
+    };
+    let Some(index) = node_index(&workflow, node_id) else {
+        return;
+    };
+    if let Some(details) = workflow["nodes"][index]["config"]["runDetails"].as_object_mut() {
+        for field in ["retryAt", "retryAttempt", "retryReason"] {
+            details.remove(field);
+        }
+    }
+    workflow["updatedAt"] = Value::from(now_ms());
+    let _ = write_json(workflow_path, &workflow).await;
+}
+
+async fn read_agent_conversation_id(workflow_path: &Path, node_id: &str) -> Option<String> {
+    let workflow = read_json(workflow_path).await.ok()?;
+    let index = node_index(&workflow, node_id)?;
+    workflow["nodes"][index]["config"]["runDetails"]["conversationSessionId"]
+        .as_str()
+        .filter(|id| !id.trim().is_empty())
+        .map(str::to_owned)
+}
+
+async fn persist_retry_reasons(workflow_path: &Path, node_id: &str, reasons: &[String]) {
+    let Ok(mut workflow) = read_json(workflow_path).await else {
+        return;
+    };
+    let Some(index) = node_index(&workflow, node_id) else {
+        return;
+    };
+    if !workflow["nodes"][index]["config"]["runDetails"].is_object() {
+        let started_at = workflow["nodes"][index]["startedAt"]
+            .as_u64()
+            .unwrap_or_else(now_ms);
+        workflow["nodes"][index]["config"]["runDetails"] =
+            running_details(&workflow["nodes"][index], started_at);
+    }
+    workflow["nodes"][index]["config"]["runDetails"]["retryReasons"] =
+        Value::Array(reasons.iter().cloned().map(Value::String).collect());
+    workflow["nodes"][index]["config"]["runDetails"]["retryTranscript"] =
+        Value::String(reasons.join("\n\n"));
+    let _ = write_json(workflow_path, &workflow).await;
+}
+
+async fn load_agent_provider_plan(
+    data_root: &Path,
+    node: &Value,
+    strategy: &str,
+    configured_ids: &[String],
+) -> Vec<String> {
+    let app = if node["providerKind"].as_str() == Some("codex-cli") {
+        "codex"
+    } else {
+        "claude"
+    };
+    let settings_path = std::env::var_os("OSHEEP_AI_SETTINGS_STORE_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| data_root.join("ai-settings.json"));
+    let Ok(raw) = tokio::fs::read(settings_path).await else {
+        return Vec::new();
+    };
+    let Ok(settings) = serde_json::from_slice::<Value>(&raw) else {
+        return Vec::new();
+    };
+    let manager = &settings["apps"][app];
+    let providers = manager["providers"].as_object();
+    let current = manager["current"].as_str().unwrap_or("");
+    if strategy == "none" {
+        return (!current.is_empty())
+            .then(|| vec![current.to_owned()])
+            .unwrap_or_default();
+    }
+    let mut ids = configured_ids
+        .iter()
+        .filter(|id| providers.is_some_and(|items| items.contains_key(id.as_str())))
+        .cloned()
+        .collect::<Vec<_>>();
+    if ids.is_empty() {
+        return (!current.is_empty())
+            .then(|| vec![current.to_owned()])
+            .unwrap_or_default();
+    }
+    if strategy == "lowest-multiplier" {
+        ids.sort_by(|a, b| {
+            let multiplier = |id: &str| {
+                providers
+                    .and_then(|items| items.get(id))
+                    .and_then(|provider| provider["billingMultiplier"].as_f64())
+                    .unwrap_or(1.0)
+            };
+            multiplier(a)
+                .partial_cmp(&multiplier(b))
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.cmp(b))
+        });
+    }
+    ids
+}
+
+async fn apply_agent_provider(data_root: &Path, node: &Value, provider_id: &str) {
+    if provider_id.trim().is_empty() {
+        return;
+    }
+    let app = if node["providerKind"].as_str() == Some("codex-cli") {
+        "codex"
+    } else {
+        "claude"
+    };
+    let settings_path = std::env::var_os("OSHEEP_AI_SETTINGS_STORE_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| data_root.join("ai-settings.json"));
+    let Ok(raw) = tokio::fs::read(settings_path).await else {
+        return;
+    };
+    let Ok(settings) = serde_json::from_slice::<Value>(&raw) else {
+        return;
+    };
+    let provider = &settings["apps"][app]["providers"][provider_id];
+    if !provider.is_object() {
+        return;
+    }
+    let home = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| data_root.to_path_buf());
+    if app == "claude" {
+        let path = std::env::var_os("CLAUDE_CONFIG_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".claude"))
+            .join("settings.json");
+        let Some(mut config) = provider["settingsConfig"].clone().as_object().cloned() else {
+            return;
+        };
+        config.remove("api_format");
+        config.remove("apiFormat");
+        config.remove("openrouter_compat_mode");
+        config.remove("openrouterCompatMode");
+        if let Some(parent) = path.parent() {
+            let _ = tokio::fs::create_dir_all(parent).await;
+        }
+        if let Ok(bytes) = serde_json::to_vec_pretty(&Value::Object(config)) {
+            let _ = tokio::fs::write(path, bytes).await;
+        }
+    } else {
+        let config = &provider["settingsConfig"];
+        let auth = config["auth"].clone();
+        let toml = config["config"].as_str().unwrap_or("");
+        let root = std::env::var_os("CODEX_HOME")
+            .or_else(|| std::env::var_os("OSHEEP_CODEX_CONFIG_DIR"))
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".codex"));
+        let _ = tokio::fs::create_dir_all(&root).await;
+        if auth.is_object() {
+            if let Ok(bytes) = serde_json::to_vec_pretty(&auth) {
+                let _ = tokio::fs::write(root.join("auth.json"), bytes).await;
+            }
+        }
+        let _ = tokio::fs::write(root.join("config.toml"), toml).await;
+    }
 }
 
 fn parse_maybe_json(raw: &str) -> Value {
@@ -1852,19 +2439,103 @@ fn clean_terminal_text(value: &str) -> String {
     value.trim().to_owned()
 }
 
+fn agent_session_waiting_for_choice(app: AgentSessionApp, value: &Value) -> bool {
+    if app == AgentSessionApp::Claude {
+        if value["type"].as_str() != Some("assistant") {
+            return false;
+        }
+        return value["message"]["content"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|item| {
+                item["type"].as_str() == Some("tool_use")
+                    && item["name"].as_str() == Some("AskUserQuestion")
+            });
+    }
+    let payload = value.get("payload").unwrap_or(value);
+    let kind = payload["type"]
+        .as_str()
+        .unwrap_or(value["type"].as_str().unwrap_or(""));
+    if kind == "item_completed" && payload["item"]["status"].as_str() == Some("declined") {
+        return true;
+    }
+    if kind != "custom_tool_call" {
+        return false;
+    }
+    let input = payload.get("input").unwrap_or(&Value::Null);
+    codex_requests_escalation(input)
+}
+
+fn agent_session_resume_event(app: AgentSessionApp, value: &Value) -> bool {
+    if app == AgentSessionApp::Claude {
+        if value["type"].as_str() != Some("user") {
+            return false;
+        }
+        let content = &value["message"]["content"];
+        if content.as_str().is_some_and(|text| !text.trim().is_empty()) {
+            return true;
+        }
+        return content.as_array().into_iter().flatten().any(|item| {
+            if item["type"].as_str() == Some("tool_result") {
+                return true;
+            }
+            item["text"]
+                .as_str()
+                .is_some_and(|text| !text.trim().is_empty())
+        });
+    }
+    let payload = value.get("payload").unwrap_or(value);
+    if matches!(
+        payload["type"].as_str(),
+        Some("task_started" | "turn_started")
+    ) {
+        return true;
+    }
+    if matches!(
+        payload["type"].as_str(),
+        Some("function_call_output" | "custom_tool_call_output")
+    ) {
+        let output = payload
+            .get("output")
+            .unwrap_or(&Value::Null)
+            .to_string()
+            .to_ascii_lowercase();
+        return !output.contains("code-mode host closed its stdout")
+            && !output.contains("aborted by user after")
+            && !output.contains("declined")
+            && !output.contains("denied");
+    }
+    false
+}
+
+fn codex_requests_escalation(input: &Value) -> bool {
+    match input {
+        Value::Object(object) => object.iter().any(|(key, value)| {
+            (key == "sandbox_permissions" && value.as_str() == Some("require_escalated"))
+                || codex_requests_escalation(value)
+        }),
+        Value::Array(items) => items.iter().any(codex_requests_escalation),
+        Value::String(text) => text.contains("require_escalated"),
+        _ => false,
+    }
+}
+
 fn agent_session_completion(app: AgentSessionApp, value: &Value) -> Option<(bool, String)> {
     if app == AgentSessionApp::Claude {
         let kind = value["type"].as_str().unwrap_or("");
         let subtype = value["subtype"].as_str().unwrap_or("");
-        if value["is_error"].as_bool().unwrap_or(false)
-            || (kind == "result" && subtype != "success" && !subtype.is_empty())
-        {
+        let api_error = value["isApiErrorMessage"].as_bool().unwrap_or(false)
+            || value["is_api_error_message"].as_bool().unwrap_or(false);
+        let result_error = kind == "result"
+            && subtype != "success"
+            && !subtype.is_empty()
+            && (value.get("error").is_some() || value.get("result").is_some());
+        if value["is_error"].as_bool().unwrap_or(false) || api_error || result_error {
             return Some((
                 false,
-                value["error"]
-                    .as_str()
-                    .unwrap_or("Claude Code failed.")
-                    .to_owned(),
+                error_message_value(&value["error"])
+                    .unwrap_or_else(|| "Claude Code failed.".to_owned()),
             ));
         }
         if (kind == "system" && subtype == "turn_duration")
@@ -1878,7 +2549,7 @@ fn agent_session_completion(app: AgentSessionApp, value: &Value) -> Option<(bool
     let kind = payload["type"]
         .as_str()
         .unwrap_or(value["type"].as_str().unwrap_or(""));
-    if matches!(kind, "task_complete" | "turn_complete") {
+    if matches!(kind, "task_complete" | "turn_complete" | "turn_completed") {
         if let Some(error) = payload["error"]["message"]
             .as_str()
             .or_else(|| payload["error"].as_str())
@@ -1888,16 +2559,31 @@ fn agent_session_completion(app: AgentSessionApp, value: &Value) -> Option<(bool
         }
         return Some((true, String::new()));
     }
-    if matches!(kind, "error" | "turn_failed" | "task_failed") {
+    if matches!(
+        kind,
+        "error" | "turn_failed" | "task_failed" | "turn_aborted" | "task_aborted" | "stream_error"
+    ) {
         return Some((
             false,
-            payload["message"]
-                .as_str()
-                .unwrap_or("Codex failed.")
-                .to_owned(),
+            error_message_value(&payload["message"])
+                .or_else(|| error_message_value(&payload["error"]))
+                .unwrap_or_else(|| "Codex failed.".to_owned()),
         ));
     }
     None
+}
+
+fn error_message_value(value: &Value) -> Option<String> {
+    value
+        .as_str()
+        .filter(|text| !text.trim().is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            value["message"]
+                .as_str()
+                .filter(|text| !text.trim().is_empty())
+                .map(str::to_owned)
+        })
 }
 
 fn agent_session_message(app: AgentSessionApp, value: &Value) -> Option<String> {
@@ -1960,10 +2646,32 @@ fn parse_agent_session_result(
     content: &str,
 ) -> Option<Result<String, String>> {
     let mut answer = String::new();
+    let mut active_codex_turn_id: Option<String> = None;
     for line in content.lines() {
         let Ok(value) = serde_json::from_str::<Value>(line) else {
             continue;
         };
+        if app == AgentSessionApp::Codex {
+            let payload = value.get("payload").unwrap_or(&Value::Null);
+            let kind = payload["type"]
+                .as_str()
+                .or_else(|| value["type"].as_str())
+                .unwrap_or("");
+            let turn_id = payload["turn_id"]
+                .as_str()
+                .or_else(|| value["turn_id"].as_str())
+                .unwrap_or("");
+            if matches!(kind, "task_started" | "turn_started") {
+                if !turn_id.is_empty() {
+                    active_codex_turn_id = Some(turn_id.to_owned());
+                }
+            } else if active_codex_turn_id
+                .as_deref()
+                .is_some_and(|active| !turn_id.is_empty() && active != turn_id)
+            {
+                continue;
+            }
+        }
         if let Some(message) = agent_session_message(app, &value) {
             answer = message;
         }
@@ -2652,6 +3360,123 @@ mod tests {
     }
 
     #[test]
+    fn finished_agent_details_keep_markdown_message_separate_from_retry_log() {
+        let mut node = serde_json::json!({
+            "kind":"agent", "title":"Claude", "providerKind":"claude-cli", "config":{}
+        });
+        node["config"]["runDetails"] = running_details(&node, 100);
+        finish_details(
+            &mut node,
+            "success",
+            120,
+            Some(&serde_json::json!({
+                "stdout":"raw tui", "transcript":"last answer", "text":"last answer",
+                "retryTranscript":"API 503\\n[osheep] retry 1/2: continue", "retryAttempts":2
+            })),
+            None,
+        );
+        assert_eq!(node["config"]["runDetails"]["transcript"], "last answer");
+        assert_eq!(node["config"]["runDetails"]["retryAttempts"], 2);
+        assert!(node["config"]["runDetails"]["retryTranscript"]
+            .as_str()
+            .unwrap()
+            .contains("retry 1/2"));
+    }
+
+    #[test]
+    fn workflow_agent_invocation_keeps_interactive_tui_and_prompt() {
+        let claude = serde_json::json!({
+            "providerKind":"claude-cli", "model":"sonnet", "mode":"plan",
+            "config":{"resumeConversation":false, "claudePermissionMode":"acceptEdits"}
+        });
+        let (_, claude_args) =
+            build_workflow_agent_invocation("claude-cli", &claude, "继续").unwrap();
+        assert!(!claude_args.iter().any(|arg| arg == "-p"));
+        assert_eq!(claude_args.last().map(String::as_str), Some("继续"));
+
+        let codex = serde_json::json!({
+            "providerKind":"codex-cli", "model":"gpt-5", "mode":"goal",
+            "config":{"codexApproval":"on-request", "codexSandbox":"workspace-write"}
+        });
+        let (_, codex_args) =
+            build_workflow_agent_invocation("codex-cli", &codex, "Build").unwrap();
+        assert!(!codex_args.iter().any(|arg| arg == "exec"));
+        assert_eq!(codex_args.last().map(String::as_str), Some("Build"));
+    }
+
+    #[test]
+    fn agent_session_jsonl_keeps_last_assistant_message_and_structured_error() {
+        let claude = concat!(
+            r#"{"type":"assistant","message":{"content":[{"text":"first"}]}}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"content":[{"text":"last"}]}}"#,
+            "\n",
+            r#"{"type":"result","subtype":"success"}"#
+        );
+        assert_eq!(
+            parse_agent_session_result(AgentSessionApp::Claude, claude),
+            Some(Ok("last".into()))
+        );
+        let codex = r#"{"payload":{"type":"task_complete","error":{"message":"API 503"}}}"#;
+        assert_eq!(
+            parse_agent_session_result(AgentSessionApp::Codex, codex),
+            Some(Err("API 503".into()))
+        );
+    }
+
+    #[test]
+    fn agent_session_lifecycle_matches_codex_terminal_events() {
+        let escalation = serde_json::json!({
+            "type": "custom_tool_call",
+            "payload": {
+                "type": "custom_tool_call",
+                "name": "exec",
+                "input": {"sandbox_permissions": "require_escalated"}
+            }
+        });
+        assert!(agent_session_waiting_for_choice(
+            AgentSessionApp::Codex,
+            &escalation
+        ));
+
+        let declined = serde_json::json!({
+            "type": "event_msg",
+            "payload": {
+                "type": "item_completed",
+                "item": {"status": "declined"}
+            }
+        });
+        assert!(agent_session_waiting_for_choice(
+            AgentSessionApp::Codex,
+            &declined
+        ));
+        assert!(agent_session_resume_event(
+            AgentSessionApp::Codex,
+            &serde_json::json!({"type":"event_msg","payload":{"type":"task_started"}})
+        ));
+        assert!(agent_session_resume_event(
+            AgentSessionApp::Codex,
+            &serde_json::json!({"type":"event_msg","payload":{"type":"custom_tool_call_output","output":"ok"}})
+        ));
+        assert!(agent_session_resume_event(
+            AgentSessionApp::Claude,
+            &serde_json::json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"q"}]}})
+        ));
+
+        let failed = serde_json::json!({
+            "type": "event_msg",
+            "payload": {
+                "type": "task_complete",
+                "error": {"message": "unexpected status 503 Service Unavailable"}
+            }
+        });
+        assert_eq!(
+            agent_session_completion(AgentSessionApp::Codex, &failed),
+            Some((false, "unexpected status 503 Service Unavailable".into()))
+        );
+    }
+
+    #[test]
     fn data_blocks_use_upstream_outputs_and_typed_variables() {
         let variable = serde_json::json!({
             "id":"vars","kind":"variable","title":"Variables",
@@ -2693,6 +3518,84 @@ mod tests {
         assert!(safe_workspace_path(Path::new("workspace"), "../secret").is_err());
     }
 
+    #[test]
+    fn agent_retry_settings_match_ts_defaults_and_types() {
+        let node = serde_json::json!({"config": {
+            "retries": "2", "retryForever": "true", "retryDelaySeconds": "1.5",
+            "retryLanguage": "en", "retryStrategy": "lowest-multiplier",
+            "retryProviderIds": ["cheap", "cheap", "standard", 4]
+        }});
+        assert_eq!(agent_retry_count(&node), 2);
+        assert!(agent_retry_forever(&node));
+        assert_eq!(agent_retry_delay_millis(&node), 1500);
+        assert_eq!(agent_retry_prompt(&node), "continue");
+        assert_eq!(agent_retry_strategy(&node), "lowest-multiplier");
+        assert_eq!(agent_retry_provider_ids(&node), vec!["cheap", "standard"]);
+    }
+
+    #[test]
+    fn agent_retry_failure_classification_matches_terminal_semantics() {
+        assert!(should_retry_agent_failure(
+            "HTTP 429 rate limit",
+            0,
+            2,
+            false
+        ));
+        assert!(should_retry_agent_failure(
+            "API server unavailable",
+            1,
+            2,
+            false
+        ));
+        assert!(should_retry_agent_failure("invalid prompt", 0, 2, false));
+        assert!(!should_retry_agent_failure(
+            "PTY event stream closed",
+            0,
+            2,
+            false
+        ));
+        assert!(!should_retry_agent_failure("network error", 2, 2, false));
+        assert!(should_retry_agent_failure("network error", 99, 0, true));
+    }
+
+    #[tokio::test]
+    async fn provider_plan_honors_retry_strategy_and_multipliers() {
+        let root = std::env::temp_dir().join(format!(
+            "osheep-provider-plan-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        tokio::fs::create_dir_all(&root).await.unwrap();
+        tokio::fs::write(
+            root.join("ai-settings.json"),
+            serde_json::json!({
+                "apps": {"claude": {"current":"standard", "providers": {
+                    "standard":{"billingMultiplier":1}, "cheap":{"billingMultiplier":0.5}
+                }}}
+            })
+            .to_string(),
+        )
+        .await
+        .unwrap();
+        let node = serde_json::json!({"providerKind":"claude-cli"});
+        let ids = load_agent_provider_plan(
+            &root,
+            &node,
+            "lowest-multiplier",
+            &["standard".into(), "cheap".into()],
+        )
+        .await;
+        assert_eq!(ids, vec!["cheap", "standard"]);
+        let round_robin = load_agent_provider_plan(
+            &root,
+            &node,
+            "round-robin",
+            &["standard".into(), "cheap".into()],
+        )
+        .await;
+        assert_eq!(round_robin, vec!["standard", "cheap"]);
+        tokio::fs::remove_dir_all(root).await.ok();
+    }
+
     #[tokio::test]
     async fn persists_and_broadcasts_node_and_run_statuses() {
         let root = std::env::temp_dir().join(format!(
@@ -2713,7 +3616,7 @@ mod tests {
         let runtime = WorkflowRuntime::default();
         let mut events = runtime.subscribe("contract").await;
         let (_, initial) = runtime
-            .start("contract".into(), path.clone(), root.clone(), None)
+            .start("contract".into(), path.clone(), root.clone(), None, None)
             .await
             .unwrap();
         assert_eq!(initial["runs"][0]["status"], "running");

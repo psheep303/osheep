@@ -229,12 +229,21 @@ impl AgentSessionService {
     }
     async fn list_codex(&self) -> Result<Vec<AgentSessionSummary>, AgentSessionError> {
         let mut out = Vec::new();
+        let titles =
+            read_codex_title_index(&self.roots.codex_home.join("session_index.jsonl")).await;
         for file in collect_jsonl(&self.roots.codex_home.join("sessions")).await? {
             let id = session_id_from_filename(&file);
             if !valid_id(&id) {
                 continue;
             }
-            if let Some(s) = parse_session(AgentSessionApp::Codex, &file, &id).await? {
+            if let Some(s) = parse_session_with_title(
+                AgentSessionApp::Codex,
+                &file,
+                &id,
+                titles.get(&id).map(String::as_str),
+            )
+            .await?
+            {
                 out.push(s);
             }
         }
@@ -271,6 +280,15 @@ async fn parse_session(
     app: AgentSessionApp,
     path: &Path,
     fallback: &str,
+) -> Result<Option<AgentSessionSummary>, AgentSessionError> {
+    parse_session_with_title(app, path, fallback, None).await
+}
+
+async fn parse_session_with_title(
+    app: AgentSessionApp,
+    path: &Path,
+    fallback: &str,
+    indexed_title: Option<&str>,
 ) -> Result<Option<AgentSessionSummary>, AgentSessionError> {
     let meta = tokio::fs::metadata(path).await?;
     let bytes = tokio::fs::read(path).await?;
@@ -342,6 +360,21 @@ async fn parse_session(
                     .and_then(Value::as_str)
                     .unwrap_or("")
                     .to_string();
+                title = clean_prompt_context(&title);
+            }
+            if title.is_empty()
+                && typ == "response_item"
+                && p.get("type").and_then(Value::as_str) == Some("message")
+                && p.get("role").and_then(Value::as_str) == Some("user")
+            {
+                title = clean_prompt_context(&content_text(p.get("content")));
+            }
+            if cwd.is_empty() && typ == "turn_context" {
+                cwd = p
+                    .get("cwd")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_owned();
             }
         }
     }
@@ -361,6 +394,11 @@ async fn parse_session(
     if title.trim().is_empty() {
         title = format!("{}{}", prefix, &id[..id.len().min(8)]);
     }
+    if app == AgentSessionApp::Codex {
+        if let Some(indexed) = indexed_title.filter(|value| !value.trim().is_empty()) {
+            title = indexed.trim().to_owned();
+        }
+    }
     Ok(Some(AgentSessionSummary {
         app,
         id,
@@ -371,12 +409,44 @@ async fn parse_session(
         size: meta.len(),
     }))
 }
+
+async fn read_codex_title_index(path: &Path) -> std::collections::HashMap<String, String> {
+    let Ok(text) = tokio::fs::read_to_string(path).await else {
+        return std::collections::HashMap::new();
+    };
+    text.lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter_map(|value| {
+            let id = value.get("id").and_then(Value::as_str)?.trim();
+            let title = value.get("thread_name").and_then(Value::as_str)?.trim();
+            (!id.is_empty() && !title.is_empty()).then(|| (id.to_owned(), title.to_owned()))
+        })
+        .collect()
+}
 fn title_or(current: String, next: Option<&str>) -> String {
     if current.trim().is_empty() {
         next.unwrap_or("").trim().to_string()
     } else {
         current
     }
+}
+
+fn clean_prompt_context(value: &str) -> String {
+    let mut cleaned = value.to_owned();
+    for marker in ["<environment_context>", "<permissions instructions>"] {
+        if let Some(start) = cleaned.to_ascii_lowercase().find(marker) {
+            let close = marker.replace('<', "</");
+            if let Some(end) = cleaned[start..].to_ascii_lowercase().find(&close) {
+                cleaned.replace_range(start..start + end + close.len(), " ");
+            }
+        }
+    }
+    if let Some(start) = cleaned.to_ascii_lowercase().find("# agents.md") {
+        if let Some(end) = cleaned[start..].find("\n\n") {
+            cleaned.replace_range(start..start + end, " ");
+        }
+    }
+    cleaned.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 fn content_text(v: Option<&Value>) -> String {
     match v {
@@ -618,6 +688,80 @@ mod tests {
             .unwrap();
         assert_eq!(deleted.len(), 1);
         assert_eq!(failed.len(), 1);
+        let _ = tokio::fs::remove_dir_all(root).await;
+        let _ = tokio::fs::remove_dir_all(workspace).await;
+    }
+
+    #[tokio::test]
+    async fn codex_sessions_prefer_session_index_thread_name() {
+        let root = temp("codex-title");
+        let workspace = temp("codex-title-workspace");
+        let sessions = root.join("sessions/2026/09/13");
+        tokio::fs::create_dir_all(&sessions).await.unwrap();
+        tokio::fs::create_dir_all(&workspace).await.unwrap();
+        let id = "01abcdef-2345-6789-abcd-ef0123456789";
+        let path = sessions.join(format!("rollout-2026-09-13T00-00-00-{id}.jsonl"));
+        let session_meta = serde_json::json!({
+            "type":"session_meta",
+            "payload":{"id":id,"cwd":workspace.to_string_lossy()}
+        });
+        tokio::fs::write(&path, format!("{}\n", session_meta))
+            .await
+            .unwrap();
+        tokio::fs::write(
+            root.join("session_index.jsonl"),
+            format!(
+                "{}\n",
+                serde_json::json!({"id":id,"thread_name":"总结后的 Codex 任务"})
+            ),
+        )
+        .await
+        .unwrap();
+        let service = AgentSessionService::with_roots(AgentSessionRoots {
+            claude_home: temp("claude-unused"),
+            codex_home: root.clone(),
+        });
+        let listed = service
+            .list_in_project(AgentSessionApp::Codex, &workspace)
+            .await
+            .unwrap();
+        assert_eq!(listed[0].title, "总结后的 Codex 任务");
+        let _ = tokio::fs::remove_dir_all(root).await;
+        let _ = tokio::fs::remove_dir_all(workspace).await;
+    }
+
+    #[tokio::test]
+    async fn codex_sessions_fallback_to_first_user_message_summary() {
+        let root = temp("codex-response-title");
+        let workspace = temp("codex-response-title-workspace");
+        let sessions = root.join("sessions/2026/09/13");
+        tokio::fs::create_dir_all(&sessions).await.unwrap();
+        tokio::fs::create_dir_all(&workspace).await.unwrap();
+        let id = "01abcdef-2345-6789-abcd-ef0123456790";
+        let path = sessions.join(format!("rollout-2026-09-13T00-00-00-{id}.jsonl"));
+        let lines = [
+            serde_json::json!({"type":"session_meta","payload":{"id":id,"cwd":workspace.to_string_lossy()}}),
+            serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>hidden</environment_context>\n总结这个任务"}]}}),
+        ];
+        tokio::fs::write(
+            &path,
+            lines
+                .iter()
+                .map(Value::to_string)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+        .await
+        .unwrap();
+        let service = AgentSessionService::with_roots(AgentSessionRoots {
+            claude_home: temp("claude-unused-response-title"),
+            codex_home: root.clone(),
+        });
+        let listed = service
+            .list_in_project(AgentSessionApp::Codex, &workspace)
+            .await
+            .unwrap();
+        assert_eq!(listed[0].title, "总结这个任务");
         let _ = tokio::fs::remove_dir_all(root).await;
         let _ = tokio::fs::remove_dir_all(workspace).await;
     }

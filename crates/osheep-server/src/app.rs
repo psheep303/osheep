@@ -4688,10 +4688,17 @@ async fn workflow_run(
             .map(str::to_owned)
             .collect::<Vec<_>>()
     });
+    let retry_language = Some(
+        if body.get("language").and_then(Value::as_str) == Some("zh-CN") {
+            "zh-CN"
+        } else {
+            "en"
+        },
+    );
     let key = workflow_runtime_key(&root, &wid);
     let (run_id, workflow) = state
         .workflow_runtime
-        .start(key, path, root, requested)
+        .start(key, path, root, requested, retry_language)
         .await
         .map_err(workflow_runtime_error)?;
     Ok(Json(
