@@ -371,7 +371,10 @@ pub async fn build_app_with_runtime(
             "/api/workspaces/{id}/workflows",
             get(workflows).post(workflow_create),
         )
-        .route("/api/workspaces/{id}/workflows/usage", get(workflow_usage))
+        .route(
+            "/api/workspaces/{id}/workflows/usage",
+            get(workspace_workflow_usage),
+        )
         .route(
             "/api/workspaces/{id}/workflows/{wid}",
             get(workflow_get).put(workflow_save).delete(delete_workflow),
@@ -999,6 +1002,13 @@ struct GitLogQuery {
     offset: Option<String>,
     #[serde(rename = "ref")]
     reference: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkflowUsageQuery {
+    range: Option<String>,
+    #[serde(rename = "timezoneOffset")]
+    timezone_offset: Option<i64>,
 }
 
 fn deserialize_query_bool<'de, D>(deserializer: D) -> Result<bool, D::Error>
@@ -2470,8 +2480,102 @@ async fn update_ai_settings(
     Ok(Json(root["aiSettings"].clone()))
 }
 
-async fn ai_live_settings(AxumPath(app): AxumPath<String>) -> Json<Value> {
-    Json(serde_json::json!({"app": app, "settingsConfig": {}}))
+async fn write_ai_provider_live(
+    app: &str,
+    provider: &Value,
+    paths: &Value,
+) -> Result<(), ApiError> {
+    let settings = provider
+        .get("settingsConfig")
+        .and_then(Value::as_object)
+        .ok_or_else(|| ApiError::invalid_path("provider settingsConfig must be an object"))?;
+    match app {
+        "claude" => {
+            let mut value = Value::Object(settings.clone());
+            if let Some(object) = value.as_object_mut() {
+                object.remove("api_format");
+                object.remove("apiFormat");
+                object.remove("openrouter_compat_mode");
+                object.remove("openrouterCompatMode");
+            }
+            let path = paths["claude"]["settings"]
+                .as_str()
+                .map(PathBuf::from)
+                .ok_or_else(|| ApiError::invalid_path("Claude settings path is unavailable"))?;
+            match write_json_atomic(path, &value).await {
+                Ok(()) => Ok(()),
+                Err(error) if error.is_forbidden() => Ok(()),
+                Err(error) => Err(error),
+            }
+        }
+        "codex" => {
+            let auth = settings
+                .get("auth")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
+            let config = settings.get("config").and_then(Value::as_str).unwrap_or("");
+            let auth_path = paths["codex"]["auth"]
+                .as_str()
+                .map(PathBuf::from)
+                .ok_or_else(|| ApiError::invalid_path("Codex auth path is unavailable"))?;
+            let config_path = paths["codex"]["config"]
+                .as_str()
+                .map(PathBuf::from)
+                .ok_or_else(|| ApiError::invalid_path("Codex config path is unavailable"))?;
+            if let Err(error) = write_json_atomic(auth_path, &auth).await {
+                if !error.is_forbidden() {
+                    return Err(error);
+                }
+            }
+            let parent = config_path
+                .parent()
+                .ok_or_else(|| ApiError::invalid_path("Codex config path is invalid"))?;
+            if let Err(error) = tokio::fs::create_dir_all(parent).await {
+                if error.kind() != std::io::ErrorKind::PermissionDenied {
+                    return Err(error.into());
+                }
+                return Ok(());
+            }
+            if let Err(error) = tokio::fs::write(config_path, config).await {
+                if error.kind() != std::io::ErrorKind::PermissionDenied {
+                    return Err(error.into());
+                }
+            }
+            Ok(())
+        }
+        _ => Err(ApiError::invalid_path("app must be claude or codex")),
+    }
+}
+
+async fn ai_live_settings(
+    State(state): State<AppState>,
+    AxumPath(app): AxumPath<String>,
+) -> Result<Json<Value>, ApiError> {
+    if !matches!(app.as_str(), "claude" | "codex") {
+        return Err(ApiError::invalid_path("app must be claude or codex"));
+    }
+    let paths = state.p6_state.lock().await["aiSettings"]["paths"].clone();
+    let settings = if app == "claude" {
+        let path = PathBuf::from(paths["claude"]["settings"].as_str().unwrap_or(""));
+        let text = tokio::fs::read_to_string(path).await?;
+        serde_json::from_str(&text)
+            .map_err(|_| ApiError::invalid_path("Claude settings JSON is invalid"))?
+    } else {
+        let auth_path = PathBuf::from(paths["codex"]["auth"].as_str().unwrap_or(""));
+        let config_path = PathBuf::from(paths["codex"]["config"].as_str().unwrap_or(""));
+        let auth = tokio::fs::read_to_string(auth_path)
+            .await
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+        let config = tokio::fs::read_to_string(config_path)
+            .await
+            .unwrap_or_default();
+        serde_json::json!({"auth":auth,"config":config})
+    };
+    Ok(Json(
+        serde_json::json!({"app":app,"settingsConfig":settings}),
+    ))
 }
 
 async fn import_ai_live_provider(
@@ -2571,8 +2675,14 @@ async fn upsert_ai_provider(
         .unwrap_or(&id)
         .to_owned();
     item["providers"][&provider_id] = provider;
+    let should_apply = body.get("apply").and_then(Value::as_bool).unwrap_or(false);
     if item["current"].as_str().unwrap_or("").is_empty() {
-        item["current"] = Value::String(provider_id);
+        item["current"] = Value::String(provider_id.clone());
+    }
+    let current_provider = item["providers"][&provider_id].clone();
+    let paths = root["aiSettings"]["paths"].clone();
+    if should_apply {
+        write_ai_provider_live(app, &current_provider, &paths).await?;
     }
     persist_ai_settings(&state, &root).await?;
     Ok(Json(root["aiSettings"].clone()))
@@ -2598,11 +2708,22 @@ async fn switch_ai_provider(
 ) -> Result<Json<Value>, ApiError> {
     let app = body.get("app").and_then(Value::as_str).unwrap_or("claude");
     let id = body.get("id").and_then(Value::as_str).unwrap_or("");
-    let mut root = state.p6_state.lock().await;
-    let manager = &mut root["aiSettings"]["state"]["apps"][app];
-    if manager["providers"].get(id).is_some() {
-        manager["current"] = Value::String(id.to_owned());
+    if !matches!(app, "claude" | "codex") || id.trim().is_empty() {
+        return Err(ApiError::invalid_path("app and provider id are required"));
     }
+    let (target, paths) = {
+        let root = state.p6_state.lock().await;
+        let manager = &root["aiSettings"]["state"]["apps"][app];
+        let target = manager["providers"][id].clone();
+        if target.is_null() {
+            return Err(ApiError::not_found("provider not found"));
+        }
+        let paths = root["aiSettings"]["paths"].clone();
+        (target, paths)
+    };
+    write_ai_provider_live(app, &target, &paths).await?;
+    let mut root = state.p6_state.lock().await;
+    root["aiSettings"]["state"]["apps"][app]["current"] = Value::String(id.to_owned());
     persist_ai_settings(&state, &root).await?;
     Ok(Json(root["aiSettings"].clone()))
 }
@@ -2619,9 +2740,16 @@ async fn ai_cli_status() -> Json<Value> {
 async fn ai_cli_tools() -> Json<Value> {
     let claude = find_path_executable("claude");
     let codex = find_path_executable("codex");
+    let platform = if cfg!(target_os = "windows") {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "macos"
+    } else {
+        "linux"
+    };
     Json(serde_json::json!({"tools": [
-        {"name":"claude","installed":claude.is_some(),"path":claude},
-        {"name":"codex","installed":codex.is_some(),"path":codex}
+        {"name":"claude","installed":claude.is_some(),"path":claude,"activeAction":Value::Null,"currentVersion":Value::Null,"latestVersion":Value::Null,"updateAvailable":false,"platform":platform,"error":Value::Null},
+        {"name":"codex","installed":codex.is_some(),"path":codex,"activeAction":Value::Null,"currentVersion":Value::Null,"latestVersion":Value::Null,"updateAvailable":false,"platform":platform,"error":Value::Null}
     ]}))
 }
 
@@ -4564,8 +4692,244 @@ async fn template_icon(
         .into_response())
 }
 
-async fn workflow_usage() -> Json<Value> {
-    Json(empty_workflow_usage(0))
+async fn workflow_usage(
+    State(state): State<AppState>,
+    Query(query): Query<WorkflowUsageQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let workspaces = state.workspaces.list().await?;
+    let mut total = empty_workflow_usage(workspaces.len() as u64);
+    for workspace in workspaces {
+        let current = collect_workflow_usage(&workspace.path, &query).await?;
+        merge_workflow_usage(&mut total, &current, false);
+    }
+    Ok(Json(total))
+}
+
+async fn workspace_workflow_usage(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    Query(query): Query<WorkflowUsageQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let workspace = state.workspaces.resolve(&id).await?;
+    Ok(Json(collect_workflow_usage(&workspace.path, &query).await?))
+}
+
+async fn collect_workflow_usage(
+    root: &Path,
+    query: &WorkflowUsageQuery,
+) -> Result<Value, ApiError> {
+    let range = match query.range.as_deref() {
+        Some("7d") => "7d",
+        Some("all") => "all",
+        _ => "30d",
+    };
+    let now = now_ms();
+    let offset = query.timezone_offset.unwrap_or(0).clamp(-840, 840);
+    let start = if range == "all" {
+        0
+    } else {
+        let days = if range == "7d" { 7 } else { 30 };
+        now.saturating_sub(days * 86_400_000)
+    };
+    let mut result = empty_workflow_usage(1);
+    result["range"] = Value::String(range.to_owned());
+    let dir = root.join(".osheep/workflows");
+    let mut entries = match tokio::fs::read_dir(dir).await {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(result),
+        Err(error) => return Err(error.into()),
+    };
+    while let Some(entry) = entries.next_entry().await? {
+        if entry.path().extension().and_then(|v| v.to_str()) != Some("json") {
+            continue;
+        }
+        let workflow = match read_json(&entry.path()).await {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let workflow_id = workflow["id"].as_str().unwrap_or("");
+        let title = workflow["title"].as_str().unwrap_or(workflow_id).to_owned();
+        for run in workflow["runs"].as_array().into_iter().flatten() {
+            let run_id = run["id"].as_str().unwrap_or("");
+            let started = run["startedAt"].as_u64().unwrap_or(0);
+            if run_id.is_empty() || started < start || started > now {
+                continue;
+            }
+            let mut run_tokens = 0.0;
+            let mut run_cost = 0.0;
+            let mut run_input = 0.0;
+            let mut run_output = 0.0;
+            let mut run_cache_read = 0.0;
+            let mut run_cache_write = 0.0;
+            for trace in run["trace"].as_array().into_iter().flatten() {
+                let input = usage_field(trace, "input");
+                let output = usage_field(trace, "output");
+                let cache_read = usage_field(trace, "cacheRead");
+                let cache_write = usage_field(trace, "cacheWrite");
+                let total = usage_field(trace, "total").max(input + output);
+                let cost = usage_field(trace, "cost");
+                run_input += input;
+                run_output += output;
+                run_cache_read += cache_read;
+                run_cache_write += cache_write;
+                run_tokens += total;
+                run_cost += cost;
+                let model = trace["model"].as_str().unwrap_or("");
+                if !model.is_empty() && total > 0.0 {
+                    add_usage_model(&mut result, model, total, cost);
+                }
+            }
+            add_usage_totals(
+                &mut result,
+                run_input,
+                run_output,
+                run_cache_read,
+                run_cache_write,
+                run_tokens,
+                run_cost,
+            );
+            let status = run["status"].as_str().unwrap_or("success");
+            let run_item = serde_json::json!({
+                "workflowId":workflow_id,"workflowTitle":title,"runId":run_id,
+                "status":status,"startedAt":started,"completedAt":run["completedAt"],
+                "tokens":run_tokens,"cost":run_cost
+            });
+            result["recentRuns"].as_array_mut().unwrap().push(run_item);
+            add_usage_workflow(&mut result, workflow_id, &title, run_tokens, run_cost);
+            let date = usage_date_key(started, offset);
+            add_usage_daily(&mut result, &date, run_tokens, run_cost);
+        }
+    }
+    let recent = result["recentRuns"].as_array_mut().unwrap();
+    recent.sort_by(|a, b| b["startedAt"].as_u64().cmp(&a["startedAt"].as_u64()));
+    recent.truncate(20);
+    Ok(result)
+}
+
+fn usage_field(trace: &Value, name: &str) -> f64 {
+    let aliases: &[&str] = match name {
+        "cacheRead" => &["cacheRead", "cache_read_tokens", "cache_read_input_tokens"],
+        "cacheWrite" => &[
+            "cacheWrite",
+            "cache_write_tokens",
+            "cache_creation_input_tokens",
+        ],
+        "total" => &["total", "totalTokens", "total_tokens"],
+        _ => &[name],
+    };
+    for container in [trace, &trace["tokens"], &trace["usage"], &trace["output"]] {
+        for key in aliases {
+            if let Some(value) = container[*key]
+                .as_f64()
+                .filter(|v| v.is_finite() && *v > 0.0)
+            {
+                return value;
+            }
+        }
+    }
+    0.0
+}
+
+fn add_usage_totals(
+    result: &mut Value,
+    input: f64,
+    output: f64,
+    read: f64,
+    write: f64,
+    total: f64,
+    cost: f64,
+) {
+    for (key, value) in [
+        ("inputTokens", input),
+        ("outputTokens", output),
+        ("cacheReadTokens", read),
+        ("cacheWriteTokens", write),
+        ("totalTokens", total),
+        ("cost", cost),
+    ] {
+        let current = result["totals"][key].as_f64().unwrap_or(0.0);
+        result["totals"][key] = Value::from(current + value);
+    }
+    result["totals"]["runs"] = Value::from(result["totals"]["runs"].as_u64().unwrap_or(0) + 1);
+}
+
+fn add_usage_workflow(result: &mut Value, id: &str, title: &str, tokens: f64, cost: f64) {
+    let rows = result["workflows"].as_array_mut().unwrap();
+    let row = rows
+        .iter_mut()
+        .find(|row| row["workflowId"].as_str() == Some(id));
+    if let Some(row) = row {
+        row["runs"] = Value::from(row["runs"].as_u64().unwrap_or(0) + 1);
+        row["tokens"] = Value::from(row["tokens"].as_f64().unwrap_or(0.0) + tokens);
+        row["cost"] = Value::from(row["cost"].as_f64().unwrap_or(0.0) + cost);
+        return;
+    }
+    rows.push(
+        serde_json::json!({"workflowId":id,"title":title,"runs":1,"tokens":tokens,"cost":cost}),
+    );
+}
+
+fn add_usage_model(result: &mut Value, model: &str, tokens: f64, cost: f64) {
+    let rows = result["models"].as_array_mut().unwrap();
+    if let Some(row) = rows
+        .iter_mut()
+        .find(|row| row["model"].as_str() == Some(model))
+    {
+        row["runs"] = Value::from(row["runs"].as_u64().unwrap_or(0) + 1);
+        row["tokens"] = Value::from(row["tokens"].as_f64().unwrap_or(0.0) + tokens);
+        row["cost"] = Value::from(row["cost"].as_f64().unwrap_or(0.0) + cost);
+    } else {
+        rows.push(serde_json::json!({"model":model,"runs":1,"tokens":tokens,"cost":cost}));
+    }
+}
+
+fn add_usage_daily(result: &mut Value, date: &str, tokens: f64, cost: f64) {
+    let rows = result["daily"].as_array_mut().unwrap();
+    if let Some(row) = rows
+        .iter_mut()
+        .find(|row| row["date"].as_str() == Some(date))
+    {
+        row["runs"] = Value::from(row["runs"].as_u64().unwrap_or(0) + 1);
+        row["tokens"] = Value::from(row["tokens"].as_f64().unwrap_or(0.0) + tokens);
+        row["cost"] = Value::from(row["cost"].as_f64().unwrap_or(0.0) + cost);
+    } else {
+        rows.push(serde_json::json!({"date":date,"runs":1,"tokens":tokens,"cost":cost}));
+    }
+}
+
+fn usage_date_key(timestamp: u64, offset: i64) -> String {
+    let days = ((timestamp as i64).saturating_sub(offset * 60_000)).div_euclid(86_400_000);
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = mp + if mp < 10 { 3 } else { -9 };
+    let year = y + if month <= 2 { 1 } else { 0 };
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
+fn merge_workflow_usage(total: &mut Value, current: &Value, _details: bool) {
+    for key in [
+        "inputTokens",
+        "outputTokens",
+        "cacheReadTokens",
+        "cacheWriteTokens",
+        "totalTokens",
+        "cost",
+    ] {
+        total["totals"][key] = Value::from(
+            total["totals"][key].as_f64().unwrap_or(0.0)
+                + current["totals"][key].as_f64().unwrap_or(0.0),
+        );
+    }
+    total["totals"]["runs"] = Value::from(
+        total["totals"]["runs"].as_u64().unwrap_or(0)
+            + current["totals"]["runs"].as_u64().unwrap_or(0),
+    );
 }
 
 async fn workflows(

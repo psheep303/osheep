@@ -171,6 +171,63 @@ impl AgentSessionService {
         };
         Ok(Some(tokio::fs::read_to_string(path).await?))
     }
+
+    /// Reassign a newly-created Codex session to the user-requested UUID.
+    /// Codex cannot accept an arbitrary id on its initial TUI invocation; the
+    /// TypeScript implementation performs this rewrite after the first turn so
+    /// subsequent retries can use `codex resume <requested-id>`.
+    pub async fn reassign_codex_session_id(
+        &self,
+        current_id: &str,
+        requested_id: &str,
+    ) -> Result<(), AgentSessionError> {
+        validate_id(current_id)?;
+        validate_id(requested_id)?;
+        if current_id == requested_id {
+            return Ok(());
+        }
+        let Some(path) = locate_file(&self.roots, AgentSessionApp::Codex, current_id).await? else {
+            return Err(AgentSessionError::NotFound);
+        };
+        let text = tokio::fs::read_to_string(&path).await?;
+        let mut changed = false;
+        let rewritten = text
+            .lines()
+            .map(|line| {
+                let Ok(mut value) = serde_json::from_str::<Value>(line) else {
+                    return line.to_owned();
+                };
+                if value["type"].as_str() != Some("session_meta") {
+                    return line.to_owned();
+                }
+                let payload = &mut value["payload"];
+                if payload["id"].as_str() == Some(current_id) {
+                    payload["id"] = Value::String(requested_id.to_owned());
+                    changed = true;
+                }
+                if payload["session_id"].as_str() == Some(current_id) {
+                    payload["session_id"] = Value::String(requested_id.to_owned());
+                    changed = true;
+                }
+                serde_json::to_string(&value).unwrap_or_else(|_| line.to_owned())
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        if !changed {
+            return Err(AgentSessionError::InvalidQuery(
+                "Codex session has no session metadata".into(),
+            ));
+        }
+        let next = path.with_file_name(
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.replace(current_id, requested_id))
+                .unwrap_or_else(|| format!("rollout-{requested_id}.jsonl")),
+        );
+        tokio::fs::write(&next, format!("{rewritten}\n")).await?;
+        tokio::fs::remove_file(&path).await?;
+        Ok(())
+    }
     pub async fn batch_delete(
         &self,
         app: AgentSessionApp,
@@ -762,6 +819,44 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(listed[0].title, "总结这个任务");
+        let _ = tokio::fs::remove_dir_all(root).await;
+        let _ = tokio::fs::remove_dir_all(workspace).await;
+    }
+
+    #[tokio::test]
+    async fn codex_session_id_can_be_reassigned_for_resume() {
+        let root = temp("codex-reassign");
+        let workspace = temp("codex-reassign-workspace");
+        let sessions = root.join("sessions/2026/09/13");
+        tokio::fs::create_dir_all(&sessions).await.unwrap();
+        tokio::fs::create_dir_all(&workspace).await.unwrap();
+        let current = "01abcdef-2345-6789-abcd-ef0123456791";
+        let requested = "01abcdef-2345-6789-abcd-ef0123456792";
+        let path = sessions.join(format!("rollout-2026-09-13T00-00-00-{current}.jsonl"));
+        tokio::fs::write(
+            &path,
+            serde_json::json!({"type":"session_meta","payload":{"id":current,"cwd":workspace.to_string_lossy()}}).to_string(),
+        )
+        .await
+        .unwrap();
+        let service = AgentSessionService::with_roots(AgentSessionRoots {
+            claude_home: temp("claude-unused-reassign"),
+            codex_home: root.clone(),
+        });
+        service
+            .reassign_codex_session_id(current, requested)
+            .await
+            .unwrap();
+        assert!(service
+            .read_in_project(AgentSessionApp::Codex, requested, &workspace)
+            .await
+            .unwrap()
+            .is_some());
+        assert!(service
+            .read_in_project(AgentSessionApp::Codex, current, &workspace)
+            .await
+            .unwrap()
+            .is_none());
         let _ = tokio::fs::remove_dir_all(root).await;
         let _ = tokio::fs::remove_dir_all(workspace).await;
     }

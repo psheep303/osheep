@@ -14,7 +14,11 @@ pub(crate) async fn claude_snapshot() -> Value {
 }
 
 pub(crate) async fn codex_snapshot() -> Value {
-    codex_snapshot_from(&user_home()).await
+    let home = std::env::var_os("CODEX_HOME")
+        .or_else(|| std::env::var_os("OSHEEP_CODEX_CONFIG_DIR"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| user_home().join(".codex"));
+    codex_snapshot_from_codex_dir(&home).await
 }
 
 async fn read_json(path: &Path) -> Option<Value> {
@@ -138,8 +142,8 @@ fn claude_paths(
     })
 }
 
-async fn codex_snapshot_from(home: &Path) -> Value {
-    let codex_dir = home.join(".codex");
+async fn codex_snapshot_from_codex_dir(codex_dir: &Path) -> Value {
+    let codex_dir = codex_dir.to_path_buf();
     let config_path = codex_dir.join("config.toml");
     let cache_root = codex_dir.join(".tmp/plugins");
     let registry_path = cache_root.join(".agents/plugins/api_marketplace.json");
@@ -150,7 +154,7 @@ async fn codex_snapshot_from(home: &Path) -> Value {
         .unwrap_or_default();
     let mut plugins = HashMap::<String, Value>::new();
     let mut marketplaces = Vec::new();
-    let mut warnings = Vec::new();
+    let warnings: Vec<String> = Vec::new();
 
     if let Some(registry) = read_json(&registry_path).await {
         let marketplace = registry["name"].as_str().unwrap_or("openai-api-curated");
@@ -189,11 +193,6 @@ async fn codex_snapshot_from(home: &Path) -> Value {
                 "source":{"kind":"marketplace","path":plugin_root}
             }));
         }
-    } else {
-        warnings.push(format!(
-            "Codex official marketplace was not found at {}",
-            registry_path.display()
-        ));
     }
 
     if let Some(personal) = read_json(&personal_marketplace).await {
@@ -432,7 +431,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let snapshot = codex_snapshot_from(&home).await;
+        let snapshot = codex_snapshot_from_codex_dir(&home.join(".codex")).await;
         assert_eq!(
             snapshot["plugins"][0]["selector"],
             "game-studio@openai-api-curated"

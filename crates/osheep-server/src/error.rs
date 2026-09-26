@@ -45,6 +45,10 @@ impl ApiError {
     pub fn not_found(message: impl Into<String>) -> Self {
         Self::new(StatusCode::NOT_FOUND, "NOT_FOUND", message)
     }
+
+    pub fn is_forbidden(&self) -> bool {
+        self.status == StatusCode::FORBIDDEN
+    }
 }
 
 impl IntoResponse for ApiError {
@@ -65,8 +69,16 @@ impl IntoResponse for ApiError {
 impl From<std::io::Error> for ApiError {
     fn from(error: std::io::Error) -> Self {
         Self::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "IO_ERROR",
+            if error.kind() == std::io::ErrorKind::PermissionDenied {
+                StatusCode::FORBIDDEN
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            },
+            if error.kind() == std::io::ErrorKind::PermissionDenied {
+                "IO_FORBIDDEN"
+            } else {
+                "IO_ERROR"
+            },
             error.to_string(),
         )
     }

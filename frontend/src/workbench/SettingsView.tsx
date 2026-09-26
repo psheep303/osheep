@@ -715,7 +715,7 @@ function AboutPanel() {
   }, [activeTool]);
 
   return (
-    <>
+    <div className="settings-about-panel">
       <section className="settings-view__group settings-about">
         <h2 className="settings-view__group-title">{t("settings.about.title")}</h2>
         <div className="settings-about__brand">
@@ -779,7 +779,7 @@ function AboutPanel() {
           ))}
         </div>
       </section>
-    </>
+    </div>
   );
 }
 

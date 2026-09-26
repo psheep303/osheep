@@ -428,6 +428,57 @@ impl WorkflowRuntime {
                 }
             }
         }
+        // Match the Node runner's session-id contract: an id already present in
+        // this workspace resumes that conversation, while a missing id starts a
+        // new conversation. Claude can create a requested id directly; Codex
+        // creates its native id first and is reassigned after the first turn.
+        let provider = resolved_node["providerKind"]
+            .as_str()
+            .unwrap_or("claude-cli")
+            .to_owned();
+        let configured_session_id = resolved_node["config"]["sessionId"]
+            .as_str()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned);
+        let session_app = if provider == "codex-cli" {
+            AgentSessionApp::Codex
+        } else {
+            AgentSessionApp::Claude
+        };
+        let existing_configured_session = if let Some(session_id) = configured_session_id.as_deref()
+        {
+            self.session_service
+                .list(session_app)
+                .await
+                .map(|sessions| {
+                    sessions
+                        .iter()
+                        .any(|session| session.id.as_str() == session_id)
+                })
+                .unwrap_or(false)
+        } else {
+            false
+        };
+        if existing_configured_session {
+            resolved_node["config"]["resumeConversation"] = Value::Bool(true);
+            resolved_node["config"]["conversationSessionId"] =
+                Value::String(configured_session_id.clone().unwrap_or_default());
+        } else {
+            // A stale resume flag must not turn a missing id into a failed
+            // resume attempt. Codex will be assigned the requested id after
+            // its new native session is created.
+            resolved_node["config"]["resumeConversation"] = Value::Bool(false);
+            if provider == "codex-cli" {
+                if let Some(config) = resolved_node["config"].as_object_mut() {
+                    config.remove("conversationSessionId");
+                }
+            } else if configured_session_id.is_none() {
+                // Claude requires an explicit id for interactive workflow runs.
+                resolved_node["config"]["sessionId"] =
+                    Value::String(uuid::Uuid::new_v4().to_string());
+            }
+        }
         let node = &resolved_node;
         let retries = agent_retry_count(node);
         let retry_forever = agent_retry_forever(node);
@@ -467,6 +518,26 @@ impl WorkflowRuntime {
                 .await;
             match result {
                 Ok(mut output) => {
+                    if current_node["providerKind"].as_str() == Some("codex-cli")
+                        && !current_node["config"]["resumeConversation"]
+                            .as_bool()
+                            .unwrap_or(false)
+                    {
+                        let requested = current_node["config"]["sessionId"]
+                            .as_str()
+                            .filter(|value| !value.trim().is_empty())
+                            .map(str::to_owned);
+                        let actual = output["conversationSessionId"].as_str().map(str::to_owned);
+                        if let (Some(requested), Some(actual)) = (requested, actual) {
+                            if requested != actual {
+                                let _ = self
+                                    .session_service
+                                    .reassign_codex_session_id(&actual, &requested)
+                                    .await;
+                                output["conversationSessionId"] = Value::String(requested);
+                            }
+                        }
+                    }
                     if !attempt_transcripts.is_empty() {
                         let latest = output_text(&output);
                         output["retryTranscript"] = Value::String(attempt_transcripts.join("\n\n"));
@@ -533,6 +604,28 @@ impl WorkflowRuntime {
                     .await;
                     current_node["prompt"] = Value::String(retry_prompt.to_owned());
                     current_node["config"]["resumeConversation"] = Value::Bool(true);
+                    if current_node["providerKind"].as_str() == Some("codex-cli") {
+                        let requested = current_node["config"]["sessionId"]
+                            .as_str()
+                            .filter(|value| !value.trim().is_empty())
+                            .map(str::to_owned);
+                        let actual = read_agent_conversation_id(
+                            workflow_path,
+                            node["id"].as_str().unwrap_or(""),
+                        )
+                        .await;
+                        if let (Some(requested), Some(actual)) = (requested, actual) {
+                            if requested != actual {
+                                let _ = self
+                                    .session_service
+                                    .reassign_codex_session_id(&actual, &requested)
+                                    .await;
+                                current_node["config"]["conversationSessionId"] =
+                                    Value::String(requested.clone());
+                                current_node["config"]["sessionId"] = Value::String(requested);
+                            }
+                        }
+                    }
                     let persisted_session_id = read_agent_conversation_id(
                         workflow_path,
                         node["id"].as_str().unwrap_or(""),
@@ -576,7 +669,35 @@ impl WorkflowRuntime {
             ));
         }
         let provider = node["providerKind"].as_str().unwrap_or("claude-cli");
-        let (executable, args) = build_workflow_agent_invocation(provider, node, prompt)?;
+        let mut launch_node = node.clone();
+        if provider == "claude-cli"
+            && launch_node["config"]["resumeConversation"]
+                .as_bool()
+                .unwrap_or(false)
+        {
+            let session_id = launch_node["config"]["sessionId"]
+                .as_str()
+                .or_else(|| launch_node["config"]["conversationSessionId"].as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            let exists = if let Some(session_id) = session_id {
+                self.session_service
+                    .list(AgentSessionApp::Claude)
+                    .await
+                    .map(|sessions| {
+                        sessions
+                            .iter()
+                            .any(|session| session.id.as_str() == session_id)
+                    })
+                    .unwrap_or(false)
+            } else {
+                false
+            };
+            if !exists {
+                launch_node["config"]["resumeConversation"] = Value::Bool(false);
+            }
+        }
+        let (executable, args) = build_workflow_agent_invocation(provider, &launch_node, prompt)?;
         let profile = pty
             .profiles()
             .into_iter()
@@ -624,15 +745,15 @@ impl WorkflowRuntime {
         } else {
             AgentSessionApp::Claude
         };
-        let resume_configured = node["config"]["resumeConversation"]
+        let resume_configured = launch_node["config"]["resumeConversation"]
             .as_bool()
             .unwrap_or(false);
         let mut conversation_id = if provider == "codex-cli" && resume_configured {
-            node["config"]["conversationSessionId"]
+            launch_node["config"]["conversationSessionId"]
                 .as_str()
-                .or_else(|| node["config"]["sessionId"].as_str())
+                .or_else(|| launch_node["config"]["sessionId"].as_str())
         } else if provider != "codex-cli" {
-            node["config"]["sessionId"].as_str()
+            launch_node["config"]["sessionId"].as_str()
         } else {
             None
         }
@@ -683,24 +804,30 @@ impl WorkflowRuntime {
                         }
                         let mut recovered = None;
                         for _ in 0..25 {
+                            if cancelled.load(Ordering::SeqCst) {
+                                break;
+                            }
                             if let Some(id) = conversation_id.as_deref() {
                                 if let Ok(Some(content)) = self.session_service.read_in_project(agent_app, id, workspace_root).await {
                                     if let Some(result) = parse_agent_session_result(agent_app, &content) {
-                                        recovered = Some((id.to_owned(), result));
+                                        recovered = Some((id.to_owned(), result, content));
                                         break;
                                     }
                                 }
                             }
                             sleep(Duration::from_millis(120)).await;
                         }
-                        if let Some((id, result)) = recovered {
+                        if let Some((id, result, content)) = recovered {
                             match result {
-                                Ok(answer) => break 'agent_loop Ok(serde_json::json!({"type":provider,"status":"success","stdout":transcript,"stderr":"","text":answer,"transcript":answer,"exitCode":code,"conversationSessionId":id})),
+                                Ok(answer) => break 'agent_loop Ok(serde_json::json!({"type":provider,"status":"success","stdout":"","stderr":"","text":answer,"transcript":answer,"usage":agent_session_usage(agent_app, &content),"exitCode":code,"conversationSessionId":id})),
                                 Err(message) => {
                                     self.persist_agent_details(workflow_path, key, &node_id, &session_id, "error", &message, Some(&id)).await;
                                     break 'agent_loop Err(message);
                                 }
                             }
+                        }
+                        if cancelled.load(Ordering::SeqCst) {
+                            break Err("Workflow stopped.".to_owned());
                         }
                         let message = if !final_message.trim().is_empty() {
                             final_message.clone()
@@ -731,11 +858,14 @@ impl WorkflowRuntime {
                             }
                         }
                         for _ in 0..25 {
+                            if cancelled.load(Ordering::SeqCst) {
+                                break 'agent_loop Err("Workflow stopped.".to_owned());
+                            }
                             if let Some(id) = conversation_id.as_deref() {
                                 if let Ok(Some(content)) = self.session_service.read_in_project(agent_app, id, workspace_root).await {
                                     if let Some(result) = parse_agent_session_result(agent_app, &content) {
                                         match result {
-                                            Ok(answer) => break 'agent_loop Ok(serde_json::json!({"type":provider,"status":"success","stdout":transcript,"stderr":"","text":answer,"transcript":answer,"exitCode":0,"conversationSessionId":id})),
+                                            Ok(answer) => break 'agent_loop Ok(serde_json::json!({"type":provider,"status":"success","stdout":"","stderr":"","text":answer,"transcript":answer,"usage":agent_session_usage(agent_app, &content),"exitCode":0,"conversationSessionId":id})),
                                             Err(error) => {
                                                 self.persist_agent_details(workflow_path, key, &node_id, &session_id, "error", &error, Some(id)).await;
                                                 break 'agent_loop Err(error);
@@ -762,24 +892,30 @@ impl WorkflowRuntime {
                         }
                         let mut recovered = None;
                         for _ in 0..25 {
+                            if cancelled.load(Ordering::SeqCst) {
+                                break;
+                            }
                             if let Some(id) = conversation_id.as_deref() {
                                 if let Ok(Some(content)) = self.session_service.read_in_project(agent_app, id, workspace_root).await {
                                     if let Some(result) = parse_agent_session_result(agent_app, &content) {
-                                        recovered = Some((id.to_owned(), result));
+                                        recovered = Some((id.to_owned(), result, content));
                                         break;
                                     }
                                 }
                             }
                             sleep(Duration::from_millis(120)).await;
                         }
-                        if let Some((id, result)) = recovered {
+                        if let Some((id, result, content)) = recovered {
                             match result {
-                                Ok(answer) => break 'agent_loop Ok(serde_json::json!({"type":provider,"status":"success","stdout":transcript,"stderr":"","text":answer,"transcript":answer,"exitCode":0,"conversationSessionId":id})),
+                                Ok(answer) => break 'agent_loop Ok(serde_json::json!({"type":provider,"status":"success","stdout":"","stderr":"","text":answer,"transcript":answer,"usage":agent_session_usage(agent_app, &content),"exitCode":0,"conversationSessionId":id})),
                                 Err(message) => break 'agent_loop Err(message),
                             }
                         }
                         if !final_message.trim().is_empty() {
                             self.persist_agent_details(workflow_path, key, &node_id, &session_id, "error", &final_message, conversation_id.as_deref()).await;
+                        }
+                        if cancelled.load(Ordering::SeqCst) {
+                            break Err("Workflow stopped.".to_owned());
                         }
                         let fallback = clean_terminal_text(&transcript);
                         break Err(if fallback.is_empty() {
@@ -846,13 +982,27 @@ impl WorkflowRuntime {
                                     }
                                     if success {
                                         let _ = session.kill().await;
-                                        let answer = if final_message.trim().is_empty() { clean_terminal_text(&transcript) } else { final_message.clone() };
-                                        break 'agent_loop Ok(serde_json::json!({"type":provider,"status":"success","stdout":transcript,"stderr":"","text":answer,"transcript":answer,"exitCode":0,"conversationSessionId":id}));
+                                        let answer = if agent_app == AgentSessionApp::Codex {
+                                            parse_agent_session_result(agent_app, &content)
+                                                .and_then(Result::ok)
+                                                .filter(|answer| !answer.trim().is_empty())
+                                                .unwrap_or_default()
+                                        } else {
+                                            final_message.clone()
+                                        };
+                                        break 'agent_loop Ok(serde_json::json!({"type":provider,"status":"success","stdout":"","stderr":"","text":answer,"transcript":answer,"usage":agent_session_usage(agent_app, &content),"exitCode":0,"conversationSessionId":id}));
                                     }
                                     let _ = session.kill().await;
-                                    if !final_message.trim().is_empty() {
-                                        self.persist_agent_details(workflow_path, key, &node_id, &session_id, "error", &final_message, Some(id)).await;
-                                    }
+                                    self.persist_agent_details(
+                                        workflow_path,
+                                        key,
+                                        &node_id,
+                                        &session_id,
+                                        "error",
+                                        &message,
+                                        Some(id),
+                                    )
+                                    .await;
                                     break 'agent_loop Err(message);
                                 }
                             }
@@ -1471,6 +1621,7 @@ fn finish_details(
     ) {
         return;
     }
+    let is_agent = node["kind"].as_str() == Some("agent");
     if !node["config"]["runDetails"].is_object() {
         let fallback = running_details(node, node["startedAt"].as_u64().unwrap_or(completed_at));
         node["config"]["runDetails"] = fallback;
@@ -1516,7 +1667,10 @@ fn finish_details(
         } else {
             format!("{existing_stderr}\n{error}")
         });
-        if details["transcript"]
+        if is_agent {
+            details["stdout"] = Value::String(String::new());
+            details["transcript"] = Value::String(error.to_owned());
+        } else if details["transcript"]
             .as_str()
             .unwrap_or("")
             .trim()
@@ -2645,33 +2799,14 @@ fn parse_agent_session_result(
     app: AgentSessionApp,
     content: &str,
 ) -> Option<Result<String, String>> {
+    if app == AgentSessionApp::Codex {
+        return parse_codex_session_result(content);
+    }
     let mut answer = String::new();
-    let mut active_codex_turn_id: Option<String> = None;
     for line in content.lines() {
         let Ok(value) = serde_json::from_str::<Value>(line) else {
             continue;
         };
-        if app == AgentSessionApp::Codex {
-            let payload = value.get("payload").unwrap_or(&Value::Null);
-            let kind = payload["type"]
-                .as_str()
-                .or_else(|| value["type"].as_str())
-                .unwrap_or("");
-            let turn_id = payload["turn_id"]
-                .as_str()
-                .or_else(|| value["turn_id"].as_str())
-                .unwrap_or("");
-            if matches!(kind, "task_started" | "turn_started") {
-                if !turn_id.is_empty() {
-                    active_codex_turn_id = Some(turn_id.to_owned());
-                }
-            } else if active_codex_turn_id
-                .as_deref()
-                .is_some_and(|active| !turn_id.is_empty() && active != turn_id)
-            {
-                continue;
-            }
-        }
         if let Some(message) = agent_session_message(app, &value) {
             answer = message;
         }
@@ -2683,6 +2818,199 @@ fn parse_agent_session_result(
         }
     }
     None
+}
+
+fn agent_session_usage(app: AgentSessionApp, content: &str) -> Value {
+    let values = content
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .collect::<Vec<_>>();
+    let mut input = 0.0;
+    let mut output = 0.0;
+    let mut cache_read = 0.0;
+    let mut cache_write = 0.0;
+    if app == AgentSessionApp::Codex {
+        for value in values.iter().rev() {
+            let payload = value.get("payload").unwrap_or(value);
+            if payload["type"].as_str() != Some("token_count") {
+                continue;
+            }
+            let usage = payload
+                .get("info")
+                .and_then(|value| value.get("total_token_usage"))
+                .or_else(|| payload.get("total_token_usage"));
+            input = usage_number(usage, &["input_tokens", "inputTokens"]);
+            output = usage_number(usage, &["output_tokens", "outputTokens"]);
+            cache_read = usage_number(
+                usage,
+                &[
+                    "cached_input_tokens",
+                    "cache_read_input_tokens",
+                    "cacheReadInputTokens",
+                ],
+            );
+            cache_write = usage_number(
+                usage,
+                &[
+                    "cache_write_tokens",
+                    "cache_creation_input_tokens",
+                    "cacheWriteInputTokens",
+                ],
+            );
+            break;
+        }
+    } else {
+        for value in values {
+            if value["type"].as_str() != Some("assistant") {
+                continue;
+            }
+            let usage = value["message"].get("usage").or_else(|| value.get("usage"));
+            input += usage_number(usage, &["input_tokens", "inputTokens"]);
+            output += usage_number(usage, &["output_tokens", "outputTokens"]);
+            cache_read += usage_number(
+                usage,
+                &[
+                    "cache_read_input_tokens",
+                    "cached_input_tokens",
+                    "cacheReadInputTokens",
+                ],
+            );
+            cache_write += usage_number(
+                usage,
+                &[
+                    "cache_creation_input_tokens",
+                    "cache_write_input_tokens",
+                    "cacheWriteInputTokens",
+                ],
+            );
+        }
+    }
+    serde_json::json!({"input":input,"output":output,"cacheRead":cache_read,"cacheWrite":cache_write,"total":input+output})
+}
+
+fn usage_number(value: Option<&Value>, keys: &[&str]) -> f64 {
+    keys.iter()
+        .find_map(|key| {
+            value
+                .and_then(|value| value.get(*key))
+                .and_then(Value::as_f64)
+        })
+        .unwrap_or(0.0)
+}
+
+fn parse_codex_session_result(content: &str) -> Option<Result<String, String>> {
+    let values = content
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .collect::<Vec<_>>();
+    for value in values.iter().rev() {
+        let payload = value.get("payload").unwrap_or(value);
+        let kind = payload["type"]
+            .as_str()
+            .or_else(|| value["type"].as_str())
+            .unwrap_or("");
+        if matches!(kind, "task_complete" | "turn_complete" | "turn_completed") {
+            if let Some(error) = payload["error"]["message"]
+                .as_str()
+                .or_else(|| payload["error"].as_str())
+                .filter(|message| !message.trim().is_empty())
+            {
+                return Some(Err(error.to_owned()));
+            }
+            return Some(Ok(codex_final_answer(&values)));
+        }
+        if matches!(
+            kind,
+            "error"
+                | "turn_failed"
+                | "task_failed"
+                | "turn_aborted"
+                | "task_aborted"
+                | "stream_error"
+        ) {
+            return Some(Err(error_message_value(&payload["message"])
+                .or_else(|| error_message_value(&payload["error"]))
+                .unwrap_or_else(|| "Codex failed.".to_owned())));
+        }
+    }
+    None
+}
+
+fn codex_final_answer(values: &[Value]) -> String {
+    for value in values.iter().rev() {
+        let payload = value.get("payload").unwrap_or(value);
+        let kind = value["type"].as_str().unwrap_or("");
+        let payload_kind = payload["type"].as_str().unwrap_or("");
+        if kind == "task_complete" || (kind == "event_msg" && payload_kind == "task_complete") {
+            let answer = clean_structured_text(
+                value["last_agent_message"]
+                    .as_str()
+                    .or_else(|| payload["last_agent_message"].as_str())
+                    .unwrap_or(""),
+            );
+            if !answer.is_empty() {
+                return answer;
+            }
+        }
+    }
+    for value in values.iter().rev() {
+        let payload = value.get("payload").unwrap_or(&Value::Null);
+        if value["type"].as_str() == Some("response_item")
+            && payload["type"].as_str() == Some("message")
+            && payload["role"].as_str() == Some("assistant")
+        {
+            let answer = json_content_text(&payload["content"]);
+            if !answer.is_empty() {
+                return answer;
+            }
+        }
+        if value["type"].as_str() == Some("message") && value["role"].as_str() == Some("assistant")
+        {
+            let answer = json_content_text(&value["content"]);
+            if !answer.is_empty() {
+                return answer;
+            }
+        }
+    }
+    String::new()
+}
+
+fn json_content_text(value: &Value) -> String {
+    match value {
+        Value::String(text) => clean_structured_text(text),
+        Value::Array(items) => items
+            .iter()
+            .map(json_content_text)
+            .filter(|text| !text.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Value::Object(object) => {
+            if let Some(text) = object.get("text").and_then(Value::as_str) {
+                return clean_structured_text(text);
+            }
+            object
+                .get("content")
+                .map(json_content_text)
+                .unwrap_or_default()
+        }
+        _ => String::new(),
+    }
+}
+
+fn clean_structured_text(value: &str) -> String {
+    let mut text = value.replace('\r', "");
+    for tag in ["system-reminder", "environment_context"] {
+        loop {
+            let Some(start) = text.to_ascii_lowercase().find(&format!("<{tag}>")) else {
+                break;
+            };
+            let Some(end) = text.to_ascii_lowercase()[start..].find(&format!("</{tag}>")) else {
+                break;
+            };
+            text.replace_range(start..start + end + tag.len() + 3, "");
+        }
+    }
+    text.trim().to_owned()
 }
 
 pub(crate) async fn run_cli_chat_with_cancel(
@@ -3384,6 +3712,33 @@ mod tests {
     }
 
     #[test]
+    fn failed_agent_details_drop_terminal_replay_noise() {
+        let mut node = serde_json::json!({
+            "kind":"agent", "title":"Codex", "providerKind":"codex-cli", "config":{}
+        });
+        node["startedAt"] = Value::from(100u64);
+        node["config"]["runDetails"] = serde_json::json!({
+            "status":"running", "startedAt":100, "stdout":"tui replay",
+            "stderr":"", "transcript":"tui replay"
+        });
+        finish_details(
+            &mut node,
+            "error",
+            120,
+            None,
+            Some("Codex failed after 2 attempts: unexpected status 404"),
+        );
+        assert_eq!(
+            node["config"]["runDetails"]["stdout"],
+            Value::String(String::new())
+        );
+        assert_eq!(
+            node["config"]["runDetails"]["transcript"],
+            "Codex failed after 2 attempts: unexpected status 404"
+        );
+    }
+
+    #[test]
     fn workflow_agent_invocation_keeps_interactive_tui_and_prompt() {
         let claude = serde_json::json!({
             "providerKind":"claude-cli", "model":"sonnet", "mode":"plan",
@@ -3394,6 +3749,19 @@ mod tests {
         assert!(!claude_args.iter().any(|arg| arg == "-p"));
         assert_eq!(claude_args.last().map(String::as_str), Some("继续"));
 
+        let claude_resume = serde_json::json!({
+            "providerKind":"claude-cli",
+            "config":{
+                "resumeConversation":true,
+                "sessionId":"550e8400-e29b-41d4-a716-446655440000"
+            }
+        });
+        let (_, claude_resume_args) =
+            build_workflow_agent_invocation("claude-cli", &claude_resume, "继续").unwrap();
+        assert!(claude_resume_args.windows(2).any(|pair| {
+            pair[0] == "--resume" && pair[1] == "550e8400-e29b-41d4-a716-446655440000"
+        }));
+
         let codex = serde_json::json!({
             "providerKind":"codex-cli", "model":"gpt-5", "mode":"goal",
             "config":{"codexApproval":"on-request", "codexSandbox":"workspace-write"}
@@ -3402,6 +3770,22 @@ mod tests {
             build_workflow_agent_invocation("codex-cli", &codex, "Build").unwrap();
         assert!(!codex_args.iter().any(|arg| arg == "exec"));
         assert_eq!(codex_args.last().map(String::as_str), Some("Build"));
+
+        let codex_resume = serde_json::json!({
+            "providerKind":"codex-cli",
+            "config":{
+                "resumeConversation":true,
+                "conversationSessionId":"550e8400-e29b-41d4-a716-446655440000"
+            }
+        });
+        let (_, codex_resume_args) =
+            build_workflow_agent_invocation("codex-cli", &codex_resume, "继续").unwrap();
+        assert!(codex_resume_args
+            .windows(2)
+            .any(|pair| { pair[0] == "resume" && pair[1] == "--ask-for-approval" }));
+        assert!(codex_resume_args
+            .iter()
+            .any(|arg| arg == "550e8400-e29b-41d4-a716-446655440000"));
     }
 
     #[test]
@@ -3421,6 +3805,15 @@ mod tests {
         assert_eq!(
             parse_agent_session_result(AgentSessionApp::Codex, codex),
             Some(Err("API 503".into()))
+        );
+        let codex_answer = concat!(
+            r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"工具输出不应成为最终结果"}]}}"#,
+            "\n",
+            r#"{"type":"event_msg","payload":{"type":"task_complete","last_agent_message":"最终答案"}}"#
+        );
+        assert_eq!(
+            parse_agent_session_result(AgentSessionApp::Codex, codex_answer),
+            Some(Ok("最终答案".into()))
         );
     }
 

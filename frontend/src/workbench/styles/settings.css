@@ -129,6 +129,7 @@
 .usage-stats__status.is-stopped { color: var(--color-warning-strong); }
 
 .settings-about__brand { display: flex; align-items: center; gap: 12px; margin: 20px 0 28px; }
+.settings-about-panel { opacity: 1; filter: none; }
 .settings-about__mark { display: block; width: 44px; height: 44px; object-fit: contain; }
 .settings-about__brand div { display: grid; gap: 3px; }
 .settings-about__brand strong { color: var(--fg-strong); font-size: 20px; }
