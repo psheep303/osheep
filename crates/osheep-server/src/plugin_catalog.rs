@@ -9,6 +9,21 @@ fn user_home() -> PathBuf {
         .unwrap_or_default()
 }
 
+fn codex_personal_paths(home: &Path) -> (PathBuf, PathBuf) {
+    (
+        std::env::var_os("OSHEEP_CODEX_PERSONAL_PLUGIN_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join("plugins")),
+        std::env::var_os("OSHEEP_CODEX_PERSONAL_MARKETPLACE")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                home.join(".agents")
+                    .join("plugins")
+                    .join("marketplace.json")
+            }),
+    )
+}
+
 pub(crate) async fn claude_snapshot() -> Value {
     claude_snapshot_from(&user_home()).await
 }
@@ -30,9 +45,9 @@ async fn claude_snapshot_from(home: &Path) -> Value {
     let claude_dir = home.join(".claude");
     let settings_path = claude_dir.join("settings.json");
     let local_settings = claude_dir.join("settings.local.json");
-    let cache = claude_dir.join("plugins/cache");
-    let marketplaces_root = claude_dir.join("plugins/marketplaces");
-    let installed_path = claude_dir.join("plugins/installed_plugins.json");
+    let cache = claude_dir.join("plugins").join("cache");
+    let marketplaces_root = claude_dir.join("plugins").join("marketplaces");
+    let installed_path = claude_dir.join("plugins").join("installed_plugins.json");
     let enabled = read_json(&settings_path)
         .await
         .and_then(|value| value.get("enabledPlugins").cloned())
@@ -67,7 +82,7 @@ async fn claude_snapshot_from(home: &Path) -> Value {
         if !entry.file_type().await.is_ok_and(|kind| kind.is_dir()) {
             continue;
         }
-        let manifest_path = entry.path().join(".claude-plugin/marketplace.json");
+        let manifest_path = entry.path().join(".claude-plugin").join("marketplace.json");
         let Some(manifest) = read_json(&manifest_path).await else {
             continue;
         };
@@ -98,22 +113,54 @@ async fn claude_snapshot_from(home: &Path) -> Value {
                 .get(&selector)
                 .and_then(Value::as_bool)
                 .unwrap_or(is_installed);
-            let source_path = item["source"]
-                .as_str()
-                .map(|path| entry.path().join(path))
+            let source_path = plugin_source_path(item, &entry.path()).or_else(|| {
+                install
+                    .and_then(|value| value["installPath"].as_str())
+                    .map(PathBuf::from)
+            });
+            let plugin_manifest = match source_path.as_deref() {
+                Some(path) => read_json(&path.join(".claude-plugin").join("plugin.json")).await,
+                None => None,
+            };
+            let icon = load_plugin_icon(
+                plugin_manifest.as_ref().unwrap_or(item),
+                source_path.as_deref(),
+                name,
+            )
+            .await;
+            let display_name = plugin_manifest
+                .as_ref()
+                .and_then(|value| value["interface"]["displayName"].as_str())
                 .or_else(|| {
-                    install
-                        .and_then(|value| value["installPath"].as_str())
-                        .map(PathBuf::from)
+                    plugin_manifest
+                        .as_ref()
+                        .and_then(|value| value["displayName"].as_str())
+                })
+                .or_else(|| item.get("displayName").and_then(Value::as_str))
+                .unwrap_or(name);
+            let version = install
+                .and_then(|value| value["version"].as_str())
+                .or_else(|| {
+                    plugin_manifest
+                        .as_ref()
+                        .and_then(|value| value["version"].as_str())
                 });
-            let icon = load_plugin_icon(item, source_path.as_deref(), name).await;
+            let description = plugin_manifest
+                .as_ref()
+                .and_then(|value| value["interface"]["shortDescription"].as_str())
+                .or_else(|| {
+                    plugin_manifest
+                        .as_ref()
+                        .and_then(|value| value["description"].as_str())
+                })
+                .or_else(|| item.get("description").and_then(Value::as_str));
             plugins.insert(selector.clone(), serde_json::json!({
                 "name": name,
                 "marketplace": marketplace,
                 "selector": selector,
-                "displayName": item.get("displayName").and_then(Value::as_str).unwrap_or(name),
-                "version": install.and_then(|value| value["version"].as_str()),
-                "description": item.get("description").and_then(Value::as_str),
+                "displayName": display_name,
+                "version": version,
+                "description": description,
                 "icon": icon,
                 "scope": install.and_then(|value| value["scope"].as_str()),
                 "status": {"installed":is_installed,"available":true,"enabled":is_enabled,"cached":is_installed,"local":false},
@@ -145,10 +192,20 @@ fn claude_paths(
 async fn codex_snapshot_from_codex_dir(codex_dir: &Path) -> Value {
     let codex_dir = codex_dir.to_path_buf();
     let config_path = codex_dir.join("config.toml");
-    let cache_root = codex_dir.join(".tmp/plugins");
-    let registry_path = cache_root.join(".agents/plugins/api_marketplace.json");
-    let personal_marketplace = codex_dir.join("plugins/marketplace.json");
-    let personal_root = codex_dir.join("plugins");
+    let cache_root = codex_dir.join(".tmp").join("plugins");
+    let preferred_registry_path = cache_root
+        .join(".agents")
+        .join("plugins")
+        .join("api_marketplace.json");
+    let fallback_registry_path = cache_root
+        .join(".agents")
+        .join("plugins")
+        .join("marketplace.json");
+    // Codex keeps the personal marketplace outside CODEX_HOME. CODEX_HOME is
+    // the native runtime/config directory, while local plugins are shared
+    // from the user's home directory.
+    let home = user_home();
+    let (personal_root, personal_marketplace) = codex_personal_paths(&home);
     let config = tokio::fs::read_to_string(&config_path)
         .await
         .unwrap_or_default();
@@ -156,7 +213,14 @@ async fn codex_snapshot_from_codex_dir(codex_dir: &Path) -> Value {
     let mut marketplaces = Vec::new();
     let warnings: Vec<String> = Vec::new();
 
-    if let Some(registry) = read_json(&registry_path).await {
+    let registry = if let Some(value) = read_json(&preferred_registry_path).await {
+        Some((preferred_registry_path, value))
+    } else {
+        read_json(&fallback_registry_path)
+            .await
+            .map(|value| (fallback_registry_path, value))
+    };
+    if let Some((registry_path, registry)) = registry {
         let marketplace = registry["name"].as_str().unwrap_or("openai-api-curated");
         marketplaces.push(serde_json::json!({
             "name": marketplace,
@@ -170,7 +234,7 @@ async fn codex_snapshot_from_codex_dir(codex_dir: &Path) -> Value {
             let selector = format!("{name}@{marketplace}");
             let plugin_root = codex_plugin_root(&cache_root, item);
             let metadata = match &plugin_root {
-                Some(root) => read_json(&root.join(".codex-plugin/plugin.json")).await,
+                Some(root) => read_json(&root.join(".codex-plugin").join("plugin.json")).await,
                 None => None,
             };
             let icon = load_plugin_icon(
@@ -206,15 +270,42 @@ async fn codex_snapshot_from_codex_dir(codex_dir: &Path) -> Value {
             };
             let selector = format!("{name}@{marketplace}");
             let source_path = item["source"]["path"].as_str().map(|path| {
-                personal_marketplace
-                    .parent()
-                    .unwrap_or(&codex_dir)
-                    .join(path)
+                personal_plugin_source_path(&personal_marketplace, &personal_root, path)
             });
-            let icon = load_plugin_icon(item, source_path.as_deref(), name).await;
+            let plugin_manifest = match source_path.as_deref() {
+                Some(path) => read_json(&path.join(".codex-plugin").join("plugin.json")).await,
+                None => None,
+            };
+            let icon = load_plugin_icon(
+                plugin_manifest.as_ref().unwrap_or(item),
+                source_path.as_deref(),
+                name,
+            )
+            .await;
+            let display_name = plugin_manifest
+                .as_ref()
+                .and_then(|value| value["interface"]["displayName"].as_str())
+                .or_else(|| {
+                    plugin_manifest
+                        .as_ref()
+                        .and_then(|value| value["displayName"].as_str())
+                })
+                .unwrap_or(name);
+            let version = plugin_manifest
+                .as_ref()
+                .and_then(|value| value["version"].as_str());
+            let description = plugin_manifest
+                .as_ref()
+                .and_then(|value| value["interface"]["shortDescription"].as_str())
+                .or_else(|| {
+                    plugin_manifest
+                        .as_ref()
+                        .and_then(|value| value["description"].as_str())
+                });
             let installed = codex_config_mentions(&config, &selector);
             plugins.insert(selector.clone(), serde_json::json!({
-                "name":name,"marketplace":marketplace,"selector":selector,"displayName":name,
+                "name":name,"marketplace":marketplace,"selector":selector,"displayName":display_name,
+                "version":version,"description":description,
                 "icon":icon,
                 "status":{"installed":installed,"available":true,"enabled":codex_config_enabled(&config, &selector).unwrap_or(installed),"cached":source_path.as_ref().is_some_and(|path| path.exists()),"local":true},
                 "source":{"kind":"personal","path":source_path}
@@ -233,6 +324,43 @@ fn codex_plugin_root(cache_root: &Path, item: &Value) -> Option<PathBuf> {
     let path = item["source"]["path"].as_str()?;
     let candidate = cache_root.join(path);
     candidate.exists().then_some(candidate)
+}
+
+fn plugin_source_path(item: &Value, marketplace_root: &Path) -> Option<PathBuf> {
+    let source = item.get("source")?;
+    let raw = source
+        .as_str()
+        .or_else(|| source.get("path").and_then(Value::as_str))?;
+    if raw.starts_with("http://") || raw.starts_with("https://") {
+        return None;
+    }
+    Some(marketplace_root.join(raw.replace('\\', "/")))
+}
+
+fn personal_plugin_source_path(
+    marketplace_path: &Path,
+    personal_root: &Path,
+    raw: &str,
+) -> PathBuf {
+    let normalized = raw.replace('\\', "/");
+    let segments = normalized
+        .split('/')
+        .filter(|segment| !segment.is_empty() && *segment != ".")
+        .collect::<Vec<_>>();
+    if segments.first() == Some(&"plugins") && segments.len() > 1 {
+        return segments[1..]
+            .iter()
+            .fold(personal_root.to_path_buf(), |path, segment| {
+                path.join(segment)
+            });
+    }
+    segments.iter().fold(
+        marketplace_path
+            .parent()
+            .unwrap_or(personal_root)
+            .to_path_buf(),
+        |path, segment| path.join(segment),
+    )
 }
 
 fn codex_config_mentions(config: &str, selector: &str) -> bool {
@@ -419,9 +547,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reads_claude_plugin_manifest_icon() {
+        let home = temp_home("claude-icon");
+        let root = home
+            .join(".claude")
+            .join("plugins")
+            .join("marketplaces")
+            .join("official");
+        let marketplace = root.join(".claude-plugin").join("marketplace.json");
+        let plugin_root = root.join("plugins").join("demo");
+        tokio::fs::create_dir_all(marketplace.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(plugin_root.join(".claude-plugin"))
+            .await
+            .unwrap();
+        tokio::fs::write(
+            &marketplace,
+            r#"{"name":"official","plugins":[{"name":"demo","source":"./plugins/demo"}]}"#,
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(
+            plugin_root.join(".claude-plugin").join("plugin.json"),
+            r#"{"name":"demo","interface":{"displayName":"Demo","icon":"data:image/svg+xml;base64,AAAA"}}"#,
+        )
+        .await
+        .unwrap();
+        let snapshot = claude_snapshot_from(&home).await;
+        assert_eq!(snapshot["plugins"][0]["displayName"], "Demo");
+        assert_eq!(
+            snapshot["plugins"][0]["icon"],
+            "data:image/svg+xml;base64,AAAA"
+        );
+        tokio::fs::remove_dir_all(home).await.ok();
+    }
+
+    #[tokio::test]
     async fn reads_codex_official_registry_without_cli() {
         let home = temp_home("codex");
-        let registry = home.join(".codex/.tmp/plugins/.agents/plugins/api_marketplace.json");
+        let registry = home
+            .join(".codex")
+            .join(".tmp")
+            .join("plugins")
+            .join(".agents")
+            .join("plugins")
+            .join("api_marketplace.json");
         tokio::fs::create_dir_all(registry.parent().unwrap())
             .await
             .unwrap();
@@ -438,5 +609,57 @@ mod tests {
         );
         assert_eq!(snapshot["plugins"][0]["status"]["available"], true);
         tokio::fs::remove_dir_all(home).await.ok();
+    }
+
+    #[tokio::test]
+    async fn falls_back_to_codex_marketplace_registry() {
+        let home = temp_home("codex-fallback");
+        let registry = home
+            .join(".codex")
+            .join(".tmp")
+            .join("plugins")
+            .join(".agents")
+            .join("plugins")
+            .join("marketplace.json");
+        tokio::fs::create_dir_all(registry.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(
+            &registry,
+            r#"{"name":"openai-curated","plugins":[{"name":"demo","source":{"path":"./plugins/demo"}}]}"#,
+        )
+        .await
+        .unwrap();
+        let snapshot = codex_snapshot_from_codex_dir(&home.join(".codex")).await;
+        assert_eq!(snapshot["plugins"][0]["selector"], "demo@openai-curated");
+        assert_eq!(
+            snapshot["marketplaces"][0]["path"],
+            registry.to_string_lossy().as_ref()
+        );
+        tokio::fs::remove_dir_all(home).await.ok();
+    }
+
+    #[test]
+    fn resolves_personal_plugin_paths_from_plugins_prefix() {
+        let marketplace = PathBuf::from(r"C:\Users\Admin\.agents\plugins\marketplace.json");
+        let root = PathBuf::from(r"C:\Users\Admin\plugins");
+        assert_eq!(
+            personal_plugin_source_path(&marketplace, &root, r".\plugins\demo"),
+            root.join("demo")
+        );
+    }
+
+    #[test]
+    fn codex_personal_plugins_use_agents_marketplace() {
+        let home = PathBuf::from(r"C:\Users\Admin");
+        let (root, marketplace) = codex_personal_paths(&home);
+        assert_eq!(root, home.join("plugins"));
+        assert_eq!(
+            marketplace,
+            home.join(".agents")
+                .join("plugins")
+                .join("marketplace.json")
+        );
+        assert!(!marketplace.starts_with(home.join(".codex")));
     }
 }

@@ -4356,11 +4356,19 @@ fn valid_codex_plugin_name(value: &str) -> bool {
 }
 
 fn codex_plugin_paths() -> (PathBuf, PathBuf) {
-    let root = std::env::var_os("CODEX_HOME")
-        .or_else(|| std::env::var_os("OSHEEP_CODEX_CONFIG_DIR"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| user_home().join(".codex"));
-    (root.join("plugins"), root.join("plugins/marketplace.json"))
+    let home = user_home();
+    (
+        std::env::var_os("OSHEEP_CODEX_PERSONAL_PLUGIN_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join("plugins")),
+        std::env::var_os("OSHEEP_CODEX_PERSONAL_MARKETPLACE")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                home.join(".agents")
+                    .join("plugins")
+                    .join("marketplace.json")
+            }),
+    )
 }
 
 async fn read_personal_codex_marketplace(path: &Path) -> Value {
@@ -4436,7 +4444,7 @@ async fn codex_plugin_local_create(
     let mut marketplace = read_personal_codex_marketplace(&marketplace_path).await;
     let plugins = marketplace["plugins"].as_array_mut().unwrap();
     plugins.retain(|item| item["name"].as_str() != Some(name));
-    plugins.push(serde_json::json!({"name":name,"source":{"path":name}}));
+    plugins.push(serde_json::json!({"name":name,"source":{"path":format!("./plugins/{name}")}}));
     write_personal_codex_marketplace(&marketplace_path, &marketplace).await?;
     let snapshot = crate::plugin_catalog::codex_snapshot().await;
     state.p6_state.lock().await["codexPlugins"] = snapshot.clone();
@@ -4475,7 +4483,7 @@ async fn codex_plugin_local_import(
     let mut marketplace = read_personal_codex_marketplace(&marketplace_path).await;
     let plugins = marketplace["plugins"].as_array_mut().unwrap();
     plugins.retain(|item| item["name"].as_str() != Some(name));
-    plugins.push(serde_json::json!({"name":name,"source":{"path":name}}));
+    plugins.push(serde_json::json!({"name":name,"source":{"path":format!("./plugins/{name}")}}));
     write_personal_codex_marketplace(&marketplace_path, &marketplace).await?;
     let snapshot = crate::plugin_catalog::codex_snapshot().await;
     state.p6_state.lock().await["codexPlugins"] = snapshot.clone();
@@ -5059,10 +5067,11 @@ async fn workflow_run(
             "en"
         },
     );
+    let resume = body.get("resume").and_then(Value::as_bool).unwrap_or(false);
     let key = workflow_runtime_key(&root, &wid);
     let (run_id, workflow) = state
         .workflow_runtime
-        .start(key, path, root, requested, retry_language)
+        .start(key, path, root, requested, retry_language, resume)
         .await
         .map_err(workflow_runtime_error)?;
     Ok(Json(
@@ -5094,7 +5103,7 @@ async fn workflow_pause(
     let _ = read_workflow(&root, &wid).await?;
     state
         .workflow_runtime
-        .stop(&workflow_runtime_key(&root, &wid))
+        .pause(&workflow_runtime_key(&root, &wid))
         .await;
     Ok(Json(serde_json::json!({"ok": true, "paused": true})))
 }
@@ -5758,6 +5767,11 @@ fn workflow_runtime_error(error: crate::workflow_runtime::RuntimeError) -> ApiEr
         crate::workflow_runtime::RuntimeError::NoRunnableBlocks => ApiError::new(
             StatusCode::BAD_REQUEST,
             "WORKFLOW_NOT_RUNNABLE",
+            error.to_string(),
+        ),
+        crate::workflow_runtime::RuntimeError::CheckpointUnavailable => ApiError::new(
+            StatusCode::CONFLICT,
+            "WORKFLOW_CHECKPOINT_UNAVAILABLE",
             error.to_string(),
         ),
         _ => ApiError::new(

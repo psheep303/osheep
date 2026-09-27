@@ -32,6 +32,7 @@ impl Default for WorkflowRuntime {
 struct ActiveRun {
     run_id: String,
     cancelled: Arc<AtomicBool>,
+    checkpoint_on_stop: Arc<AtomicBool>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -46,6 +47,8 @@ pub(crate) enum RuntimeError {
     NotWaiting,
     #[error("workflow has no runnable blocks")]
     NoRunnableBlocks,
+    #[error("workflow checkpoint is no longer available")]
+    CheckpointUnavailable,
 }
 
 impl WorkflowRuntime {
@@ -84,9 +87,11 @@ impl WorkflowRuntime {
         workspace_root: PathBuf,
         requested_ids: Option<Vec<String>>,
         retry_language: Option<&str>,
+        resume: bool,
     ) -> Result<(String, Value), RuntimeError> {
-        let run_id = format!("run_{}", uuid::Uuid::new_v4().simple());
+        let mut run_id = format!("run_{}", uuid::Uuid::new_v4().simple());
         let cancelled = Arc::new(AtomicBool::new(false));
+        let checkpoint_on_stop = Arc::new(AtomicBool::new(false));
         {
             let mut active = self.active.lock().await;
             if active.contains_key(&key) {
@@ -97,6 +102,7 @@ impl WorkflowRuntime {
                 ActiveRun {
                     run_id: run_id.clone(),
                     cancelled: cancelled.clone(),
+                    checkpoint_on_stop: checkpoint_on_stop.clone(),
                 },
             );
         }
@@ -108,7 +114,41 @@ impl WorkflowRuntime {
             self.active.lock().await.remove(&key);
             return Err(RuntimeError::NoRunnableBlocks);
         }
-        let reset = if full_run {
+        let resume_run = if resume && full_run {
+            workflow["runs"]
+                .as_array()
+                .and_then(|runs| {
+                    runs.iter().rev().find(|run| {
+                        run["status"] == "stopped" && run["resumable"].as_bool() == Some(true)
+                    })
+                })
+                .cloned()
+        } else {
+            None
+        };
+        if resume && resume_run.is_none() {
+            self.active.lock().await.remove(&key);
+            return Err(RuntimeError::CheckpointUnavailable);
+        }
+        if let Some(previous) = resume_run.as_ref() {
+            if previous["nodeIds"].as_array().is_none_or(|ids| {
+                ids.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+                    != node_ids
+            }) {
+                self.active.lock().await.remove(&key);
+                return Err(RuntimeError::CheckpointUnavailable);
+            }
+            if let Some(previous_id) = previous["id"].as_str() {
+                run_id = previous_id.to_owned();
+                if let Some(active) = self.active.lock().await.get_mut(&key) {
+                    active.run_id = run_id.clone();
+                }
+            }
+        }
+        let reset = if full_run && resume_run.is_none() {
             workflow["nodes"]
                 .as_array()
                 .into_iter()
@@ -126,9 +166,19 @@ impl WorkflowRuntime {
             }
         }
         let now = now_ms();
-        let run = serde_json::json!({
-            "id":run_id,"status":"running","startedAt":now,"nodeIds":node_ids,"trace":[]
-        });
+        let run = if let Some(mut previous) = resume_run {
+            previous["status"] = Value::String("running".into());
+            previous["startedAt"] = Value::from(now);
+            previous["completedAt"] = Value::Null;
+            previous["error"] = Value::Null;
+            previous["resumable"] = Value::Null;
+            previous["resumeFingerprint"] = Value::Null;
+            previous
+        } else {
+            serde_json::json!({
+                "id":run_id,"status":"running","startedAt":now,"nodeIds":node_ids,"trace":[]
+            })
+        };
         if !workflow["runs"].is_array() {
             workflow["runs"] = Value::Array(Vec::new());
         }
@@ -136,7 +186,11 @@ impl WorkflowRuntime {
         if runs.len() >= 50 {
             runs.drain(..runs.len() - 49);
         }
-        runs.push(run.clone());
+        if let Some(existing) = runs.iter_mut().find(|item| item["id"] == run_id) {
+            *existing = run.clone();
+        } else {
+            runs.push(run.clone());
+        }
         workflow["updatedAt"] = Value::from(now);
         if let Err(error) = write_json(&workflow_path, &workflow).await {
             self.active.lock().await.remove(&key);
@@ -161,6 +215,7 @@ impl WorkflowRuntime {
                     task_run_id.clone(),
                     node_ids,
                     cancelled,
+                    checkpoint_on_stop,
                     retry_language,
                 )
                 .await;
@@ -178,6 +233,20 @@ impl WorkflowRuntime {
     pub(crate) async fn stop(&self, key: &str) -> bool {
         let active = self.active.lock().await.get(key).cloned();
         if let Some(run) = active {
+            run.cancelled.store(true, Ordering::SeqCst);
+            if let Some(session) = self.agent_sessions.lock().await.get(key).cloned() {
+                let _ = session.kill().await;
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(crate) async fn pause(&self, key: &str) -> bool {
+        let active = self.active.lock().await.get(key).cloned();
+        if let Some(run) = active {
+            run.checkpoint_on_stop.store(true, Ordering::SeqCst);
             run.cancelled.store(true, Ordering::SeqCst);
             if let Some(session) = self.agent_sessions.lock().await.get(key).cloned() {
                 let _ = session.kill().await;
@@ -211,6 +280,7 @@ impl WorkflowRuntime {
         run_id: String,
         node_ids: Vec<String>,
         cancelled: Arc<AtomicBool>,
+        checkpoint_on_stop: Arc<AtomicBool>,
         retry_language: Option<String>,
     ) {
         let mut run_error = None;
@@ -222,9 +292,36 @@ impl WorkflowRuntime {
         let selected = node_ids.iter().cloned().collect::<HashSet<_>>();
         let mut source_handles = HashMap::<String, Option<String>>::new();
         let mut skipped = HashSet::<String>::new();
+        let mut checkpoints = HashMap::<String, Value>::new();
+        if let Ok(workflow) = read_json(&workflow_path).await {
+            if let Some(run) = find_run(&workflow, &run_id) {
+                if let Some(trace) = run["trace"].as_array() {
+                    for item in trace {
+                        if item["status"] == "success" {
+                            if let Some(node_id) = item["nodeId"].as_str() {
+                                if let Some(output) = item.get("output") {
+                                    checkpoints.insert(node_id.to_owned(), output.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         for node_id in node_ids {
             if cancelled.load(Ordering::SeqCst) {
                 break;
+            }
+            if let Some(output) = checkpoints.get(&node_id) {
+                if let Ok(workflow) = read_json(&workflow_path).await {
+                    if let Some(index) = node_index(&workflow, &node_id) {
+                        source_handles.insert(
+                            node_id.clone(),
+                            source_handle(&workflow["nodes"][index], output),
+                        );
+                    }
+                }
+                continue;
             }
             if !node_is_active(&node_id, &edges, &selected, &source_handles, &skipped) {
                 skipped.insert(node_id);
@@ -326,16 +423,23 @@ impl WorkflowRuntime {
                 }
                 Err(error) => {
                     let stopped = cancelled.load(Ordering::SeqCst);
-                    let status = "error";
+                    let checkpoint = stopped && checkpoint_on_stop.load(Ordering::SeqCst);
+                    let status = if checkpoint { "stopped" } else { "error" };
                     let node = &mut workflow["nodes"][index];
-                    node["status"] = Value::String(status.into());
-                    node["error"] = Value::String(error.clone());
-                    node["summary"] = Value::String(error.clone());
-                    node["rawOutput"] = Value::String(error.clone());
-                    node["completedAt"] = Value::from(completed_at);
+                    if checkpoint {
+                        reset_node(node);
+                    } else {
+                        node["status"] = Value::String(status.into());
+                        node["error"] = Value::String(error.clone());
+                        node["summary"] = Value::String(error.clone());
+                        node["rawOutput"] = Value::String(error.clone());
+                        node["completedAt"] = Value::from(completed_at);
+                    }
                     node["config"]["waitingForInput"] = Value::Bool(false);
                     node["config"]["waitingForApproval"] = Value::Bool(false);
-                    finish_details(node, "error", completed_at, None, Some(&error));
+                    if !checkpoint {
+                        finish_details(node, "error", completed_at, None, Some(&error));
+                    }
                     complete_trace(
                         &mut workflow,
                         &run_id,
@@ -373,6 +477,13 @@ impl WorkflowRuntime {
             if let Some(run) = find_run_mut(&mut workflow, &run_id) {
                 run["status"] = Value::String(status.into());
                 run["completedAt"] = Value::from(completed_at);
+                let resumable = status == "stopped" && checkpoint_on_stop.load(Ordering::SeqCst);
+                if resumable {
+                    run["resumable"] = Value::Bool(true);
+                } else {
+                    run["resumable"] = Value::Null;
+                    run["resumeFingerprint"] = Value::Null;
+                }
                 if let Some(error) = run_error {
                     run["error"] = Value::String(error);
                 }
@@ -1491,6 +1602,11 @@ fn reset_node(node: &mut Value) {
         node.as_object_mut()
             .expect("workflow node object")
             .remove(key);
+    }
+    if let Some(config) = node["config"].as_object_mut() {
+        config.remove("runDetails");
+        config.remove("waitingForInput");
+        config.remove("waitingForApproval");
     }
 }
 
@@ -4009,7 +4125,14 @@ mod tests {
         let runtime = WorkflowRuntime::default();
         let mut events = runtime.subscribe("contract").await;
         let (_, initial) = runtime
-            .start("contract".into(), path.clone(), root.clone(), None, None)
+            .start(
+                "contract".into(),
+                path.clone(),
+                root.clone(),
+                None,
+                None,
+                false,
+            )
             .await
             .unwrap();
         assert_eq!(initial["runs"][0]["status"], "running");
