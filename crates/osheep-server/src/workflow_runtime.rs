@@ -1,4 +1,4 @@
-use osheep_core::{AgentSessionApp, AgentSessionService};
+use osheep_core::{AgentSessionApp, AgentSessionService, AgentSessionSummary};
 use osheep_pty::{PtyEvent, PtyRuntime, PtySession, SpawnRequest};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -1002,12 +1002,14 @@ impl WorkflowRuntime {
                 launch_node["config"]["resumeConversation"] = Value::Bool(false);
             }
         }
-        let (executable, args) = build_workflow_agent_invocation(provider, &launch_node, prompt)?;
+        let (executable, args) =
+            build_workflow_agent_invocation(provider, &launch_node, prompt, None)?;
         let agent_app = if provider == "codex-cli" {
             AgentSessionApp::Codex
         } else {
             AgentSessionApp::Claude
         };
+        let session_discovery_started_at = now_ms();
         let baseline_session_ids = self
             .session_service
             .list_in_project(agent_app, workspace_root)
@@ -1081,13 +1083,10 @@ impl WorkflowRuntime {
         let mut codex_pending_abort: Option<(String, std::time::Instant, bool)> = None;
         let mut codex_user_interrupted = false;
         let mut pty_ended = false;
+        let mut pty_exit_diagnostic = None::<String>;
         let mut session_jsonl_seen = false;
         if let Some(id) = conversation_id.as_deref() {
-            if let Ok(Some(content)) = self
-                .session_service
-                .read_in_project(agent_app, id, workspace_root)
-                .await
-            {
+            if let Ok(Some(content)) = self.session_service.read_by_id(agent_app, id).await {
                 session_offset = content.len();
                 session_jsonl_seen = true;
             }
@@ -1102,41 +1101,58 @@ impl WorkflowRuntime {
                     Ok(PtyEvent::Output(data)) => {
                         transcript.push_str(&data);
                     }
-                    Ok(PtyEvent::Exit { .. }) | Ok(PtyEvent::Error(_)) | Err(_) => {
+                    Ok(PtyEvent::Exit { code, signal }) => {
+                        pty_ended = true;
+                        pty_exit_diagnostic = Some(format!(
+                            "The CLI process exited before its session JSONL was found (code {code}, signal {signal:?})."
+                        ));
+                    }
+                    Ok(PtyEvent::Error(error)) => {
+                        pty_ended = true;
+                        pty_exit_diagnostic = Some(format!("The CLI process reported: {error}"));
+                    }
+                    Err(_) => {
                         pty_ended = true;
                     }
                 },
                 _ = sleep(Duration::from_millis(120)) => {
                     if !session_jsonl_seen {
                         if let Ok(sessions) = self.session_service.list_in_project(agent_app, workspace_root).await {
-                            let existing_id = conversation_id.as_deref();
-                            conversation_id = sessions
-                                .into_iter()
-                                .find(|item| {
-                                    existing_id.is_some_and(|id| id == item.id)
-                                        || (existing_id.is_none()
-                                            && !baseline_session_ids.contains(&item.id)
-                                            && item.updated_at
-                                                >= node["startedAt"].as_u64().unwrap_or(0) as f64)
-                                })
-                                .map(|item| item.id);
+                            if let Some(id) = select_agent_session_id(
+                                &sessions,
+                                conversation_id.as_deref(),
+                                &baseline_session_ids,
+                                session_discovery_started_at,
+                            ) {
+                                conversation_id = Some(id);
+                            }
                         }
                         if !session_jsonl_seen
                             && std::time::Instant::now() >= session_discovery_deadline
                         {
                             let _ = session.kill().await;
-                            break 'agent_loop Err(format!(
+                            let message = format!(
                                 "{} session JSONL was not created.",
                                 if agent_app == AgentSessionApp::Codex {
                                     "Codex"
                                 } else {
                                     "Claude Code"
                                 }
-                            ));
+                            );
+                            let mut diagnostic = pty_exit_diagnostic
+                                .clone()
+                                .unwrap_or_else(|| "The CLI process did not create a session.".into());
+                            let output = transcript.trim();
+                            if !output.is_empty() {
+                                let excerpt = output.chars().rev().take(4_000).collect::<String>();
+                                diagnostic.push_str("\nCLI output:\n");
+                                diagnostic.extend(excerpt.chars().rev());
+                            }
+                            break 'agent_loop Err(format!("{message} {diagnostic}"));
                         }
                     }
                     if let Some(id) = conversation_id.as_deref() {
-                        if let Ok(Some(content)) = self.session_service.read_in_project(agent_app, id, workspace_root).await {
+                        if let Ok(Some(content)) = self.session_service.read_by_id(agent_app, id).await {
                             session_jsonl_seen = true;
                             let start = session_offset.min(content.len());
                             session_offset = content.len();
@@ -3394,7 +3410,16 @@ async fn run_agent_process(
         if let Some(model) = model {
             args.extend(["--model", model]);
         }
-        run_program(workspace_root, "claude", &args, Some(prompt), cancelled).await
+        let executable = find_claude_executable()
+            .ok_or_else(|| "Claude Code CLI is not installed or not on PATH.".to_owned())?;
+        run_program(
+            workspace_root,
+            &executable.to_string_lossy(),
+            &args,
+            Some(prompt),
+            cancelled,
+        )
+        .await
     }
 }
 
@@ -3402,6 +3427,7 @@ fn build_workflow_agent_invocation(
     provider: &str,
     node: &Value,
     prompt: &str,
+    claude_executable_override: Option<&Path>,
 ) -> Result<(PathBuf, Vec<String>), String> {
     let mut args = Vec::<String>::new();
     let mut codex_resume_id = None;
@@ -3431,7 +3457,10 @@ fn build_workflow_agent_invocation(
             find_executable("codex").unwrap_or_else(|| PathBuf::from("codex"))
         }
     } else {
-        find_executable("claude").unwrap_or_else(|| PathBuf::from("claude"))
+        claude_executable_override
+            .map(Path::to_path_buf)
+            .or_else(find_claude_executable)
+            .ok_or_else(|| "Claude Code CLI is not installed or not on PATH.".to_owned())?
     };
     if provider == "codex-cli" {
         if node["config"]["resumeConversation"]
@@ -3506,6 +3535,27 @@ fn build_workflow_agent_invocation(
     }
     args.push(prompt.to_owned());
     Ok((executable, args))
+}
+
+fn select_agent_session_id(
+    sessions: &[AgentSessionSummary],
+    expected_id: Option<&str>,
+    baseline_ids: &HashSet<String>,
+    started_at: u64,
+) -> Option<String> {
+    if let Some(session) =
+        expected_id.and_then(|expected| sessions.iter().find(|session| session.id == expected))
+    {
+        return Some(session.id.clone());
+    }
+    sessions
+        .iter()
+        .filter(|session| {
+            !baseline_ids.contains(&session.id)
+                && session.updated_at >= started_at.saturating_sub(2_000) as f64
+        })
+        .max_by(|left, right| left.updated_at.total_cmp(&right.updated_at))
+        .map(|session| session.id.clone())
 }
 
 fn agent_session_waiting_for_choice(app: AgentSessionApp, value: &Value) -> bool {
@@ -4616,6 +4666,138 @@ fn find_executable(program: &str) -> Option<PathBuf> {
     None
 }
 
+fn find_claude_executable() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("OSHEEP_CLAUDE_CLI_PATH")
+        .map(PathBuf::from)
+        .filter(|path| path.is_file())
+    {
+        return Some(path);
+    }
+    #[cfg(windows)]
+    {
+        let process_path = std::env::var_os("PATH").unwrap_or_default();
+        if let Some(path) = find_executable_in_path_list("claude", &process_path) {
+            return Some(path);
+        }
+        if let Some(path) = std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .map(|app_data| app_data.join("npm"))
+            .and_then(|directory| find_claude_executable_in_directory(&directory))
+        {
+            return Some(path);
+        }
+        if let Some(path) = windows_persistent_path()
+            .as_deref()
+            .and_then(|path| find_executable_in_path_list("claude", path))
+        {
+            return Some(path);
+        }
+        let home = std::env::var_os("USERPROFILE")
+            .or_else(|| std::env::var_os("HOME"))
+            .map(PathBuf::from)?;
+        find_claude_executable_under_home(&home)
+    }
+    #[cfg(not(windows))]
+    {
+        find_executable("claude")
+    }
+}
+
+#[cfg(windows)]
+fn find_executable_in_path_list(program: &str, path_list: &std::ffi::OsStr) -> Option<PathBuf> {
+    let directories = std::env::split_paths(path_list).collect::<Vec<_>>();
+    for name in [
+        format!("{program}.exe"),
+        format!("{program}.cmd"),
+        program.to_owned(),
+    ] {
+        for directory in &directories {
+            if let Some(candidate) = find_claude_candidate(directory, &name) {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+fn find_claude_executable_in_directory(directory: &Path) -> Option<PathBuf> {
+    ["claude.exe", "claude.cmd", "claude"]
+        .iter()
+        .find_map(|name| find_claude_candidate(directory, name))
+}
+
+#[cfg(windows)]
+fn find_claude_candidate(directory: &Path, name: &str) -> Option<PathBuf> {
+    let candidate = directory.join(name);
+    candidate.is_file().then_some(candidate)
+}
+
+#[cfg(windows)]
+fn windows_persistent_path() -> Option<std::ffi::OsString> {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::System::Registry::{
+        RegGetValueW, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ,
+    };
+
+    let subkeys = [
+        (HKEY_CURRENT_USER, "Environment"),
+        (
+            HKEY_LOCAL_MACHINE,
+            r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+        ),
+    ];
+    let value_name = "Path\0".encode_utf16().collect::<Vec<_>>();
+    for (root, subkey) in subkeys {
+        let subkey = subkey.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+        let mut byte_count = 0u32;
+        let flags = RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ;
+        let _size_result = unsafe {
+            RegGetValueW(
+                root,
+                subkey.as_ptr(),
+                value_name.as_ptr(),
+                flags,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut byte_count,
+            )
+        };
+        if byte_count == 0 {
+            continue;
+        }
+        let mut buffer = vec![0u16; (byte_count as usize).div_ceil(2)];
+        let result = unsafe {
+            RegGetValueW(
+                root,
+                subkey.as_ptr(),
+                value_name.as_ptr(),
+                flags,
+                std::ptr::null_mut(),
+                buffer.as_mut_ptr().cast(),
+                &mut byte_count,
+            )
+        };
+        if result == 0 {
+            if let Some(end) = buffer.iter().position(|unit| *unit == 0) {
+                return Some(OsString::from_wide(&buffer[..end]));
+            }
+            return Some(OsString::from_wide(&buffer));
+        }
+    }
+    None
+}
+
+fn find_claude_executable_under_home(home: &Path) -> Option<PathBuf> {
+    let candidate = home.join(".local").join("bin").join(if cfg!(windows) {
+        "claude.exe"
+    } else {
+        "claude"
+    });
+    candidate.is_file().then_some(candidate)
+}
+
 async fn fetch_url(
     workspace_root: &Path,
     url: &str,
@@ -5048,8 +5230,13 @@ mod tests {
             "providerKind":"claude-cli", "model":"sonnet", "mode":"plan",
             "config":{"resumeConversation":false, "claudePermissionMode":"acceptEdits"}
         });
-        let (_, claude_args) =
-            build_workflow_agent_invocation("claude-cli", &claude, "继续").unwrap();
+        let (_, claude_args) = build_workflow_agent_invocation(
+            "claude-cli",
+            &claude,
+            "继续",
+            Some(Path::new("claude.exe")),
+        )
+        .unwrap();
         assert!(!claude_args.iter().any(|arg| arg == "-p"));
         assert_eq!(claude_args.last().map(String::as_str), Some("继续"));
 
@@ -5060,8 +5247,13 @@ mod tests {
                 "sessionId":"550e8400-e29b-41d4-a716-446655440000"
             }
         });
-        let (_, claude_resume_args) =
-            build_workflow_agent_invocation("claude-cli", &claude_resume, "继续").unwrap();
+        let (_, claude_resume_args) = build_workflow_agent_invocation(
+            "claude-cli",
+            &claude_resume,
+            "继续",
+            Some(Path::new("claude.exe")),
+        )
+        .unwrap();
         assert!(claude_resume_args.windows(2).any(|pair| {
             pair[0] == "--resume" && pair[1] == "550e8400-e29b-41d4-a716-446655440000"
         }));
@@ -5071,7 +5263,7 @@ mod tests {
             "config":{"codexApproval":"on-request", "codexSandbox":"workspace-write"}
         });
         let (_, codex_args) =
-            build_workflow_agent_invocation("codex-cli", &codex, "Build").unwrap();
+            build_workflow_agent_invocation("codex-cli", &codex, "Build", None).unwrap();
         assert!(!codex_args.iter().any(|arg| arg == "exec"));
         assert_eq!(codex_args.last().map(String::as_str), Some("Build"));
 
@@ -5083,13 +5275,89 @@ mod tests {
             }
         });
         let (_, codex_resume_args) =
-            build_workflow_agent_invocation("codex-cli", &codex_resume, "继续").unwrap();
+            build_workflow_agent_invocation("codex-cli", &codex_resume, "继续", None).unwrap();
         assert!(codex_resume_args
             .windows(2)
             .any(|pair| { pair[0] == "resume" && pair[1] == "--ask-for-approval" }));
         assert!(codex_resume_args
             .iter()
             .any(|arg| arg == "550e8400-e29b-41d4-a716-446655440000"));
+    }
+
+    #[test]
+    fn finds_claude_native_install_under_user_home() {
+        let root = std::env::temp_dir().join(format!(
+            "osheep-claude-native-install-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let executable = root.join(".local").join("bin").join(if cfg!(windows) {
+            "claude.exe"
+        } else {
+            "claude"
+        });
+        std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        std::fs::write(&executable, "").unwrap();
+
+        assert_eq!(find_claude_executable_under_home(&root), Some(executable));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_claude_path_search_matches_ts_candidate_priority() {
+        let root = std::env::temp_dir().join(format!(
+            "osheep-claude-path-priority-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let first = root.join("first");
+        let second = root.join("second");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        let cmd = first.join("claude.cmd");
+        let exe = second.join("claude.exe");
+        std::fs::write(&cmd, "@echo off\r\n").unwrap();
+        std::fs::write(&exe, "").unwrap();
+        let paths = std::env::join_paths([&first, &second]).unwrap();
+
+        assert_eq!(
+            find_executable_in_path_list("claude", &paths),
+            Some(exe.clone())
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn missing_requested_claude_session_falls_back_to_a_new_project_session() {
+        let session = |id: &str, updated_at| AgentSessionSummary {
+            app: AgentSessionApp::Claude,
+            id: id.to_owned(),
+            title: String::new(),
+            cwd: String::new(),
+            created_at: updated_at,
+            updated_at,
+            size: 1,
+        };
+        let sessions = vec![
+            session("older_session", 10_000.0),
+            session("newest_session", 12_000.0),
+        ];
+        let baseline = HashSet::new();
+
+        assert_eq!(
+            select_agent_session_id(&sessions, Some("requested_session"), &baseline, 10_000),
+            Some("newest_session".to_owned())
+        );
+        assert_eq!(
+            select_agent_session_id(
+                &sessions[..1],
+                None,
+                &HashSet::from(["older_session".to_owned()]),
+                10_000
+            ),
+            None
+        );
     }
 
     #[test]

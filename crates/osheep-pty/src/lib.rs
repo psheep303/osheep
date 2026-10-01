@@ -824,12 +824,30 @@ fn terminal_environment(program: Option<&str>) -> Vec<(String, String)> {
                 && key != "CODEX_TUI_DISABLE_KEYBOARD_ENHANCEMENT"
         })
         .collect();
+    map_agent_config_aliases(&mut values);
     values.push(("TERM".into(), "xterm-256color".into()));
     values.push((
         "TERM_PROGRAM".into(),
         program.unwrap_or("WezTerm").to_owned(),
     ));
     values
+}
+
+fn map_agent_config_aliases(values: &mut Vec<(String, String)>) {
+    for (alias, cli_variable) in [
+        ("OSHEEP_CLAUDE_CONFIG_DIR", "CLAUDE_CONFIG_DIR"),
+        ("OSHEEP_CODEX_CONFIG_DIR", "CODEX_HOME"),
+    ] {
+        if !values.iter().any(|(key, _)| key == cli_variable) {
+            if let Some(value) = values
+                .iter()
+                .find(|(key, _)| key == alias)
+                .map(|(_, value)| value.clone())
+            {
+                values.push((cli_variable.to_owned(), value));
+            }
+        }
+    }
 }
 
 fn platform_shell_path(path: &Path) -> PathBuf {
@@ -971,6 +989,38 @@ impl Utf8Decoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn maps_osheep_agent_config_aliases_for_cli_processes() {
+        let mut values = vec![
+            ("OSHEEP_CLAUDE_CONFIG_DIR".into(), "C:/osheep/claude".into()),
+            ("OSHEEP_CODEX_CONFIG_DIR".into(), "C:/osheep/codex".into()),
+        ];
+
+        map_agent_config_aliases(&mut values);
+
+        assert!(values.contains(&("CLAUDE_CONFIG_DIR".into(), "C:/osheep/claude".into())));
+        assert!(values.contains(&("CODEX_HOME".into(), "C:/osheep/codex".into())));
+    }
+
+    #[test]
+    fn explicit_agent_config_environment_wins_over_osheep_aliases() {
+        let mut values = vec![
+            ("OSHEEP_CLAUDE_CONFIG_DIR".into(), "C:/osheep/claude".into()),
+            ("CLAUDE_CONFIG_DIR".into(), "C:/custom/claude".into()),
+        ];
+
+        map_agent_config_aliases(&mut values);
+
+        assert_eq!(
+            values
+                .iter()
+                .filter(|(key, _)| key == "CLAUDE_CONFIG_DIR")
+                .count(),
+            1
+        );
+        assert!(values.contains(&("CLAUDE_CONFIG_DIR".into(), "C:/custom/claude".into())));
+    }
 
     #[test]
     fn decoder_preserves_utf8_split_across_pty_reads() {

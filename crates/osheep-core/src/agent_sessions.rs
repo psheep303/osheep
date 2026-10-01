@@ -172,6 +172,18 @@ impl AgentSessionService {
         Ok(Some(tokio::fs::read_to_string(path).await?))
     }
 
+    pub async fn read_by_id(
+        &self,
+        app: AgentSessionApp,
+        id: &str,
+    ) -> Result<Option<String>, AgentSessionError> {
+        validate_id(id)?;
+        let Some(path) = locate_file(&self.roots, app, id).await? else {
+            return Ok(None);
+        };
+        Ok(Some(tokio::fs::read_to_string(path).await?))
+    }
+
     /// Reassign a newly-created Codex session to the user-requested UUID.
     /// Codex cannot accept an arbitrary id on its initial TUI invocation; the
     /// TypeScript implementation performs this rewrite after the first turn so
@@ -716,6 +728,31 @@ mod tests {
         assert!(!path.exists());
         let _ = tokio::fs::remove_dir_all(root).await;
         let _ = tokio::fs::remove_dir_all(workspace).await;
+    }
+
+    #[tokio::test]
+    async fn reads_claude_session_by_id_without_requiring_project_metadata() {
+        let root = temp("claude-direct-read");
+        let project = root.join("projects/p");
+        tokio::fs::create_dir_all(&project).await.unwrap();
+        let id = "abcdef12-3456-7890-abcd-ef1234567890";
+        let path = project.join(format!("{id}.jsonl"));
+        let event = serde_json::json!({"sessionId":id,"type":"assistant"});
+        tokio::fs::write(&path, format!("{event}\n")).await.unwrap();
+        let service = AgentSessionService::with_roots(AgentSessionRoots {
+            claude_home: root.clone(),
+            codex_home: temp("codex-unused-direct-read"),
+        });
+
+        assert_eq!(
+            service
+                .read_by_id(AgentSessionApp::Claude, id)
+                .await
+                .unwrap(),
+            Some(format!("{event}\n"))
+        );
+
+        let _ = tokio::fs::remove_dir_all(root).await;
     }
 
     #[tokio::test]
