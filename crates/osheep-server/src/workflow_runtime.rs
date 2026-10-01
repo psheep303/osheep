@@ -47,6 +47,8 @@ pub(crate) enum RuntimeError {
     NotWaiting,
     #[error("workflow has no runnable blocks")]
     NoRunnableBlocks,
+    #[error("Workflow has a cycle without an exit.")]
+    ClosedCycle,
     #[error("workflow checkpoint is no longer available")]
     CheckpointUnavailable,
 }
@@ -114,6 +116,23 @@ impl WorkflowRuntime {
         if node_ids.is_empty() {
             self.active.lock().await.remove(&key);
             return Err(RuntimeError::NoRunnableBlocks);
+        }
+        let selected = node_ids.iter().cloned().collect::<HashSet<_>>();
+        let selected_edges = workflow["edges"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|edge| {
+                edge["from"]
+                    .as_str()
+                    .is_some_and(|id| selected.contains(id))
+                    && edge["to"].as_str().is_some_and(|id| selected.contains(id))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if workflow_has_closed_cycle(&selected_edges, &node_ids) {
+            self.active.lock().await.remove(&key);
+            return Err(RuntimeError::ClosedCycle);
         }
         let resume_run = if resume && full_run {
             workflow["runs"]
@@ -304,18 +323,31 @@ impl WorkflowRuntime {
             .ok()
             .and_then(|workflow| workflow["edges"].as_array().cloned())
             .unwrap_or_default();
-        let selected = node_ids.iter().cloned().collect::<HashSet<_>>();
-        let mut source_handles = HashMap::<String, Option<String>>::new();
-        let mut skipped = HashSet::<String>::new();
-        let mut checkpoints = HashMap::<String, Value>::new();
+        let back_edge_indices = workflow_back_edge_indices(&edges, &node_ids);
+        let forward_edges = edges
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| !back_edge_indices.contains(index))
+            .map(|(_, edge)| edge.clone())
+            .collect::<Vec<_>>();
+        let back_edges = edges
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| back_edge_indices.contains(index))
+            .map(|(_, edge)| edge.clone())
+            .collect::<Vec<_>>();
+        let mut checkpoints = HashMap::<String, VecDeque<Value>>::new();
         if let Ok(workflow) = read_json(&workflow_path).await {
             if let Some(run) = find_run(&workflow, &run_id) {
                 if let Some(trace) = run["trace"].as_array() {
                     for item in trace {
                         if item["status"] == "success" {
                             if let Some(node_id) = item["nodeId"].as_str() {
-                                if let Some(output) = item.get("output") {
-                                    checkpoints.insert(node_id.to_owned(), output.clone());
+                                if item.get("output").is_some() {
+                                    checkpoints
+                                        .entry(node_id.to_owned())
+                                        .or_default()
+                                        .push_back(item.clone());
                                 }
                             }
                         }
@@ -323,139 +355,50 @@ impl WorkflowRuntime {
                 }
             }
         }
-        for node_id in node_ids {
-            if cancelled.load(Ordering::SeqCst) {
-                break;
-            }
-            if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
-                let seconds = max_duration.unwrap_or_default();
-                *limit_error.lock().await = Some(format!(
-                    "Workflow run duration exceeded the {}s limit.",
-                    format_limit(seconds)
-                ));
-                cancelled.store(true, Ordering::SeqCst);
-                break;
-            }
-            if let Some(output) = checkpoints.get(&node_id) {
-                if let Ok(workflow) = read_json(&workflow_path).await {
-                    if let Some(index) = node_index(&workflow, &node_id) {
-                        source_handles.insert(
-                            node_id.clone(),
-                            source_handle(&workflow["nodes"][index], output),
-                        );
-                    }
-                }
-                continue;
-            }
-            if !node_is_active(&node_id, &edges, &selected, &source_handles, &skipped) {
-                skipped.insert(node_id);
-                continue;
-            }
-            let started_at = now_ms();
-            let mut workflow = match read_json(&workflow_path).await {
-                Ok(value) => value,
-                Err(error) => {
-                    run_error = Some(error.to_string());
+        let mut pass_node_ids = node_ids.clone();
+        while !pass_node_ids.is_empty() {
+            let pass_selected = pass_node_ids.iter().cloned().collect::<HashSet<_>>();
+            let mut pass_source_handles = HashMap::<String, Option<String>>::new();
+            let mut pass_skipped = HashSet::<String>::new();
+            let mut loop_targets = HashSet::<String>::new();
+            for node_id in pass_node_ids.clone() {
+                if cancelled.load(Ordering::SeqCst) {
                     break;
                 }
-            };
-            let Some(index) = node_index(&workflow, &node_id) else {
-                run_error = Some(format!("workflow node not found: {node_id}"));
-                break;
-            };
-            {
-                let node = &mut workflow["nodes"][index];
-                node["status"] = Value::String("running".into());
-                node["startedAt"] = Value::from(started_at);
-                node["completedAt"] = Value::Null;
-                node["error"] = Value::String(String::new());
-                let kind = node["kind"].as_str().unwrap_or("agent").to_owned();
-                let action = node["config"]["action"]
-                    .as_str()
-                    .unwrap_or("display")
-                    .to_owned();
-                if kind == "input" || (kind == "markdown" && action == "message") {
-                    node["config"]["waitingForInput"] = Value::Bool(true);
+                if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+                    let seconds = max_duration.unwrap_or_default();
+                    *limit_error.lock().await = Some(format!(
+                        "Workflow run duration exceeded the {}s limit.",
+                        format_limit(seconds)
+                    ));
+                    cancelled.store(true, Ordering::SeqCst);
+                    break;
                 }
-                if kind == "diff-approval" || (kind == "markdown" && action == "approval") {
-                    node["config"]["waitingForApproval"] = Value::Bool(true);
+                if !node_is_active(
+                    &node_id,
+                    &forward_edges,
+                    &pass_selected,
+                    &pass_source_handles,
+                    &pass_skipped,
+                ) {
+                    pass_skipped.insert(node_id);
+                    continue;
                 }
-                if matches!(kind.as_str(), "agent" | "command") {
-                    node["config"]["runDetails"] = running_details(node, started_at);
-                }
-            }
-            let running_node = workflow["nodes"][index].clone();
-            push_trace(&mut workflow, &run_id, &running_node, started_at);
-            if write_json(&workflow_path, &workflow).await.is_err() {
-                run_error = Some("failed to persist running node".into());
-                break;
-            }
-            self.emit_node(&key, &workflow["nodes"][index]).await;
-            if let Some(run) = find_run(&workflow, &run_id).cloned() {
-                self.emit_run(&key, &run).await;
-            }
-
-            let mut node = workflow["nodes"][index].clone();
-            if let Some(language) = retry_language.as_deref() {
-                node["config"]["retryLanguage"] =
-                    Value::String(if language == "zh-CN" { "zh-CN" } else { "en" }.to_owned());
-            }
-            let result = if let Some(deadline) = deadline {
-                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-                match tokio::time::timeout(
-                    remaining,
-                    self.execute_node(
-                        &key,
-                        &workflow_path,
-                        &workspace_root,
-                        &workflow,
-                        &node,
-                        cancelled.clone(),
-                    ),
-                )
-                .await
+                if let Some(checkpoint) =
+                    checkpoints.get_mut(&node_id).and_then(VecDeque::pop_front)
                 {
-                    Ok(result) => result,
-                    Err(_) => {
-                        let seconds = max_duration.unwrap_or_default();
-                        let message = format!(
-                            "Workflow run duration exceeded the {}s limit.",
-                            format_limit(seconds)
-                        );
-                        *limit_error.lock().await = Some(message.clone());
-                        cancelled.store(true, Ordering::SeqCst);
-                        if let Some(session) = self.agent_sessions.lock().await.get(&key).cloned() {
-                            let _ = session.kill().await;
+                    let output = checkpoint["output"].clone();
+                    let mut workflow = match read_json(&workflow_path).await {
+                        Ok(value) => value,
+                        Err(error) => {
+                            run_error = Some(error.to_string());
+                            break;
                         }
-                        Err(message)
-                    }
-                }
-            } else {
-                self.execute_node(
-                    &key,
-                    &workflow_path,
-                    &workspace_root,
-                    &workflow,
-                    &node,
-                    cancelled.clone(),
-                )
-                .await
-            };
-            let completed_at = now_ms();
-            let mut workflow = match read_json(&workflow_path).await {
-                Ok(value) => value,
-                Err(error) => {
-                    run_error = Some(error.to_string());
-                    break;
-                }
-            };
-            let Some(index) = node_index(&workflow, &node_id) else {
-                break;
-            };
-            match result {
-                Ok(output) => {
-                    let mut output = output;
-                    self.apply_usage_cost(&node, &mut output).await;
+                    };
+                    let Some(index) = node_index(&workflow, &node_id) else {
+                        run_error = Some(format!("workflow node not found: {node_id}"));
+                        break;
+                    };
                     let text = output_text(&output);
                     let node = &mut workflow["nodes"][index];
                     node["status"] = Value::String("success".into());
@@ -463,81 +406,232 @@ impl WorkflowRuntime {
                     node["rawOutput"] = Value::String(
                         serde_json::to_string_pretty(&output).unwrap_or_else(|_| text.clone()),
                     );
-                    node["completedAt"] = Value::from(completed_at);
+                    node["error"] = Value::String(String::new());
+                    node["startedAt"] = checkpoint["startedAt"].clone();
+                    node["completedAt"] = checkpoint["completedAt"].clone();
                     node["config"]["waitingForInput"] = Value::Bool(false);
                     node["config"]["waitingForApproval"] = Value::Bool(false);
-                    finish_details(node, "success", completed_at, Some(&output), None);
-                    source_handles.insert(node_id.clone(), source_handle(node, &output));
-                    complete_trace(
-                        &mut workflow,
-                        &run_id,
+                    let handle = source_handle(node, &output);
+                    if write_json(&workflow_path, &workflow).await.is_err() {
+                        run_error = Some("failed to restore workflow checkpoint".into());
+                        break;
+                    }
+                    self.emit_node(&key, &workflow["nodes"][index]).await;
+                    pass_source_handles.insert(node_id.clone(), handle.clone());
+                    collect_loop_targets(
+                        &back_edges,
                         &node_id,
-                        "success",
-                        completed_at,
-                        Some(output),
-                        None,
+                        handle.as_deref(),
+                        &pass_selected,
+                        &mut loop_targets,
                     );
-                    if let Some(limit) = max_cost {
-                        let cost = run_cost_from_workflow(&workflow, &run_id);
-                        if cost > limit {
+                    continue;
+                }
+                let started_at = now_ms();
+                let mut workflow = match read_json(&workflow_path).await {
+                    Ok(value) => value,
+                    Err(error) => {
+                        run_error = Some(error.to_string());
+                        break;
+                    }
+                };
+                let Some(index) = node_index(&workflow, &node_id) else {
+                    run_error = Some(format!("workflow node not found: {node_id}"));
+                    break;
+                };
+                {
+                    let node = &mut workflow["nodes"][index];
+                    node["status"] = Value::String("running".into());
+                    node["startedAt"] = Value::from(started_at);
+                    node["completedAt"] = Value::Null;
+                    node["error"] = Value::String(String::new());
+                    let kind = node["kind"].as_str().unwrap_or("agent").to_owned();
+                    let action = node["config"]["action"]
+                        .as_str()
+                        .unwrap_or("display")
+                        .to_owned();
+                    if kind == "input" || (kind == "markdown" && action == "message") {
+                        node["config"]["waitingForInput"] = Value::Bool(true);
+                    }
+                    if kind == "diff-approval" || (kind == "markdown" && action == "approval") {
+                        node["config"]["waitingForApproval"] = Value::Bool(true);
+                    }
+                    if matches!(kind.as_str(), "agent" | "command") {
+                        node["config"]["runDetails"] = running_details(node, started_at);
+                    }
+                }
+                let running_node = workflow["nodes"][index].clone();
+                push_trace(&mut workflow, &run_id, &running_node, started_at);
+                if write_json(&workflow_path, &workflow).await.is_err() {
+                    run_error = Some("failed to persist running node".into());
+                    break;
+                }
+                self.emit_node(&key, &workflow["nodes"][index]).await;
+                if let Some(run) = find_run(&workflow, &run_id).cloned() {
+                    self.emit_run(&key, &run).await;
+                }
+
+                let mut node = workflow["nodes"][index].clone();
+                if let Some(language) = retry_language.as_deref() {
+                    node["config"]["retryLanguage"] =
+                        Value::String(if language == "zh-CN" { "zh-CN" } else { "en" }.to_owned());
+                }
+                let result = if let Some(deadline) = deadline {
+                    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                    match tokio::time::timeout(
+                        remaining,
+                        self.execute_node(
+                            &key,
+                            &workflow_path,
+                            &workspace_root,
+                            &workflow,
+                            &node,
+                            cancelled.clone(),
+                        ),
+                    )
+                    .await
+                    {
+                        Ok(result) => result,
+                        Err(_) => {
+                            let seconds = max_duration.unwrap_or_default();
                             let message = format!(
-                                "Workflow run cost exceeded the ${} limit.",
-                                format_limit(limit)
+                                "Workflow run duration exceeded the {}s limit.",
+                                format_limit(seconds)
                             );
-                            *limit_error.lock().await = Some(message);
+                            *limit_error.lock().await = Some(message.clone());
                             cancelled.store(true, Ordering::SeqCst);
+                            if let Some(session) =
+                                self.agent_sessions.lock().await.get(&key).cloned()
+                            {
+                                let _ = session.kill().await;
+                            }
+                            Err(message)
+                        }
+                    }
+                } else {
+                    self.execute_node(
+                        &key,
+                        &workflow_path,
+                        &workspace_root,
+                        &workflow,
+                        &node,
+                        cancelled.clone(),
+                    )
+                    .await
+                };
+                let completed_at = now_ms();
+                let mut workflow = match read_json(&workflow_path).await {
+                    Ok(value) => value,
+                    Err(error) => {
+                        run_error = Some(error.to_string());
+                        break;
+                    }
+                };
+                let Some(index) = node_index(&workflow, &node_id) else {
+                    break;
+                };
+                match result {
+                    Ok(output) => {
+                        let mut output = output;
+                        self.apply_usage_cost(&node, &mut output).await;
+                        let text = output_text(&output);
+                        let node = &mut workflow["nodes"][index];
+                        node["status"] = Value::String("success".into());
+                        node["summary"] = Value::String(text.clone());
+                        node["rawOutput"] = Value::String(
+                            serde_json::to_string_pretty(&output).unwrap_or_else(|_| text.clone()),
+                        );
+                        node["completedAt"] = Value::from(completed_at);
+                        node["config"]["waitingForInput"] = Value::Bool(false);
+                        node["config"]["waitingForApproval"] = Value::Bool(false);
+                        finish_details(node, "success", completed_at, Some(&output), None);
+                        let handle = source_handle(node, &output);
+                        pass_source_handles.insert(node_id.clone(), handle.clone());
+                        collect_loop_targets(
+                            &back_edges,
+                            &node_id,
+                            handle.as_deref(),
+                            &pass_selected,
+                            &mut loop_targets,
+                        );
+                        complete_trace(
+                            &mut workflow,
+                            &run_id,
+                            &node_id,
+                            "success",
+                            completed_at,
+                            Some(output),
+                            None,
+                        );
+                        if let Some(limit) = max_cost {
+                            let cost = run_cost_from_workflow(&workflow, &run_id);
+                            if cost > limit {
+                                let message = format!(
+                                    "Workflow run cost exceeded the ${} limit.",
+                                    format_limit(limit)
+                                );
+                                *limit_error.lock().await = Some(message);
+                                cancelled.store(true, Ordering::SeqCst);
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        let stopped = cancelled.load(Ordering::SeqCst);
+                        let limit = limit_error.lock().await.clone();
+                        let checkpoint = stopped && checkpoint_on_stop.load(Ordering::SeqCst);
+                        let status = if checkpoint && limit.is_none() {
+                            "stopped"
+                        } else {
+                            "error"
+                        };
+                        let node = &mut workflow["nodes"][index];
+                        if checkpoint {
+                            reset_node(node);
+                        } else {
+                            node["status"] = Value::String(status.into());
+                            node["error"] = Value::String(error.clone());
+                            node["summary"] = Value::String(error.clone());
+                            node["rawOutput"] = Value::String(error.clone());
+                            node["completedAt"] = Value::from(completed_at);
+                        }
+                        node["config"]["waitingForInput"] = Value::Bool(false);
+                        node["config"]["waitingForApproval"] = Value::Bool(false);
+                        if !checkpoint {
+                            finish_details(node, "error", completed_at, None, Some(&error));
+                        }
+                        complete_trace(
+                            &mut workflow,
+                            &run_id,
+                            &node_id,
+                            status,
+                            completed_at,
+                            None,
+                            Some(error.clone()),
+                        );
+                        if let Some(limit) = limit {
+                            run_error = Some(limit);
+                        } else if !stopped {
+                            run_error = Some(error);
                         }
                     }
                 }
-                Err(error) => {
-                    let stopped = cancelled.load(Ordering::SeqCst);
-                    let limit = limit_error.lock().await.clone();
-                    let checkpoint = stopped && checkpoint_on_stop.load(Ordering::SeqCst);
-                    let status = if checkpoint && limit.is_none() {
-                        "stopped"
-                    } else {
-                        "error"
-                    };
-                    let node = &mut workflow["nodes"][index];
-                    if checkpoint {
-                        reset_node(node);
-                    } else {
-                        node["status"] = Value::String(status.into());
-                        node["error"] = Value::String(error.clone());
-                        node["summary"] = Value::String(error.clone());
-                        node["rawOutput"] = Value::String(error.clone());
-                        node["completedAt"] = Value::from(completed_at);
-                    }
-                    node["config"]["waitingForInput"] = Value::Bool(false);
-                    node["config"]["waitingForApproval"] = Value::Bool(false);
-                    if !checkpoint {
-                        finish_details(node, "error", completed_at, None, Some(&error));
-                    }
-                    complete_trace(
-                        &mut workflow,
-                        &run_id,
-                        &node_id,
-                        status,
-                        completed_at,
-                        None,
-                        Some(error.clone()),
-                    );
-                    if let Some(limit) = limit {
-                        run_error = Some(limit);
-                    } else if !stopped {
-                        run_error = Some(error);
-                    }
+                workflow["updatedAt"] = Value::from(completed_at);
+                if write_json(&workflow_path, &workflow).await.is_err() {
+                    run_error = Some("failed to persist completed node".into());
+                    break;
+                }
+                self.emit_node(&key, &workflow["nodes"][index]).await;
+                if run_error.is_some() || cancelled.load(Ordering::SeqCst) {
+                    break;
                 }
             }
-            workflow["updatedAt"] = Value::from(completed_at);
-            if write_json(&workflow_path, &workflow).await.is_err() {
-                run_error = Some("failed to persist completed node".into());
-                break;
-            }
-            self.emit_node(&key, &workflow["nodes"][index]).await;
             if run_error.is_some() || cancelled.load(Ordering::SeqCst) {
                 break;
             }
+            if loop_targets.is_empty() {
+                break;
+            }
+            pass_node_ids = reachable_workflow_node_ids(&loop_targets, &forward_edges, &node_ids);
         }
 
         if let Ok(mut workflow) = read_json(&workflow_path).await {
@@ -1764,54 +1858,58 @@ fn ordered_node_ids(workflow: &Value, requested: Option<&[String]>) -> Vec<Strin
         .iter()
         .filter_map(|node| node["id"].as_str().map(str::to_owned))
         .collect::<Vec<_>>();
-    if let Some(requested) = requested.filter(|ids| !ids.is_empty()) {
+    let planned = if let Some(requested) = requested.filter(|ids| !ids.is_empty()) {
         let requested = requested.iter().collect::<HashSet<_>>();
-        return all
-            .into_iter()
+        all.iter()
             .filter(|id| requested.contains(id))
-            .collect();
-    }
-    let known = all.iter().cloned().collect::<HashSet<_>>();
-    let roots = nodes
-        .iter()
-        .filter(|node| {
-            matches!(
-                node["kind"].as_str().unwrap_or("agent"),
-                "trigger" | "manual-trigger" | "cron" | "webhook-trigger"
-            )
-        })
-        .filter_map(|node| node["id"].as_str().map(str::to_owned))
-        .collect::<Vec<_>>();
-    let mut reachable = HashSet::new();
-    let mut pending = VecDeque::from(roots);
-    while let Some(id) = pending.pop_front() {
-        if !reachable.insert(id.clone()) {
-            continue;
-        }
-        for edge in workflow["edges"].as_array().into_iter().flatten() {
-            if edge["from"] == id {
-                if let Some(target) = edge["to"].as_str().filter(|target| known.contains(*target)) {
-                    pending.push_back(target.to_owned());
+            .cloned()
+            .collect::<Vec<_>>()
+    } else {
+        let known = all.iter().cloned().collect::<HashSet<_>>();
+        let roots = nodes
+            .iter()
+            .filter(|node| {
+                matches!(
+                    node["kind"].as_str().unwrap_or("agent"),
+                    "trigger" | "manual-trigger" | "cron" | "webhook-trigger"
+                )
+            })
+            .filter_map(|node| node["id"].as_str().map(str::to_owned))
+            .collect::<Vec<_>>();
+        let mut reachable = HashSet::new();
+        let mut pending = VecDeque::from(roots);
+        while let Some(id) = pending.pop_front() {
+            if !reachable.insert(id.clone()) {
+                continue;
+            }
+            for edge in workflow["edges"].as_array().into_iter().flatten() {
+                if edge["from"] == id {
+                    if let Some(target) =
+                        edge["to"].as_str().filter(|target| known.contains(*target))
+                    {
+                        pending.push_back(target.to_owned());
+                    }
                 }
             }
         }
-    }
-    let planned = all
+        all.iter()
+            .filter(|id| reachable.contains(*id))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let selected = planned.iter().cloned().collect::<HashSet<_>>();
+    let edges = workflow["edges"].as_array().cloned().unwrap_or_default();
+    let back_edges = workflow_back_edge_indices(&edges, &planned);
+    let mut indegree = planned
         .iter()
-        .filter(|id| reachable.contains(*id))
-        .cloned()
-        .collect::<Vec<_>>();
-    let mut indegree = all
-        .iter()
-        .filter(|id| reachable.contains(*id))
         .map(|id| (id.clone(), 0usize))
         .collect::<HashMap<_, _>>();
     let mut outgoing = HashMap::<String, Vec<String>>::new();
-    for edge in workflow["edges"].as_array().into_iter().flatten() {
+    for (edge_index, edge) in edges.iter().enumerate() {
         let (Some(from), Some(to)) = (edge["from"].as_str(), edge["to"].as_str()) else {
             continue;
         };
-        if reachable.contains(from) && reachable.contains(to) {
+        if selected.contains(from) && selected.contains(to) && !back_edges.contains(&edge_index) {
             outgoing
                 .entry(from.to_owned())
                 .or_default()
@@ -1841,6 +1939,210 @@ fn ordered_node_ids(workflow: &Value, requested: Option<&[String]>) -> Vec<Strin
         }
     }
     result
+}
+
+fn workflow_back_edge_indices(edges: &[Value], node_ids: &[String]) -> HashSet<usize> {
+    fn visit(
+        node_id: &str,
+        outgoing: &HashMap<String, Vec<(usize, String)>>,
+        state: &mut HashMap<String, u8>,
+        back_edges: &mut HashSet<usize>,
+    ) {
+        state.insert(node_id.to_owned(), 1);
+        for (edge_index, target) in outgoing.get(node_id).into_iter().flatten() {
+            if target == node_id {
+                back_edges.insert(*edge_index);
+                continue;
+            }
+            match state.get(target).copied() {
+                Some(1) => {
+                    back_edges.insert(*edge_index);
+                }
+                Some(2) => {}
+                _ => visit(target, outgoing, state, back_edges),
+            }
+        }
+        state.insert(node_id.to_owned(), 2);
+    }
+
+    let selected = node_ids.iter().cloned().collect::<HashSet<_>>();
+    let mut outgoing = HashMap::<String, Vec<(usize, String)>>::new();
+    let mut indegree = node_ids
+        .iter()
+        .map(|id| (id.clone(), 0usize))
+        .collect::<HashMap<_, _>>();
+    for (index, edge) in edges.iter().enumerate() {
+        let (Some(from), Some(to)) = (edge["from"].as_str(), edge["to"].as_str()) else {
+            continue;
+        };
+        if !selected.contains(from) || !selected.contains(to) {
+            continue;
+        }
+        outgoing
+            .entry(from.to_owned())
+            .or_default()
+            .push((index, to.to_owned()));
+        if from != to {
+            *indegree.entry(to.to_owned()).or_default() += 1;
+        }
+    }
+    let mut state = HashMap::<String, u8>::new();
+    let mut back_edges = HashSet::new();
+    for node_id in node_ids
+        .iter()
+        .filter(|id| indegree.get(*id).copied().unwrap_or(0) == 0)
+        .chain(node_ids.iter())
+    {
+        if !state.contains_key(node_id) {
+            visit(node_id, &outgoing, &mut state, &mut back_edges);
+        }
+    }
+    back_edges
+}
+
+fn workflow_has_closed_cycle(edges: &[Value], node_ids: &[String]) -> bool {
+    fn visit(
+        node_id: &str,
+        outgoing: &HashMap<String, Vec<String>>,
+        indexes: &mut HashMap<String, usize>,
+        low_links: &mut HashMap<String, usize>,
+        stack: &mut Vec<String>,
+        on_stack: &mut HashSet<String>,
+        next_index: &mut usize,
+        closed_cycle: &mut bool,
+        edges: &[Value],
+    ) {
+        indexes.insert(node_id.to_owned(), *next_index);
+        low_links.insert(node_id.to_owned(), *next_index);
+        *next_index += 1;
+        stack.push(node_id.to_owned());
+        on_stack.insert(node_id.to_owned());
+        for target in outgoing.get(node_id).into_iter().flatten() {
+            if !indexes.contains_key(target) {
+                visit(
+                    target,
+                    outgoing,
+                    indexes,
+                    low_links,
+                    stack,
+                    on_stack,
+                    next_index,
+                    closed_cycle,
+                    edges,
+                );
+                let target_low_link = low_links[target];
+                let node_low_link = low_links[node_id];
+                low_links.insert(node_id.to_owned(), node_low_link.min(target_low_link));
+            } else if on_stack.contains(target) {
+                let target_index = indexes[target];
+                let node_low_link = low_links[node_id];
+                low_links.insert(node_id.to_owned(), node_low_link.min(target_index));
+            }
+        }
+        if low_links[node_id] != indexes[node_id] {
+            return;
+        }
+        let mut component = HashSet::new();
+        while let Some(member) = stack.pop() {
+            on_stack.remove(&member);
+            let is_root = member == node_id;
+            component.insert(member);
+            if is_root {
+                break;
+            }
+        }
+        let cyclic = component.len() > 1
+            || edges
+                .iter()
+                .any(|edge| edge["from"] == node_id && edge["to"] == node_id);
+        if !cyclic {
+            return;
+        }
+        let has_exit = edges.iter().any(|edge| {
+            edge["from"]
+                .as_str()
+                .is_some_and(|source| component.contains(source))
+                && edge["to"]
+                    .as_str()
+                    .is_some_and(|target| !component.contains(target))
+        });
+        if !has_exit {
+            *closed_cycle = true;
+        }
+    }
+
+    let selected = node_ids.iter().cloned().collect::<HashSet<_>>();
+    let mut outgoing = HashMap::<String, Vec<String>>::new();
+    for edge in edges {
+        let (Some(from), Some(to)) = (edge["from"].as_str(), edge["to"].as_str()) else {
+            continue;
+        };
+        if selected.contains(from) && selected.contains(to) {
+            outgoing
+                .entry(from.to_owned())
+                .or_default()
+                .push(to.to_owned());
+        }
+    }
+    let mut indexes = HashMap::new();
+    let mut low_links = HashMap::new();
+    let mut stack = Vec::new();
+    let mut on_stack = HashSet::new();
+    let mut next_index = 0;
+    let mut closed_cycle = false;
+    for node_id in node_ids {
+        if !indexes.contains_key(node_id) {
+            visit(
+                node_id,
+                &outgoing,
+                &mut indexes,
+                &mut low_links,
+                &mut stack,
+                &mut on_stack,
+                &mut next_index,
+                &mut closed_cycle,
+                edges,
+            );
+        }
+    }
+    closed_cycle
+}
+
+fn reachable_workflow_node_ids(
+    roots: &HashSet<String>,
+    forward_edges: &[Value],
+    ordered_ids: &[String],
+) -> Vec<String> {
+    let selected = ordered_ids.iter().cloned().collect::<HashSet<_>>();
+    let mut outgoing = HashMap::<String, Vec<String>>::new();
+    for edge in forward_edges {
+        let (Some(from), Some(to)) = (edge["from"].as_str(), edge["to"].as_str()) else {
+            continue;
+        };
+        if selected.contains(from) && selected.contains(to) {
+            outgoing
+                .entry(from.to_owned())
+                .or_default()
+                .push(to.to_owned());
+        }
+    }
+    let mut reachable = HashSet::new();
+    let mut pending = roots
+        .iter()
+        .filter(|id| selected.contains(*id))
+        .cloned()
+        .collect::<Vec<_>>();
+    while let Some(node_id) = pending.pop() {
+        if !reachable.insert(node_id.clone()) {
+            continue;
+        }
+        pending.extend(outgoing.get(&node_id).into_iter().flatten().cloned());
+    }
+    ordered_ids
+        .iter()
+        .filter(|id| reachable.contains(*id))
+        .cloned()
+        .collect()
 }
 
 fn node_is_active(
@@ -1873,6 +2175,27 @@ fn node_is_active(
         let actual = source_handles.get(source).and_then(Option::as_deref);
         expected.is_none() || actual.is_none() || expected == actual
     })
+}
+
+fn collect_loop_targets(
+    back_edges: &[Value],
+    source_id: &str,
+    source_handle: Option<&str>,
+    selected: &HashSet<String>,
+    loop_targets: &mut HashSet<String>,
+) {
+    for edge in back_edges {
+        let Some(target) = edge["to"].as_str() else {
+            continue;
+        };
+        if edge["from"].as_str() != Some(source_id) || !selected.contains(target) {
+            continue;
+        }
+        let expected = edge["sourceHandle"].as_str();
+        if expected.is_none() || source_handle.is_none() || expected == source_handle {
+            loop_targets.insert(target.to_owned());
+        }
+    }
 }
 
 fn reset_node(node: &mut Value) {
@@ -4354,6 +4677,166 @@ mod tests {
             "edges":[{"from":"a","to":"b"},{"from":"b","to":"c"}]
         });
         assert_eq!(ordered_node_ids(&workflow, None), vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn orders_loop_nodes_without_back_edges_and_repeats_only_the_selected_loop_path() {
+        let workflow = serde_json::json!({
+            "nodes":[
+                {"id":"trigger","kind":"trigger"},
+                {"id":"body","kind":"command"},
+                {"id":"condition","kind":"if"},
+                {"id":"exit","kind":"command"}
+            ],
+            "edges":[
+                {"id":"condition-loop","from":"condition","to":"body","sourceHandle":"true"},
+                {"id":"condition-exit","from":"condition","to":"exit","sourceHandle":"false"},
+                {"id":"body-condition","from":"body","to":"condition"},
+                {"id":"trigger-body","from":"trigger","to":"body"}
+            ]
+        });
+        let ordered = ordered_node_ids(&workflow, None);
+        assert_eq!(ordered, vec!["trigger", "body", "condition", "exit"]);
+        let edges = workflow["edges"].as_array().unwrap();
+        let back_indices = workflow_back_edge_indices(edges, &ordered);
+        assert_eq!(back_indices, HashSet::from([0usize]));
+        let forward = edges
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| !back_indices.contains(index))
+            .map(|(_, edge)| edge.clone())
+            .collect::<Vec<_>>();
+        let pass_nodes = ["body", "condition", "exit"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let selected = pass_nodes.iter().cloned().collect::<HashSet<_>>();
+        let mut targets = HashSet::new();
+        collect_loop_targets(
+            &[edges[0].clone()],
+            "condition",
+            Some("true"),
+            &selected,
+            &mut targets,
+        );
+        assert_eq!(
+            reachable_workflow_node_ids(&targets, &forward, &ordered),
+            pass_nodes
+        );
+        targets.clear();
+        collect_loop_targets(
+            &[edges[0].clone()],
+            "condition",
+            Some("false"),
+            &selected,
+            &mut targets,
+        );
+        assert!(targets.is_empty());
+    }
+
+    #[test]
+    fn rejects_workflow_cycles_without_an_exit() {
+        let ids = vec!["a".to_owned(), "b".to_owned()];
+        let closed = serde_json::json!([
+            {"from":"a","to":"b"},
+            {"from":"b","to":"a"}
+        ]);
+        assert!(workflow_has_closed_cycle(closed.as_array().unwrap(), &ids));
+        let with_exit = serde_json::json!([
+            {"from":"a","to":"b"},
+            {"from":"b","to":"a"},
+            {"from":"b","to":"exit"}
+        ]);
+        assert!(!workflow_has_closed_cycle(
+            with_exit.as_array().unwrap(),
+            &ids
+        ));
+    }
+
+    #[tokio::test]
+    async fn workflow_runtime_repeats_nodes_through_a_selected_back_edge() {
+        let root = std::env::temp_dir().join(format!(
+            "osheep-workflow-back-edge-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        tokio::fs::create_dir_all(&root).await.unwrap();
+        let workflow_path = root.join("workflow.json");
+        let workflow = serde_json::json!({
+            "id":"wf_backedge01","updatedAt":0,"runs":[],
+            "nodes":[
+                {"id":"trigger","kind":"trigger","title":"Start","status":"idle"},
+                {"id":"input","blockId":1,"kind":"input","title":"Input","status":"idle","config":{}},
+                {"id":"condition","blockId":2,"kind":"if","title":"Continue?","status":"idle","config":{"expression":"{{blocks[1].value}} == true"}},
+                {"id":"exit","kind":"wait","title":"Exit","status":"idle","config":{"seconds":0}}
+            ],
+            "edges":[
+                {"id":"condition-loop","from":"condition","to":"input","sourceHandle":"true"},
+                {"id":"condition-exit","from":"condition","to":"exit","sourceHandle":"false"},
+                {"id":"input-condition","from":"input","to":"condition"},
+                {"id":"trigger-input","from":"trigger","to":"input"}
+            ]
+        });
+        write_json(&workflow_path, &workflow).await.unwrap();
+        let runtime = WorkflowRuntime::new(root.join("state"));
+        let (run_id, _) = runtime
+            .start(
+                "back-edge-test".into(),
+                workflow_path.clone(),
+                root.clone(),
+                None,
+                None,
+                false,
+            )
+            .await
+            .unwrap();
+
+        for value in [true, false] {
+            tokio::time::timeout(Duration::from_secs(3), async {
+                loop {
+                    if runtime
+                        .resolve("back-edge-test", "input", Value::Bool(value))
+                        .await
+                        .is_ok()
+                    {
+                        break;
+                    }
+                    sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("workflow should reach the input on each loop pass");
+        }
+
+        let completed = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let current = read_json(&workflow_path).await.unwrap();
+                if find_run(&current, &run_id).is_some_and(|run| run["status"] != "running") {
+                    break current;
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("workflow run should complete after the loop exit");
+        assert_eq!(find_run(&completed, &run_id).unwrap()["status"], "success");
+        let trace_ids = find_run(&completed, &run_id).unwrap()["trace"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|item| item["nodeId"].as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            trace_ids,
+            vec![
+                "trigger",
+                "input",
+                "condition",
+                "input",
+                "condition",
+                "exit"
+            ]
+        );
+        tokio::fs::remove_dir_all(root).await.ok();
     }
 
     #[test]

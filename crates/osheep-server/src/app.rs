@@ -2365,7 +2365,10 @@ fn normalize_litellm_prices(payload: &Value) -> Vec<Value> {
 
 fn is_default_favorite_model(model: &str, provider: &str) -> bool {
     matches!(
-        (model.trim().to_ascii_lowercase().as_str(), provider.trim().to_ascii_lowercase().as_str()),
+        (
+            model.trim().to_ascii_lowercase().as_str(),
+            provider.trim().to_ascii_lowercase().as_str()
+        ),
         ("gpt-5.6-sol", "openai")
             | ("gpt-5.6-terra", "openai")
             | ("gpt-5.6-luna", "openai")
@@ -5955,6 +5958,11 @@ fn workflow_runtime_error(error: crate::workflow_runtime::RuntimeError) -> ApiEr
         crate::workflow_runtime::RuntimeError::NoRunnableBlocks => ApiError::new(
             StatusCode::BAD_REQUEST,
             "WORKFLOW_NOT_RUNNABLE",
+            error.to_string(),
+        ),
+        crate::workflow_runtime::RuntimeError::ClosedCycle => ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "WORKFLOW_CYCLE_WITHOUT_EXIT",
             error.to_string(),
         ),
         crate::workflow_runtime::RuntimeError::CheckpointUnavailable => ApiError::new(
