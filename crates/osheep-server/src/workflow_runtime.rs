@@ -781,7 +781,7 @@ impl WorkflowRuntime {
                         });
                     }
                     retry_reasons.push(error.clone());
-                    if is_agent_api_failure(&error) && provider_plan.len() > 1 {
+                    if provider_plan.len() > 1 {
                         provider_index = (provider_index + 1) % provider_plan.len();
                     }
                     attempt += 1;
@@ -2430,41 +2430,8 @@ fn should_retry_agent_failure(
     {
         return false;
     }
-    // Match the TypeScript runner: every terminal `error` outcome is retryable
-    // until the configured attempt budget is exhausted. API/network wording is
-    // used separately to rotate providers, not to gate retries.
+    // Provider rotation is applied after every retryable terminal error.
     true
-}
-
-fn is_agent_api_failure(message: &str) -> bool {
-    static API_ERROR: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(
-            r"(?i)\bAPI(?: request)? (?:Error|failed|failure)\b|\b(?:unable|failed) to (?:connect to|reach) (?:the )?API\b",
-        )
-        .expect("valid API error pattern")
-    });
-    static API_STATUS: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(
-            r"(?i)\b(?:API Error\s*:|unexpected status|HTTP(?: status)?|response status|last status|status code|status)\s*(?:code\s*)?[:=]?\s*[1-5]\d{2}\b|\brequest failed with status(?: code)?\s*[:=]?\s*[1-5]\d{2}\b",
-        )
-        .expect("valid API status pattern")
-    });
-    static API_MARKER: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(
-            r"(?i)\b(?:INVALID_API_KEY|authentication_error|permission_error|rate_limit_error|api_error|overloaded_error)\b",
-        )
-        .expect("valid API marker pattern")
-    });
-    static NETWORK_ERROR: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(
-            r"(?i)\b(?:fetch failed|network error|socket hang up|service unavailable|temporarily unavailable|gateway timeout|connection (?:error|failed|reset|refused|timed out)|(?:failed|unable|could not) to connect|error sending request|request timed out|proxy error|certificate (?:error|verify failed)|name resolution|name or service not known|econnaborted|econnreset|econnrefused|ehostunreach|enetunreach|etimedout|enotfound|eai_again|dns|tls)\b|网络错误|连接(?:失败|超时)",
-        )
-        .expect("valid network error pattern")
-    });
-    API_ERROR.is_match(message)
-        || API_STATUS.is_match(message)
-        || API_MARKER.is_match(message)
-        || NETWORK_ERROR.is_match(message)
 }
 
 async fn set_retry_details(
@@ -2633,14 +2600,46 @@ async fn apply_agent_provider(
     if provider_id.trim().is_empty() {
         return Ok(());
     }
+    let settings_path = std::env::var_os("OSHEEP_AI_SETTINGS_STORE_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| data_root.join("ai-settings.json"));
+    let home = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| data_root.to_path_buf());
+    let claude_config_dir = std::env::var_os("OSHEEP_CLAUDE_CONFIG_DIR")
+        .or_else(|| std::env::var_os("CLAUDE_CONFIG_DIR"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".claude"));
+    let codex_config_dir = std::env::var_os("CODEX_HOME")
+        .or_else(|| std::env::var_os("OSHEEP_CODEX_CONFIG_DIR"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".codex"));
+    apply_agent_provider_to_paths(
+        &settings_path,
+        &claude_config_dir,
+        &codex_config_dir,
+        node,
+        provider_id,
+    )
+    .await
+}
+
+async fn apply_agent_provider_to_paths(
+    settings_path: &Path,
+    claude_config_dir: &Path,
+    codex_config_dir: &Path,
+    node: &Value,
+    provider_id: &str,
+) -> Result<(), String> {
+    if provider_id.trim().is_empty() {
+        return Ok(());
+    }
     let app = if node["providerKind"].as_str() == Some("codex-cli") {
         "codex"
     } else {
         "claude"
     };
-    let settings_path = std::env::var_os("OSHEEP_AI_SETTINGS_STORE_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| data_root.join("ai-settings.json"));
     let raw = tokio::fs::read(&settings_path)
         .await
         .map_err(|error| format!("Failed to read AI provider settings: {error}"))?;
@@ -2650,16 +2649,8 @@ async fn apply_agent_provider(
     if !provider.is_object() {
         return Err(format!("AI provider not found: {provider_id}"));
     }
-    let home = std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| data_root.to_path_buf());
     if app == "claude" {
-        let path = std::env::var_os("OSHEEP_CLAUDE_CONFIG_DIR")
-            .or_else(|| std::env::var_os("CLAUDE_CONFIG_DIR"))
-            .map(PathBuf::from)
-            .unwrap_or_else(|| home.join(".claude"))
-            .join("settings.json");
+        let path = claude_config_dir.join("settings.json");
         let mut config = provider["settingsConfig"]
             .clone()
             .as_object()
@@ -2683,10 +2674,7 @@ async fn apply_agent_provider(
         let config = &provider["settingsConfig"];
         let auth = config["auth"].clone();
         let toml = config["config"].as_str().unwrap_or("");
-        let root = std::env::var_os("CODEX_HOME")
-            .or_else(|| std::env::var_os("OSHEEP_CODEX_CONFIG_DIR"))
-            .map(PathBuf::from)
-            .unwrap_or_else(|| home.join(".codex"));
+        let root = codex_config_dir;
         tokio::fs::create_dir_all(&root)
             .await
             .map_err(|error| format!("Failed to create Codex config directory: {error}"))?;
@@ -2711,7 +2699,7 @@ async fn apply_agent_provider(
     }
     let bytes = serde_json::to_vec_pretty(&settings)
         .map_err(|error| format!("Failed to encode AI provider settings: {error}"))?;
-    tokio::fs::write(&settings_path, bytes)
+    tokio::fs::write(settings_path, bytes)
         .await
         .map_err(|error| format!("Failed to persist AI provider selection: {error}"))?;
     Ok(())
@@ -4853,13 +4841,6 @@ mod tests {
         ));
         assert!(!should_retry_agent_failure("network error", 2, 2, false));
         assert!(should_retry_agent_failure("network error", 99, 0, true));
-        assert!(is_agent_api_failure(
-            "unexpected status 503 Service Unavailable"
-        ));
-        assert!(is_agent_api_failure("network error: connection reset"));
-        assert!(!is_agent_api_failure(
-            "command returned code 503 in its output"
-        ));
     }
 
     #[tokio::test]
@@ -4897,6 +4878,97 @@ mod tests {
         )
         .await;
         assert_eq!(round_robin, vec!["standard", "cheap"]);
+        tokio::fs::remove_dir_all(root).await.ok();
+    }
+
+    #[tokio::test]
+    async fn applying_agent_provider_updates_live_cli_files_and_selected_provider() {
+        let root = std::env::temp_dir().join(format!(
+            "osheep-apply-agent-provider-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let settings_path = root.join("ai-settings.json");
+        let claude_dir = root.join("claude-config");
+        let codex_dir = root.join("codex-config");
+        tokio::fs::create_dir_all(&root).await.unwrap();
+        tokio::fs::write(
+            &settings_path,
+            serde_json::json!({
+                "apps": {
+                    "claude": {
+                        "current":"old-claude",
+                        "providers": {
+                            "new-claude": {
+                                "settingsConfig": {
+                                    "env":{"ANTHROPIC_BASE_URL":"https://claude.example"},
+                                    "api_format":"internal-only"
+                                }
+                            }
+                        }
+                    },
+                    "codex": {
+                        "current":"old-codex",
+                        "providers": {
+                            "new-codex": {
+                                "category":"custom",
+                                "settingsConfig": {
+                                    "auth":{"OPENAI_API_KEY":"codex-secret"},
+                                    "config":"model_provider = \"new-codex\"\n"
+                                }
+                            }
+                        }
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .await
+        .unwrap();
+
+        apply_agent_provider_to_paths(
+            &settings_path,
+            &claude_dir,
+            &codex_dir,
+            &serde_json::json!({"providerKind":"claude-cli"}),
+            "new-claude",
+        )
+        .await
+        .unwrap();
+        apply_agent_provider_to_paths(
+            &settings_path,
+            &claude_dir,
+            &codex_dir,
+            &serde_json::json!({"providerKind":"codex-cli"}),
+            "new-codex",
+        )
+        .await
+        .unwrap();
+
+        let claude_live: Value = serde_json::from_slice(
+            &tokio::fs::read(claude_dir.join("settings.json"))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            claude_live["env"]["ANTHROPIC_BASE_URL"],
+            "https://claude.example"
+        );
+        assert!(claude_live.get("api_format").is_none());
+        assert_eq!(
+            tokio::fs::read_to_string(codex_dir.join("config.toml"))
+                .await
+                .unwrap(),
+            "model_provider = \"new-codex\"\n"
+        );
+        let codex_auth: Value =
+            serde_json::from_slice(&tokio::fs::read(codex_dir.join("auth.json")).await.unwrap())
+                .unwrap();
+        assert_eq!(codex_auth["OPENAI_API_KEY"], "codex-secret");
+        let settings: Value =
+            serde_json::from_slice(&tokio::fs::read(&settings_path).await.unwrap()).unwrap();
+        assert_eq!(settings["apps"]["claude"]["current"], "new-claude");
+        assert_eq!(settings["apps"]["codex"]["current"], "new-codex");
         tokio::fs::remove_dir_all(root).await.ok();
     }
 
