@@ -130,7 +130,7 @@ impl WorkflowRuntime {
             })
             .cloned()
             .collect::<Vec<_>>();
-        if workflow_has_closed_cycle(&selected_edges, &node_ids) {
+        if workflow_has_closed_cycle(&selected_edges, &node_ids, &workflow["nodes"]) {
             self.active.lock().await.remove(&key);
             return Err(RuntimeError::ClosedCycle);
         }
@@ -2000,7 +2000,7 @@ fn workflow_back_edge_indices(edges: &[Value], node_ids: &[String]) -> HashSet<u
     back_edges
 }
 
-fn workflow_has_closed_cycle(edges: &[Value], node_ids: &[String]) -> bool {
+fn workflow_has_closed_cycle(edges: &[Value], node_ids: &[String], nodes: &Value) -> bool {
     fn visit(
         node_id: &str,
         outgoing: &HashMap<String, Vec<String>>,
@@ -2011,6 +2011,7 @@ fn workflow_has_closed_cycle(edges: &[Value], node_ids: &[String]) -> bool {
         next_index: &mut usize,
         closed_cycle: &mut bool,
         edges: &[Value],
+        nodes: &Value,
     ) {
         indexes.insert(node_id.to_owned(), *next_index);
         low_links.insert(node_id.to_owned(), *next_index);
@@ -2029,6 +2030,7 @@ fn workflow_has_closed_cycle(edges: &[Value], node_ids: &[String]) -> bool {
                     next_index,
                     closed_cycle,
                     edges,
+                    nodes,
                 );
                 let target_low_link = low_links[target];
                 let node_low_link = low_links[node_id];
@@ -2058,7 +2060,7 @@ fn workflow_has_closed_cycle(edges: &[Value], node_ids: &[String]) -> bool {
         if !cyclic {
             return;
         }
-        let has_exit = edges.iter().any(|edge| {
+        let has_edge_exit = edges.iter().any(|edge| {
             edge["from"]
                 .as_str()
                 .is_some_and(|source| component.contains(source))
@@ -2066,7 +2068,28 @@ fn workflow_has_closed_cycle(edges: &[Value], node_ids: &[String]) -> bool {
                     .as_str()
                     .is_some_and(|target| !component.contains(target))
         });
-        if !has_exit {
+        let has_unconnected_branch_exit = nodes.as_array().is_some_and(|nodes| {
+            nodes.iter().any(|node| {
+                let Some(id) = node["id"].as_str() else {
+                    return false;
+                };
+                if !component.contains(id) {
+                    return false;
+                }
+                let handles: &[&str] = match node["kind"].as_str().unwrap_or("agent") {
+                    "if" => &["true", "false"],
+                    "diff-approval" => &["success", "failure"],
+                    "markdown" if node["config"]["action"] == "approval" => &["success", "failure"],
+                    _ => &[],
+                };
+                handles.iter().any(|handle| {
+                    !edges
+                        .iter()
+                        .any(|edge| edge["from"] == id && edge["sourceHandle"] == **handle)
+                })
+            })
+        });
+        if !has_edge_exit && !has_unconnected_branch_exit {
             *closed_cycle = true;
         }
     }
@@ -2102,6 +2125,7 @@ fn workflow_has_closed_cycle(edges: &[Value], node_ids: &[String]) -> bool {
                 &mut next_index,
                 &mut closed_cycle,
                 edges,
+                nodes,
             );
         }
     }
@@ -2556,21 +2580,45 @@ fn resolve_workflow_variable(
     if name.is_empty() {
         return Err(format!("Invalid workflow variable: {template}"));
     }
-    let mut found = None;
+    let active_run_started_at = workflow["runs"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|run| run["status"] == "running")
+        .and_then(|run| run["startedAt"].as_u64());
+    let mut found: Option<(u64, Value)> = None;
     for node in workflow["nodes"].as_array().into_iter().flatten() {
         if node["kind"] != "variable" {
+            continue;
+        }
+        let completed_at = node["completedAt"].as_u64().unwrap_or(0);
+        if active_run_started_at
+            .is_some_and(|started_at| node["status"] != "success" || completed_at < started_at)
+        {
             continue;
         }
         let Some(output) = parsed_node_output(node) else {
             continue;
         };
-        if let Some(value) = output["variables"].get(name) {
-            found = Some(value.clone());
+        let value = if let Some(value) = output["variables"].get(name) {
+            Some(value.clone())
         } else if output["name"] == name {
-            found = output.get("value").cloned();
+            output.get("value").cloned()
+        } else {
+            None
+        };
+        if let Some(value) = value {
+            if found
+                .as_ref()
+                .is_none_or(|(previous_completed_at, _)| completed_at > *previous_completed_at)
+            {
+                found = Some((completed_at, value));
+            }
         }
     }
-    let mut value = found.ok_or_else(|| format!("Workflow variable does not exist: {template}"))?;
+    let mut value = found
+        .map(|(_, value)| value)
+        .ok_or_else(|| format!("Workflow variable does not exist: {template}"))?;
     apply_value_path(&mut value, &rest[end + 1..], template)?;
     Ok(value)
 }
@@ -3067,13 +3115,25 @@ fn execute_variable(node: &Value, workflow: &Value) -> Result<Value, String> {
         });
     let mut variables = serde_json::Map::new();
     let mut variable_types = serde_json::Map::new();
-    for existing in workflow["nodes"].as_array().into_iter().flatten() {
-        if existing["kind"] != "variable" || existing["id"] == node["id"] {
+    let nodes = workflow["nodes"].as_array();
+    let node_index = nodes.and_then(|nodes| {
+        nodes
+            .iter()
+            .position(|existing| existing["id"] == node["id"])
+    });
+    for (index, existing) in nodes.into_iter().flatten().enumerate() {
+        if existing["kind"] != "variable"
+            || existing["id"] == node["id"]
+            || node_index.is_none_or(|node_index| index >= node_index)
+        {
             continue;
         }
         if let Some(output) = parsed_node_output(existing) {
             if let Some(values) = output["variables"].as_object() {
                 variables.extend(values.clone());
+            } else if let (Some(name), Some(value)) = (output["name"].as_str(), output.get("value"))
+            {
+                variables.insert(name.to_owned(), value.clone());
             }
             if let Some(types) = output["variableTypes"].as_object() {
                 variable_types.extend(types.clone());
@@ -4741,7 +4801,11 @@ mod tests {
             {"from":"a","to":"b"},
             {"from":"b","to":"a"}
         ]);
-        assert!(workflow_has_closed_cycle(closed.as_array().unwrap(), &ids));
+        assert!(workflow_has_closed_cycle(
+            closed.as_array().unwrap(),
+            &ids,
+            &serde_json::json!([])
+        ));
         let with_exit = serde_json::json!([
             {"from":"a","to":"b"},
             {"from":"b","to":"a"},
@@ -4749,7 +4813,28 @@ mod tests {
         ]);
         assert!(!workflow_has_closed_cycle(
             with_exit.as_array().unwrap(),
-            &ids
+            &ids,
+            &serde_json::json!([])
+        ));
+    }
+
+    #[test]
+    fn approval_success_branch_is_an_exit_from_a_workflow_cycle() {
+        let ids = vec!["agent".to_owned(), "approval".to_owned(), "next".to_owned()];
+        let nodes = serde_json::json!([
+            {"id":"agent","kind":"agent"},
+            {"id":"approval","kind":"markdown","config":{"action":"approval"}},
+            {"id":"next","kind":"markdown","config":{"action":"display"}}
+        ]);
+        let edges = serde_json::json!([
+            {"from":"agent","to":"approval"},
+            {"from":"approval","to":"next","sourceHandle":"failure"},
+            {"from":"next","to":"agent"}
+        ]);
+        assert!(!workflow_has_closed_cycle(
+            edges.as_array().unwrap(),
+            &ids,
+            &nodes
         ));
     }
 
@@ -5269,6 +5354,46 @@ mod tests {
         ]);
         let merged = execute_merge(&workflow["nodes"][2], &workflow).unwrap();
         assert_eq!(merged["data"], serde_json::json!({"left":1,"right":2}));
+    }
+
+    #[test]
+    fn variable_block_overwrites_inherited_names_and_ignores_later_nodes() {
+        let first = serde_json::json!({
+            "id":"first","kind":"variable",
+            "rawOutput":"{\"type\":\"variable\",\"variables\":{\"shared\":\"old\",\"keep\":\"yes\"}}"
+        });
+        let current = serde_json::json!({
+            "id":"current","kind":"variable","config":{"variables":[
+                {"name":"shared","value":"new","type":"text"},
+                {"name":"added","value":"fresh","type":"text"}
+            ]}
+        });
+        let later = serde_json::json!({
+            "id":"later","kind":"variable",
+            "rawOutput":"{\"type\":\"variable\",\"variables\":{\"shared\":\"stale\"}}"
+        });
+        let workflow = serde_json::json!({"nodes":[first,current.clone(),later],"edges":[]});
+        let output = execute_variable(&current, &workflow).unwrap();
+        assert_eq!(output["variables"]["shared"], "new");
+        assert_eq!(output["variables"]["keep"], "yes");
+        assert_eq!(output["variables"]["added"], "fresh");
+    }
+
+    #[test]
+    fn running_workflow_resolves_only_variables_completed_in_the_active_run() {
+        let workflow = serde_json::json!({
+            "runs":[{"id":"active","status":"running","startedAt":100}],
+            "nodes":[
+                {"id":"current","kind":"variable","status":"success","completedAt":110,
+                 "rawOutput":"{\"type\":\"variable\",\"variables\":{\"shared\":\"current\"}}"},
+                {"id":"stale","kind":"variable","status":"success","completedAt":90,
+                 "rawOutput":"{\"type\":\"variable\",\"variables\":{\"shared\":\"stale\"}}"}
+            ]
+        });
+        assert_eq!(
+            resolve_template_value("{{vars[shared]}}", &workflow).unwrap(),
+            serde_json::json!("current")
+        );
     }
 
     #[test]
