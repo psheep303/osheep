@@ -153,20 +153,30 @@ async function readBrowserEntry(
 export async function readBrowserDropItems(
   items: DataTransferItemList,
 ): Promise<BrowserDropFile[]> {
-  const output: BrowserDropFile[] = [];
+  // DataTransferItemList is only reliable during the synchronous drop event.
+  // Snapshot every item before awaiting FileSystemEntry.file() so later files
+  // are not lost in WebView/browser implementations that release the list.
+  const pending: Array<{ entry: FileSystemEntryLike } | { file: File }> = [];
   for (let index = 0; index < items.length; index += 1) {
     const item = items[index];
     if (!item) continue;
     const entry = (
       item as DataTransferItem & { webkitGetAsEntry?: () => FileSystemEntryLike | null }
     ).webkitGetAsEntry?.();
-    if (entry) output.push(...(await readBrowserEntry(entry, "")));
+    if (entry) pending.push({ entry });
     else {
       const file = item.getAsFile();
-      if (file) output.push({ file, relativePath: file.name });
+      if (file) pending.push({ file });
     }
   }
-  return output;
+  const output = await Promise.all(
+    pending.map(async (item) =>
+      "entry" in item
+        ? readBrowserEntry(item.entry, "")
+        : [{ file: item.file, relativePath: item.file.name }],
+    ),
+  );
+  return output.flat();
 }
 
 export function writeFileTreeDragData(

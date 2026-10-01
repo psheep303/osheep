@@ -186,6 +186,7 @@ export function FileTree({
     startY: number;
     active: boolean;
   } | null>(null);
+  const desktopCopyQueueRef = useRef(Promise.resolve());
   const [pointerDragPaths, setPointerDragPaths] = useState<Set<string>>(new Set());
   const [pointerDragActive, setPointerDragActive] = useState(false);
   const [pointerDragPreview, setPointerDragPreview] = useState<{
@@ -275,10 +276,10 @@ export function FileTree({
     return true;
   };
 
-  const bumpTree = () => {
+  const bumpTree = useCallback(() => {
     setTreeVersion((v) => v + 1);
     onFsChange?.();
-  };
+  }, [onFsChange]);
 
   // External refresh trigger (osheep code mutated files). Skip the mount pass
   // and only react to real changes, then bump treeVersion so the root and
@@ -412,9 +413,19 @@ export function FileTree({
     const nextSelection: string[] = [];
     for (const entry of files) {
       const file = entry.file;
-      const name = entry.relativePath || basename(file.name) || "dropped-file";
+      const relativePath = (entry.relativePath || basename(file.name) || "dropped-file").replace(
+        /\\/g,
+        "/",
+      );
+      const separator = relativePath.lastIndexOf("/");
+      const relativeDir = separator >= 0 ? relativePath.slice(0, separator) : "";
+      const name = separator >= 0 ? relativePath.slice(separator + 1) : relativePath;
+      const targetDir = joinPath(destDir, relativeDir);
       try {
-        const targetPath = joinPath(destDir, name.replace(/\\/g, "/"));
+        const targetName = await findFreeName(workspaceId, targetDir, name, "file").catch(
+          () => name,
+        );
+        const targetPath = joinPath(targetDir, targetName);
         await writeFileBase64(workspaceId, targetPath, await fileToBase64(file));
         nextSelection.push(targetPath);
         changed = true;
@@ -430,9 +441,33 @@ export function FileTree({
     if (firstError) notify.error(t("notification.moveFailed", { detail: firstError.message }));
   };
 
+  const copyDesktopFiles = useCallback(
+    async (sourcePaths: string[], targetDir: string) => {
+      let changed = false;
+      let firstError: Error | null = null;
+      for (const sourcePath of sourcePaths) {
+        try {
+          const name = basename(sourcePath);
+          const targetName = await findFreeName(workspaceId, targetDir, name, "file").catch(
+            () => name,
+          );
+          await copyExternalEntryTo(workspaceId, sourcePath, joinPath(targetDir, targetName));
+          changed = true;
+        } catch (error) {
+          firstError ??= error as Error;
+        }
+      }
+      if (changed) bumpTree();
+      if (firstError) notify.error((firstError as Error).message);
+    },
+    [bumpTree, notify, workspaceId],
+  );
+
   useEffect(() => {
     let unlisten: (() => void) | null = null;
+    let active = true;
     void listenDesktopFileDrop((payload) => {
+      if (!active) return;
       const elements = elementsAtDesktopDropPosition(payload.position);
       const element =
         elements.find((candidate) => {
@@ -445,22 +480,19 @@ export function FileTree({
       if (row && row.dataset.fileTreeNodeKind !== "directory") return;
       const targetDir =
         row?.dataset.fileTreeNodeKind === "directory" ? (row.dataset.fileTreeDropPath ?? "") : "";
-      void Promise.all(
-        payload.paths.map(async (sourcePath) => {
-          const name = basename(sourcePath);
-          const targetName = await findFreeName(workspaceId, targetDir, name, "file").catch(
-            () => name,
-          );
-          await copyExternalEntryTo(workspaceId, sourcePath, joinPath(targetDir, targetName));
-        }),
-      )
-        .then(() => bumpTree())
-        .catch((error) => notify.error((error as Error).message));
+      desktopCopyQueueRef.current = desktopCopyQueueRef.current
+        .catch(() => undefined)
+        .then(() => copyDesktopFiles(payload.paths, targetDir));
     }).then((cleanup) => {
-      unlisten = cleanup;
+      if (!cleanup) return;
+      if (!active) cleanup();
+      else unlisten = cleanup;
     });
-    return () => unlisten?.();
-  }, [bumpTree, notify, workspaceId]);
+    return () => {
+      active = false;
+      unlisten?.();
+    };
+  }, [copyDesktopFiles]);
 
   const onDropMove = async (srcPaths: string[], destDir: string) => {
     const sources = topLevelPaths(srcPaths);

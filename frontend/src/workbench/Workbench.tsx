@@ -1241,7 +1241,9 @@ export function Workbench() {
 
   useEffect(() => {
     let unlisten: (() => void) | null = null;
+    let active = true;
     void listenDesktopFileDrop((payload) => {
+      if (!active) return;
       const elements = elementsAtDesktopDropPosition(payload.position);
       // Coordinate payloads can be reported in physical pixels or window
       // coordinates. Prefer the explorer whenever any candidate lands there,
@@ -1267,9 +1269,14 @@ export function Workbench() {
       const source = payload.paths[0];
       if (source && Number.isInteger(index)) void openDroppedDesktopFile(source, index);
     }).then((cleanup) => {
-      unlisten = cleanup;
+      if (!cleanup) return;
+      if (!active) cleanup();
+      else unlisten = cleanup;
     });
-    return () => unlisten?.();
+    return () => {
+      active = false;
+      unlisten?.();
+    };
   }, [openDroppedDesktopFile, tabs.length]);
 
   const openDroppedFile = useCallback(
