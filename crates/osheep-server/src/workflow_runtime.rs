@@ -92,6 +92,7 @@ impl WorkflowRuntime {
         let mut run_id = format!("run_{}", uuid::Uuid::new_v4().simple());
         let cancelled = Arc::new(AtomicBool::new(false));
         let checkpoint_on_stop = Arc::new(AtomicBool::new(false));
+        let limit_error = Arc::new(Mutex::new(None::<String>));
         {
             let mut active = self.active.lock().await;
             if active.contains_key(&key) {
@@ -216,6 +217,7 @@ impl WorkflowRuntime {
                     node_ids,
                     cancelled,
                     checkpoint_on_stop,
+                    limit_error,
                     retry_language,
                 )
                 .await;
@@ -281,9 +283,22 @@ impl WorkflowRuntime {
         node_ids: Vec<String>,
         cancelled: Arc<AtomicBool>,
         checkpoint_on_stop: Arc<AtomicBool>,
+        limit_error: Arc<Mutex<Option<String>>>,
         retry_language: Option<String>,
     ) {
         let mut run_error = None;
+        let initial_workflow = read_json(&workflow_path).await.ok();
+        let max_duration = initial_workflow
+            .as_ref()
+            .and_then(|workflow| workflow["settings"]["maxRunDurationSeconds"].as_f64())
+            .filter(|value| *value > 0.0);
+        let deadline = max_duration
+            .map(|seconds| std::time::Instant::now() + Duration::from_secs_f64(seconds));
+        let max_cost = initial_workflow
+            .as_ref()
+            .filter(|workflow| workflow["settings"]["unbilled"] != Value::Bool(true))
+            .and_then(|workflow| workflow["settings"]["maxRunCost"].as_f64())
+            .filter(|value| *value > 0.0);
         let edges = read_json(&workflow_path)
             .await
             .ok()
@@ -310,6 +325,15 @@ impl WorkflowRuntime {
         }
         for node_id in node_ids {
             if cancelled.load(Ordering::SeqCst) {
+                break;
+            }
+            if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+                let seconds = max_duration.unwrap_or_default();
+                *limit_error.lock().await = Some(format!(
+                    "Workflow run duration exceeded the {}s limit.",
+                    format_limit(seconds)
+                ));
+                cancelled.store(true, Ordering::SeqCst);
                 break;
             }
             if let Some(output) = checkpoints.get(&node_id) {
@@ -376,8 +400,38 @@ impl WorkflowRuntime {
                 node["config"]["retryLanguage"] =
                     Value::String(if language == "zh-CN" { "zh-CN" } else { "en" }.to_owned());
             }
-            let result = self
-                .execute_node(
+            let result = if let Some(deadline) = deadline {
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                match tokio::time::timeout(
+                    remaining,
+                    self.execute_node(
+                        &key,
+                        &workflow_path,
+                        &workspace_root,
+                        &workflow,
+                        &node,
+                        cancelled.clone(),
+                    ),
+                )
+                .await
+                {
+                    Ok(result) => result,
+                    Err(_) => {
+                        let seconds = max_duration.unwrap_or_default();
+                        let message = format!(
+                            "Workflow run duration exceeded the {}s limit.",
+                            format_limit(seconds)
+                        );
+                        *limit_error.lock().await = Some(message.clone());
+                        cancelled.store(true, Ordering::SeqCst);
+                        if let Some(session) = self.agent_sessions.lock().await.get(&key).cloned() {
+                            let _ = session.kill().await;
+                        }
+                        Err(message)
+                    }
+                }
+            } else {
+                self.execute_node(
                     &key,
                     &workflow_path,
                     &workspace_root,
@@ -385,7 +439,8 @@ impl WorkflowRuntime {
                     &node,
                     cancelled.clone(),
                 )
-                .await;
+                .await
+            };
             let completed_at = now_ms();
             let mut workflow = match read_json(&workflow_path).await {
                 Ok(value) => value,
@@ -399,6 +454,8 @@ impl WorkflowRuntime {
             };
             match result {
                 Ok(output) => {
+                    let mut output = output;
+                    self.apply_usage_cost(&node, &mut output).await;
                     let text = output_text(&output);
                     let node = &mut workflow["nodes"][index];
                     node["status"] = Value::String("success".into());
@@ -420,11 +477,27 @@ impl WorkflowRuntime {
                         Some(output),
                         None,
                     );
+                    if let Some(limit) = max_cost {
+                        let cost = run_cost_from_workflow(&workflow, &run_id);
+                        if cost > limit {
+                            let message = format!(
+                                "Workflow run cost exceeded the ${} limit.",
+                                format_limit(limit)
+                            );
+                            *limit_error.lock().await = Some(message);
+                            cancelled.store(true, Ordering::SeqCst);
+                        }
+                    }
                 }
                 Err(error) => {
                     let stopped = cancelled.load(Ordering::SeqCst);
+                    let limit = limit_error.lock().await.clone();
                     let checkpoint = stopped && checkpoint_on_stop.load(Ordering::SeqCst);
-                    let status = if checkpoint { "stopped" } else { "error" };
+                    let status = if checkpoint && limit.is_none() {
+                        "stopped"
+                    } else {
+                        "error"
+                    };
                     let node = &mut workflow["nodes"][index];
                     if checkpoint {
                         reset_node(node);
@@ -449,7 +522,9 @@ impl WorkflowRuntime {
                         None,
                         Some(error.clone()),
                     );
-                    if !stopped {
+                    if let Some(limit) = limit {
+                        run_error = Some(limit);
+                    } else if !stopped {
                         run_error = Some(error);
                     }
                 }
@@ -467,7 +542,10 @@ impl WorkflowRuntime {
 
         if let Ok(mut workflow) = read_json(&workflow_path).await {
             let completed_at = now_ms();
-            let status = if cancelled.load(Ordering::SeqCst) {
+            let limit = limit_error.lock().await.clone();
+            let status = if limit.is_some() {
+                "error"
+            } else if cancelled.load(Ordering::SeqCst) {
                 "stopped"
             } else if run_error.is_some() {
                 "error"
@@ -484,10 +562,12 @@ impl WorkflowRuntime {
                     run["resumable"] = Value::Null;
                     run["resumeFingerprint"] = Value::Null;
                 }
-                if let Some(error) = run_error {
+                if let Some(error) = limit.or(run_error) {
                     run["error"] = Value::String(error);
                 }
                 let run = run.clone();
+                update_run_stats(&mut workflow, &run_id);
+                let run = find_run(&workflow, &run_id).cloned().unwrap_or(run);
                 workflow["updatedAt"] = Value::from(completed_at);
                 let _ = write_json(&workflow_path, &workflow).await;
                 self.emit_run(&key, &run).await;
@@ -604,18 +684,23 @@ impl WorkflowRuntime {
         let provider_plan =
             load_agent_provider_plan(&self.data_root, node, &retry_strategy, &retry_provider_ids)
                 .await;
+        let mut active_provider_id = load_current_agent_provider(&self.data_root, node).await;
         let mut attempt = 0usize;
         let mut current_node = node.clone();
         let mut attempt_transcripts = Vec::new();
         let mut retry_reasons = Vec::new();
+        let mut provider_index = 0usize;
 
         loop {
             if cancelled.load(Ordering::SeqCst) {
                 return Err("Workflow stopped.".to_owned());
             }
-            if let Some(provider_id) = provider_plan.get(attempt % provider_plan.len().max(1)) {
+            if let Some(provider_id) = provider_plan.get(provider_index) {
                 current_node["config"]["providerId"] = Value::String(provider_id.clone());
-                apply_agent_provider(&self.data_root, &current_node, provider_id).await;
+                if active_provider_id.as_deref() != Some(provider_id.as_str()) {
+                    apply_agent_provider(&self.data_root, &current_node, provider_id).await?;
+                    active_provider_id = Some(provider_id.clone());
+                }
             }
             let result = self
                 .run_agent_attempt(
@@ -696,6 +781,9 @@ impl WorkflowRuntime {
                         });
                     }
                     retry_reasons.push(error.clone());
+                    if is_agent_api_failure(&error) && provider_plan.len() > 1 {
+                        provider_index = (provider_index + 1) % provider_plan.len();
+                    }
                     attempt += 1;
                     attempt_transcripts.push(format!(
                         "{error}\n[osheep] retry {attempt}/{}: {retry_prompt}",
@@ -713,6 +801,12 @@ impl WorkflowRuntime {
                         &error,
                     )
                     .await;
+                    if let Ok(updated) = read_json(workflow_path).await {
+                        if let Some(index) = node_index(&updated, node["id"].as_str().unwrap_or(""))
+                        {
+                            self.emit_node(&key, &updated["nodes"][index]).await;
+                        }
+                    }
                     current_node["prompt"] = Value::String(retry_prompt.to_owned());
                     current_node["config"]["resumeConversation"] = Value::Bool(true);
                     if current_node["providerKind"].as_str() == Some("codex-cli") {
@@ -754,6 +848,12 @@ impl WorkflowRuntime {
                     }
                     wait_cancelled(Duration::from_millis(retry_delay), cancelled.clone()).await?;
                     clear_retry_details(workflow_path, node["id"].as_str().unwrap_or("")).await;
+                    if let Ok(updated) = read_json(workflow_path).await {
+                        if let Some(index) = node_index(&updated, node["id"].as_str().unwrap_or(""))
+                        {
+                            self.emit_node(&key, &updated["nodes"][index]).await;
+                        }
+                    }
                 }
             }
         }
@@ -809,6 +909,19 @@ impl WorkflowRuntime {
             }
         }
         let (executable, args) = build_workflow_agent_invocation(provider, &launch_node, prompt)?;
+        let agent_app = if provider == "codex-cli" {
+            AgentSessionApp::Codex
+        } else {
+            AgentSessionApp::Claude
+        };
+        let baseline_session_ids = self
+            .session_service
+            .list_in_project(agent_app, workspace_root)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|item| item.id)
+            .collect::<HashSet<_>>();
         let profile = pty
             .profiles()
             .into_iter()
@@ -850,12 +963,6 @@ impl WorkflowRuntime {
         )
         .await;
         let mut transcript = replay.data;
-        let mut last_update = now_ms();
-        let agent_app = if provider == "codex-cli" {
-            AgentSessionApp::Codex
-        } else {
-            AgentSessionApp::Claude
-        };
         let resume_configured = launch_node["config"]["resumeConversation"]
             .as_bool()
             .unwrap_or(false);
@@ -871,9 +978,16 @@ impl WorkflowRuntime {
         .filter(|value| !value.trim().is_empty())
         .map(str::to_owned);
         let mut session_offset = 0usize;
+        let mut session_remainder = String::new();
+        let session_discovery_deadline = std::time::Instant::now() + Duration::from_secs(30);
         let mut final_message = String::new();
         let mut waiting_for_choice = false;
+        let mut codex_pending_approvals = HashSet::new();
         let mut active_codex_turn_id: Option<String> = None;
+        let mut codex_pending_abort: Option<(String, std::time::Instant, bool)> = None;
+        let mut codex_user_interrupted = false;
+        let mut pty_ended = false;
+        let mut session_jsonl_seen = false;
         if let Some(id) = conversation_id.as_deref() {
             if let Ok(Some(content)) = self
                 .session_service
@@ -881,6 +995,7 @@ impl WorkflowRuntime {
                 .await
             {
                 session_offset = content.len();
+                session_jsonl_seen = true;
             }
         }
         let result = 'agent_loop: loop {
@@ -889,171 +1004,54 @@ impl WorkflowRuntime {
                 break Err("Workflow stopped.".to_owned());
             }
             tokio::select! {
-                event = events.recv() => match event {
+                event = events.recv(), if !pty_ended => match event {
                     Ok(PtyEvent::Output(data)) => {
                         transcript.push_str(&data);
-                        if now_ms().saturating_sub(last_update) >= 250 {
-                            self.persist_agent_details(workflow_path, key, &node_id, &session_id, "running", &transcript, None).await;
-                            last_update = now_ms();
-                        }
                     }
-                    Ok(PtyEvent::Exit { code, .. }) => {
-                        if cancelled.load(Ordering::SeqCst) {
-                            break Err("Workflow stopped.".to_owned());
-                        }
-                        // The interactive CLIs commonly exit with code 0 even when the
-                        // API turn failed (for example Codex's `task_complete.error`).
-                        // Treat the JSONL reducer as the source of truth and give the
-                        // session file a short settle window after the PTY closes.
-                        if conversation_id.is_none() {
-                            if let Ok(sessions) = self.session_service.list_in_project(agent_app, workspace_root).await {
-                                conversation_id = sessions
-                                    .into_iter()
-                                    .find(|item| item.updated_at >= node["startedAt"].as_u64().unwrap_or(0) as f64)
-                                    .map(|item| item.id);
-                            }
-                        }
-                        let mut recovered = None;
-                        for _ in 0..25 {
-                            if cancelled.load(Ordering::SeqCst) {
-                                break;
-                            }
-                            if let Some(id) = conversation_id.as_deref() {
-                                if let Ok(Some(content)) = self.session_service.read_in_project(agent_app, id, workspace_root).await {
-                                    if let Some(result) = parse_agent_session_result(agent_app, &content) {
-                                        recovered = Some((id.to_owned(), result, content));
-                                        break;
-                                    }
-                                }
-                            }
-                            sleep(Duration::from_millis(120)).await;
-                        }
-                        if let Some((id, result, content)) = recovered {
-                            match result {
-                                Ok(answer) => break 'agent_loop Ok(serde_json::json!({"type":provider,"status":"success","stdout":"","stderr":"","text":answer,"transcript":answer,"usage":agent_session_usage(agent_app, &content),"exitCode":code,"conversationSessionId":id})),
-                                Err(message) => {
-                                    self.persist_agent_details(workflow_path, key, &node_id, &session_id, "error", &message, Some(&id)).await;
-                                    break 'agent_loop Err(message);
-                                }
-                            }
-                        }
-                        if cancelled.load(Ordering::SeqCst) {
-                            break Err("Workflow stopped.".to_owned());
-                        }
-                        let message = if !final_message.trim().is_empty() {
-                            final_message.clone()
-                        } else {
-                            clean_terminal_text(&transcript)
-                        };
-                        if !message.trim().is_empty() {
-                            self.persist_agent_details(workflow_path, key, &node_id, &session_id, "error", &message, conversation_id.as_deref()).await;
-                        }
-                        break Err(if code == 0 {
-                            "Agent exited before the session reported a result.".to_owned()
-                        } else if message.is_empty() {
-                            format!("{provider} exited with code {code}.")
-                        } else {
-                            message
-                        });
-                    }
-                    Ok(PtyEvent::Error(message)) => {
-                        // A PTY reader can close just after the CLI has flushed its
-                        // JSONL terminal event. Recover that event before surfacing
-                        // the transport error so API failures are classified correctly.
-                        if conversation_id.is_none() {
-                            if let Ok(sessions) = self.session_service.list_in_project(agent_app, workspace_root).await {
-                                conversation_id = sessions
-                                    .into_iter()
-                                    .find(|item| item.updated_at >= node["startedAt"].as_u64().unwrap_or(0) as f64)
-                                    .map(|item| item.id);
-                            }
-                        }
-                        for _ in 0..25 {
-                            if cancelled.load(Ordering::SeqCst) {
-                                break 'agent_loop Err("Workflow stopped.".to_owned());
-                            }
-                            if let Some(id) = conversation_id.as_deref() {
-                                if let Ok(Some(content)) = self.session_service.read_in_project(agent_app, id, workspace_root).await {
-                                    if let Some(result) = parse_agent_session_result(agent_app, &content) {
-                                        match result {
-                                            Ok(answer) => break 'agent_loop Ok(serde_json::json!({"type":provider,"status":"success","stdout":"","stderr":"","text":answer,"transcript":answer,"usage":agent_session_usage(agent_app, &content),"exitCode":0,"conversationSessionId":id})),
-                                            Err(error) => {
-                                                self.persist_agent_details(workflow_path, key, &node_id, &session_id, "error", &error, Some(id)).await;
-                                                break 'agent_loop Err(error);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            sleep(Duration::from_millis(120)).await;
-                        }
-                        if !final_message.trim().is_empty() {
-                            self.persist_agent_details(workflow_path, key, &node_id, &session_id, "error", &final_message, conversation_id.as_deref()).await;
-                        }
-                        break Err(message);
-                    }
-                    Err(_) => {
-                        if conversation_id.is_none() {
-                            if let Ok(sessions) = self.session_service.list_in_project(agent_app, workspace_root).await {
-                                conversation_id = sessions
-                                    .into_iter()
-                                    .find(|item| item.updated_at >= node["startedAt"].as_u64().unwrap_or(0) as f64)
-                                    .map(|item| item.id);
-                            }
-                        }
-                        let mut recovered = None;
-                        for _ in 0..25 {
-                            if cancelled.load(Ordering::SeqCst) {
-                                break;
-                            }
-                            if let Some(id) = conversation_id.as_deref() {
-                                if let Ok(Some(content)) = self.session_service.read_in_project(agent_app, id, workspace_root).await {
-                                    if let Some(result) = parse_agent_session_result(agent_app, &content) {
-                                        recovered = Some((id.to_owned(), result, content));
-                                        break;
-                                    }
-                                }
-                            }
-                            sleep(Duration::from_millis(120)).await;
-                        }
-                        if let Some((id, result, content)) = recovered {
-                            match result {
-                                Ok(answer) => break 'agent_loop Ok(serde_json::json!({"type":provider,"status":"success","stdout":"","stderr":"","text":answer,"transcript":answer,"usage":agent_session_usage(agent_app, &content),"exitCode":0,"conversationSessionId":id})),
-                                Err(message) => break 'agent_loop Err(message),
-                            }
-                        }
-                        if !final_message.trim().is_empty() {
-                            self.persist_agent_details(workflow_path, key, &node_id, &session_id, "error", &final_message, conversation_id.as_deref()).await;
-                        }
-                        if cancelled.load(Ordering::SeqCst) {
-                            break Err("Workflow stopped.".to_owned());
-                        }
-                        let fallback = clean_terminal_text(&transcript);
-                        break Err(if fallback.is_empty() {
-                            "Agent process ended before the session reported a result.".to_owned()
-                        } else {
-                            fallback
-                        });
+                    Ok(PtyEvent::Exit { .. }) | Ok(PtyEvent::Error(_)) | Err(_) => {
+                        pty_ended = true;
                     }
                 },
                 _ = sleep(Duration::from_millis(120)) => {
-                    if conversation_id.is_none() {
+                    if !session_jsonl_seen {
                         if let Ok(sessions) = self.session_service.list_in_project(agent_app, workspace_root).await {
+                            let existing_id = conversation_id.as_deref();
                             conversation_id = sessions
                                 .into_iter()
-                                .find(|item| item.updated_at >= node["startedAt"].as_u64().unwrap_or(0) as f64)
+                                .find(|item| {
+                                    existing_id.is_some_and(|id| id == item.id)
+                                        || (existing_id.is_none()
+                                            && !baseline_session_ids.contains(&item.id)
+                                            && item.updated_at
+                                                >= node["startedAt"].as_u64().unwrap_or(0) as f64)
+                                })
                                 .map(|item| item.id);
-                            if let Some(id) = conversation_id.as_deref() {
-                                self.persist_agent_details(workflow_path, key, &node_id, &session_id, "running", &transcript, Some(id)).await;
-                            }
+                        }
+                        if !session_jsonl_seen
+                            && std::time::Instant::now() >= session_discovery_deadline
+                        {
+                            let _ = session.kill().await;
+                            break 'agent_loop Err(format!(
+                                "{} session JSONL was not created.",
+                                if agent_app == AgentSessionApp::Codex {
+                                    "Codex"
+                                } else {
+                                    "Claude Code"
+                                }
+                            ));
                         }
                     }
                     if let Some(id) = conversation_id.as_deref() {
                         if let Ok(Some(content)) = self.session_service.read_in_project(agent_app, id, workspace_root).await {
+                            session_jsonl_seen = true;
                             let start = session_offset.min(content.len());
                             session_offset = content.len();
-                            for line in content.get(start..).unwrap_or("").lines() {
-                                let Ok(value) = serde_json::from_str::<Value>(line) else { continue };
+                            let lines = take_complete_jsonl_lines(
+                                &mut session_remainder,
+                                content.get(start..).unwrap_or(""),
+                            );
+                            for line in lines {
+                                let Ok(value) = serde_json::from_str::<Value>(&line) else { continue };
                                 if agent_app == AgentSessionApp::Codex {
                                     let payload = value.get("payload").unwrap_or(&Value::Null);
                                     let kind = payload["type"]
@@ -1064,25 +1062,100 @@ impl WorkflowRuntime {
                                         .as_str()
                                         .or_else(|| value["turn_id"].as_str())
                                         .unwrap_or("");
+                                    if codex_user_interrupt_marker(&value) {
+                                        codex_user_interrupted = true;
+                                        continue;
+                                    }
                                     if matches!(kind, "task_started" | "turn_started") {
                                         if !turn_id.is_empty() {
+                                            if let Some((message, _, interrupted)) = codex_pending_abort.take() {
+                                                let error = if interrupted {
+                                                    "Codex turn was cancelled.".to_owned()
+                                                } else {
+                                                    message
+                                                };
+                                                let _ = session.kill().await;
+                                                self.persist_agent_details(
+                                                    workflow_path,
+                                                    key,
+                                                    &node_id,
+                                                    &session_id,
+                                                    "error",
+                                                    &error,
+                                                    Some(id),
+                                                ).await;
+                                                break 'agent_loop Err(error);
+                                            }
                                             active_codex_turn_id = Some(turn_id.to_owned());
                                         }
+                                        codex_user_interrupted = false;
                                     } else if active_codex_turn_id
                                         .as_deref()
                                         .is_some_and(|active| !turn_id.is_empty() && active != turn_id)
                                     {
                                         continue;
                                     }
+                                    if matches!(kind, "turn_aborted" | "task_aborted") {
+                                        if codex_pending_approvals.iter().any(|id| id == "__osheep_rejected_turn") {
+                                            continue;
+                                        }
+                                        let message = codex_event_error_message(&value)
+                                            .unwrap_or_else(|| "Codex turn was cancelled.".to_owned());
+                                        if is_codex_api_error(&message) {
+                                            let _ = session.kill().await;
+                                            self.persist_agent_details(
+                                                workflow_path,
+                                                key,
+                                                &node_id,
+                                                &session_id,
+                                                "error",
+                                                &message,
+                                                Some(id),
+                                            ).await;
+                                            break 'agent_loop Err(message);
+                                        }
+                                        if !codex_pending_approvals.is_empty() {
+                                            codex_pending_approvals.clear();
+                                            codex_pending_approvals.insert("__osheep_rejected_turn".to_owned());
+                                            continue;
+                                        }
+                                        codex_pending_abort = Some((
+                                            message,
+                                            std::time::Instant::now() + Duration::from_millis(250),
+                                            codex_user_interrupted,
+                                        ));
+                                        codex_user_interrupted = false;
+                                        continue;
+                                    }
                                 }
-                                if agent_session_waiting_for_choice(agent_app, &value) {
-                                    waiting_for_choice = true;
-                                    self.persist_agent_details(workflow_path, key, &node_id, &session_id, "waiting-for-choice", &transcript, Some(id)).await;
-                                    continue;
-                                }
-                                if waiting_for_choice && agent_session_resume_event(agent_app, &value) {
-                                    waiting_for_choice = false;
-                                    self.persist_agent_details(workflow_path, key, &node_id, &session_id, "running", &transcript, Some(id)).await;
+                                let approval_state = if agent_app == AgentSessionApp::Codex {
+                                    codex_approval_event(&mut codex_pending_approvals, &value)
+                                } else {
+                                    if agent_session_waiting_for_choice(agent_app, &value) {
+                                        Some(true)
+                                    } else if waiting_for_choice
+                                        && agent_session_resume_event(agent_app, &value)
+                                    {
+                                        Some(false)
+                                    } else {
+                                        None
+                                    }
+                                };
+                                if let Some(waiting) = approval_state {
+                                    waiting_for_choice = waiting;
+                                    self.persist_agent_details(
+                                        workflow_path,
+                                        key,
+                                        &node_id,
+                                        &session_id,
+                                        if waiting { "waiting-for-choice" } else { "running" },
+                                        &transcript,
+                                        Some(id),
+                                    )
+                                    .await;
+                                    if waiting {
+                                        continue;
+                                    }
                                 }
                                 if let Some(message) = agent_session_message(agent_app, &value) {
                                     final_message = message;
@@ -1116,6 +1189,26 @@ impl WorkflowRuntime {
                                     .await;
                                     break 'agent_loop Err(message);
                                 }
+                            }
+                        }
+                        if let Some((message, deadline, interrupted)) = codex_pending_abort.as_ref() {
+                            if std::time::Instant::now() >= *deadline {
+                                let message = if *interrupted {
+                                    "Codex turn was cancelled.".to_owned()
+                                } else {
+                                    message.clone()
+                                };
+                                let _ = session.kill().await;
+                                self.persist_agent_details(
+                                    workflow_path,
+                                    key,
+                                    &node_id,
+                                    &session_id,
+                                    "error",
+                                    &message,
+                                    conversation_id.as_deref(),
+                                ).await;
+                                break 'agent_loop Err(message);
                             }
                         }
                     }
@@ -1450,6 +1543,38 @@ impl WorkflowRuntime {
         }
     }
 
+    async fn apply_usage_cost(&self, node: &Value, output: &mut Value) {
+        let output_provider_id = output["providerId"].as_str().map(str::to_owned);
+        let Some(usage) = output.get_mut("usage").and_then(Value::as_object_mut) else {
+            return;
+        };
+        if usage.get("cost").and_then(Value::as_f64).is_some() {
+            return;
+        }
+        let model = usage
+            .get("model")
+            .and_then(Value::as_str)
+            .or_else(|| node["model"].as_str())
+            .unwrap_or("default");
+        let Some(tokens) = usage_tokens(usage) else {
+            return;
+        };
+        let settings = read_json(&self.data_root.join("settings.json")).await.ok();
+        let prices = settings
+            .as_ref()
+            .and_then(|value| value["pricing"]["models"].as_array())
+            .cloned()
+            .unwrap_or_default();
+        let input_includes_cache = node["providerKind"].as_str() != Some("claude-cli");
+        if let Some(cost) = calculate_model_cost(model, &tokens, &prices, input_includes_cache) {
+            let multiplier =
+                provider_billing_multiplier(&self.data_root, node, output_provider_id.as_deref())
+                    .await;
+            usage.insert("cost".into(), Value::from(cost * multiplier));
+            usage.insert("billingMultiplier".into(), Value::from(multiplier));
+        }
+    }
+
     async fn sender(&self, key: &str) -> broadcast::Sender<Value> {
         let mut events = self.events.lock().await;
         events
@@ -1476,6 +1601,160 @@ impl WorkflowRuntime {
             serde_json::json!({"type":"run","updatedAt":now_ms(),"run":run}),
         )
         .await;
+    }
+}
+
+async fn provider_billing_multiplier(
+    data_root: &Path,
+    node: &Value,
+    output_provider_id: Option<&str>,
+) -> f64 {
+    let provider_id = output_provider_id
+        .or_else(|| node["config"]["providerId"].as_str())
+        .unwrap_or("");
+    if provider_id.trim().is_empty() {
+        return 1.0;
+    }
+    let app = if node["providerKind"].as_str() == Some("codex-cli") {
+        "codex"
+    } else {
+        "claude"
+    };
+    let path = std::env::var_os("OSHEEP_AI_SETTINGS_STORE_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| data_root.join("ai-settings.json"));
+    let Ok(bytes) = tokio::fs::read(path).await else {
+        return 1.0;
+    };
+    let Ok(settings) = serde_json::from_slice::<Value>(&bytes) else {
+        return 1.0;
+    };
+    settings["apps"][app]["providers"][provider_id]["billingMultiplier"]
+        .as_f64()
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .unwrap_or(1.0)
+}
+
+fn usage_tokens(usage: &serde_json::Map<String, Value>) -> Option<(f64, f64, f64, f64)> {
+    let input = usage_number_map(usage, &["input", "inputTokens", "input_tokens"]);
+    let output = usage_number_map(usage, &["output", "outputTokens", "output_tokens"]);
+    let cache_read = usage_number_map(
+        usage,
+        &[
+            "cacheRead",
+            "cache_read_input_tokens",
+            "cached_input_tokens",
+        ],
+    );
+    let cache_write = usage_number_map(
+        usage,
+        &[
+            "cacheWrite",
+            "cache_creation_input_tokens",
+            "cache_write_tokens",
+        ],
+    );
+    (input > 0.0 || output > 0.0 || cache_read > 0.0 || cache_write > 0.0).then_some((
+        input,
+        output,
+        cache_read,
+        cache_write,
+    ))
+}
+
+fn usage_number_map(map: &serde_json::Map<String, Value>, keys: &[&str]) -> f64 {
+    keys.iter()
+        .find_map(|key| map.get(*key).and_then(Value::as_f64))
+        .unwrap_or(0.0)
+}
+
+fn calculate_model_cost(
+    model: &str,
+    tokens: &(f64, f64, f64, f64),
+    prices: &[Value],
+    input_includes_cache: bool,
+) -> Option<f64> {
+    let price = prices.iter().find(|price| {
+        price["model"]
+            .as_str()
+            .is_some_and(|value| value.eq_ignore_ascii_case(model))
+    })?;
+    if price["billingMode"].as_str() == Some("per-request") {
+        return price["costPerRequest"].as_f64();
+    }
+    let input = tokens.0;
+    let cache_read = tokens.2;
+    let cache_write = tokens.3;
+    let uncached_input = if input_includes_cache {
+        if input >= cache_read + cache_write {
+            input - cache_read - cache_write
+        } else {
+            input
+        }
+    } else {
+        input
+    };
+    let input_rate = price["inputCostPerMillion"].as_f64().unwrap_or(0.0);
+    let output_rate = price["outputCostPerMillion"].as_f64().unwrap_or(0.0);
+    let read_rate = price["cacheReadCostPerMillion"]
+        .as_f64()
+        .unwrap_or(input_rate);
+    let write_rate = price["cacheWriteCostPerMillion"]
+        .as_f64()
+        .unwrap_or(input_rate);
+    let cost = (uncached_input * input_rate
+        + tokens.1 * output_rate
+        + cache_read * read_rate
+        + cache_write * write_rate)
+        / 1_000_000.0;
+    cost.is_finite().then_some(cost)
+}
+
+fn format_limit(value: f64) -> String {
+    if value < 0.0001 {
+        format!("{value:.8}")
+    } else {
+        format!("{value:.4}")
+    }
+}
+
+fn run_cost_from_workflow(workflow: &Value, run_id: &str) -> f64 {
+    find_run(workflow, run_id)
+        .and_then(|run| run["trace"].as_array())
+        .into_iter()
+        .flatten()
+        .map(|trace| trace["cost"].as_f64().unwrap_or(0.0))
+        .sum()
+}
+
+fn update_run_stats(workflow: &mut Value, run_id: &str) {
+    let Some(run) = find_run(workflow, run_id).cloned() else {
+        return;
+    };
+    let traces = run["trace"].as_array().cloned().unwrap_or_default();
+    let mut input = 0.0;
+    let mut output = 0.0;
+    let mut cache_read = 0.0;
+    let mut cache_write = 0.0;
+    let mut total = 0.0;
+    let mut cost = 0.0;
+    for trace in &traces {
+        input += trace["tokens"]["input"].as_f64().unwrap_or(0.0);
+        output += trace["tokens"]["output"].as_f64().unwrap_or(0.0);
+        cache_read += trace["tokens"]["cacheRead"].as_f64().unwrap_or(0.0);
+        cache_write += trace["tokens"]["cacheWrite"].as_f64().unwrap_or(0.0);
+        let trace_total = trace["tokens"]["total"].as_f64().unwrap_or(input + output);
+        total += trace_total;
+        cost += trace["cost"].as_f64().unwrap_or(0.0);
+    }
+    if let Some(run) = find_run_mut(workflow, run_id) {
+        run["stats"] = serde_json::json!({
+            "durationMs":run["completedAt"].as_u64().unwrap_or_else(now_ms).saturating_sub(run["startedAt"].as_u64().unwrap_or(0)),
+            "inputTokens":input,"outputTokens":output,"cacheReadTokens":cache_read,
+            "cacheWriteTokens":cache_write,"totalTokens":total.max(input + output),
+            "cost":cost,"nodeCount":traces.len(),
+            "retryCount":traces.iter().map(|trace| trace["retryReasons"].as_array().map_or(0, Vec::len)).sum::<usize>()
+        });
     }
 }
 
@@ -1670,11 +1949,54 @@ fn complete_trace(
         completed_at.saturating_sub(trace["startedAt"].as_u64().unwrap_or(completed_at)),
     );
     if let Some(output) = output {
+        if let Some(usage) = output.get("usage") {
+            if let Some(model) = usage["model"].as_str().filter(|value| !value.is_empty()) {
+                trace["model"] = Value::String(model.to_owned());
+            }
+            let input = usage_number_value(usage, &["input", "inputTokens", "input_tokens"]);
+            let output_tokens =
+                usage_number_value(usage, &["output", "outputTokens", "output_tokens"]);
+            let cache_read = usage_number_value(
+                usage,
+                &[
+                    "cacheRead",
+                    "cache_read_input_tokens",
+                    "cached_input_tokens",
+                ],
+            );
+            let cache_write = usage_number_value(
+                usage,
+                &[
+                    "cacheWrite",
+                    "cache_creation_input_tokens",
+                    "cache_write_tokens",
+                ],
+            );
+            trace["tokens"] = serde_json::json!({"input":input,"output":output_tokens,"cacheRead":cache_read,"cacheWrite":cache_write,"total":input + output_tokens});
+            if let Some(cost) = usage["cost"].as_f64() {
+                trace["cost"] = Value::from(cost);
+            }
+            if let Some(multiplier) = usage["billingMultiplier"].as_f64() {
+                trace["billingMultiplier"] = Value::from(multiplier);
+            }
+        }
+        if let Some(provider_id) = output["providerId"]
+            .as_str()
+            .filter(|value| !value.is_empty())
+        {
+            trace["providerId"] = Value::String(provider_id.to_owned());
+        }
         trace["output"] = output;
     }
     if let Some(error) = error {
         trace["error"] = Value::String(error);
     }
+}
+
+fn usage_number_value(value: &Value, keys: &[&str]) -> f64 {
+    keys.iter()
+        .find_map(|key| value.get(*key).and_then(Value::as_f64))
+        .unwrap_or(0.0)
 }
 
 fn running_details(node: &Value, started_at: u64) -> Value {
@@ -1762,6 +2084,9 @@ fn finish_details(
         details["exitCode"] = output.get("exitCode").cloned().unwrap_or(Value::Null);
         if let Some(session_id) = output["conversationSessionId"].as_str() {
             details["conversationSessionId"] = Value::String(session_id.to_owned());
+        }
+        if let Some(usage) = output.get("usage") {
+            details["usage"] = usage.clone();
         }
         for field in [
             "retryAttempts",
@@ -2111,6 +2436,37 @@ fn should_retry_agent_failure(
     true
 }
 
+fn is_agent_api_failure(message: &str) -> bool {
+    static API_ERROR: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(
+            r"(?i)\bAPI(?: request)? (?:Error|failed|failure)\b|\b(?:unable|failed) to (?:connect to|reach) (?:the )?API\b",
+        )
+        .expect("valid API error pattern")
+    });
+    static API_STATUS: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(
+            r"(?i)\b(?:API Error\s*:|unexpected status|HTTP(?: status)?|response status|last status|status code|status)\s*(?:code\s*)?[:=]?\s*[1-5]\d{2}\b|\brequest failed with status(?: code)?\s*[:=]?\s*[1-5]\d{2}\b",
+        )
+        .expect("valid API status pattern")
+    });
+    static API_MARKER: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(
+            r"(?i)\b(?:INVALID_API_KEY|authentication_error|permission_error|rate_limit_error|api_error|overloaded_error)\b",
+        )
+        .expect("valid API marker pattern")
+    });
+    static NETWORK_ERROR: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(
+            r"(?i)\b(?:fetch failed|network error|socket hang up|service unavailable|temporarily unavailable|gateway timeout|connection (?:error|failed|reset|refused|timed out)|(?:failed|unable|could not) to connect|error sending request|request timed out|proxy error|certificate (?:error|verify failed)|name resolution|name or service not known|econnaborted|econnreset|econnrefused|ehostunreach|enetunreach|etimedout|enotfound|eai_again|dns|tls)\b|网络错误|连接(?:失败|超时)",
+        )
+        .expect("valid network error pattern")
+    });
+    API_ERROR.is_match(message)
+        || API_STATUS.is_match(message)
+        || API_MARKER.is_match(message)
+        || NETWORK_ERROR.is_match(message)
+}
+
 async fn set_retry_details(
     workflow_path: &Path,
     node_id: &str,
@@ -2199,7 +2555,7 @@ async fn load_agent_provider_plan(
     let settings_path = std::env::var_os("OSHEEP_AI_SETTINGS_STORE_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|| data_root.join("ai-settings.json"));
-    let Ok(raw) = tokio::fs::read(settings_path).await else {
+    let Ok(raw) = tokio::fs::read(&settings_path).await else {
         return Vec::new();
     };
     let Ok(settings) = serde_json::from_slice::<Value>(&raw) else {
@@ -2225,24 +2581,57 @@ async fn load_agent_provider_plan(
     }
     if strategy == "lowest-multiplier" {
         ids.sort_by(|a, b| {
+            let provider = |id: &str| providers.and_then(|items| items.get(id));
             let multiplier = |id: &str| {
-                providers
-                    .and_then(|items| items.get(id))
-                    .and_then(|provider| provider["billingMultiplier"].as_f64())
+                provider(id)
+                    .and_then(|item| item["billingMultiplier"].as_f64())
+                    .filter(|value| value.is_finite() && *value > 0.0)
                     .unwrap_or(1.0)
             };
             multiplier(a)
                 .partial_cmp(&multiplier(b))
                 .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| {
+                    provider(a)
+                        .and_then(|item| item["sortIndex"].as_i64())
+                        .unwrap_or(0)
+                        .cmp(
+                            &provider(b)
+                                .and_then(|item| item["sortIndex"].as_i64())
+                                .unwrap_or(0),
+                        )
+                })
                 .then_with(|| a.cmp(b))
         });
     }
     ids
 }
 
-async fn apply_agent_provider(data_root: &Path, node: &Value, provider_id: &str) {
+async fn load_current_agent_provider(data_root: &Path, node: &Value) -> Option<String> {
+    let app = if node["providerKind"].as_str() == Some("codex-cli") {
+        "codex"
+    } else {
+        "claude"
+    };
+    let settings_path = std::env::var_os("OSHEEP_AI_SETTINGS_STORE_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| data_root.join("ai-settings.json"));
+    let raw = tokio::fs::read(settings_path).await.ok()?;
+    let settings = serde_json::from_slice::<Value>(&raw).ok()?;
+    let current = settings["apps"][app]["current"].as_str()?;
+    settings["apps"][app]["providers"]
+        .get(current)
+        .is_some_and(Value::is_object)
+        .then(|| current.to_owned())
+}
+
+async fn apply_agent_provider(
+    data_root: &Path,
+    node: &Value,
+    provider_id: &str,
+) -> Result<(), String> {
     if provider_id.trim().is_empty() {
-        return;
+        return Ok(());
     }
     let app = if node["providerKind"].as_str() == Some("codex-cli") {
         "codex"
@@ -2252,38 +2641,44 @@ async fn apply_agent_provider(data_root: &Path, node: &Value, provider_id: &str)
     let settings_path = std::env::var_os("OSHEEP_AI_SETTINGS_STORE_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|| data_root.join("ai-settings.json"));
-    let Ok(raw) = tokio::fs::read(settings_path).await else {
-        return;
-    };
-    let Ok(settings) = serde_json::from_slice::<Value>(&raw) else {
-        return;
-    };
+    let raw = tokio::fs::read(&settings_path)
+        .await
+        .map_err(|error| format!("Failed to read AI provider settings: {error}"))?;
+    let mut settings = serde_json::from_slice::<Value>(&raw)
+        .map_err(|error| format!("Failed to parse AI provider settings: {error}"))?;
     let provider = &settings["apps"][app]["providers"][provider_id];
     if !provider.is_object() {
-        return;
+        return Err(format!("AI provider not found: {provider_id}"));
     }
     let home = std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
         .map(PathBuf::from)
         .unwrap_or_else(|| data_root.to_path_buf());
     if app == "claude" {
-        let path = std::env::var_os("CLAUDE_CONFIG_DIR")
+        let path = std::env::var_os("OSHEEP_CLAUDE_CONFIG_DIR")
+            .or_else(|| std::env::var_os("CLAUDE_CONFIG_DIR"))
             .map(PathBuf::from)
             .unwrap_or_else(|| home.join(".claude"))
             .join("settings.json");
-        let Some(mut config) = provider["settingsConfig"].clone().as_object().cloned() else {
-            return;
-        };
+        let mut config = provider["settingsConfig"]
+            .clone()
+            .as_object()
+            .cloned()
+            .ok_or_else(|| format!("Claude provider has invalid settings: {provider_id}"))?;
         config.remove("api_format");
         config.remove("apiFormat");
         config.remove("openrouter_compat_mode");
         config.remove("openrouterCompatMode");
         if let Some(parent) = path.parent() {
-            let _ = tokio::fs::create_dir_all(parent).await;
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|error| format!("Failed to create Claude config directory: {error}"))?;
         }
-        if let Ok(bytes) = serde_json::to_vec_pretty(&Value::Object(config)) {
-            let _ = tokio::fs::write(path, bytes).await;
-        }
+        let bytes = serde_json::to_vec_pretty(&Value::Object(config))
+            .map_err(|error| format!("Failed to encode Claude settings: {error}"))?;
+        tokio::fs::write(path, bytes)
+            .await
+            .map_err(|error| format!("Failed to apply Claude provider: {error}"))?;
     } else {
         let config = &provider["settingsConfig"];
         let auth = config["auth"].clone();
@@ -2292,14 +2687,51 @@ async fn apply_agent_provider(data_root: &Path, node: &Value, provider_id: &str)
             .or_else(|| std::env::var_os("OSHEEP_CODEX_CONFIG_DIR"))
             .map(PathBuf::from)
             .unwrap_or_else(|| home.join(".codex"));
-        let _ = tokio::fs::create_dir_all(&root).await;
-        if auth.is_object() {
-            if let Ok(bytes) = serde_json::to_vec_pretty(&auth) {
-                let _ = tokio::fs::write(root.join("auth.json"), bytes).await;
-            }
+        tokio::fs::create_dir_all(&root)
+            .await
+            .map_err(|error| format!("Failed to create Codex config directory: {error}"))?;
+        let keep_existing_auth = provider["category"].as_str() == Some("official")
+            && !codex_auth_has_login_material(&auth);
+        if !keep_existing_auth && auth.is_object() {
+            let bytes = serde_json::to_vec_pretty(&auth)
+                .map_err(|error| format!("Failed to encode Codex auth: {error}"))?;
+            tokio::fs::write(root.join("auth.json"), bytes)
+                .await
+                .map_err(|error| format!("Failed to apply Codex auth: {error}"))?;
         }
-        let _ = tokio::fs::write(root.join("config.toml"), toml).await;
+        tokio::fs::write(root.join("config.toml"), toml)
+            .await
+            .map_err(|error| format!("Failed to apply Codex config: {error}"))?;
     }
+    // Keep the persisted provider selection in sync with the live files. The
+    // TypeScript runner updates both on every retry, so the next attempt and
+    // a subsequent run observe the same provider.
+    if let Some(manager) = settings["apps"][app].as_object_mut() {
+        manager.insert("current".to_owned(), Value::String(provider_id.to_owned()));
+    }
+    let bytes = serde_json::to_vec_pretty(&settings)
+        .map_err(|error| format!("Failed to encode AI provider settings: {error}"))?;
+    tokio::fs::write(&settings_path, bytes)
+        .await
+        .map_err(|error| format!("Failed to persist AI provider selection: {error}"))?;
+    Ok(())
+}
+
+fn codex_auth_has_login_material(auth: &Value) -> bool {
+    let Some(auth) = auth.as_object() else {
+        return false;
+    };
+    auth.iter().any(|(key, value)| {
+        if key == "auth_mode" || value.is_null() {
+            return false;
+        }
+        match value {
+            Value::String(text) => !text.trim().is_empty(),
+            Value::Array(values) => !values.is_empty(),
+            Value::Object(values) => !values.is_empty(),
+            _ => true,
+        }
+    })
 }
 
 fn parse_maybe_json(raw: &str) -> Value {
@@ -2705,10 +3137,6 @@ fn build_workflow_agent_invocation(
     Ok((executable, args))
 }
 
-fn clean_terminal_text(value: &str) -> String {
-    value.trim().to_owned()
-}
-
 fn agent_session_waiting_for_choice(app: AgentSessionApp, value: &Value) -> bool {
     if app == AgentSessionApp::Claude {
         if value["type"].as_str() != Some("assistant") {
@@ -2730,11 +3158,88 @@ fn agent_session_waiting_for_choice(app: AgentSessionApp, value: &Value) -> bool
     if kind == "item_completed" && payload["item"]["status"].as_str() == Some("declined") {
         return true;
     }
+    if matches!(kind, "function_call_output" | "custom_tool_call_output") {
+        let output = payload.get("output").unwrap_or(&Value::Null);
+        return codex_output_was_approval_denied(output) || codex_output_was_user_aborted(output);
+    }
     if kind != "custom_tool_call" {
         return false;
     }
+    let name = payload["name"]
+        .as_str()
+        .or_else(|| value["name"].as_str())
+        .unwrap_or("");
+    if name != "exec" {
+        return false;
+    }
     let input = payload.get("input").unwrap_or(&Value::Null);
-    codex_requests_escalation(input)
+    codex_requests_escalation(input) || value.get("input").is_some_and(codex_requests_escalation)
+}
+
+fn codex_approval_event(pending: &mut HashSet<String>, value: &Value) -> Option<bool> {
+    const REJECTED: &str = "__osheep_rejected_turn";
+    let payload = value.get("payload").unwrap_or(value);
+    let kind = payload["type"]
+        .as_str()
+        .unwrap_or(value["type"].as_str().unwrap_or(""));
+    let call_id = payload["call_id"]
+        .as_str()
+        .or_else(|| value["call_id"].as_str())
+        .unwrap_or("");
+
+    if matches!(kind, "task_started" | "turn_started") {
+        pending.clear();
+        return Some(false);
+    }
+    if matches!(kind, "function_call" | "custom_tool_call") && !call_id.is_empty() {
+        let name = payload["name"]
+            .as_str()
+            .or_else(|| value["name"].as_str())
+            .unwrap_or("");
+        if kind == "custom_tool_call"
+            && name == "exec"
+            && (codex_requests_escalation(&payload["input"])
+                || codex_requests_escalation(&value["input"]))
+        {
+            if pending.insert(call_id.to_owned()) {
+                return Some(true);
+            }
+        }
+        return None;
+    }
+    if kind == "item_completed" && payload["item"]["status"].as_str() == Some("declined") {
+        pending.insert(REJECTED.to_owned());
+        return Some(true);
+    }
+    if matches!(kind, "function_call_output" | "custom_tool_call_output") {
+        let output = payload.get("output").unwrap_or(&Value::Null);
+        let denied = codex_output_was_approval_denied(output)
+            || (!call_id.is_empty()
+                && pending.contains(call_id)
+                && codex_output_was_user_aborted(output));
+        if denied {
+            pending.remove(call_id);
+            pending.insert(REJECTED.to_owned());
+            return Some(true);
+        }
+        if pending.remove(call_id) && pending.is_empty() {
+            return Some(false);
+        }
+    }
+    None
+}
+
+fn take_complete_jsonl_lines(remainder: &mut String, appended: &str) -> Vec<String> {
+    remainder.push_str(appended);
+    let Some(last_newline) = remainder.rfind('\n') else {
+        return Vec::new();
+    };
+    let complete = remainder[..=last_newline].to_owned();
+    remainder.drain(..=last_newline);
+    complete
+        .lines()
+        .map(|line| line.trim_end_matches('\r').to_owned())
+        .collect()
 }
 
 fn agent_session_resume_event(app: AgentSessionApp, value: &Value) -> bool {
@@ -2771,7 +3276,9 @@ fn agent_session_resume_event(app: AgentSessionApp, value: &Value) -> bool {
             .unwrap_or(&Value::Null)
             .to_string()
             .to_ascii_lowercase();
-        return !output.contains("code-mode host closed its stdout")
+        return !codex_output_was_approval_denied(payload.get("output").unwrap_or(&Value::Null))
+            && !codex_output_was_user_aborted(payload.get("output").unwrap_or(&Value::Null))
+            && !output.contains("code-mode host closed its stdout")
             && !output.contains("aborted by user after")
             && !output.contains("declined")
             && !output.contains("denied");
@@ -2786,7 +3293,36 @@ fn codex_requests_escalation(input: &Value) -> bool {
                 || codex_requests_escalation(value)
         }),
         Value::Array(items) => items.iter().any(codex_requests_escalation),
-        Value::String(text) => text.contains("require_escalated"),
+        Value::String(text) => {
+            if let Ok(parsed) = serde_json::from_str::<Value>(text) {
+                if codex_requests_escalation(&parsed) {
+                    return true;
+                }
+            }
+            let normalized = text.replace("\\\"", "\"").replace("\\'", "'");
+            let lower = normalized.to_ascii_lowercase();
+            lower.contains("sandbox_permissions") && lower.contains("require_escalated")
+        }
+        _ => false,
+    }
+}
+
+fn codex_output_was_approval_denied(value: &Value) -> bool {
+    match value {
+        Value::String(text) => text
+            .to_ascii_lowercase()
+            .contains("code-mode host closed its stdout"),
+        Value::Object(object) => object.values().any(codex_output_was_approval_denied),
+        Value::Array(items) => items.iter().any(codex_output_was_approval_denied),
+        _ => false,
+    }
+}
+
+fn codex_output_was_user_aborted(value: &Value) -> bool {
+    match value {
+        Value::String(text) => text.to_ascii_lowercase().contains("aborted by user after"),
+        Value::Object(object) => object.values().any(codex_output_was_user_aborted),
+        Value::Array(items) => items.iter().any(codex_output_was_user_aborted),
         _ => false,
     }
 }
@@ -2829,18 +3365,78 @@ fn agent_session_completion(app: AgentSessionApp, value: &Value) -> Option<(bool
         }
         return Some((true, String::new()));
     }
-    if matches!(
-        kind,
-        "error" | "turn_failed" | "task_failed" | "turn_aborted" | "task_aborted" | "stream_error"
-    ) {
-        return Some((
-            false,
-            error_message_value(&payload["message"])
-                .or_else(|| error_message_value(&payload["error"]))
-                .unwrap_or_else(|| "Codex failed.".to_owned()),
-        ));
+    if kind == "stream_error" {
+        let message = codex_event_terminal_message(value)?;
+        return codex_terminal_stream_error(&message).then_some((false, message));
+    }
+    if kind
+        .split('_')
+        .any(|part| matches!(part, "error" | "failed" | "failure"))
+    {
+        let message = codex_event_terminal_message(value)?;
+        return is_codex_api_error(&message).then_some((false, message));
     }
     None
+}
+
+fn codex_event_terminal_message(value: &Value) -> Option<String> {
+    let payload = value.get("payload").unwrap_or(value);
+    error_message_value(&payload["error"])
+        .or_else(|| error_message_value(&value["error"]))
+        .or_else(|| error_message_value(&payload["message"]))
+        .or_else(|| error_message_value(&value["message"]))
+        .or_else(|| error_message_value(&payload["reason"]))
+        .or_else(|| error_message_value(&value["reason"]))
+}
+
+fn codex_event_error_message(value: &Value) -> Option<String> {
+    let payload = value.get("payload").unwrap_or(value);
+    error_message_value(&payload["reason"])
+        .or_else(|| error_message_value(&payload["error"]))
+        .or_else(|| error_message_value(&payload["message"]))
+        .or_else(|| error_message_value(&value["reason"]))
+        .or_else(|| error_message_value(&value["error"]))
+        .or_else(|| error_message_value(&value["message"]))
+}
+
+fn is_codex_api_error(message: &str) -> bool {
+    static API_ERROR: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(
+            r"(?i)\b(?:unexpected status|last status|HTTP(?: status)?|response status|status code|status)\s*(?:code\s*)?[:=]?\s*[1-5]\d{2}\b|\b(?:API Error|API request|api_error|INVALID_API_KEY|API_KEY_DISABLED|rate[_ ]limit|overloaded|service unavailable|fetch failed|network error|connection (?:reset|refused|timed out)|econnreset|econnrefused|etimedout|enotfound|dns|tls)\b",
+        )
+        .expect("valid Codex API error pattern")
+    });
+    API_ERROR.is_match(message)
+}
+
+fn codex_terminal_stream_error(message: &str) -> bool {
+    static RETRY_LIMIT: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?i)\b(?:exceeded|reached) (?:the )?retry limit\b")
+            .expect("valid Codex stream error pattern")
+    });
+    RETRY_LIMIT.is_match(message)
+}
+
+fn codex_user_interrupt_marker(value: &Value) -> bool {
+    let payload = value.get("payload").unwrap_or(&Value::Null);
+    if value["type"].as_str() != Some("response_item")
+        || payload["type"].as_str() != Some("message")
+        || payload["role"].as_str() != Some("developer")
+    {
+        return false;
+    }
+    payload["content"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|item| item["text"].as_str())
+        .any(|text| {
+            text.to_ascii_lowercase().contains("<turn_aborted>")
+                && text
+                    .to_ascii_lowercase()
+                    .contains("previous turn was interrupted on purpose")
+                && text.to_ascii_lowercase().contains("</turn_aborted>")
+        })
 }
 
 fn error_message_value(value: &Value) -> Option<String> {
@@ -2945,9 +3541,16 @@ fn agent_session_usage(app: AgentSessionApp, content: &str) -> Value {
     let mut output = 0.0;
     let mut cache_read = 0.0;
     let mut cache_write = 0.0;
+    let mut model = None::<String>;
     if app == AgentSessionApp::Codex {
         for value in values.iter().rev() {
             let payload = value.get("payload").unwrap_or(value);
+            if model.is_none() {
+                model = payload["model"]
+                    .as_str()
+                    .or_else(|| value["model"].as_str())
+                    .map(str::to_owned);
+            }
             if payload["type"].as_str() != Some("token_count") {
                 continue;
             }
@@ -2963,6 +3566,7 @@ fn agent_session_usage(app: AgentSessionApp, content: &str) -> Value {
                     "cached_input_tokens",
                     "cache_read_input_tokens",
                     "cacheReadInputTokens",
+                    "cacheRead",
                 ],
             );
             cache_write = usage_number(
@@ -2971,6 +3575,7 @@ fn agent_session_usage(app: AgentSessionApp, content: &str) -> Value {
                     "cache_write_tokens",
                     "cache_creation_input_tokens",
                     "cacheWriteInputTokens",
+                    "cacheWrite",
                 ],
             );
             break;
@@ -2979,6 +3584,12 @@ fn agent_session_usage(app: AgentSessionApp, content: &str) -> Value {
         for value in values {
             if value["type"].as_str() != Some("assistant") {
                 continue;
+            }
+            if model.is_none() {
+                model = value["message"]["model"]
+                    .as_str()
+                    .or_else(|| value["model"].as_str())
+                    .map(str::to_owned);
             }
             let usage = value["message"].get("usage").or_else(|| value.get("usage"));
             input += usage_number(usage, &["input_tokens", "inputTokens"]);
@@ -2989,6 +3600,8 @@ fn agent_session_usage(app: AgentSessionApp, content: &str) -> Value {
                     "cache_read_input_tokens",
                     "cached_input_tokens",
                     "cacheReadInputTokens",
+                    "cache_read_tokens",
+                    "cacheRead",
                 ],
             );
             cache_write += usage_number(
@@ -2997,11 +3610,16 @@ fn agent_session_usage(app: AgentSessionApp, content: &str) -> Value {
                     "cache_creation_input_tokens",
                     "cache_write_input_tokens",
                     "cacheWriteInputTokens",
+                    "cacheWrite",
                 ],
             );
         }
     }
-    serde_json::json!({"input":input,"output":output,"cacheRead":cache_read,"cacheWrite":cache_write,"total":input+output})
+    let mut result = serde_json::json!({"input":input,"output":output,"cacheRead":cache_read,"cacheWrite":cache_write,"total":input+output});
+    if let Some(model) = model {
+        result["model"] = Value::String(model);
+    }
+    result
 }
 
 fn usage_number(value: Option<&Value>, keys: &[&str]) -> f64 {
@@ -3593,7 +4211,7 @@ fn find_executable(program: &str) -> Option<PathBuf> {
     if path.components().count() > 1 && path.exists() {
         return Some(path.to_owned());
     }
-    let path_env = std::env::var_os("PATH")?;
+    let path_env = std::env::var_os("PATH");
     #[cfg(windows)]
     let extensions: &[&str] = if Path::new(program).extension().is_some() {
         &[""]
@@ -3602,11 +4220,25 @@ fn find_executable(program: &str) -> Option<PathBuf> {
     };
     #[cfg(not(windows))]
     let extensions: &[&str] = &[""];
-    for directory in std::env::split_paths(&path_env) {
-        for extension in extensions {
-            let candidate = directory.join(format!("{program}{extension}"));
-            if candidate.is_file() {
-                return Some(candidate);
+    if let Some(path_env) = path_env {
+        for directory in std::env::split_paths(&path_env) {
+            for extension in extensions {
+                let candidate = directory.join(format!("{program}{extension}"));
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+    #[cfg(windows)]
+    if Path::new(program).extension().is_none() {
+        if let Some(app_data) = std::env::var_os("APPDATA").map(PathBuf::from) {
+            let directory = app_data.join("npm");
+            for extension in [".exe", ".cmd", ".bat"] {
+                let candidate = directory.join(format!("{program}{extension}"));
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
             }
         }
     }
@@ -3947,6 +4579,21 @@ mod tests {
             AgentSessionApp::Codex,
             &escalation
         ));
+        assert!(agent_session_waiting_for_choice(
+            AgentSessionApp::Codex,
+            &serde_json::json!({
+                "type":"custom_tool_call",
+                "name":"exec",
+                "input":"exec(command=\"curl.exe -I https://example.com\", sandbox_permissions: \\\"require_escalated\\\")"
+            })
+        ));
+        assert!(agent_session_waiting_for_choice(
+            AgentSessionApp::Codex,
+            &serde_json::json!({
+                "type":"custom_tool_call_output",
+                "output":"aborted by user after approval"
+            })
+        ));
 
         let declined = serde_json::json!({
             "type": "event_msg",
@@ -3983,6 +4630,147 @@ mod tests {
             agent_session_completion(AgentSessionApp::Codex, &failed),
             Some((false, "unexpected status 503 Service Unavailable".into()))
         );
+        assert_eq!(
+            agent_session_completion(
+                AgentSessionApp::Codex,
+                &serde_json::json!({
+                    "type":"event_msg",
+                    "payload":{"type":"turn_failed","message":"tool execution failed"}
+                })
+            ),
+            None
+        );
+        assert_eq!(
+            agent_session_completion(
+                AgentSessionApp::Codex,
+                &serde_json::json!({
+                    "type":"event_msg",
+                    "payload":{"type":"turn_failed","message":"network error: connection reset"}
+                })
+            ),
+            Some((false, "network error: connection reset".into()))
+        );
+        assert_eq!(
+            agent_session_completion(
+                AgentSessionApp::Codex,
+                &serde_json::json!({
+                    "type":"event_msg",
+                    "payload":{
+                        "type":"turn_failed",
+                        "error":{"message":"unexpected status 503 Service Unavailable"},
+                        "message":"tool execution failed"
+                    }
+                })
+            ),
+            Some((false, "unexpected status 503 Service Unavailable".into()))
+        );
+        assert_eq!(
+            agent_session_completion(
+                AgentSessionApp::Codex,
+                &serde_json::json!({
+                    "type":"event_msg",
+                    "payload":{"type":"stream_error","message":"reached retry limit"}
+                })
+            ),
+            Some((false, "reached retry limit".into()))
+        );
+        assert_eq!(
+            agent_session_completion(
+                AgentSessionApp::Codex,
+                &serde_json::json!({
+                    "type":"event_msg",
+                    "payload":{"type":"stream_error","message":"temporary stream interruption"}
+                })
+            ),
+            None
+        );
+        assert_eq!(
+            agent_session_completion(
+                AgentSessionApp::Codex,
+                &serde_json::json!({
+                    "type":"event_msg",
+                    "payload":{"type":"turn_aborted","reason":"interrupted"}
+                })
+            ),
+            None
+        );
+        assert!(codex_user_interrupt_marker(&serde_json::json!({
+            "type":"response_item",
+            "payload":{
+                "type":"message",
+                "role":"developer",
+                "content":[{"type":"input_text","text":"<turn_aborted>The previous turn was interrupted on purpose.</turn_aborted>"}]
+            }
+        })));
+    }
+
+    #[test]
+    fn codex_approval_waiting_is_bound_to_the_matching_call() {
+        let mut pending = HashSet::new();
+        let request = serde_json::json!({
+            "type":"response_item",
+            "payload":{
+                "type":"custom_tool_call",
+                "name":"exec",
+                "call_id":"call_1",
+                "input":"{\"sandbox_permissions\":\"require_escalated\"}"
+            }
+        });
+        assert_eq!(codex_approval_event(&mut pending, &request), Some(true));
+        let unrelated = serde_json::json!({
+            "type":"response_item",
+            "payload":{"type":"custom_tool_call_output","call_id":"call_other","output":"ok"}
+        });
+        assert_eq!(codex_approval_event(&mut pending, &unrelated), None);
+        let accepted = serde_json::json!({
+            "type":"response_item",
+            "payload":{"type":"custom_tool_call_output","call_id":"call_1","output":"ok"}
+        });
+        assert_eq!(codex_approval_event(&mut pending, &accepted), Some(false));
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn jsonl_monitor_retains_partial_event_lines_between_polls() {
+        let mut remainder = String::new();
+        assert!(
+            take_complete_jsonl_lines(&mut remainder, "{\"type\":\"event_msg\",\"payload\":")
+                .is_empty()
+        );
+        let lines = take_complete_jsonl_lines(
+            &mut remainder,
+            "{\"type\":\"task_started\"}}\n{\"type\":\"partial",
+        );
+        assert_eq!(
+            lines,
+            vec!["{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}"]
+        );
+        assert_eq!(remainder, "{\"type\":\"partial");
+    }
+
+    #[test]
+    fn codex_task_start_is_the_jsonl_running_transition() {
+        let mut pending = HashSet::new();
+        let started = serde_json::json!({
+            "type":"event_msg",
+            "payload":{"type":"task_started","turn_id":"turn_1"}
+        });
+        assert_eq!(codex_approval_event(&mut pending, &started), Some(false));
+    }
+
+    #[test]
+    fn official_codex_provider_without_login_material_keeps_oauth_auth_file() {
+        assert!(!codex_auth_has_login_material(&serde_json::json!({
+            "auth_mode":"chatgpt",
+            "OPENAI_API_KEY":""
+        })));
+        assert!(codex_auth_has_login_material(&serde_json::json!({
+            "auth_mode":"chatgpt",
+            "tokens":{"access_token":"token"}
+        })));
+        assert!(codex_auth_has_login_material(&serde_json::json!({
+            "OPENAI_API_KEY":"sk-test"
+        })));
     }
 
     #[test]
@@ -4065,6 +4853,13 @@ mod tests {
         ));
         assert!(!should_retry_agent_failure("network error", 2, 2, false));
         assert!(should_retry_agent_failure("network error", 99, 0, true));
+        assert!(is_agent_api_failure(
+            "unexpected status 503 Service Unavailable"
+        ));
+        assert!(is_agent_api_failure("network error: connection reset"));
+        assert!(!is_agent_api_failure(
+            "command returned code 503 in its output"
+        ));
     }
 
     #[tokio::test]

@@ -375,8 +375,34 @@ impl PtyRuntime for NativePtyRuntime {
                 .args
                 .clone()
         };
-        let mut command = CommandBuilder::new(platform_shell_path(&executable));
-        command.args(args);
+        let executable_extension = executable
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(|value| value.to_ascii_lowercase());
+        let executable_name = executable
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let needs_cmd_shim = cfg!(windows)
+            && (matches!(executable_extension.as_deref(), Some("cmd") | Some("bat"))
+                || (executable_extension.is_none()
+                    && matches!(executable_name.as_str(), "claude" | "codex")));
+        let mut command = if needs_cmd_shim {
+            // npm installs Windows CLIs as .cmd/.bat shims. CreateProcessW
+            // cannot execute those files directly, so route them through
+            // cmd.exe while preserving the original argument list.
+            let cmd = find_executable("cmd.exe").unwrap_or_else(|| PathBuf::from("cmd.exe"));
+            let mut command = CommandBuilder::new(platform_shell_path(&cmd));
+            command.args(["/D", "/S", "/C", "call"]);
+            command.arg(platform_shell_path(&executable));
+            command.args(args);
+            command
+        } else {
+            let mut command = CommandBuilder::new(platform_shell_path(&executable));
+            command.args(args);
+            command
+        };
         command.cwd(platform_shell_path(&request.cwd));
         for (key, value) in terminal_environment(request.terminal_program.as_deref()) {
             command.env(key, value);

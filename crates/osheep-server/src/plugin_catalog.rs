@@ -25,7 +25,11 @@ fn codex_personal_paths(home: &Path) -> (PathBuf, PathBuf) {
 }
 
 pub(crate) async fn claude_snapshot() -> Value {
-    claude_snapshot_from(&user_home()).await
+    let claude_dir = std::env::var_os("OSHEEP_CLAUDE_CONFIG_DIR")
+        .or_else(|| std::env::var_os("CLAUDE_CONFIG_DIR"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| user_home().join(".claude"));
+    claude_snapshot_from_dir(&claude_dir).await
 }
 
 pub(crate) async fn codex_snapshot() -> Value {
@@ -41,8 +45,12 @@ async fn read_json(path: &Path) -> Option<Value> {
     serde_json::from_slice(&bytes).ok()
 }
 
+#[cfg(test)]
 async fn claude_snapshot_from(home: &Path) -> Value {
-    let claude_dir = home.join(".claude");
+    claude_snapshot_from_dir(&home.join(".claude")).await
+}
+
+async fn claude_snapshot_from_dir(claude_dir: &Path) -> Value {
     let settings_path = claude_dir.join("settings.json");
     let local_settings = claude_dir.join("settings.local.json");
     let cache = claude_dir.join("plugins").join("cache");
@@ -62,99 +70,89 @@ async fn claude_snapshot_from(home: &Path) -> Value {
     let mut marketplaces = Vec::new();
     let mut warnings = Vec::new();
 
-    let mut entries = match tokio::fs::read_dir(&marketplaces_root).await {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return serde_json::json!({
-                "plugins": [], "marketplaces": [], "warnings": [],
-                "paths": claude_paths(&claude_dir, &settings_path, &local_settings, &cache, &marketplaces_root)
-            });
-        }
-        Err(error) => {
-            warnings.push(format!("Claude marketplace scan failed: {error}"));
-            return serde_json::json!({
-                "plugins": [], "marketplaces": [], "warnings": warnings,
-                "paths": claude_paths(&claude_dir, &settings_path, &local_settings, &cache, &marketplaces_root)
-            });
-        }
-    };
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        if !entry.file_type().await.is_ok_and(|kind| kind.is_dir()) {
-            continue;
-        }
-        let manifest_path = entry.path().join(".claude-plugin").join("marketplace.json");
-        let Some(manifest) = read_json(&manifest_path).await else {
-            continue;
-        };
-        let marketplace = manifest["name"]
-            .as_str()
-            .map(str::to_owned)
-            .unwrap_or_else(|| entry.file_name().to_string_lossy().into_owned());
-        marketplaces.push(serde_json::json!({
-            "name": marketplace,
-            "source": manifest.get("source").and_then(Value::as_str),
-            "repo": manifest.get("repo").and_then(Value::as_str),
-            "url": manifest.get("homepage").and_then(Value::as_str),
-            "path": entry.path()
-        }));
-        for item in manifest["plugins"].as_array().into_iter().flatten() {
-            let Some(name) = item["name"].as_str() else {
+    if let Ok(mut entries) = tokio::fs::read_dir(&marketplaces_root).await {
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            if !entry.file_type().await.is_ok_and(|kind| kind.is_dir()) {
+                continue;
+            }
+            let manifest_path = entry.path().join(".claude-plugin").join("marketplace.json");
+            let Some(manifest) = read_json(&manifest_path).await else {
                 continue;
             };
-            let selector = format!("{name}@{marketplace}");
-            let installs = installed
-                .get(&selector)
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
-            let install = installs.last();
-            let is_installed = !installs.is_empty();
-            let is_enabled = enabled
-                .get(&selector)
-                .and_then(Value::as_bool)
-                .unwrap_or(is_installed);
-            let source_path = plugin_source_path(item, &entry.path()).or_else(|| {
-                install
-                    .and_then(|value| value["installPath"].as_str())
-                    .map(PathBuf::from)
+            let marketplace = manifest["name"]
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| entry.file_name().to_string_lossy().into_owned());
+            let source = manifest.get("source").and_then(|value| {
+                value
+                    .as_str()
+                    .or_else(|| value.get("url").and_then(Value::as_str))
             });
-            let plugin_manifest = match source_path.as_deref() {
-                Some(path) => read_json(&path.join(".claude-plugin").join("plugin.json")).await,
-                None => None,
-            };
-            let icon = load_plugin_icon(
-                plugin_manifest.as_ref().unwrap_or(item),
-                source_path.as_deref(),
-                name,
-            )
-            .await;
-            let display_name = plugin_manifest
-                .as_ref()
-                .and_then(|value| value["interface"]["displayName"].as_str())
-                .or_else(|| {
-                    plugin_manifest
-                        .as_ref()
-                        .and_then(|value| value["displayName"].as_str())
-                })
-                .or_else(|| item.get("displayName").and_then(Value::as_str))
-                .unwrap_or(name);
-            let version = install
-                .and_then(|value| value["version"].as_str())
-                .or_else(|| {
-                    plugin_manifest
-                        .as_ref()
-                        .and_then(|value| value["version"].as_str())
+            marketplaces.push(serde_json::json!({
+                "name": marketplace,
+                "source": source,
+                "repo": manifest.get("repo").and_then(Value::as_str),
+                "url": manifest.get("homepage").and_then(Value::as_str),
+                "path": entry.path()
+            }));
+            for item in manifest["plugins"].as_array().into_iter().flatten() {
+                let Some(name) = item["name"].as_str() else {
+                    continue;
+                };
+                let selector = format!("{name}@{marketplace}");
+                let installs = installed
+                    .get(&selector)
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                let install = installs.last();
+                let is_installed = !installs.is_empty();
+                let is_enabled = enabled
+                    .get(&selector)
+                    .and_then(Value::as_bool)
+                    .unwrap_or(is_installed);
+                let source_path = plugin_source_path(item, &entry.path()).or_else(|| {
+                    install
+                        .and_then(|value| value["installPath"].as_str())
+                        .map(PathBuf::from)
                 });
-            let description = plugin_manifest
-                .as_ref()
-                .and_then(|value| value["interface"]["shortDescription"].as_str())
-                .or_else(|| {
-                    plugin_manifest
-                        .as_ref()
-                        .and_then(|value| value["description"].as_str())
-                })
-                .or_else(|| item.get("description").and_then(Value::as_str));
-            plugins.insert(selector.clone(), serde_json::json!({
+                let plugin_manifest = match source_path.as_deref() {
+                    Some(path) => read_json(&path.join(".claude-plugin").join("plugin.json")).await,
+                    None => None,
+                };
+                let icon = load_plugin_icon(
+                    plugin_manifest.as_ref().unwrap_or(item),
+                    source_path.as_deref(),
+                    name,
+                )
+                .await;
+                let display_name = plugin_manifest
+                    .as_ref()
+                    .and_then(|value| value["interface"]["displayName"].as_str())
+                    .or_else(|| {
+                        plugin_manifest
+                            .as_ref()
+                            .and_then(|value| value["displayName"].as_str())
+                    })
+                    .or_else(|| item.get("displayName").and_then(Value::as_str))
+                    .unwrap_or(name);
+                let version = install
+                    .and_then(|value| value["version"].as_str())
+                    .or_else(|| {
+                        plugin_manifest
+                            .as_ref()
+                            .and_then(|value| value["version"].as_str())
+                    });
+                let description = plugin_manifest
+                    .as_ref()
+                    .and_then(|value| value["interface"]["shortDescription"].as_str())
+                    .or_else(|| {
+                        plugin_manifest
+                            .as_ref()
+                            .and_then(|value| value["description"].as_str())
+                    })
+                    .or_else(|| item.get("description").and_then(Value::as_str));
+                plugins.insert(selector.clone(), serde_json::json!({
                 "name": name,
                 "marketplace": marketplace,
                 "selector": selector,
@@ -166,7 +164,73 @@ async fn claude_snapshot_from(home: &Path) -> Value {
                 "status": {"installed":is_installed,"available":true,"enabled":is_enabled,"cached":is_installed,"local":false},
                 "source": {"kind":"marketplace","path":source_path}
             }));
+            }
         }
+    } else if tokio::fs::metadata(&marketplaces_root).await.is_err() {
+        // Installed plugins can still be reported when the marketplace cache is absent.
+    } else {
+        warnings.push("Claude marketplace scan failed".to_owned());
+    }
+    // Claude keeps installed plugin metadata separately from marketplace metadata. Merge
+    // those records so installed-only plugins remain visible and their manifests/icons load.
+    for (selector, installs) in &installed {
+        if plugins.contains_key(selector) {
+            continue;
+        }
+        let Some(install) = installs.as_array().and_then(|items| items.last()) else {
+            continue;
+        };
+        let Some(raw_install_path) = install["installPath"].as_str() else {
+            continue;
+        };
+        let install_path = {
+            let path = PathBuf::from(raw_install_path.replace('\\', "/"));
+            if path.is_absolute() {
+                path
+            } else {
+                claude_dir.join(path)
+            }
+        };
+        let (name, marketplace) = selector
+            .rsplit_once('@')
+            .map(|(name, marketplace)| (name.to_owned(), Some(marketplace.to_owned())))
+            .unwrap_or_else(|| (selector.clone(), None));
+        let manifest = read_json(&install_path.join(".claude-plugin").join("plugin.json")).await;
+        let display_name = manifest
+            .as_ref()
+            .and_then(|value| value["interface"]["displayName"].as_str())
+            .or_else(|| {
+                manifest
+                    .as_ref()
+                    .and_then(|value| value["displayName"].as_str())
+            })
+            .unwrap_or(&name);
+        let description = manifest
+            .as_ref()
+            .and_then(|value| value["interface"]["shortDescription"].as_str())
+            .or_else(|| {
+                manifest
+                    .as_ref()
+                    .and_then(|value| value["description"].as_str())
+            });
+        let icon = load_plugin_icon(
+            manifest.as_ref().unwrap_or(&Value::Null),
+            Some(&install_path),
+            &name,
+        )
+        .await;
+        plugins.insert(selector.clone(), serde_json::json!({
+            "name": name,
+            "marketplace": marketplace,
+            "selector": selector,
+            "displayName": display_name,
+            "version": install["version"].as_str().or_else(|| manifest.as_ref().and_then(|value| value["version"].as_str())),
+            "description": description,
+            "icon": icon,
+            "scope": install["scope"].as_str(),
+            "status": {"installed":true,"available":false,"enabled":enabled.get(selector).and_then(Value::as_bool).unwrap_or(true),"cached":true,"local":false},
+            "source": {"kind":"cache","path":install_path}
+        }));
     }
     let mut plugins = plugins.into_values().collect::<Vec<_>>();
     sort_plugins(&mut plugins);
@@ -312,6 +376,32 @@ async fn codex_snapshot_from_codex_dir(codex_dir: &Path) -> Value {
             }));
         }
     }
+    for (selector, enabled) in codex_config_plugins(&config) {
+        if plugins.contains_key(&selector) {
+            continue;
+        }
+        let (name, marketplace) = selector
+            .rsplit_once('@')
+            .map(|(name, marketplace)| (name.to_owned(), Some(marketplace.to_owned())))
+            .unwrap_or_else(|| (selector.clone(), None));
+        plugins.insert(selector.clone(), serde_json::json!({
+            "name": name,
+            "marketplace": marketplace,
+            "selector": selector,
+            "displayName": name,
+            "version": Value::Null,
+            "description": Value::Null,
+            "icon": fallback_plugin_icon(&selector),
+            "scope": Value::Null,
+            "status": {"installed":true,"available":false,"enabled":enabled,"cached":false,"local":false},
+            "source": {"kind":"config","path":config_path}
+        }));
+    }
+    let cache_plugins = discover_codex_cache_plugins(&cache_root).await;
+    for plugin in cache_plugins {
+        let selector = plugin["selector"].as_str().unwrap_or_default().to_owned();
+        plugins.entry(selector).or_insert(plugin);
+    }
     let mut plugins = plugins.into_values().collect::<Vec<_>>();
     sort_plugins(&mut plugins);
     serde_json::json!({
@@ -383,6 +473,88 @@ fn codex_config_enabled(config: &str, selector: &str) -> Option<bool> {
         let (key, value) = line.split_once('=')?;
         (key.trim() == "enabled").then(|| value.trim() == "true")
     })
+}
+
+fn codex_config_plugins(config: &str) -> Vec<(String, bool)> {
+    let mut result = Vec::new();
+    let mut current: Option<(String, bool)> = None;
+    for line in config.lines() {
+        let trimmed = line.trim();
+        if let Some(header) = trimmed
+            .strip_prefix("[plugins.")
+            .and_then(|value| value.strip_suffix(']'))
+        {
+            if let Some((selector, enabled)) = current.take() {
+                result.push((selector, enabled));
+            }
+            let selector = header.trim_matches('"').trim_matches('\'');
+            if !selector.is_empty() {
+                current = Some((selector.to_owned(), true));
+            }
+            continue;
+        }
+        if let Some((_, enabled)) = current.as_mut() {
+            if let Some(value) = trimmed
+                .strip_prefix("enabled")
+                .and_then(|value| value.strip_prefix('='))
+            {
+                *enabled = value.trim() == "true";
+            }
+        }
+    }
+    if let Some((selector, enabled)) = current {
+        result.push((selector, enabled));
+    }
+    result
+}
+
+async fn discover_codex_cache_plugins(cache_root: &Path) -> Vec<Value> {
+    let mut records = Vec::new();
+    let Ok(mut marketplaces) = tokio::fs::read_dir(cache_root).await else {
+        return records;
+    };
+    while let Ok(Some(marketplace_entry)) = marketplaces.next_entry().await {
+        let Ok(mut names) = tokio::fs::read_dir(marketplace_entry.path()).await else {
+            continue;
+        };
+        while let Ok(Some(name_entry)) = names.next_entry().await {
+            let Ok(mut versions) = tokio::fs::read_dir(name_entry.path()).await else {
+                continue;
+            };
+            let mut latest = None;
+            while let Ok(Some(version_entry)) = versions.next_entry().await {
+                let manifest_path = version_entry
+                    .path()
+                    .join(".codex-plugin")
+                    .join("plugin.json");
+                if read_json(&manifest_path).await.is_some() {
+                    latest = Some(version_entry.path());
+                }
+            }
+            let Some(root) = latest else { continue };
+            let Some(manifest) = read_json(&root.join(".codex-plugin").join("plugin.json")).await
+            else {
+                continue;
+            };
+            let name = name_entry.file_name().to_string_lossy().into_owned();
+            let marketplace = marketplace_entry.file_name().to_string_lossy().into_owned();
+            let selector = format!("{name}@{marketplace}");
+            let display_name = manifest["interface"]["displayName"]
+                .as_str()
+                .or_else(|| manifest["displayName"].as_str())
+                .unwrap_or(&name);
+            let icon = load_plugin_icon(&manifest, Some(&root), &name).await;
+            records.push(serde_json::json!({
+                "name":name,"marketplace":marketplace,"selector":selector,
+                "displayName":display_name,"version":manifest["version"],
+                "description":manifest["interface"]["shortDescription"].as_str().or_else(|| manifest["description"].as_str()),
+                "icon":icon,"scope":Value::Null,
+                "status":{"installed":true,"available":false,"enabled":true,"cached":true,"local":false},
+                "source":{"kind":"cache","path":root}
+            }));
+        }
+    }
+    records
 }
 
 async fn load_plugin_icon(metadata: &Value, plugin_root: Option<&Path>, name: &str) -> String {
@@ -580,6 +752,44 @@ mod tests {
             snapshot["plugins"][0]["icon"],
             "data:image/svg+xml;base64,AAAA"
         );
+        tokio::fs::remove_dir_all(home).await.ok();
+    }
+
+    #[tokio::test]
+    async fn reads_installed_claude_plugin_without_marketplace_entry() {
+        let home = temp_home("claude-installed-only");
+        let install_root = home
+            .join(".claude")
+            .join("plugins")
+            .join("cache")
+            .join("demo");
+        tokio::fs::create_dir_all(install_root.join(".claude-plugin"))
+            .await
+            .unwrap();
+        tokio::fs::write(
+            home.join(".claude").join("plugins").join("installed_plugins.json"),
+            format!(
+                r#"{{"plugins":{{"demo@custom":[{{"version":"1.0.0","scope":"user","installPath":"{}"}}]}}}}"#,
+                install_root.to_string_lossy().replace('\\', "\\\\")
+            ),
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(
+            install_root.join(".claude-plugin").join("plugin.json"),
+            r#"{"name":"demo","interface":{"displayName":"Installed Demo"}}"#,
+        )
+        .await
+        .unwrap();
+        let snapshot = claude_snapshot_from(&home).await;
+        assert_eq!(snapshot["plugins"][0]["selector"], "demo@custom");
+        assert_eq!(snapshot["plugins"][0]["displayName"], "Installed Demo");
+        assert_eq!(snapshot["plugins"][0]["status"]["installed"], true);
+        assert_eq!(snapshot["plugins"][0]["status"]["available"], false);
+        assert!(snapshot["plugins"][0]["icon"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("data:image/svg+xml;base64,"));
         tokio::fs::remove_dir_all(home).await.ok();
     }
 

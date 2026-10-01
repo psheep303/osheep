@@ -2263,19 +2263,129 @@ async fn terminal_socket_inner(socket: WebSocket, session: Arc<dyn PtySession>) 
     }
 }
 
-async fn sync_model_prices() -> Result<Json<Value>, ApiError> {
-    // Keep the settings screen useful even when the optional LiteLLM network
-    // source is unavailable. These are the same model identifiers exposed by
-    // the local CLI adapters and are intentionally conservative estimates.
-    let models = serde_json::json!([
-        {"model":"claude-sonnet","provider":"anthropic","billingMode":"dynamic","inputCostPerMillion":3.0,"outputCostPerMillion":15.0,"source":"manual"},
-        {"model":"claude-opus","provider":"anthropic","billingMode":"dynamic","inputCostPerMillion":15.0,"outputCostPerMillion":75.0,"source":"manual"},
-        {"model":"gpt-5.1-codex","provider":"openai","billingMode":"dynamic","inputCostPerMillion":1.25,"outputCostPerMillion":10.0,"source":"manual"},
-        {"model":"gpt-5","provider":"openai","billingMode":"dynamic","inputCostPerMillion":1.25,"outputCostPerMillion":10.0,"source":"manual"}
-    ]);
-    Ok(Json(
-        serde_json::json!({"models":models,"source":"osheep-default","updatedAt":now_ms()}),
-    ))
+async fn sync_model_prices(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
+    const SOURCES: [&str; 3] = [
+        "https://cdn.jsdelivr.net/gh/BerriAI/litellm@litellm_internal_staging/model_prices_and_context_window.json",
+        "https://cdn.jsdelivr.net/gh/BerriAI/litellm@main/model_prices_and_context_window.json",
+        "https://raw.githubusercontent.com/BerriAI/litellm/litellm_internal_staging/model_prices_and_context_window.json",
+    ];
+    let mut last_error = "LiteLLM returned no model prices".to_owned();
+    let mut models = None;
+    for source in SOURCES {
+        let payload = match fetch_json_url(source).await {
+            Ok(payload) => payload,
+            Err(error) => {
+                last_error = error;
+                continue;
+            }
+        };
+        let normalized = normalize_litellm_prices(&payload);
+        if normalized.is_empty() {
+            last_error = "LiteLLM returned no model prices".to_owned();
+            continue;
+        }
+        if normalized
+            .iter()
+            .any(|item| item["provider"].as_str().unwrap_or("").is_empty())
+        {
+            last_error = "LiteLLM returned model prices without providers".to_owned();
+            continue;
+        }
+        models = Some(normalized);
+        break;
+    }
+    let models = models.ok_or_else(|| {
+        ApiError::new(
+            StatusCode::BAD_GATEWAY,
+            "MODEL_PRICE_SYNC_FAILED",
+            last_error,
+        )
+    })?;
+    state
+        .store
+        .merge_settings(&serde_json::json!({"pricing":{"models":models}}))
+        .await?;
+    let settings = state.store.settings(default_settings()).await?;
+    Ok(Json(serde_json::json!({
+        "models":settings["pricing"]["models"],
+        "source":"litellm",
+        "updatedAt":now_ms()
+    })))
+}
+
+async fn fetch_json_url(url: &str) -> Result<Value, String> {
+    let output = tokio::process::Command::new(if cfg!(windows) { "curl.exe" } else { "curl" })
+        .args(["-fsSL", "--max-time", "15", url])
+        .output()
+        .await
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Err(format!("LiteLLM price sync failed ({})", output.status));
+    }
+    serde_json::from_slice(&output.stdout).map_err(|error| error.to_string())
+}
+
+fn normalize_litellm_prices(payload: &Value) -> Vec<Value> {
+    let Some(object) = payload.as_object() else {
+        return Vec::new();
+    };
+    let mut records = Vec::new();
+    for (model, value) in object {
+        let Some(item) = value.as_object() else {
+            continue;
+        };
+        let input = number_value(item.get("input_cost_per_token"));
+        let output = number_value(item.get("output_cost_per_token"));
+        let per_request = number_value(item.get("input_cost_per_request"))
+            .zip(number_value(item.get("output_cost_per_request")))
+            .map(|(left, right)| left + right)
+            .or_else(|| number_value(item.get("input_cost_per_request")))
+            .or_else(|| number_value(item.get("output_cost_per_request")));
+        if model.trim().is_empty() || input.is_none() && output.is_none() && per_request.is_none() {
+            continue;
+        }
+        records.push(serde_json::json!({
+            "model":model,
+            "provider":item.get("litellm_provider").and_then(Value::as_str).unwrap_or(""),
+            "billingMode":if per_request.is_some() {"per-request"} else {"dynamic"},
+            "costPerRequest":per_request,
+            "inputCostPerMillion":input.unwrap_or(0.0).max(0.0) * 1_000_000.0,
+            "outputCostPerMillion":output.unwrap_or(0.0).max(0.0) * 1_000_000.0,
+            "cacheReadCostPerMillion":number_value(item.get("cache_read_input_token_cost")).map(|v| v.max(0.0) * 1_000_000.0),
+            "cacheWriteCostPerMillion":number_value(item.get("cache_creation_input_token_cost")).map(|v| v.max(0.0) * 1_000_000.0),
+            "favorite":is_default_favorite_model(model, item.get("litellm_provider").and_then(Value::as_str).unwrap_or("")),
+            "favoriteCustomized":false,
+            "source":"litellm",
+            "updatedAt":now_ms()
+        }));
+    }
+    records.sort_by(|left, right| left["model"].as_str().cmp(&right["model"].as_str()));
+    records
+}
+
+fn is_default_favorite_model(model: &str, provider: &str) -> bool {
+    matches!(
+        (model.trim().to_ascii_lowercase().as_str(), provider.trim().to_ascii_lowercase().as_str()),
+        ("gpt-5.6-sol", "openai")
+            | ("gpt-5.6-terra", "openai")
+            | ("gpt-5.6-luna", "openai")
+            | ("gpt-5.5", "openai")
+            | ("gpt-5.4", "openai")
+            | ("claude-fable-5", "anthropic")
+            | ("claude-opus-4-7", "anthropic")
+            | ("claude-opus-4-8", "anthropic")
+            | ("claude-opus-5", "anthropic")
+    )
+}
+
+fn number_value(value: Option<&Value>) -> Option<f64> {
+    value
+        .and_then(|value| match value {
+            Value::Number(number) => number.as_f64(),
+            Value::String(text) => text.parse::<f64>().ok(),
+            _ => None,
+        })
+        .filter(|value| value.is_finite())
 }
 
 async fn ai_cli_tool_action(
@@ -2747,10 +2857,88 @@ async fn ai_cli_tools() -> Json<Value> {
     } else {
         "linux"
     };
+    let claude_version = cli_version(claude.as_deref()).await;
+    let codex_version = cli_version(codex.as_deref()).await;
+    let claude_latest = npm_latest_version("@anthropic-ai/claude-code").await;
+    let codex_latest = npm_latest_version("@openai/codex").await;
     Json(serde_json::json!({"tools": [
-        {"name":"claude","installed":claude.is_some(),"path":claude,"activeAction":Value::Null,"currentVersion":Value::Null,"latestVersion":Value::Null,"updateAvailable":false,"platform":platform,"error":Value::Null},
-        {"name":"codex","installed":codex.is_some(),"path":codex,"activeAction":Value::Null,"currentVersion":Value::Null,"latestVersion":Value::Null,"updateAvailable":false,"platform":platform,"error":Value::Null}
+        cli_tool_status("claude", claude, claude_version, claude_latest, platform),
+        cli_tool_status("codex", codex, codex_version, codex_latest, platform)
     ]}))
+}
+
+fn cli_tool_status(
+    name: &str,
+    path: Option<PathBuf>,
+    current: Option<String>,
+    latest: Option<String>,
+    platform: &str,
+) -> Value {
+    let update_available = current
+        .as_deref()
+        .zip(latest.as_deref())
+        .is_some_and(|(current, latest)| compare_versions(latest, current).is_gt());
+    serde_json::json!({
+        "name":name,"installed":path.is_some(),"path":path,
+        "activeAction":Value::Null,"currentVersion":current,"latestVersion":latest,
+        "updateAvailable":update_available,"platform":platform,"error":Value::Null
+    })
+}
+
+async fn cli_version(path: Option<&Path>) -> Option<String> {
+    let path = path?;
+    let output = tokio::process::Command::new(path)
+        .arg("--version")
+        .output()
+        .await
+        .ok()?;
+    parse_version(&format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    ))
+}
+
+async fn npm_latest_version(package: &str) -> Option<String> {
+    let encoded =
+        percent_encoding::utf8_percent_encode(package, percent_encoding::NON_ALPHANUMERIC);
+    let url = format!("https://registry.npmjs.org/{encoded}/latest");
+    let value = fetch_json_url(&url).await.ok()?;
+    parse_version(value["version"].as_str().unwrap_or(""))
+}
+
+fn parse_version(value: &str) -> Option<String> {
+    let mut parts = value.split(|character: char| !character.is_ascii_digit() && character != '.');
+    parts
+        .find(|part| part.split('.').count() >= 2 && part.split('.').all(|item| !item.is_empty()))
+        .map(str::to_owned)
+}
+
+fn compare_versions(left: &str, right: &str) -> std::cmp::Ordering {
+    let left = left
+        .split('-')
+        .next()
+        .unwrap_or(left)
+        .split('.')
+        .map(|part| part.parse::<u64>().unwrap_or(0))
+        .collect::<Vec<_>>();
+    let right = right
+        .split('-')
+        .next()
+        .unwrap_or(right)
+        .split('.')
+        .map(|part| part.parse::<u64>().unwrap_or(0))
+        .collect::<Vec<_>>();
+    let length = left.len().max(right.len());
+    (0..length)
+        .map(|index| {
+            left.get(index)
+                .copied()
+                .unwrap_or(0)
+                .cmp(&right.get(index).copied().unwrap_or(0))
+        })
+        .find(|ordering| *ordering != std::cmp::Ordering::Equal)
+        .unwrap_or(std::cmp::Ordering::Equal)
 }
 
 async fn ai_models(
@@ -5885,6 +6073,43 @@ async fn static_fallback(State(state): State<AppState>, uri: Uri, headers: Heade
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_price_normalization_preserves_partial_request_rates() {
+        let prices = normalize_litellm_prices(&serde_json::json!({
+            "demo": {
+                "litellm_provider": "demo",
+                "input_cost_per_request": 0.01
+            },
+            "chat": {
+                "litellm_provider": "demo",
+                "input_cost_per_token": 0.000001,
+                "output_cost_per_token": 0.000002,
+                "cache_read_input_token_cost": 0.0000005
+            },
+            "gpt-5.6-sol": {
+                "litellm_provider": "openai",
+                "input_cost_per_token": 0.000001,
+                "output_cost_per_token": 0.000002
+            }
+        }));
+        assert_eq!(prices.len(), 3);
+        assert_eq!(prices[0]["billingMode"], "dynamic");
+        assert_eq!(prices[1]["billingMode"], "per-request");
+        assert_eq!(prices[1]["costPerRequest"], 0.01);
+        assert_eq!(prices[0]["cacheReadCostPerMillion"], 0.5);
+        assert_eq!(prices[2]["favorite"], true);
+        assert_eq!(prices[2]["favoriteCustomized"], false);
+    }
+
+    #[test]
+    fn semantic_version_comparison_considers_missing_components_zero() {
+        assert_eq!(
+            compare_versions("1.2.1", "1.2"),
+            std::cmp::Ordering::Greater
+        );
+        assert_eq!(compare_versions("1.2", "1.2.0"), std::cmp::Ordering::Equal);
+    }
 
     #[test]
     fn replay_chunks_preserve_utf8_and_size_limit() {
