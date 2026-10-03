@@ -7,6 +7,18 @@ start_frontend=1
 install_dependencies=0
 developer_mode=0
 
+# Keep the defaults local, but allow callers to expose the development server
+# explicitly (for example: OSHEEP_HOST=0.0.0.0 OSHEEP_AUTH_TOKEN=... ./dev.sh).
+backend_host=${OSHEEP_HOST:-127.0.0.1}
+backend_port=${OSHEEP_PORT:-4178}
+frontend_host=${OSHEEP_FRONTEND_HOST:-${OSHEEP_HOST:-127.0.0.1}}
+frontend_port=${OSHEEP_FRONTEND_PORT:-5173}
+api_proxy=${VITE_API_PROXY:-http://127.0.0.1:${backend_port}}
+auth_token_status='<unset>'
+if [[ -n ${OSHEEP_AUTH_TOKEN:-} ]]; then
+  auth_token_status='<set>'
+fi
+
 usage() {
   printf '%s\n' "Usage: bash ./dev.sh [--backend-only|--frontend-only] [--install] [--developer]"
 }
@@ -57,21 +69,26 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 if (( start_backend )); then
-  printf '[backend] http://127.0.0.1:%s\n' "${OSHEEP_PORT:-4178}"
+  printf '[backend] http://%s:%s\n' "$backend_host" "$backend_port"
+  printf '  OSHEEP_HOST=%s OSHEEP_PORT=%s\n' "$backend_host" "$backend_port"
+  printf '  CORS_ORIGIN=%s\n' "${CORS_ORIGIN:-<unset>}"
+  printf '  OSHEEP_AUTH_TOKEN=%s\n' "$auth_token_status"
   (
     cd "$repo_root"
     if (( developer_mode )); then export OSHEEP_DEVELOPER_MODE=1; fi
-    exec cargo run -p osheep-server
+    exec env OSHEEP_HOST="$backend_host" OSHEEP_PORT="$backend_port" cargo run -p osheep-server
   ) &
   pids+=("$!")
 fi
 
 if (( start_frontend )); then
   install_project "$repo_root/frontend"
-  printf '%s\n' '[frontend] http://127.0.0.1:5173'
+  printf '[frontend] http://%s:%s\n' "$frontend_host" "$frontend_port"
+  printf '  OSHEEP_FRONTEND_HOST=%s OSHEEP_FRONTEND_PORT=%s\n' "$frontend_host" "$frontend_port"
+  printf '  VITE_API_PROXY=%s\n' "$api_proxy"
   (
     cd "$repo_root/frontend"
-    exec npm run dev
+    exec env VITE_API_PROXY="$api_proxy" npm run dev -- --host "$frontend_host" --port "$frontend_port"
   ) &
   pids+=("$!")
 fi
