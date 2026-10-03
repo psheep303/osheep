@@ -103,8 +103,8 @@ impl Security {
             .is_some_and(|value| secrets_equal(value, &self.session_token))
     }
 
-    pub fn session_cookie(&self) -> String {
-        let secure = if self.remote_access { "; Secure" } else { "" };
+    pub fn session_cookie(&self, secure: bool) -> String {
+        let secure = if secure { "; Secure" } else { "" };
         format!(
             "{SESSION_COOKIE}={}; Path=/; HttpOnly; SameSite=Strict{secure}",
             self.session_token

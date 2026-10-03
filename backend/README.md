@@ -36,8 +36,8 @@ npm start          # 生产：node dist/index.js
 WebSocket 均要求该 Cookie；跨站浏览器请求会在建立会话前被拒绝。
 
 当 `OSHEEP_HOST` 不是回环地址时，后端会拒绝在缺少至少 32 字符的 `OSHEEP_AUTH_TOKEN` 或显式
-`CORS_ORIGIN` 的情况下启动。远程入口应使用 HTTPS，并通过
-`https://host/#osheep-token=TOKEN` 首次交换令牌。该共享令牌只适合受控的单用户部署，
+`CORS_ORIGIN` 的情况下启动。远程入口支持 HTTP，但 HTTP 会明文传输令牌和会话，建议使用 HTTPS，
+并通过 `http(s)://host/#osheep-token=TOKEN` 首次交换令牌。该共享令牌只适合受控的单用户部署，
 不能替代多用户身份认证、反向代理访问控制或网络隔离。
 
 ## API 概览

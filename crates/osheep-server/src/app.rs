@@ -37,6 +37,7 @@ use tokio::process::Command;
 use tokio::sync::{broadcast, Mutex};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
+use url::Url;
 
 const TERMINAL_REPLAY_CHUNK_BYTES: usize = 64 * 1024;
 const AI_TERMINAL_DONE_MARKER: &str = "__OSHEEP_AGENT_DONE__";
@@ -2079,12 +2080,29 @@ async fn create_session(
             (header::CACHE_CONTROL, HeaderValue::from_static("no-store")),
             (
                 header::SET_COOKIE,
-                HeaderValue::from_str(&state.security.session_cookie()).unwrap(),
+                HeaderValue::from_str(&state.security.session_cookie(request_uses_https(&headers)))
+                    .unwrap(),
             ),
         ],
         Json(HealthResponse { ok: true }),
     )
         .into_response())
+}
+
+fn request_uses_https(headers: &HeaderMap) -> bool {
+    if headers
+        .get("x-forwarded-proto")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(',').next())
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("https"))
+    {
+        return true;
+    }
+    headers
+        .get(header::ORIGIN)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| Url::parse(value).ok())
+        .is_some_and(|url| url.scheme() == "https")
 }
 
 async fn terminal_profiles(State(state): State<AppState>) -> Json<ShellProfilesResponse> {

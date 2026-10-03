@@ -123,7 +123,10 @@ export function createSecurity(options: SecurityOptions) {
         throw errors.authRequired("远程访问需要通过 URL fragment 提供 OSHEEP_AUTH_TOKEN");
       }
 
-      const secure = remoteAccess ? "; Secure" : "";
+      const secure =
+        request.protocol === "https" || request.headers.origin?.startsWith("https://")
+          ? "; Secure"
+          : "";
       reply.header("cache-control", "no-store");
       reply.header(
         "set-cookie",

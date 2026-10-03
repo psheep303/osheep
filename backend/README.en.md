@@ -41,8 +41,9 @@ session can be established.
 
 When `OSHEEP_HOST` is not a loopback address, the backend refuses to start unless it has an
 `OSHEEP_AUTH_TOKEN` of at least 32 characters and explicit `CORS_ORIGIN` values. Remote entry
-points must use HTTPS. Exchange the token once through `https://host/#osheep-token=TOKEN`. This
-shared token is only suitable for controlled single-user deployments and does not replace
+points support HTTP, but HTTP sends the token and session in cleartext; HTTPS is recommended.
+Exchange the token once through `http(s)://host/#osheep-token=TOKEN`. This shared token is only
+suitable for controlled single-user deployments and does not replace
 multi-user authentication, reverse-proxy access control, or network isolation.
 
 ## API Overview
